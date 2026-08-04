@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     Json, Router,
     extract::Request,
@@ -6,27 +8,32 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+pub mod apps;
 pub mod bootstrap;
 pub mod compose;
 pub mod config;
 pub mod db;
 pub mod docker;
 
+use apps::DeployError;
 use db::StateStore;
+use docker::DockerRuntime;
 
 #[derive(Clone)]
 struct AppState<S: StateStore> {
     store: S,
+    docker: Arc<dyn DockerRuntime>,
 }
 
-pub fn build_app<S: StateStore>(store: S) -> Router {
-    let state = AppState { store };
+pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Router {
+    let state = AppState { store, docker };
 
     Router::new()
         .route("/health", get(health))
         .route("/bootstrap/status", get(bootstrap_status::<S>))
+        .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
@@ -66,6 +73,68 @@ async fn bootstrap_status<S: StateStore>(
         initialized,
         dns_suffix,
     })
+}
+
+#[derive(Deserialize)]
+struct DeployApplicationRequest {
+    name: String,
+    image: String,
+}
+
+#[derive(Serialize)]
+struct ApplicationResponse {
+    name: String,
+    hostname: String,
+    image: String,
+    status: String,
+}
+
+impl From<apps::ApplicationRecord> for ApplicationResponse {
+    fn from(app: apps::ApplicationRecord) -> Self {
+        Self {
+            name: app.name,
+            hostname: app.hostname,
+            image: app.image,
+            status: app.status,
+        }
+    }
+}
+
+async fn deploy_app<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    Json(body): Json<DeployApplicationRequest>,
+) -> Response {
+    match apps::deploy_from_image(&state.store, state.docker.as_ref(), &body.name, &body.image)
+        .await
+    {
+        Ok(app) => (StatusCode::CREATED, Json(ApplicationResponse::from(app))).into_response(),
+        Err(err) => deploy_error_response(err),
+    }
+}
+
+async fn list_apps<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
+    match apps::list_applications(&state.store).await {
+        Ok(apps) => {
+            let body: Vec<ApplicationResponse> =
+                apps.into_iter().map(ApplicationResponse::from).collect();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(err) => deploy_error_response(err),
+    }
+}
+
+fn deploy_error_response(err: DeployError) -> Response {
+    let (status, message) = match &err {
+        DeployError::AlreadyExists(_) => (StatusCode::CONFLICT, err.to_string()),
+        DeployError::InvalidName(_) | DeployError::MissingImage => {
+            (StatusCode::BAD_REQUEST, err.to_string())
+        }
+        DeployError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
+        DeployError::Docker(_) | DeployError::Db(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        }
+    };
+    (status, message).into_response()
 }
 
 async fn require_api_key<S: StateStore>(
@@ -111,6 +180,7 @@ mod tests {
     use axum::http::{Request, header};
     use axum::response::Response;
     use db::FakeStateStore;
+    use docker::FakeDocker;
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
@@ -125,37 +195,59 @@ mod tests {
             .unwrap()
     }
 
-    async fn setup_app(api_key: &str) -> (Router, FakeStateStore) {
+    async fn post_json(app: &Router, uri: &str, api_key: Option<&str>, body: Value) -> Response {
+        let mut req = Request::builder().method("POST").uri(uri);
+        if let Some(key) = api_key {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
+        }
+        req = req.header(header::CONTENT_TYPE, "application/json");
+        app.clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn setup_app(api_key: &str) -> (Router, FakeStateStore, FakeDocker) {
         let store = FakeStateStore::new();
         store.store_state("api_key", api_key).await.unwrap();
-        let app = build_app(store.clone());
+        let docker = FakeDocker::new();
+        let app = build_app(store.clone(), Arc::new(docker.clone()));
+        (app, store, docker)
+    }
+
+    async fn setup_initialized_app(api_key: &str, dns_suffix: &str) -> (Router, FakeStateStore) {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", api_key).await.unwrap();
+        store.store_state("dns_suffix", dns_suffix).await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(store.clone(), Arc::new(docker));
         (app, store)
     }
 
     #[tokio::test]
     async fn health_returns_200_with_valid_api_key() {
-        let (app, _) = setup_app("secret-key").await;
+        let (app, _, _) = setup_app("secret-key").await;
         let response = send(&app, "/health", Some("secret-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
     async fn health_returns_401_without_api_key() {
-        let (app, _) = setup_app("secret-key").await;
+        let (app, _, _) = setup_app("secret-key").await;
         let response = send(&app, "/health", None).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn health_returns_401_with_invalid_api_key() {
-        let (app, _) = setup_app("secret-key").await;
+        let (app, _, _) = setup_app("secret-key").await;
         let response = send(&app, "/health", Some("wrong-key")).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn health_returns_json_status_ok_with_valid_api_key() {
-        let (app, _) = setup_app("secret-key").await;
+        let (app, _, _) = setup_app("secret-key").await;
         let response = send(&app, "/health", Some("secret-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
 
@@ -166,14 +258,14 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_route_returns_401_without_api_key() {
-        let (app, _) = setup_app("secret-key").await;
+        let (app, _, _) = setup_app("secret-key").await;
         let response = send(&app, "/nonexistent", None).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn unknown_route_returns_404_with_valid_api_key() {
-        let (app, _) = setup_app("secret-key").await;
+        let (app, _, _) = setup_app("secret-key").await;
         let response = send(&app, "/nonexistent", Some("secret-key")).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -196,7 +288,8 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_status_returns_initialized_false_when_not_initialized() {
         let store = FakeStateStore::new();
-        let app = build_app(store.clone());
+        let docker = FakeDocker::new();
+        let app = build_app(store.clone(), Arc::new(docker));
 
         // Store an API key so auth passes
         store.store_state("api_key", "test-key").await.unwrap();
@@ -216,7 +309,8 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
 
-        let app = build_app(store);
+        let docker = FakeDocker::new();
+        let app = build_app(store, Arc::new(docker));
 
         let response = send(&app, "/bootstrap/status", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -231,7 +325,8 @@ mod tests {
     async fn bootstrap_status_returns_401_without_api_key() {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
-        let app = build_app(store);
+        let docker = FakeDocker::new();
+        let app = build_app(store, Arc::new(docker));
 
         let response = send(&app, "/bootstrap/status", None).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -252,7 +347,8 @@ mod tests {
             .await
             .expect("persist should succeed");
 
-        let app = build_app(store);
+        let docker = FakeDocker::new();
+        let app = build_app(store, Arc::new(docker));
 
         let response = send(&app, "/bootstrap/status", Some("generated-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -290,6 +386,151 @@ mod tests {
             .expect_err("second persist should fail");
 
         assert!(matches!(err, bootstrap::BootstrapError::AlreadyInitialized));
+    }
+
+    #[tokio::test]
+    async fn deploy_application_from_image_returns_hostname_under_dns_suffix() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["name"], json!("blog"));
+        assert_eq!(parsed["hostname"], json!("blog.home.lan"));
+        assert_eq!(parsed["image"], json!("nginx:alpine"));
+        assert_eq!(parsed["status"], json!("running"));
+    }
+
+    #[tokio::test]
+    async fn list_applications_includes_deployed_app() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let deploy = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(deploy.status(), StatusCode::CREATED);
+
+        let response = send(&app, "/apps", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed,
+            json!([{
+                "name": "blog",
+                "hostname": "blog.home.lan",
+                "image": "nginx:alpine",
+                "status": "running"
+            }])
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_duplicate_application_name_returns_conflict() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let first = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let second = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn deploy_requires_api_key() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            None,
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn deploy_runs_application_without_host_ports() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(store, Arc::new(docker.clone()));
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
+
+        let deployed = docker.apps.lock().unwrap();
+        assert_eq!(deployed.len(), 1);
+        assert!(deployed[0].ports.is_empty());
+        assert!(
+            deployed[0]
+                .labels
+                .iter()
+                .any(|(k, v)| k == "traefik.enable" && v == "true")
+        );
+        assert!(deployed[0].labels.iter().any(|(k, v)| {
+            k == "traefik.http.routers.blog.rule" && v == "Host(`blog.home.lan`)"
+        }));
+    }
+
+    #[tokio::test]
+    async fn deploy_duplicate_returns_clear_error_message() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let _ = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+
+        let second = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        let body = to_bytes(second.into_body(), 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("already exists"));
     }
 }
 

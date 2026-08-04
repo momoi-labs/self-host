@@ -15,7 +15,10 @@ pub fn platform_config_dir() -> PathBuf {
 struct ComposeFile {
     version: String,
     services: indexmap::IndexMap<String, ComposeService>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     volumes: Option<indexmap::IndexMap<String, ComposeVolume>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    networks: Option<indexmap::IndexMap<String, ComposeNetwork>>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -31,13 +34,24 @@ struct ComposeService {
     restart: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    labels: Option<indexmap::IndexMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    networks: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Default)]
 struct ComposeVolume {}
 
+#[derive(Debug, Serialize, Default)]
+struct ComposeNetwork {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    external: bool,
+}
+
 pub struct ComposeConfig {
     pub services: Vec<ComposeServiceConfig>,
+    pub networks: Vec<String>,
 }
 
 pub struct ComposeServiceConfig {
@@ -48,6 +62,8 @@ pub struct ComposeServiceConfig {
     pub volumes: Vec<String>,
     pub restart_policy: String,
     pub cmd: Vec<String>,
+    pub labels: Vec<(String, String)>,
+    pub networks: Vec<String>,
 }
 
 pub struct ComposeRunner {
@@ -93,6 +109,16 @@ impl ComposeRunner {
             if !svc.cmd.is_empty() {
                 service.command = Some(svc.cmd.clone());
             }
+            if !svc.labels.is_empty() {
+                let mut labels = IndexMap::new();
+                for (k, v) in &svc.labels {
+                    labels.insert(k.clone(), v.clone());
+                }
+                service.labels = Some(labels);
+            }
+            if !svc.networks.is_empty() {
+                service.networks = Some(svc.networks.clone());
+            }
 
             services.insert(svc.name.clone(), service);
 
@@ -108,6 +134,18 @@ impl ComposeRunner {
             }
         }
 
+        let networks = if config.networks.is_empty() {
+            None
+        } else {
+            let mut nets = IndexMap::new();
+            for name in &config.networks {
+                // Pre-created by DockerRuntime::ensure_network so apps and
+                // Infra share one bridge for Traefik Docker provider routing.
+                nets.insert(name.clone(), ComposeNetwork { external: true });
+            }
+            Some(nets)
+        };
+
         let compose = ComposeFile {
             version: "3.8".to_string(),
             services,
@@ -116,6 +154,7 @@ impl ComposeRunner {
             } else {
                 None
             },
+            networks,
         };
 
         let yaml =

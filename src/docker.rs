@@ -56,6 +56,20 @@ pub struct ContainerConfig {
     pub volumes: Vec<String>,
     pub restart_policy: String,
     pub cmd: Vec<String>,
+    pub labels: Vec<(String, String)>,
+    pub networks: Vec<String>,
+}
+
+pub const PLATFORM_NETWORK: &str = "self-host";
+
+/// Application container: Traefik Host routing via labels; no host port publish.
+#[derive(Debug, Clone)]
+pub struct ApplicationContainer {
+    pub name: String,
+    pub image: String,
+    pub labels: Vec<(String, String)>,
+    pub network: String,
+    pub ports: Vec<String>,
 }
 
 impl ContainerConfig {
@@ -68,6 +82,8 @@ impl ContainerConfig {
             volumes: self.volumes.clone(),
             restart_policy: self.restart_policy.clone(),
             cmd: self.cmd.clone(),
+            labels: self.labels.clone(),
+            networks: self.networks.clone(),
         }
     }
 }
@@ -78,6 +94,10 @@ pub trait DockerRuntime: Send + Sync {
     async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError>;
     async fn commit(&self) -> Result<(), DockerError>;
     async fn container_running(&self, name: &str) -> Result<bool, DockerError>;
+    async fn ensure_network(&self, name: &str) -> Result<(), DockerError>;
+    async fn pull_image(&self, image: &str) -> Result<(), DockerError>;
+    async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError>;
+    async fn remove_container(&self, name: &str) -> Result<(), DockerError>;
 }
 
 pub struct ComposeDocker {
@@ -103,8 +123,16 @@ impl ComposeDocker {
         let compose_services: Vec<ComposeServiceConfig> =
             services.iter().map(|s| s.to_compose_service()).collect();
 
+        let networks: Vec<String> = services
+            .iter()
+            .flat_map(|s| s.networks.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
         let config = ComposeConfig {
             services: compose_services,
+            networks,
         };
 
         self.runner
@@ -163,19 +191,131 @@ impl DockerRuntime for ComposeDocker {
     async fn container_running(&self, _name: &str) -> Result<bool, DockerError> {
         Ok(true)
     }
-}
 
-pub struct FakeDocker;
+    async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
+        let output = std::process::Command::new("docker")
+            .args(["network", "inspect", name])
+            .output()
+            .map_err(|e| DockerError::Unavailable(format!("failed to inspect network: {e}")))?;
 
-impl FakeDocker {
-    pub fn new() -> Self {
-        FakeDocker
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let create = std::process::Command::new("docker")
+            .args(["network", "create", name])
+            .output()
+            .map_err(|e| DockerError::Unavailable(format!("failed to create network: {e}")))?;
+
+        if !create.status.success() {
+            let stderr = String::from_utf8_lossy(&create.stderr);
+            return Err(DockerError::Unavailable(format!(
+                "failed to create docker network '{name}': {stderr}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
+        let output = std::process::Command::new("docker")
+            .args(["pull", image])
+            .output()
+            .map_err(|e| DockerError::Unavailable(format!("failed to pull image: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(DockerError::Unavailable(format!(
+                "failed to pull image '{image}': {stderr}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
+        // Remove any previous container with the same name (recreate path).
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f", &config.name])
+            .output();
+
+        let mut args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            config.name.clone(),
+            "--restart".to_string(),
+            "unless-stopped".to_string(),
+            "--network".to_string(),
+            config.network.clone(),
+        ];
+
+        for (key, value) in &config.labels {
+            args.push("--label".into());
+            args.push(format!("{key}={value}"));
+        }
+
+        for port in &config.ports {
+            args.push("-p".into());
+            args.push(port.clone());
+        }
+
+        args.push(config.image.clone());
+
+        let output = std::process::Command::new("docker")
+            .args(&args)
+            .output()
+            .map_err(|e| DockerError::Unavailable(format!("failed to run application: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(DockerError::Unavailable(format!(
+                "failed to start Application container '{}': {stderr}",
+                config.name
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn remove_container(&self, name: &str) -> Result<(), DockerError> {
+        let output = std::process::Command::new("docker")
+            .args(["rm", "-f", name])
+            .output()
+            .map_err(|e| DockerError::Unavailable(format!("failed to remove container: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(DockerError::Unavailable(format!(
+                "failed to remove container '{name}': {stderr}"
+            )));
+        }
+
+        Ok(())
     }
 }
 
-impl Default for FakeDocker {
-    fn default() -> Self {
-        Self::new()
+#[derive(Clone, Default)]
+pub struct FakeDocker {
+    pub apps: std::sync::Arc<std::sync::Mutex<Vec<ApplicationContainer>>>,
+    pub pulled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FakeDocker {
+    pub fn new() -> Self {
+        FakeDocker {
+            apps: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            pulled: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn deployed_apps(&self) -> Vec<String> {
+        self.apps
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|a| a.name.clone())
+            .collect()
     }
 }
 
@@ -196,6 +336,69 @@ impl DockerRuntime for FakeDocker {
     async fn container_running(&self, _name: &str) -> Result<bool, DockerError> {
         Ok(true)
     }
+
+    async fn ensure_network(&self, _name: &str) -> Result<(), DockerError> {
+        Ok(())
+    }
+
+    async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
+        self.pulled.lock().unwrap().push(image.to_string());
+        Ok(())
+    }
+
+    async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
+        // Mirror production contract: Applications must not publish host ports.
+        if !config.ports.is_empty() {
+            return Err(DockerError::Unavailable(
+                "Application containers must not publish host ports".into(),
+            ));
+        }
+        self.apps.lock().unwrap().push(config);
+        Ok(())
+    }
+
+    async fn remove_container(&self, name: &str) -> Result<(), DockerError> {
+        self.apps.lock().unwrap().retain(|a| a.name != name);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<T> DockerRuntime for std::sync::Arc<T>
+where
+    T: DockerRuntime + ?Sized,
+{
+    async fn ping(&self) -> Result<(), DockerError> {
+        (**self).ping().await
+    }
+
+    async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError> {
+        (**self).ensure_container_running(config).await
+    }
+
+    async fn commit(&self) -> Result<(), DockerError> {
+        (**self).commit().await
+    }
+
+    async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
+        (**self).container_running(name).await
+    }
+
+    async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
+        (**self).ensure_network(name).await
+    }
+
+    async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
+        (**self).pull_image(image).await
+    }
+
+    async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
+        (**self).run_application(config).await
+    }
+
+    async fn remove_container(&self, name: &str) -> Result<(), DockerError> {
+        (**self).remove_container(name).await
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +415,8 @@ mod tests {
             volumes: vec!["pg-data:/var/lib/postgresql".into()],
             restart_policy: "unless-stopped".into(),
             cmd: vec![],
+            labels: vec![],
+            networks: vec![],
         };
 
         let svc = config.to_compose_service();

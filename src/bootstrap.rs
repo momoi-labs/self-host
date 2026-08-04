@@ -1,5 +1,5 @@
 use crate::db::{DbError, StateStore};
-use crate::docker::{ContainerConfig, DockerError, DockerRuntime};
+use crate::docker::{ContainerConfig, DockerError, DockerRuntime, PLATFORM_NETWORK};
 use rand::Rng;
 use tracing::info;
 
@@ -52,10 +52,9 @@ pub async fn run_bootstrap(
     docker.ping().await?;
 
     let api_key = generate_api_key();
-
-    start_infra_containers(docker, dns_suffix).await?;
-
     let host_ip = detect_host_ip();
+
+    start_infra_containers(docker, dns_suffix, &host_ip).await?;
 
     let api_listen_addr = format!("{host_ip}:{OPERATOR_API_PORT}");
 
@@ -81,14 +80,18 @@ pub async fn persist_bootstrap_state(
 
     store.store_state("api_key", &result.api_key).await?;
     store.store_state("dns_suffix", &result.dns_suffix).await?;
+    store.store_state("host_ip", &result.host_ip).await?;
 
     Ok(())
 }
 
 async fn start_infra_containers(
     docker: &impl DockerRuntime,
-    _dns_suffix: &str,
+    dns_suffix: &str,
+    host_ip: &str,
 ) -> Result<(), BootstrapError> {
+    docker.ensure_network(PLATFORM_NETWORK).await?;
+
     info!("configuring PostgreSQL 18 container");
     docker
         .ensure_container_running(ContainerConfig {
@@ -103,6 +106,8 @@ async fn start_infra_containers(
             volumes: vec!["self-host-pg-data:/var/lib/postgresql".into()],
             restart_policy: "unless-stopped".into(),
             cmd: vec![],
+            labels: vec![],
+            networks: vec![PLATFORM_NETWORK.to_string()],
         })
         .await?;
 
@@ -115,11 +120,15 @@ async fn start_infra_containers(
             env: vec![],
             volumes: vec![],
             restart_policy: "unless-stopped".into(),
+            // Wildcard *.dns_suffix → Host IP for Consumer Application Hostnames.
             cmd: vec![
                 "--no-resolv".into(),
                 "--server=8.8.8.8".into(),
                 "--server=8.8.4.4".into(),
+                format!("--address=/{dns_suffix}/{host_ip}"),
             ],
+            labels: vec![],
+            networks: vec![PLATFORM_NETWORK.to_string()],
         })
         .await?;
 
@@ -132,7 +141,13 @@ async fn start_infra_containers(
             env: vec![],
             volumes: vec!["/var/run/docker.sock:/var/run/docker.sock:ro".into()],
             restart_policy: "unless-stopped".into(),
-            cmd: vec![],
+            cmd: vec![
+                "--providers.docker=true".into(),
+                "--providers.docker.exposedbydefault=false".into(),
+                "--entrypoints.web.address=:80".into(),
+            ],
+            labels: vec![],
+            networks: vec![PLATFORM_NETWORK.to_string()],
         })
         .await?;
 
