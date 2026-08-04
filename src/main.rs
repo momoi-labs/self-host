@@ -13,8 +13,7 @@ async fn main() {
         .init();
 
     let api_key = env::var("SELF_HOST_API_KEY").unwrap_or_else(|_| "dev-key".into());
-    let listen_addr = env::var("SELF_HOST_LISTEN")
-        .unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let listen_addr = env::var("SELF_HOST_LISTEN").unwrap_or_else(|_| "127.0.0.1:3000".into());
 
     let app = build_app(api_key);
 
@@ -24,7 +23,5 @@ async fn main() {
 
     info!("platform listening on {listen_addr}");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }
