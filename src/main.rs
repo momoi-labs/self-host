@@ -1,8 +1,31 @@
 use std::env;
 
-use self_host::build_app;
+use clap::{Parser, Subcommand};
+use self_host::bootstrap::{self, BootstrapResult, OPERATOR_API_PORT};
+use self_host::config::CliConfig;
+use self_host::db::{PgStateStore, StateStore};
+use self_host::{build_app, docker::ComposeDocker};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Parser)]
+#[command(name = "self-host", about = "LAN self-host PaaS platform")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Bootstrap the platform on this Host
+    Init {
+        /// DNS suffix for Application Hostnames (default: home.lan)
+        #[arg(long, default_value = bootstrap::DEFAULT_DNS_SUFFIX)]
+        dns: String,
+    },
+    /// Start the platform daemon
+    Serve,
+}
 
 #[tokio::main]
 async fn main() {
@@ -12,16 +35,183 @@ async fn main() {
         )
         .init();
 
-    let api_key = env::var("SELF_HOST_API_KEY").unwrap_or_else(|_| "dev-key".into());
-    let listen_addr = env::var("SELF_HOST_LISTEN").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let cli = Cli::parse();
 
-    let app = build_app(api_key);
+    match cli.command {
+        Some(Command::Init { dns }) => {
+            if let Err(e) = run_init_command(&dns).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Serve) | None => {
+            run_server().await;
+        }
+    }
+}
+
+async fn run_init_command(dns_suffix: &str) -> Result<(), Box<dyn std::error::Error>> {
+    info!("bootstrapping with DNS suffix: {dns_suffix}");
+
+    let docker = ComposeDocker::new()?;
+
+    let result = bootstrap::run_bootstrap(&docker, dns_suffix).await?;
+
+    wait_for_postgres().await?;
+
+    let store = PgStateStore::connect(bootstrap::PG_DB_URL).await?;
+
+    match bootstrap::persist_bootstrap_state(&store, &result).await {
+        Ok(()) => {}
+        Err(bootstrap::BootstrapError::AlreadyInitialized) => {
+            eprintln!("Platform is already initialized.");
+            eprintln!("Start the daemon with: self-host serve");
+            return Ok(());
+        }
+        Err(e) => return Err(Box::new(e)),
+    }
+
+    save_cli_config(&result)?;
+
+    bootstrap::print_bootstrap_instructions(&result);
+
+    Ok(())
+}
+
+async fn wait_for_postgres() -> Result<(), Box<dyn std::error::Error>> {
+    let max_attempts = 30;
+    for attempt in 1..=max_attempts {
+        match PgStateStore::connect(bootstrap::PG_DB_URL).await {
+            Ok(_) => {
+                info!("PostgreSQL is ready");
+                return Ok(());
+            }
+            Err(_) if attempt < max_attempts => {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                return Err(Box::new(e));
+            }
+        }
+    }
+
+    Err("PostgreSQL did not become ready in time".into())
+}
+
+fn save_cli_config(result: &BootstrapResult) -> Result<(), Box<dyn std::error::Error>> {
+    let config = CliConfig {
+        api_base_url: format!("http://{}", result.api_listen_addr),
+        api_key: result.api_key.clone(),
+    };
+
+    config.save()?;
+
+    info!("CLI config saved to {}", CliConfig::config_path().display());
+
+    Ok(())
+}
+
+async fn run_server() {
+    let (api_key, listen_addr) = resolve_server_config().await;
+
+    let store = match PgStateStore::connect(bootstrap::PG_DB_URL).await {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::warn!("PostgreSQL not available, running without persistent state");
+            // Use env var fallback only for the API key — no DB means no state
+            let app = build_app_with_key(api_key);
+            let listener = tokio::net::TcpListener::bind(&listen_addr)
+                .await
+                .expect("failed to bind to listen address");
+            info!("listening on {listen_addr} (no DB)");
+            axum::serve(listener, app).await.expect("server error");
+            return;
+        }
+    };
+
+    // If we have a DB but no stored API key, use env var
+    if store.get_api_key().await.ok().flatten().is_none() && !api_key.is_empty() {
+        let _ = store.store_state("api_key", &api_key).await;
+    }
+
+    let app = build_app(store);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
         .expect("failed to bind to listen address");
 
-    info!("platform listening on {listen_addr}");
+    info!("listening on {listen_addr}");
 
     axum::serve(listener, app).await.expect("server error");
+}
+
+fn build_app_with_key(api_key: String) -> axum::Router {
+    use axum::{
+        Json, Router,
+        extract::Request,
+        http::StatusCode,
+        middleware::{self, Next},
+        response::{IntoResponse, Response},
+        routing::get,
+    };
+    use serde::Serialize;
+
+    #[derive(Clone)]
+    struct SimpleState {
+        api_key: String,
+    }
+
+    #[derive(Serialize)]
+    struct HealthResponse {
+        status: String,
+    }
+
+    async fn health() -> Json<HealthResponse> {
+        Json(HealthResponse {
+            status: "ok".into(),
+        })
+    }
+
+    async fn require_key(
+        state: axum::extract::State<SimpleState>,
+        req: Request,
+        next: Next,
+    ) -> Response {
+        let auth_header = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+
+        let expected = state.api_key.as_bytes();
+        let found = auth_header.unwrap_or("").as_bytes();
+
+        let matches = expected.len() == found.len()
+            && expected
+                .iter()
+                .zip(found.iter())
+                .fold(0, |acc, (x, y)| acc | (x ^ y))
+                == 0;
+
+        if matches {
+            next.run(req).await
+        } else {
+            (StatusCode::UNAUTHORIZED, "invalid api key").into_response()
+        }
+    }
+
+    let state = SimpleState { api_key };
+
+    Router::new()
+        .route("/health", get(health))
+        .layer(middleware::from_fn_with_state(state.clone(), require_key))
+        .with_state(state)
+}
+
+async fn resolve_server_config() -> (String, String) {
+    let api_key = env::var("SELF_HOST_API_KEY").unwrap_or_default();
+    let listen_addr =
+        env::var("SELF_HOST_LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{OPERATOR_API_PORT}"));
+
+    (api_key, listen_addr)
 }
