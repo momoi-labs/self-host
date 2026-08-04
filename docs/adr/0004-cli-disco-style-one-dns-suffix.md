@@ -1,5 +1,5 @@
 # CLI `self-host`: apps + init --dns
 
-A DX segue o espírito Disco com subcomandos espaçados. O recurso de Aplicação na CLI é **`apps`** (não `projects`), alinhado ao glossário. Bootstrap: `self-host init [--dns <sufixo>]` com default **`home.lan`** (não `.local`, para evitar conflito com mDNS). Um sufixo no MVP; vários depois.
+CLI UX follows Disco’s spirit with spaced subcommands. The Application resource in the CLI is **`apps`** (not `projects`), aligned with the glossary. Bootstrap: `self-host init [--dns <suffix>]` with default **`home.lan`** (not `.local`, to avoid mDNS conflicts). One suffix in MVP; multiple later.
 
 **Status:** accepted

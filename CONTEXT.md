@@ -1,45 +1,45 @@
 # Self-host PaaS (LAN)
 
-Contexto de uma plataforma self-hosted para publicar aplicações numa rede local, operada por uma pessoa, consumida por outras na LAN — sem depender de um serviço externo (SaaS) para o caminho feliz.
+A self-hosted platform for publishing applications on a local network, run by one operator, used by others on the LAN — without depending on an external service (SaaS) for the happy path.
 
 ## Language
 
-**Plataforma**:
-O sistema de controle instalado no host: o binário/daemon que faz bootstrap da infra e gerencia o ciclo de vida das aplicações.
-_Avoid_: PaaS (como sinônimo vago), cluster, Kubernetes
+**Platform**:
+The control system installed on the host: the binary/daemon that bootstraps infra and manages application lifecycle.
+_Avoid_: PaaS (as a vague synonym), cluster, Kubernetes
 
-**Aplicação**:
-Um workload publicado para consumidores na LAN, executado como container Docker (a partir de imagem pronta ou build local).
-_Avoid_: binário (reservado à Plataforma), serviço (sobrecarregado), site
+**Application**:
+A workload published for consumers on the LAN, run as a Docker container (from a ready image or a local build).
+_Avoid_: binary (reserved for the Platform), service (overloaded), site
 
 **Bootstrap**:
-O ato de iniciar a Plataforma no host a partir do binário (ex.: download + Enter), subindo a infra necessária para operar.
-_Avoid_: install script como conceito de domínio, setup
+Starting the Platform on the host from the binary (e.g. download + run), bringing up the infra required to operate.
+_Avoid_: install script as a domain concept, setup
 
-**Operador**:
-A pessoa que publica e gerencia Aplicações via CLI (e a API da Plataforma). No MVP há um único Operador.
-_Avoid_: admin, user, developer (como papel do produto)
+**Operator**:
+The person who publishes and manages Applications via the CLI (and the Platform HTTP API). The MVP has a single Operator.
+_Avoid_: admin, user, developer (as product roles)
 
-**Consumidor**:
-Quem acessa Aplicações já publicadas na LAN (HTTP). Não opera a Plataforma.
-_Avoid_: end user, cliente, visitor
+**Consumer**:
+Someone who accesses already-published Applications on the LAN (HTTP). They do not operate the Platform.
+_Avoid_: end user, client, visitor
 
 **Host**:
-A máquina na LAN onde a Plataforma roda e onde os containers das Aplicações (e da infra) sobem.
-_Avoid_: node, server, VPS (VPS não é o ambiente primário do MVP)
+The LAN machine where the Platform runs and where Application (and infra) containers start.
+_Avoid_: node, server, VPS (VPS is not the primary MVP environment)
 
 **Deploy**:
-A ação do Operador de tornar uma Aplicação disponível na LAN a partir de uma imagem Docker existente ou de um build local (Dockerfile/contexto).
-_Avoid_: release, publish, ship (como sinônimos oficiais)
+The Operator action that makes an Application available on the LAN from an existing Docker image or a local build (Dockerfile/context).
+_Avoid_: release, publish, ship (as official synonyms)
 
-**Hostname de Aplicação**:
-O nome DNS pelo qual Consumidores alcançam uma Aplicação na LAN, em geral `nome.<sufixo>` com override explícito possível.
-_Avoid_: URL (a URL inclui esquema/path), domínio público
+**Application Hostname**:
+The DNS name Consumers use to reach an Application on the LAN, usually `name.<suffix>` with an optional explicit override.
+_Avoid_: URL (URLs include scheme/path), public domain
 
-**Sufixo DNS**:
-O sufixo configurável da zona local da Plataforma sob o qual os Hostnames de Aplicação são derivados. No MVP existe um único Sufixo DNS, passado em `self-host init --dns` (default **`home.lan`**, de propósito sem `.local` por conflito com mDNS). Suporte a vários sufixos fica fora do MVP.
-_Avoid_: domínio, TLD, zone (como jargão DNS cru no glossário), home.local (como default)
+**DNS Suffix**:
+The configurable local zone suffix for the Platform under which Application Hostnames are derived. The MVP has a single DNS Suffix, set via `self-host init --dns` (default **`home.lan`**, intentionally not `.local` because of mDNS conflicts). Multiple suffixes are out of MVP scope.
+_Avoid_: domain, TLD, zone (as raw DNS jargon in the glossary), home.local (as default)
 
-**Infra da Plataforma**:
-Componentes que a Plataforma sobe para si (ex.: proxy de tráfego HTTP, descoberta/DNS local, store de estado) — não são Aplicações do Operador.
-_Avoid_: dependências (ambíguo com deps de app), sidecars
+**Platform Infra**:
+Components the Platform starts for itself (e.g. HTTP traffic proxy, local DNS, state store) — not Operator Applications.
+_Avoid_: dependencies (ambiguous with app deps), sidecars

@@ -1,5 +1,5 @@
-# DNS via dnsmasq + proxy Traefik
+# DNS via dnsmasq + Traefik proxy
 
-Para o MVP, clientes LAN precisam resolver `nome.<sufixo>` para o IP do Host; o roteamento HTTP por `Host` fica no reverse proxy. A pesquisa em `docs/research/lan-dns-service-discovery.md` mostrou que DNS “burro” basta e que Consul é overkill. Escolhemos **dnsmasq** como container de Infra (menor superfície que CoreDNS/Consul; menos risco que implementar DNS no binário agora) e **Traefik** com Docker provider. Consul e DNS embutido no binário ficam de fora do MVP.
+For the MVP, LAN clients must resolve `name.<suffix>` to the Host IP; HTTP routing by `Host` stays in the reverse proxy. Research in `docs/research/lan-dns-service-discovery.md` showed dumb DNS is enough and Consul is overkill. We chose **dnsmasq** as an Infra container (smaller surface than CoreDNS/Consul; less risk than implementing DNS in the binary now) and **Traefik** with the Docker provider. Consul and in-binary DNS are out of MVP.
 
 **Status:** accepted

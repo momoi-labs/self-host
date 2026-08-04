@@ -1,5 +1,5 @@
-# Estado da Plataforma em PostgreSQL 18
+# Platform state in PostgreSQL 18
 
-O daemon precisa persistir Aplicações, hostnames e config além do processo. Consideramos arquivos planos, SQLite e “sem persistência”. Escolhemos **PostgreSQL 18** como container de Infra no Bootstrap: mais operacionalmente pesado que SQLite num MVP de um Host, mas alinha com familiaridade do Operador e evita migração cedo se o modelo de dados crescer. A Plataforma sobe o PG; o Operador não administra um SaaS externo de banco.
+The daemon must persist Applications, hostnames, and config beyond the process lifetime. We considered flat files, SQLite, and “no persistence”. We chose **PostgreSQL 18** as an Infra container on Bootstrap: heavier than SQLite for a single-Host MVP, but matches Operator familiarity and avoids an early migration if the data model grows. The Platform starts PG; the Operator does not administer an external database SaaS.
 
 **Status:** accepted
