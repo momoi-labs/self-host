@@ -1,10 +1,12 @@
 use std::env;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use self_host::bootstrap::{self, BootstrapResult, OPERATOR_API_PORT};
+use self_host::build_app;
 use self_host::config::CliConfig;
 use self_host::db::{PgStateStore, StateStore};
-use self_host::{build_app, docker::ComposeDocker};
+use self_host::docker::{ComposeDocker, DockerRuntime};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -25,6 +27,26 @@ enum Command {
     },
     /// Start the platform daemon
     Serve,
+    /// Manage Applications
+    Apps {
+        #[command(subcommand)]
+        command: AppsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppsCommand {
+    /// Deploy an Application from a Docker image
+    Add {
+        /// Application name (used in the default Hostname)
+        #[arg(long)]
+        name: String,
+        /// Docker image reference
+        #[arg(long)]
+        image: String,
+    },
+    /// List Applications
+    List,
 }
 
 #[tokio::main]
@@ -40,6 +62,12 @@ async fn main() {
     match cli.command {
         Some(Command::Init { dns }) => {
             if let Err(e) = run_init_command(&dns).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Apps { command }) => {
+            if let Err(e) = run_apps_command(command).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -74,6 +102,71 @@ async fn run_init_command(dns_suffix: &str) -> Result<(), Box<dyn std::error::Er
     save_cli_config(&result)?;
 
     bootstrap::print_bootstrap_instructions(&result);
+
+    Ok(())
+}
+
+async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error::Error>> {
+    let config = CliConfig::load()?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "CLI config not found; run 'self-host init' first",
+        )
+    })?;
+
+    let client = reqwest::Client::new();
+
+    match command {
+        AppsCommand::Add { name, image } => {
+            let url = format!("{}/apps", config.api_base_url.trim_end_matches('/'));
+            let response = client
+                .post(&url)
+                .bearer_auth(&config.api_key)
+                .json(&serde_json::json!({ "name": name, "image": image }))
+                .send()
+                .await?;
+
+            let status = response.status();
+            let body = response.text().await?;
+            if !status.is_success() {
+                return Err(format!("Deploy failed ({status}): {body}").into());
+            }
+
+            let parsed: serde_json::Value = serde_json::from_str(&body)?;
+            println!(
+                "Deployed {} → http://{} ({})",
+                parsed["name"].as_str().unwrap_or(&name),
+                parsed["hostname"].as_str().unwrap_or("?"),
+                parsed["status"].as_str().unwrap_or("?")
+            );
+        }
+        AppsCommand::List => {
+            let url = format!("{}/apps", config.api_base_url.trim_end_matches('/'));
+            let response = client.get(&url).bearer_auth(&config.api_key).send().await?;
+
+            let status = response.status();
+            let body = response.text().await?;
+            if !status.is_success() {
+                return Err(format!("List failed ({status}): {body}").into());
+            }
+
+            let apps: Vec<serde_json::Value> = serde_json::from_str(&body)?;
+            if apps.is_empty() {
+                println!("No Applications deployed.");
+                return Ok(());
+            }
+
+            println!("{:<20} {:<40} STATUS", "NAME", "HOSTNAME");
+            for app in apps {
+                println!(
+                    "{:<20} {:<40} {}",
+                    app["name"].as_str().unwrap_or("?"),
+                    app["hostname"].as_str().unwrap_or("?"),
+                    app["status"].as_str().unwrap_or("?")
+                );
+            }
+        }
+    }
 
     Ok(())
 }
@@ -114,11 +207,18 @@ fn save_cli_config(result: &BootstrapResult) -> Result<(), Box<dyn std::error::E
 async fn run_server() {
     let (api_key, listen_addr) = resolve_server_config().await;
 
+    let docker: Arc<dyn DockerRuntime> = match ComposeDocker::new() {
+        Ok(d) => Arc::new(d),
+        Err(e) => {
+            tracing::error!("Docker unavailable: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let store = match PgStateStore::connect(bootstrap::PG_DB_URL).await {
         Ok(s) => s,
         Err(_) => {
             tracing::warn!("PostgreSQL not available, running without persistent state");
-            // Use env var fallback only for the API key — no DB means no state
             let app = build_app_with_key(api_key);
             let listener = tokio::net::TcpListener::bind(&listen_addr)
                 .await
@@ -129,12 +229,17 @@ async fn run_server() {
         }
     };
 
+    // Ensure schema includes applications table for existing installs.
+    if let Err(e) = store.initialize_schema().await {
+        tracing::warn!("failed to initialize schema: {e}");
+    }
+
     // If we have a DB but no stored API key, use env var
     if store.get_api_key().await.ok().flatten().is_none() && !api_key.is_empty() {
         let _ = store.store_state("api_key", &api_key).await;
     }
 
-    let app = build_app(store);
+    let app = build_app(store, docker);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
