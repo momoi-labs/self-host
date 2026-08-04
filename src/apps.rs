@@ -5,6 +5,9 @@ pub const APP_CONTAINER_PORT: u16 = 80;
 
 pub use crate::db::ApplicationRecord;
 
+/// Names reserved for Platform Infra — remove must reject these.
+const PROTECTED_NAMES: &[&str] = &["postgres", "dnsmasq", "traefik"];
+
 #[derive(Debug)]
 pub enum DeployError {
     NotInitialized,
@@ -169,6 +172,80 @@ pub async fn list_applications(
 
 pub fn container_name_for(app_name: &str) -> String {
     format!("self-host-app-{app_name}")
+}
+
+#[derive(Debug)]
+pub enum RemoveError {
+    NotInitialized,
+    NotFound(String),
+    ProtectedName(String),
+    Docker(DockerError),
+    Db(DbError),
+}
+
+impl std::fmt::Display for RemoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RemoveError::NotInitialized => {
+                write!(f, "platform is not initialized; run 'self-host init' first")
+            }
+            RemoveError::NotFound(name) => write!(f, "Application '{name}' not found"),
+            RemoveError::ProtectedName(name) => {
+                write!(
+                    f,
+                    "'{name}' is Platform Infra and cannot be removed as an Application"
+                )
+            }
+            RemoveError::Docker(e) => write!(f, "{e}"),
+            RemoveError::Db(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for RemoveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RemoveError::Docker(e) => Some(e),
+            RemoveError::Db(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<DockerError> for RemoveError {
+    fn from(e: DockerError) -> Self {
+        RemoveError::Docker(e)
+    }
+}
+
+impl From<DbError> for RemoveError {
+    fn from(e: DbError) -> Self {
+        match e {
+            DbError::NotFound(name) => RemoveError::NotFound(name),
+            other => RemoveError::Db(other),
+        }
+    }
+}
+
+pub async fn remove_application(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    name: &str,
+) -> Result<(), RemoveError> {
+    if PROTECTED_NAMES.contains(&name) {
+        return Err(RemoveError::ProtectedName(name.to_string()));
+    }
+
+    if !store.is_initialized().await? {
+        return Err(RemoveError::NotInitialized);
+    }
+
+    store.delete_application(name).await?;
+
+    let container_name = container_name_for(name);
+    let _ = docker.remove_container(&container_name).await;
+
+    Ok(())
 }
 
 #[cfg(test)]

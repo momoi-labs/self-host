@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{delete, get},
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ pub mod config;
 pub mod db;
 pub mod docker;
 
-use apps::DeployError;
+use apps::{DeployError, RemoveError};
 use db::StateStore;
 use docker::DockerRuntime;
 
@@ -34,6 +34,7 @@ pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Rou
         .route("/health", get(health))
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
+        .route("/apps/{name}", delete(remove_app::<S>))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
@@ -123,6 +124,28 @@ async fn list_apps<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
     }
 }
 
+async fn remove_app<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    match apps::remove_application(&state.store, state.docker.as_ref(), &name).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => remove_error_response(err),
+    }
+}
+
+fn remove_error_response(err: RemoveError) -> Response {
+    let (status, message) = match &err {
+        RemoveError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+        RemoveError::ProtectedName(_) => (StatusCode::FORBIDDEN, err.to_string()),
+        RemoveError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
+        RemoveError::Docker(_) | RemoveError::Db(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        }
+    };
+    (status, message).into_response()
+}
+
 fn deploy_error_response(err: DeployError) -> Response {
     let (status, message) = match &err {
         DeployError::AlreadyExists(_) => (StatusCode::CONFLICT, err.to_string()),
@@ -203,6 +226,17 @@ mod tests {
         req = req.header(header::CONTENT_TYPE, "application/json");
         app.clone()
             .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn delete_req(app: &Router, uri: &str, api_key: Option<&str>) -> Response {
+        let mut req = Request::builder().method("DELETE").uri(uri);
+        if let Some(key) = api_key {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
+        }
+        app.clone()
+            .oneshot(req.body(Body::empty()).unwrap())
             .await
             .unwrap()
     }
@@ -531,6 +565,97 @@ mod tests {
         let body = to_bytes(second.into_body(), 1024).await.unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn remove_application_returns_204_and_cleans_docker() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(store.clone(), Arc::new(docker.clone()));
+
+        let deploy = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(deploy.status(), StatusCode::CREATED);
+
+        let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let list = send(&app, "/apps", Some("test-key")).await;
+        let body = to_bytes(list.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed, json!([]));
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_application_returns_404() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = delete_req(&app, "/apps/nonexistent", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn remove_protected_name_returns_403() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        for name in &["postgres", "dnsmasq", "traefik"] {
+            let response = delete_req(&app, &format!("/apps/{name}"), Some("test-key")).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "should forbid removal of '{name}'"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_requires_api_key() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = delete_req(&app, "/apps/blog", None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn remove_cleans_container_from_docker() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(store.clone(), Arc::new(docker.clone()));
+
+        let _ = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+
+        assert_eq!(docker.deployed_apps(), vec!["self-host-app-blog"]);
+
+        let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        assert!(docker.deployed_apps().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_not_initialized_returns_412() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(store, Arc::new(docker));
+
+        let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
     }
 }
 

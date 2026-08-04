@@ -18,6 +18,7 @@ pub enum DbError {
     Query(String),
     AlreadyInitialized,
     AlreadyExists(String),
+    NotFound(String),
 }
 
 impl std::fmt::Display for DbError {
@@ -27,6 +28,7 @@ impl std::fmt::Display for DbError {
             DbError::Query(msg) => write!(f, "DB query error: {msg}"),
             DbError::AlreadyInitialized => write!(f, "already initialized"),
             DbError::AlreadyExists(name) => write!(f, "Application '{name}' already exists"),
+            DbError::NotFound(name) => write!(f, "Application '{name}' not found"),
         }
     }
 }
@@ -46,6 +48,7 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError>;
     async fn application_exists(&self, name: &str) -> Result<bool, DbError>;
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError>;
+    async fn delete_application(&self, name: &str) -> Result<(), DbError>;
 }
 
 #[derive(Clone)]
@@ -178,6 +181,20 @@ impl StateStore for PgStateStore {
             })
             .collect())
     }
+
+    async fn delete_application(&self, name: &str) -> Result<(), DbError> {
+        let result = sqlx::query("DELETE FROM applications WHERE name = $1")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(name.to_string()));
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -242,5 +259,13 @@ impl StateStore for FakeStateStore {
         let mut list: Vec<_> = apps.values().cloned().collect();
         list.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(list)
+    }
+
+    async fn delete_application(&self, name: &str) -> Result<(), DbError> {
+        let mut apps = self.apps.write().await;
+        if apps.remove(name).is_none() {
+            return Err(DbError::NotFound(name.to_string()));
+        }
+        Ok(())
     }
 }

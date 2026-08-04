@@ -47,6 +47,11 @@ enum AppsCommand {
     },
     /// List Applications
     List,
+    /// Remove an Application and clean Docker resources
+    Remove {
+        /// Application name
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -165,6 +170,26 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
                     app["status"].as_str().unwrap_or("?")
                 );
             }
+        }
+        AppsCommand::Remove { name } => {
+            let url = format!(
+                "{}/apps/{}",
+                config.api_base_url.trim_end_matches('/'),
+                name
+            );
+            let response = client
+                .delete(&url)
+                .bearer_auth(&config.api_key)
+                .send()
+                .await?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await?;
+                return Err(format!("Remove failed ({status}): {body}").into());
+            }
+
+            println!("Removed Application '{name}'");
         }
     }
 
