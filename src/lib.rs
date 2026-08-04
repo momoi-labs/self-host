@@ -50,9 +50,20 @@ async fn require_api_key(
         .and_then(|v| v.strip_prefix("Bearer "));
 
     match auth_header {
-        Some(key) if key == state.api_key => next.run(req).await,
+        Some(key) if constant_time_eq(key, &state.api_key) => next.run(req).await,
         _ => (StatusCode::UNAUTHORIZED, "invalid api key").into_response(),
     }
+}
+
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.iter().zip(b.iter()).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 #[cfg(test)]
@@ -113,5 +124,20 @@ mod tests {
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed, json!({"status": "ok"}));
+    }
+
+    #[test]
+    fn constant_time_eq_matches_identical_strings() {
+        assert!(constant_time_eq("secret", "secret"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_strings() {
+        assert!(!constant_time_eq("secret", "wrong"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_lengths() {
+        assert!(!constant_time_eq("short", "longer"));
     }
 }
