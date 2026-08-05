@@ -32,6 +32,11 @@ enum Command {
         #[command(subcommand)]
         command: AppsCommand,
     },
+    /// Stream Application logs
+    Logs {
+        /// Application name
+        app: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -106,6 +111,12 @@ async fn main() {
         }
         Some(Command::Apps { command }) => {
             if let Err(e) = run_apps_command(command).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Logs { app }) => {
+            if let Err(e) = run_logs_command(&app).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -324,6 +335,51 @@ async fn run_env_command(
                 return Err(format!("env unset failed ({status}): {body}").into());
             }
             println!("Removed env '{key}' from '{app}'");
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_logs_command(app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let config = CliConfig::load()?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "CLI config not found; run 'self-host init' first",
+        )
+    })?;
+
+    let url = format!(
+        "{}/apps/{}/logs",
+        config.api_base_url.trim_end_matches('/'),
+        app_name
+    );
+
+    let response = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(&config.api_key)
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await?;
+        return Err(format!("Logs failed ({status}): {body}").into());
+    }
+
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let text = String::from_utf8_lossy(&chunk);
+
+        for line in text.lines() {
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data != "keepalive" {
+                    println!("{data}");
+                }
+            }
         }
     }
 

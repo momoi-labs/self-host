@@ -448,6 +448,51 @@ async fn recreate_with_env(
     Ok(())
 }
 
+// ── Logs ───────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub enum LogsError {
+    NotInitialized,
+    NotFound(String),
+    Docker(DockerError),
+    Db(DbError),
+}
+
+impl std::fmt::Display for LogsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogsError::NotInitialized => {
+                write!(f, "platform is not initialized; run 'self-host init' first")
+            }
+            LogsError::NotFound(name) => write!(f, "Application '{name}' not found"),
+            LogsError::Docker(e) => write!(f, "{e}"),
+            LogsError::Db(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for LogsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LogsError::Docker(e) => Some(e),
+            LogsError::Db(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<DockerError> for LogsError {
+    fn from(e: DockerError) -> Self {
+        LogsError::Docker(e)
+    }
+}
+
+impl From<DbError> for LogsError {
+    fn from(e: DbError) -> Self {
+        LogsError::Db(e)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

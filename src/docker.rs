@@ -1,5 +1,6 @@
 use crate::compose::{ComposeConfig, ComposeError, ComposeRunner, ComposeServiceConfig};
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum DockerError {
@@ -100,6 +101,10 @@ pub trait DockerRuntime: Send + Sync {
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError>;
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError>;
     async fn remove_container(&self, name: &str) -> Result<(), DockerError>;
+    async fn stream_logs(
+        &self,
+        container_name: &str,
+    ) -> Result<mpsc::Receiver<String>, DockerError>;
 }
 
 pub struct ComposeDocker {
@@ -316,6 +321,69 @@ impl DockerRuntime for ComposeDocker {
 
         Ok(())
     }
+
+    async fn stream_logs(
+        &self,
+        container_name: &str,
+    ) -> Result<mpsc::Receiver<String>, DockerError> {
+        let (tx, rx) = mpsc::channel::<String>(64);
+        let name = container_name.to_string();
+
+        tokio::task::spawn(async move {
+            let mut child = match tokio::process::Command::new("docker")
+                .args(["logs", "-f", &name])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx
+                        .send(format!("failed to start log stream: {e}"))
+                        .await;
+                    return;
+                }
+            };
+
+            use tokio::io::AsyncBufReadExt;
+            let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+
+            let mut stdout_lines = tokio::io::BufReader::new(stdout).lines();
+            let mut stderr_lines = tokio::io::BufReader::new(stderr).lines();
+
+            loop {
+                tokio::select! {
+                    result = stdout_lines.next_line() => {
+                        match result {
+                            Ok(Some(line)) => {
+                                if tx.send(line).await.is_err() {
+                                    break; // receiver dropped (client disconnected)
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(_) => break,
+                        }
+                    }
+                    result = stderr_lines.next_line() => {
+                        match result {
+                            Ok(Some(line)) => {
+                                if tx.send(line).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(_) => break,
+                        }
+                    }
+                }
+            }
+
+            let _ = child.kill().await;
+        });
+
+        Ok(rx)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -391,6 +459,17 @@ impl DockerRuntime for FakeDocker {
         self.apps.lock().unwrap().retain(|a| a.name != name);
         Ok(())
     }
+
+    async fn stream_logs(
+        &self,
+        _container_name: &str,
+    ) -> Result<mpsc::Receiver<String>, DockerError> {
+        let (tx, rx) = mpsc::channel::<String>(8);
+        let _ = tx.try_send("[fake] log line 1".into());
+        let _ = tx.try_send("[fake] log line 2".into());
+        let _ = tx.try_send("[fake] log line 3".into());
+        Ok(rx)
+    }
 }
 
 #[async_trait]
@@ -432,6 +511,13 @@ where
 
     async fn remove_container(&self, name: &str) -> Result<(), DockerError> {
         (**self).remove_container(name).await
+    }
+
+    async fn stream_logs(
+        &self,
+        container_name: &str,
+    ) -> Result<mpsc::Receiver<String>, DockerError> {
+        (**self).stream_logs(container_name).await
     }
 }
 

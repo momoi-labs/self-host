@@ -5,10 +5,11 @@ use axum::{
     extract::Request,
     http::StatusCode,
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, sse},
     routing::{delete, get},
 };
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
 pub mod apps;
 pub mod bootstrap;
@@ -38,6 +39,7 @@ pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Rou
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
+        .route("/apps/{name}/logs", get(stream_logs::<S>))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
@@ -205,6 +207,50 @@ fn env_error_response(err: apps::EnvError) -> Response {
         apps::EnvError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
         apps::EnvError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
         apps::EnvError::Docker(_) | apps::EnvError::Db(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        }
+    };
+    (status, message).into_response()
+}
+
+async fn stream_logs<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    // Validate app exists
+    if !state
+        .store
+        .application_exists(&name)
+        .await
+        .unwrap_or(false)
+    {
+        return logs_error_response(&apps::LogsError::NotFound(name));
+    }
+
+    let container_name = apps::container_name_for(&name);
+
+    match state.docker.stream_logs(&container_name).await {
+        Ok(rx) => {
+            let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|line| {
+                Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(line))
+            });
+            sse::Sse::new(stream)
+                .keep_alive(
+                    sse::KeepAlive::new()
+                        .interval(std::time::Duration::from_secs(15))
+                        .text("keepalive"),
+                )
+                .into_response()
+        }
+        Err(err) => logs_error_response(&apps::LogsError::Docker(err)),
+    }
+}
+
+fn logs_error_response(err: &apps::LogsError) -> Response {
+    let (status, message) = match err {
+        apps::LogsError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+        apps::LogsError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
+        apps::LogsError::Docker(_) | apps::LogsError::Db(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     };
