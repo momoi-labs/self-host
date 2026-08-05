@@ -49,6 +49,11 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     async fn application_exists(&self, name: &str) -> Result<bool, DbError>;
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError>;
     async fn delete_application(&self, name: &str) -> Result<(), DbError>;
+
+    async fn set_env(&self, app_name: &str, key: &str, value: &str) -> Result<(), DbError>;
+    async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError>;
+    async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError>;
+    async fn unset_env(&self, app_name: &str, key: &str) -> Result<(), DbError>;
 }
 
 #[derive(Clone)]
@@ -87,6 +92,20 @@ impl StateStore for PgStateStore {
                 hostname TEXT NOT NULL,
                 image TEXT NOT NULL,
                 status TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS application_env (
+                app_name TEXT NOT NULL REFERENCES applications(name) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (app_name, key)
             )
             "#,
         )
@@ -195,12 +214,63 @@ impl StateStore for PgStateStore {
 
         Ok(())
     }
+
+    async fn set_env(&self, app_name: &str, key: &str, value: &str) -> Result<(), DbError> {
+        sqlx::query(
+            r#"
+            INSERT INTO application_env (app_name, key, value)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (app_name, key) DO UPDATE SET value = EXCLUDED.value
+            "#,
+        )
+        .bind(app_name)
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError> {
+        let row = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM application_env WHERE app_name = $1 AND key = $2",
+        )
+        .bind(app_name)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(row)
+    }
+
+    async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT key, value FROM application_env WHERE app_name = $1 ORDER BY key",
+        )
+        .bind(app_name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(rows)
+    }
+
+    async fn unset_env(&self, app_name: &str, key: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM application_env WHERE app_name = $1 AND key = $2")
+            .bind(app_name)
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
 pub struct FakeStateStore {
     data: Arc<RwLock<HashMap<String, String>>>,
     apps: Arc<RwLock<HashMap<String, ApplicationRecord>>>,
+    env: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
 }
 
 impl FakeStateStore {
@@ -208,6 +278,7 @@ impl FakeStateStore {
         FakeStateStore {
             data: Arc::new(RwLock::new(HashMap::new())),
             apps: Arc::new(RwLock::new(HashMap::new())),
+            env: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -265,6 +336,42 @@ impl StateStore for FakeStateStore {
         let mut apps = self.apps.write().await;
         if apps.remove(name).is_none() {
             return Err(DbError::NotFound(name.to_string()));
+        }
+        let mut env = self.env.write().await;
+        env.remove(name);
+        Ok(())
+    }
+
+    async fn set_env(&self, app_name: &str, key: &str, value: &str) -> Result<(), DbError> {
+        let mut env = self.env.write().await;
+        env.entry(app_name.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError> {
+        let env = self.env.read().await;
+        Ok(env
+            .get(app_name)
+            .and_then(|m| m.get(key))
+            .cloned())
+    }
+
+    async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError> {
+        let env = self.env.read().await;
+        let mut vars: Vec<_> = env
+            .get(app_name)
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+        vars.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(vars)
+    }
+
+    async fn unset_env(&self, app_name: &str, key: &str) -> Result<(), DbError> {
+        let mut env = self.env.write().await;
+        if let Some(m) = env.get_mut(app_name) {
+            m.remove(key);
         }
         Ok(())
     }

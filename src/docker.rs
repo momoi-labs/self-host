@@ -70,6 +70,7 @@ pub struct ApplicationContainer {
     pub labels: Vec<(String, String)>,
     pub network: String,
     pub ports: Vec<String>,
+    pub env: Vec<String>,
 }
 
 impl ContainerConfig {
@@ -275,6 +276,11 @@ impl DockerRuntime for ComposeDocker {
         for port in &config.ports {
             args.push("-p".into());
             args.push(port.clone());
+        }
+
+        for e in &config.env {
+            args.push("-e".into());
+            args.push(e.clone());
         }
 
         args.push(config.image.clone());

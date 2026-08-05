@@ -55,6 +55,36 @@ enum AppsCommand {
         /// Application name
         name: String,
     },
+    /// Manage Application environment variables
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnvCommand {
+    /// Set an environment variable
+    Set {
+        /// Application name
+        app: String,
+        /// KEY=value pair
+        key_value: String,
+    },
+    /// Get environment variables
+    Get {
+        /// Application name
+        app: String,
+        /// Optional: specific key to get
+        key: Option<String>,
+    },
+    /// Remove an environment variable
+    Unset {
+        /// Application name
+        app: String,
+        /// Environment variable key
+        key: String,
+    },
 }
 
 #[tokio::main]
@@ -203,6 +233,97 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             }
 
             println!("Removed Application '{name}'");
+        }
+        AppsCommand::Env { command } => {
+            run_env_command(&config, &client, command).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_env_command(
+    config: &CliConfig,
+    client: &reqwest::Client,
+    command: EnvCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let base = config.api_base_url.trim_end_matches('/');
+
+    match command {
+        EnvCommand::Set { app, key_value } => {
+            let (key, value) = key_value
+                .split_once('=')
+                .ok_or("env must be in KEY=value format")?;
+            let url = format!("{base}/apps/{app}/env");
+            let response = client
+                .post(&url)
+                .bearer_auth(&config.api_key)
+                .json(&serde_json::json!({"key": key, "value": value}))
+                .send()
+                .await?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await?;
+                return Err(format!("env set failed ({status}): {body}").into());
+            }
+            println!("Set {key}={value} on '{app}'");
+        }
+        EnvCommand::Get { app, key } => {
+            if let Some(key) = key {
+                let url = format!("{base}/apps/{app}/env");
+                let response = client
+                    .get(&url)
+                    .bearer_auth(&config.api_key)
+                    .send()
+                    .await?;
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response.text().await?;
+                    return Err(format!("env get failed ({status}): {body}").into());
+                }
+                let vars: Vec<(String, String)> = response.json().await?;
+                if let Some((_, value)) = vars.iter().find(|(k, _)| k == &key) {
+                    println!("{value}");
+                } else {
+                    eprintln!("env key '{key}' not found on '{app}'");
+                }
+            } else {
+                let url = format!("{base}/apps/{app}/env");
+                let response = client
+                    .get(&url)
+                    .bearer_auth(&config.api_key)
+                    .send()
+                    .await?;
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response.text().await?;
+                    return Err(format!("env get failed ({status}): {body}").into());
+                }
+                let vars: Vec<(String, String)> = response.json().await?;
+                if vars.is_empty() {
+                    println!("No env vars set on '{app}'");
+                } else {
+                    for (k, v) in &vars {
+                        println!("{k}={v}");
+                    }
+                }
+            }
+        }
+        EnvCommand::Unset { app, key } => {
+            let url = format!("{base}/apps/{app}/env/{key}");
+            let response = client
+                .delete(&url)
+                .bearer_auth(&config.api_key)
+                .send()
+                .await?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await?;
+                return Err(format!("env unset failed ({status}): {body}").into());
+            }
+            println!("Removed env '{key}' from '{app}'");
         }
     }
 

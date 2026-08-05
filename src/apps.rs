@@ -145,6 +145,7 @@ pub async fn deploy_from_image(
             network: PLATFORM_NETWORK.to_string(),
             // Consumer traffic goes through Traefik — never publish host ports.
             ports: vec![],
+            env: vec![],
         })
         .await?;
 
@@ -211,6 +212,7 @@ pub async fn deploy_from_path(
             labels: traefik_labels(name, &hostname),
             network: PLATFORM_NETWORK.to_string(),
             ports: vec![],
+            env: vec![],
         })
         .await?;
 
@@ -306,6 +308,142 @@ pub async fn remove_application(
 
     let container_name = container_name_for(name);
     let _ = docker.remove_container(&container_name).await;
+
+    Ok(())
+}
+
+// ── Env ────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub enum EnvError {
+    NotInitialized,
+    NotFound(String),
+    Docker(DockerError),
+    Db(DbError),
+}
+
+impl std::fmt::Display for EnvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnvError::NotInitialized => {
+                write!(f, "platform is not initialized; run 'self-host init' first")
+            }
+            EnvError::NotFound(name) => write!(f, "Application '{name}' not found"),
+            EnvError::Docker(e) => write!(f, "{e}"),
+            EnvError::Db(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for EnvError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            EnvError::Docker(e) => Some(e),
+            EnvError::Db(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<DockerError> for EnvError {
+    fn from(e: DockerError) -> Self {
+        EnvError::Docker(e)
+    }
+}
+
+impl From<DbError> for EnvError {
+    fn from(e: DbError) -> Self {
+        EnvError::Db(e)
+    }
+}
+
+pub async fn set_env(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    app_name: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), EnvError> {
+    if !store.is_initialized().await? {
+        return Err(EnvError::NotInitialized);
+    }
+
+    if !store.application_exists(app_name).await? {
+        return Err(EnvError::NotFound(app_name.to_string()));
+    }
+
+    store.set_env(app_name, key, value).await?;
+
+    // Apply: recreate container with updated env
+    recreate_with_env(store, docker, app_name).await?;
+
+    Ok(())
+}
+
+pub async fn get_all_env(
+    store: &impl StateStore,
+    app_name: &str,
+) -> Result<Vec<(String, String)>, EnvError> {
+    if !store.application_exists(app_name).await? {
+        return Err(EnvError::NotFound(app_name.to_string()));
+    }
+    Ok(store.get_all_env(app_name).await?)
+}
+
+pub async fn unset_env(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    app_name: &str,
+    key: &str,
+) -> Result<(), EnvError> {
+    if !store.is_initialized().await? {
+        return Err(EnvError::NotInitialized);
+    }
+
+    if !store.application_exists(app_name).await? {
+        return Err(EnvError::NotFound(app_name.to_string()));
+    }
+
+    store.unset_env(app_name, key).await?;
+
+    // Apply: recreate container with updated env
+    recreate_with_env(store, docker, app_name).await?;
+
+    Ok(())
+}
+
+async fn recreate_with_env(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    app_name: &str,
+) -> Result<(), EnvError> {
+    let apps = store.list_applications().await?;
+    let app = apps
+        .iter()
+        .find(|a| a.name == app_name)
+        .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
+
+    let env_vars = store
+        .get_all_env(app_name)
+        .await?
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>();
+
+    let hostname = &app.hostname;
+    let container_name = container_name_for(app_name);
+
+    docker.remove_container(&container_name).await?;
+    docker
+        .run_application(ApplicationContainer {
+            name: container_name,
+            image: app.image.clone(),
+            labels: traefik_labels(app_name, hostname),
+            network: PLATFORM_NETWORK.to_string(),
+            ports: vec![],
+            env: env_vars,
+        })
+        .await?;
 
     Ok(())
 }

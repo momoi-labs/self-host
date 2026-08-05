@@ -36,6 +36,8 @@ pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Rou
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .route("/apps/{name}", delete(remove_app::<S>))
+        .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
+        .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
@@ -155,6 +157,54 @@ fn remove_error_response(err: RemoveError) -> Response {
         RemoveError::ProtectedName(_) => (StatusCode::FORBIDDEN, err.to_string()),
         RemoveError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
         RemoveError::Docker(_) | RemoveError::Db(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        }
+    };
+    (status, message).into_response()
+}
+
+#[derive(Deserialize)]
+struct SetEnvRequest {
+    key: String,
+    value: String,
+}
+
+async fn set_env<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<SetEnvRequest>,
+) -> Response {
+    match apps::set_env(&state.store, state.docker.as_ref(), &name, &body.key, &body.value).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => env_error_response(err),
+    }
+}
+
+async fn get_env<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    match apps::get_all_env(&state.store, &name).await {
+        Ok(env) => (StatusCode::OK, Json(env)).into_response(),
+        Err(err) => env_error_response(err),
+    }
+}
+
+async fn unset_env<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path((name, key)): axum::extract::Path<(String, String)>,
+) -> Response {
+    match apps::unset_env(&state.store, state.docker.as_ref(), &name, &key).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => env_error_response(err),
+    }
+}
+
+fn env_error_response(err: apps::EnvError) -> Response {
+    let (status, message) = match &err {
+        apps::EnvError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+        apps::EnvError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
+        apps::EnvError::Docker(_) | apps::EnvError::Db(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     };
