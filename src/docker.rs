@@ -338,9 +338,7 @@ impl DockerRuntime for ComposeDocker {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx
-                        .send(format!("failed to start log stream: {e}"))
-                        .await;
+                    let _ = tx.send(format!("failed to start log stream: {e}")).await;
                     return;
                 }
             };
@@ -440,7 +438,10 @@ impl DockerRuntime for FakeDocker {
     }
 
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
-        self.built.lock().unwrap().push((path.to_string(), tag.to_string()));
+        self.built
+            .lock()
+            .unwrap()
+            .push((path.to_string(), tag.to_string()));
         Ok(())
     }
 

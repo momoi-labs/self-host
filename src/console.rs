@@ -24,9 +24,7 @@ async fn index_page() -> Response<Body> {
 }
 
 /// Serves static assets at `/console/<path>`.
-async fn static_asset(
-    axum::extract::Path(path): axum::extract::Path<String>,
-) -> Response<Body> {
+async fn static_asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response<Body> {
     // Strip leading slash if present
     let path = path.trim_start_matches('/');
 

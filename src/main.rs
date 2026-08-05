@@ -169,7 +169,12 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
     let client = reqwest::Client::new();
 
     match command {
-        AppsCommand::Add { name, image, path, hostname } => {
+        AppsCommand::Add {
+            name,
+            image,
+            path,
+            hostname,
+        } => {
             let image = image.unwrap_or_default();
             let path = path.unwrap_or_default();
 
@@ -292,11 +297,7 @@ async fn run_env_command(
         EnvCommand::Get { app, key } => {
             if let Some(key) = key {
                 let url = format!("{base}/apps/{app}/env");
-                let response = client
-                    .get(&url)
-                    .bearer_auth(&config.api_key)
-                    .send()
-                    .await?;
+                let response = client.get(&url).bearer_auth(&config.api_key).send().await?;
                 let status = response.status();
                 if !status.is_success() {
                     let body = response.text().await?;
@@ -310,11 +311,7 @@ async fn run_env_command(
                 }
             } else {
                 let url = format!("{base}/apps/{app}/env");
-                let response = client
-                    .get(&url)
-                    .bearer_auth(&config.api_key)
-                    .send()
-                    .await?;
+                let response = client.get(&url).bearer_auth(&config.api_key).send().await?;
                 let status = response.status();
                 if !status.is_success() {
                     let body = response.text().await?;
