@@ -381,10 +381,10 @@ async fn run_logs_command(app_name: &str) -> Result<(), Box<dyn std::error::Erro
         let text = String::from_utf8_lossy(&chunk);
 
         for line in text.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                if data != "keepalive" {
-                    println!("{data}");
-                }
+            if let Some(data) = line.strip_prefix("data: ")
+                && data != "keepalive"
+            {
+                println!("{data}");
             }
         }
     }
