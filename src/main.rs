@@ -52,6 +52,9 @@ enum AppsCommand {
         /// Local build path (Dockerfile/context directory)
         #[arg(long)]
         path: Option<String>,
+        /// Override the default Application Hostname
+        #[arg(long)]
+        hostname: Option<String>,
     },
     /// List Applications
     List,
@@ -166,7 +169,7 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
     let client = reqwest::Client::new();
 
     match command {
-        AppsCommand::Add { name, image, path } => {
+        AppsCommand::Add { name, image, path, hostname } => {
             let image = image.unwrap_or_default();
             let path = path.unwrap_or_default();
 
@@ -177,11 +180,16 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
                 );
             }
 
+            let mut body = serde_json::json!({ "name": name, "image": image, "path": path });
+            if let Some(h) = &hostname {
+                body["hostname"] = serde_json::json!(h);
+            }
+
             let url = format!("{}/apps", config.api_base_url.trim_end_matches('/'));
             let response = client
                 .post(&url)
                 .bearer_auth(&config.api_key)
-                .json(&serde_json::json!({ "name": name, "image": image, "path": path }))
+                .json(&body)
                 .send()
                 .await?;
 
@@ -215,12 +223,13 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
                 return Ok(());
             }
 
-            println!("{:<20} {:<40} STATUS", "NAME", "HOSTNAME");
+            println!("{:<20} {:<40} {:<10} STATUS", "NAME", "HOSTNAME", "SOURCE");
             for app in apps {
                 println!(
-                    "{:<20} {:<40} {}",
+                    "{:<20} {:<40} {:<10} {}",
                     app["name"].as_str().unwrap_or("?"),
                     app["hostname"].as_str().unwrap_or("?"),
+                    app["source"].as_str().unwrap_or("?"),
                     app["status"].as_str().unwrap_or("?")
                 );
             }

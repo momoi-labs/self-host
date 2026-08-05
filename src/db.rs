@@ -10,6 +10,7 @@ pub struct ApplicationRecord {
     pub hostname: String,
     pub image: String,
     pub status: String,
+    pub source: String,
 }
 
 #[derive(Debug)]
@@ -91,7 +92,8 @@ impl StateStore for PgStateStore {
                 name TEXT PRIMARY KEY,
                 hostname TEXT NOT NULL,
                 image TEXT NOT NULL,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'image'
             )
             "#,
         )
@@ -150,24 +152,25 @@ impl StateStore for PgStateStore {
     }
 
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError> {
-        let result = sqlx::query(
+        sqlx::query(
             r#"
-            INSERT INTO applications (name, hostname, image, status)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (name) DO NOTHING
+            INSERT INTO applications (name, hostname, image, status, source)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (name) DO UPDATE SET
+                hostname = EXCLUDED.hostname,
+                image = EXCLUDED.image,
+                status = EXCLUDED.status,
+                source = EXCLUDED.source
             "#,
         )
         .bind(&app.name)
         .bind(&app.hostname)
         .bind(&app.image)
         .bind(&app.status)
+        .bind(&app.source)
         .execute(&self.pool)
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
-
-        if result.rows_affected() == 0 {
-            return Err(DbError::AlreadyExists(app.name.clone()));
-        }
 
         Ok(())
     }
@@ -183,8 +186,8 @@ impl StateStore for PgStateStore {
     }
 
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError> {
-        let rows = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT name, hostname, image, status FROM applications ORDER BY name",
+        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT name, hostname, image, status, source FROM applications ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await
@@ -192,11 +195,12 @@ impl StateStore for PgStateStore {
 
         Ok(rows
             .into_iter()
-            .map(|(name, hostname, image, status)| ApplicationRecord {
+            .map(|(name, hostname, image, status, source)| ApplicationRecord {
                 name,
                 hostname,
                 image,
                 status,
+                source,
             })
             .collect())
     }
@@ -313,9 +317,6 @@ impl StateStore for FakeStateStore {
 
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError> {
         let mut apps = self.apps.write().await;
-        if apps.contains_key(&app.name) {
-            return Err(DbError::AlreadyExists(app.name.clone()));
-        }
         apps.insert(app.name.clone(), app.clone());
         Ok(())
     }
