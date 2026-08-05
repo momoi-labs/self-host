@@ -29,7 +29,7 @@ async fn static_asset(axum::extract::Path(path): axum::extract::Path<String>) ->
     let path = path.trim_start_matches('/');
 
     // Only allow known asset files (no directory traversal)
-    let allowed = ["app.js", "setup.html"];
+    let allowed = ["app.js", "setup.html", "api-keys.html"];
     if !allowed.contains(&path) {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)

@@ -55,6 +55,17 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError>;
     async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError>;
     async fn unset_env(&self, app_name: &str, key: &str) -> Result<(), DbError>;
+
+    async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, DbError>;
+    async fn create_api_key(&self, id: &str, label: &str) -> Result<(), DbError>;
+    async fn revoke_api_key(&self, id: &str) -> Result<(), DbError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub label: String,
+    pub created_at: String,
 }
 
 #[derive(Clone)]
@@ -121,6 +132,19 @@ impl StateStore for PgStateStore {
         )
         .execute(&self.pool)
         .await;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
 
         Ok(())
     }
@@ -277,6 +301,47 @@ impl StateStore for PgStateStore {
             .map_err(|e| DbError::Query(e.to_string()))?;
         Ok(())
     }
+
+    async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, DbError> {
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, label, created_at::TEXT FROM api_keys ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, label, created_at)| ApiKeyRecord {
+                id,
+                label,
+                created_at,
+            })
+            .collect())
+    }
+
+    async fn create_api_key(&self, id: &str, label: &str) -> Result<(), DbError> {
+        sqlx::query("INSERT INTO api_keys (id, label) VALUES ($1, $2)")
+            .bind(id)
+            .bind(label)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn revoke_api_key(&self, id: &str) -> Result<(), DbError> {
+        let result = sqlx::query("DELETE FROM api_keys WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -284,6 +349,7 @@ pub struct FakeStateStore {
     data: Arc<RwLock<HashMap<String, String>>>,
     apps: Arc<RwLock<HashMap<String, ApplicationRecord>>>,
     env: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
+    api_keys: Arc<RwLock<Vec<ApiKeyRecord>>>,
 }
 
 impl FakeStateStore {
@@ -292,6 +358,7 @@ impl FakeStateStore {
             data: Arc::new(RwLock::new(HashMap::new())),
             apps: Arc::new(RwLock::new(HashMap::new())),
             env: Arc::new(RwLock::new(HashMap::new())),
+            api_keys: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }
@@ -379,6 +446,29 @@ impl StateStore for FakeStateStore {
         let mut env = self.env.write().await;
         if let Some(m) = env.get_mut(app_name) {
             m.remove(key);
+        }
+        Ok(())
+    }
+
+    async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, DbError> {
+        Ok(self.api_keys.read().await.clone())
+    }
+
+    async fn create_api_key(&self, id: &str, label: &str) -> Result<(), DbError> {
+        self.api_keys.write().await.push(ApiKeyRecord {
+            id: id.to_string(),
+            label: label.to_string(),
+            created_at: "now".into(),
+        });
+        Ok(())
+    }
+
+    async fn revoke_api_key(&self, id: &str) -> Result<(), DbError> {
+        let mut keys = self.api_keys.write().await;
+        let len = keys.len();
+        keys.retain(|k| k.id != id);
+        if keys.len() == len {
+            return Err(DbError::NotFound(id.to_string()));
         }
         Ok(())
     }

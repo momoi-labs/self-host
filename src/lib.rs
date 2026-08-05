@@ -11,6 +11,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
+use rand::Rng;
+use crate::db::DbError;
+
 pub mod apps;
 pub mod bootstrap;
 pub mod compose;
@@ -40,6 +43,8 @@ pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Rou
         .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
+        .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
+        .route("/api-keys/{id}", delete(revoke_key::<S>))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
@@ -278,6 +283,78 @@ fn logs_error_response(err: &apps::LogsError) -> Response {
         }
     };
     (status, message).into_response()
+}
+
+#[derive(Deserialize)]
+struct CreateKeyRequest {
+    label: String,
+}
+
+#[derive(Serialize)]
+struct ApiKeyResponse {
+    id: String,
+    label: String,
+    created_at: String,
+}
+
+#[derive(Serialize)]
+struct CreateKeyResponse {
+    id: String,
+    label: String,
+    created_at: String,
+    key: String,
+}
+
+async fn list_keys<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+) -> Response {
+    match state.store.list_api_keys().await {
+        Ok(keys) => {
+            let body: Vec<ApiKeyResponse> = keys
+                .into_iter()
+                .map(|k| ApiKeyResponse {
+                    id: k.id,
+                    label: k.label,
+                    created_at: k.created_at,
+                })
+                .collect();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn create_key<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    Json(body): Json<CreateKeyRequest>,
+) -> Response {
+    let key_bytes: [u8; 32] = rand::rng().random();
+    let key: String = key_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let id = format!("sk-{}", &key[..12]);
+
+    match state.store.create_api_key(&id, &body.label).await {
+        Ok(()) => {
+            let response = CreateKeyResponse {
+                id,
+                label: body.label,
+                created_at: "now".into(),
+                key,
+            };
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn revoke_key<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match state.store.revoke_api_key(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(DbError::NotFound(_)) => (StatusCode::NOT_FOUND, "key not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 fn deploy_error_response(err: DeployError) -> Response {
