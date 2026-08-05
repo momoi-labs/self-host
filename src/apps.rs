@@ -111,6 +111,7 @@ pub async fn deploy_from_image(
     docker: &(impl DockerRuntime + ?Sized),
     name: &str,
     image: &str,
+    hostname_override: Option<&str>,
 ) -> Result<ApplicationRecord, DeployError> {
     validate_app_name(name)?;
 
@@ -127,11 +128,11 @@ pub async fn deploy_from_image(
         .await?
         .ok_or(DeployError::NotInitialized)?;
 
-    if store.application_exists(name).await? {
-        return Err(DeployError::AlreadyExists(name.to_string()));
-    }
+    let hostname = hostname_override
+        .map(|h| h.to_string())
+        .unwrap_or_else(|| default_hostname(name, &dns_suffix));
 
-    let hostname = default_hostname(name, &dns_suffix);
+    let app_existed = store.application_exists(name).await?;
 
     docker.ensure_network(PLATFORM_NETWORK).await?;
     docker.pull_image(image).await?;
@@ -143,9 +144,17 @@ pub async fn deploy_from_image(
             image: image.to_string(),
             labels: traefik_labels(name, &hostname),
             network: PLATFORM_NETWORK.to_string(),
-            // Consumer traffic goes through Traefik — never publish host ports.
             ports: vec![],
-            env: vec![],
+            env: if app_existed {
+                store
+                    .get_all_env(name)
+                    .await?
+                    .into_iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect()
+            } else {
+                vec![]
+            },
         })
         .await?;
 
@@ -154,15 +163,10 @@ pub async fn deploy_from_image(
         hostname,
         image: image.to_string(),
         status: "running".into(),
+        source: "image".into(),
     };
 
-    if let Err(e) = store.insert_application(&record).await {
-        let _ = docker.remove_container(&container_name).await;
-        return Err(match e {
-            DbError::AlreadyExists(name) => DeployError::AlreadyExists(name),
-            other => DeployError::Db(other),
-        });
-    }
+    store.insert_application(&record).await?;
 
     Ok(record)
 }
@@ -178,6 +182,7 @@ pub async fn deploy_from_path(
     docker: &(impl DockerRuntime + ?Sized),
     name: &str,
     path: &str,
+    hostname_override: Option<&str>,
 ) -> Result<ApplicationRecord, DeployError> {
     validate_app_name(name)?;
 
@@ -194,12 +199,12 @@ pub async fn deploy_from_path(
         .await?
         .ok_or(DeployError::NotInitialized)?;
 
-    if store.application_exists(name).await? {
-        return Err(DeployError::AlreadyExists(name.to_string()));
-    }
+    let hostname = hostname_override
+        .map(|h| h.to_string())
+        .unwrap_or_else(|| default_hostname(name, &dns_suffix));
 
-    let hostname = default_hostname(name, &dns_suffix);
     let image_tag = format!("self-host-{name}:latest");
+    let app_existed = store.application_exists(name).await?;
 
     docker.ensure_network(PLATFORM_NETWORK).await?;
     docker.build_image(path, &image_tag).await?;
@@ -212,7 +217,16 @@ pub async fn deploy_from_path(
             labels: traefik_labels(name, &hostname),
             network: PLATFORM_NETWORK.to_string(),
             ports: vec![],
-            env: vec![],
+            env: if app_existed {
+                store
+                    .get_all_env(name)
+                    .await?
+                    .into_iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect()
+            } else {
+                vec![]
+            },
         })
         .await?;
 
@@ -221,15 +235,10 @@ pub async fn deploy_from_path(
         hostname,
         image: image_tag,
         status: "running".into(),
+        source: "path".into(),
     };
 
-    if let Err(e) = store.insert_application(&record).await {
-        let _ = docker.remove_container(&container_name).await;
-        return Err(match e {
-            DbError::AlreadyExists(name) => DeployError::AlreadyExists(name),
-            other => DeployError::Db(other),
-        });
-    }
+    store.insert_application(&record).await?;
 
     Ok(record)
 }

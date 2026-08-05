@@ -90,6 +90,8 @@ struct DeployApplicationRequest {
     image: String,
     #[serde(default)]
     path: String,
+    #[serde(default)]
+    hostname: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -98,6 +100,7 @@ struct ApplicationResponse {
     hostname: String,
     image: String,
     status: String,
+    source: String,
 }
 
 impl From<apps::ApplicationRecord> for ApplicationResponse {
@@ -107,6 +110,7 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             hostname: app.hostname,
             image: app.image,
             status: app.status,
+            source: app.source,
         }
     }
 }
@@ -115,13 +119,15 @@ async fn deploy_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     Json(body): Json<DeployApplicationRequest>,
 ) -> Response {
+    let hostname = body.hostname.as_deref();
+
     let result = match (&body.image[..], &body.path[..]) {
         ("", "") => Err(apps::DeployError::MissingImage),
         (image, "") => {
-            apps::deploy_from_image(&state.store, state.docker.as_ref(), &body.name, image).await
+            apps::deploy_from_image(&state.store, state.docker.as_ref(), &body.name, image, hostname).await
         }
         ("", path) => {
-            apps::deploy_from_path(&state.store, state.docker.as_ref(), &body.name, path).await
+            apps::deploy_from_path(&state.store, state.docker.as_ref(), &body.name, path, hostname).await
         }
         _ => Err(apps::DeployError::MissingImage),
     };
@@ -578,7 +584,8 @@ mod tests {
                 "name": "blog",
                 "hostname": "blog.home.lan",
                 "image": "nginx:alpine",
-                "status": "running"
+                "status": "running",
+                "source": "image"
             }])
         );
     }
@@ -603,7 +610,7 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(second.status(), StatusCode::CONFLICT);
+        assert_eq!(second.status(), StatusCode::CREATED);
     }
 
     #[tokio::test]
@@ -672,10 +679,48 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(second.status(), StatusCode::CONFLICT);
+        assert_eq!(second.status(), StatusCode::CREATED);
         let body = to_bytes(second.into_body(), 1024).await.unwrap();
-        let text = String::from_utf8_lossy(&body);
-        assert!(text.contains("already exists"));
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["name"], json!("blog"));
+        assert_eq!(parsed["source"], json!("image"));
+    }
+
+    #[tokio::test]
+    async fn two_apps_on_different_hostnames_do_not_interfere() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(store, Arc::new(docker.clone()));
+
+        // Deploy two apps
+        let r1 = post_json(
+            &app, "/apps", Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        ).await;
+        assert_eq!(r1.status(), StatusCode::CREATED);
+
+        let r2 = post_json(
+            &app, "/apps", Some("test-key"),
+            json!({"name": "files", "image": "filebrowser/filebrowser"}),
+        ).await;
+        assert_eq!(r2.status(), StatusCode::CREATED);
+
+        // Both appear in list
+        let list = send(&app, "/apps", Some("test-key")).await;
+        let body = to_bytes(list.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        let names: Vec<&str> = parsed.as_array().unwrap().iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["blog", "files"]);
+
+        // Each has its own hostname
+        let hostnames: Vec<&str> = parsed.as_array().unwrap().iter()
+            .map(|a| a["hostname"].as_str().unwrap())
+            .collect();
+        assert_eq!(hostnames, vec!["blog.home.lan", "files.home.lan"]);
     }
 
     #[tokio::test]
