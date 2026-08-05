@@ -19,6 +19,7 @@ function logout() {
 // ── State ───────────────────────────────────────────────────────
 let apps = [];
 let selected = null;
+let logAbort = null;
 
 async function init() {
   await loadBootstrap();
@@ -83,6 +84,7 @@ function render() {
 }
 
 function showEmpty() {
+  if (logAbort) { logAbort.abort(); logAbort = null; }
   document.getElementById('empty-state').classList.remove('hidden');
   document.getElementById('detail').classList.add('hidden');
   document.querySelectorAll('#sidebar .app-item').forEach(el => el.classList.remove('active'));
@@ -91,6 +93,7 @@ function showEmpty() {
 function selectApp(name) {
   const app = apps.find(a => a.name === name);
   if (!app) return;
+  if (selected === name && logAbort) return;
   selected = name;
 
   document.querySelectorAll('#sidebar .app-item').forEach(el => el.classList.remove('active'));
@@ -151,12 +154,70 @@ function selectApp(name) {
       </div>
       <span class="mono text-xs text-gray-400">logs — ${esc(app.name)}</span>
     </div>
-    <div class="mono text-xs space-y-1">
-      <p class="text-gray-500">$ self-host logs ${esc(app.name)} --follow</p>
-      <p class="text-emerald-400">[--:--:--] Streaming logs from Docker…</p>
-      <p class="text-gray-500 mt-2">— connected —</p>
-    </div>
+    <div id="logs-content" class="mono text-xs text-emerald-400 space-y-0.5"></div>
   `;
+
+  startLogStream(app.name);
+}
+
+// ── Log streaming (fetch + ReadableStream) ──────────────────────
+async function startLogStream(name) {
+  if (logAbort) { logAbort.abort(); logAbort = null; }
+
+  const abort = new AbortController();
+  logAbort = abort;
+
+  const contentEl = document.getElementById('logs-content');
+  if (!contentEl) return;
+
+  contentEl.innerHTML = '';
+
+  try {
+    const res = await fetch('/apps/' + encodeURIComponent(name) + '/logs', {
+      headers: authHeaders(),
+      signal: abort.signal,
+    });
+
+    if (!res.ok) {
+      contentEl.innerHTML = '<p class="text-red-400">Failed to connect</p>';
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (line === '') continue;
+        // SSE format: "data: <content>"
+        const data = line.startsWith('data: ') ? line.slice(6) : line;
+        if (data === 'keepalive' || data === '') continue;
+        const p = document.createElement('p');
+        p.textContent = data;
+        contentEl.appendChild(p);
+      }
+
+      const panel = document.getElementById('logs-panel');
+      if (panel) panel.scrollTop = panel.scrollHeight;
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      const p = document.createElement('p');
+      p.className = 'text-red-400';
+      p.textContent = 'Connection lost';
+      contentEl.appendChild(p);
+    }
+  } finally {
+    if (logAbort === abort) logAbort = null;
+  }
 }
 
 // ── Deploy ──────────────────────────────────────────────────────

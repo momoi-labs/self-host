@@ -31,7 +31,7 @@ async fn static_asset(
     let path = path.trim_start_matches('/');
 
     // Only allow known asset files (no directory traversal)
-    let allowed = ["app.js"];
+    let allowed = ["app.js", "setup.html"];
     if !allowed.contains(&path) {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -75,7 +75,16 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
 /// Builds the public console router (no API key required).
 pub fn console_router() -> Router {
     Router::new()
+        .route("/", get(root_redirect))
         .route("/console", get(login_page))
         .route("/console/", get(index_page))
         .route("/console/{*path}", get(static_asset))
+}
+
+async fn root_redirect() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::TEMPORARY_REDIRECT)
+        .header(header::LOCATION, "/console")
+        .body(Body::empty())
+        .unwrap()
 }
