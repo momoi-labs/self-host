@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>homelab console</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .status-dot { width: 8px; height: 8px; }
+  .app-item.active { background: #eef2ff; border-left: 3px solid #4f46e5; }
+  .splitter { width: 4px; cursor: col-resize; background: #e5e7eb; flex-shrink: 0; transition: background 0.15s; position: relative; }
+  .splitter:hover, .splitter.dragging { background: #4f46e5; }
+  .splitter::after { content: ''; position: absolute; inset: 0 -4px; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<div class="flex h-screen">
+  <!-- Sidebar -->
+  <aside class="w-72 bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <div class="flex items-center gap-2.5 mb-3">
+        <div class="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
+          <span class="text-white font-bold text-xs">H</span>
+        </div>
+        <div>
+          <h1 class="font-semibold text-sm">homelab</h1>
+          <p class="text-[10px] text-gray-400 mono" id="dns-suffix">…</p>
+        </div>
+      </div>
+      <button id="deploy-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors">
+        + Deploy
+      </button>
+    </div>
+    <div class="px-3 py-3 border-b border-gray-100">
+      <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Applications</p>
+    </div>
+    <nav class="flex-1 overflow-y-auto px-2 py-1" id="sidebar"></nav>
+    <div class="px-4 py-3 border-t border-gray-100 flex items-center justify-between">
+      <span class="flex items-center gap-2">
+        <span class="status-dot rounded-full bg-emerald-500 inline-block" id="health-dot"></span>
+        <span class="text-xs text-gray-500" id="health-text">…</span>
+      </span>
+      <button onclick="logout()" class="text-xs text-gray-400 hover:text-red-500 transition-colors">Lock</button>
+    </div>
+  </aside>
+
+  <!-- Detail: config (left) + logs (right) -->
+  <div class="flex-1 flex overflow-hidden">
+    <div id="empty-state" class="flex-1 flex items-center justify-center text-gray-400">
+      <div class="text-center">
+        <div class="text-5xl mb-3">📦</div>
+        <p class="text-sm">Select an application from the sidebar</p>
+      </div>
+    </div>
+    <div id="detail" class="flex-1 flex hidden">
+      <div class="overflow-y-auto p-6" id="config-panel" style="flex-basis:50%"></div>
+      <div class="splitter" id="splitter"></div>
+      <div class="flex-1 overflow-y-auto p-6 bg-gray-900" id="logs-panel"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Deploy modal -->
+<div id="deploy-modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center" style="z-index:10001" onclick="if(event.target===this)closeDeployModal()">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between mb-5">
+      <h3 class="text-lg font-semibold">Deploy Application</h3>
+      <button onclick="closeDeployModal()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+    </div>
+    <form onsubmit="deploy(event)" class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1.5">Application name</label>
+        <input type="text" id="deploy-name" placeholder="my-app" required
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+        <p class="text-xs text-gray-400 mt-1">Lowercase, hyphens, max 63 chars</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1.5">Docker image</label>
+        <input type="text" id="deploy-image" placeholder="nginx:alpine" required
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+      </div>
+      <p id="deploy-error" class="hidden text-sm text-red-600"></p>
+      <div class="flex justify-end gap-2 pt-2">
+        <button type="button" onclick="closeDeployModal()" class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Cancel</button>
+        <button type="submit" class="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors">Deploy</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/console/app.js"></script>
+</body>
+</html>

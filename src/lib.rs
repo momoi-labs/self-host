@@ -14,6 +14,7 @@ pub mod apps;
 pub mod bootstrap;
 pub mod compose;
 pub mod config;
+pub mod console;
 pub mod db;
 pub mod docker;
 
@@ -30,7 +31,7 @@ struct AppState<S: StateStore> {
 pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Router {
     let state = AppState { store, docker };
 
-    Router::new()
+    let api_routes = Router::new()
         .route("/health", get(health))
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
@@ -39,7 +40,9 @@ pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Rou
             state.clone(),
             require_api_key::<S>,
         ))
-        .with_state(state)
+        .with_state(state);
+
+    console::console_router().merge(api_routes)
 }
 
 #[derive(Serialize)]
