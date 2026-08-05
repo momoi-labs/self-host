@@ -82,7 +82,10 @@ async fn bootstrap_status<S: StateStore>(
 #[derive(Deserialize)]
 struct DeployApplicationRequest {
     name: String,
+    #[serde(default)]
     image: String,
+    #[serde(default)]
+    path: String,
 }
 
 #[derive(Serialize)]
@@ -108,9 +111,18 @@ async fn deploy_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     Json(body): Json<DeployApplicationRequest>,
 ) -> Response {
-    match apps::deploy_from_image(&state.store, state.docker.as_ref(), &body.name, &body.image)
-        .await
-    {
+    let result = match (&body.image[..], &body.path[..]) {
+        ("", "") => Err(apps::DeployError::MissingImage),
+        (image, "") => {
+            apps::deploy_from_image(&state.store, state.docker.as_ref(), &body.name, image).await
+        }
+        ("", path) => {
+            apps::deploy_from_path(&state.store, state.docker.as_ref(), &body.name, path).await
+        }
+        _ => Err(apps::DeployError::MissingImage),
+    };
+
+    match result {
         Ok(app) => (StatusCode::CREATED, Json(ApplicationResponse::from(app))).into_response(),
         Err(err) => deploy_error_response(err),
     }
@@ -152,7 +164,7 @@ fn remove_error_response(err: RemoveError) -> Response {
 fn deploy_error_response(err: DeployError) -> Response {
     let (status, message) = match &err {
         DeployError::AlreadyExists(_) => (StatusCode::CONFLICT, err.to_string()),
-        DeployError::InvalidName(_) | DeployError::MissingImage => {
+        DeployError::InvalidName(_) | DeployError::MissingImage | DeployError::MissingPath => {
             (StatusCode::BAD_REQUEST, err.to_string())
         }
         DeployError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
@@ -719,5 +731,73 @@ mod bootstrap_tests {
             err,
             bootstrap::BootstrapError::InvalidDnsSuffix(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod deploy_path_tests {
+    use super::*;
+    use crate::db::FakeStateStore;
+    use crate::docker::FakeDocker;
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    async fn post_json(
+        app: &axum::Router,
+        uri: &str,
+        api_key: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
+        use axum::body::Body;
+        use axum::http::{Request, header};
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("Content-Type", "application/json");
+        if let Some(key) = api_key {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
+        }
+        app.clone()
+            .oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn deploy_application_from_path_builds_and_runs() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(store, Arc::new(docker.clone()));
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "api", "path": "./myapp"}),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["name"], json!("api"));
+        assert_eq!(parsed["hostname"], json!("api.home.lan"));
+        assert_eq!(parsed["image"], json!("self-host-api:latest"));
+        assert_eq!(parsed["status"], json!("running"));
+
+        let built = docker.built.lock().unwrap();
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].0, "./myapp");
+        assert_eq!(built[0].1, "self-host-api:latest");
+
+        let deployed = docker.apps.lock().unwrap();
+        assert_eq!(deployed.len(), 1);
+        assert_eq!(deployed[0].image, "self-host-api:latest");
     }
 }

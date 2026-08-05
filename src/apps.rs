@@ -14,6 +14,7 @@ pub enum DeployError {
     AlreadyExists(String),
     InvalidName(String),
     MissingImage,
+    MissingPath,
     Docker(DockerError),
     Db(DbError),
 }
@@ -29,6 +30,7 @@ impl std::fmt::Display for DeployError {
             }
             DeployError::InvalidName(msg) => write!(f, "invalid Application name: {msg}"),
             DeployError::MissingImage => write!(f, "image is required"),
+            DeployError::MissingPath => write!(f, "path is required"),
             DeployError::Docker(e) => write!(f, "{e}"),
             DeployError::Db(e) => write!(f, "{e}"),
         }
@@ -168,6 +170,66 @@ pub async fn list_applications(
     store: &impl StateStore,
 ) -> Result<Vec<ApplicationRecord>, DeployError> {
     Ok(store.list_applications().await?)
+}
+
+pub async fn deploy_from_path(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    name: &str,
+    path: &str,
+) -> Result<ApplicationRecord, DeployError> {
+    validate_app_name(name)?;
+
+    if path.is_empty() {
+        return Err(DeployError::MissingPath);
+    }
+
+    if !store.is_initialized().await? {
+        return Err(DeployError::NotInitialized);
+    }
+
+    let dns_suffix = store
+        .get_state("dns_suffix")
+        .await?
+        .ok_or(DeployError::NotInitialized)?;
+
+    if store.application_exists(name).await? {
+        return Err(DeployError::AlreadyExists(name.to_string()));
+    }
+
+    let hostname = default_hostname(name, &dns_suffix);
+    let image_tag = format!("self-host-{name}:latest");
+
+    docker.ensure_network(PLATFORM_NETWORK).await?;
+    docker.build_image(path, &image_tag).await?;
+
+    let container_name = container_name_for(name);
+    docker
+        .run_application(ApplicationContainer {
+            name: container_name.clone(),
+            image: image_tag.clone(),
+            labels: traefik_labels(name, &hostname),
+            network: PLATFORM_NETWORK.to_string(),
+            ports: vec![],
+        })
+        .await?;
+
+    let record = ApplicationRecord {
+        name: name.to_string(),
+        hostname,
+        image: image_tag,
+        status: "running".into(),
+    };
+
+    if let Err(e) = store.insert_application(&record).await {
+        let _ = docker.remove_container(&container_name).await;
+        return Err(match e {
+            DbError::AlreadyExists(name) => DeployError::AlreadyExists(name),
+            other => DeployError::Db(other),
+        });
+    }
+
+    Ok(record)
 }
 
 pub fn container_name_for(app_name: &str) -> String {

@@ -36,14 +36,17 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AppsCommand {
-    /// Deploy an Application from a Docker image
+    /// Deploy an Application from a Docker image or local build path
     Add {
         /// Application name (used in the default Hostname)
         #[arg(long)]
         name: String,
         /// Docker image reference
         #[arg(long)]
-        image: String,
+        image: Option<String>,
+        /// Local build path (Dockerfile/context directory)
+        #[arg(long)]
+        path: Option<String>,
     },
     /// List Applications
     List,
@@ -122,12 +125,22 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
     let client = reqwest::Client::new();
 
     match command {
-        AppsCommand::Add { name, image } => {
+        AppsCommand::Add { name, image, path } => {
+            let image = image.unwrap_or_default();
+            let path = path.unwrap_or_default();
+
+            if image.is_empty() && path.is_empty() {
+                return Err(
+                    "Either --image or --path is required for deploy. Use --image <ref> or --path <dir>."
+                        .into(),
+                );
+            }
+
             let url = format!("{}/apps", config.api_base_url.trim_end_matches('/'));
             let response = client
                 .post(&url)
                 .bearer_auth(&config.api_key)
-                .json(&serde_json::json!({ "name": name, "image": image }))
+                .json(&serde_json::json!({ "name": name, "image": image, "path": path }))
                 .send()
                 .await?;
 

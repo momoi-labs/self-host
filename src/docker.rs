@@ -96,6 +96,7 @@ pub trait DockerRuntime: Send + Sync {
     async fn container_running(&self, name: &str) -> Result<bool, DockerError>;
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError>;
     async fn pull_image(&self, image: &str) -> Result<(), DockerError>;
+    async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError>;
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError>;
     async fn remove_container(&self, name: &str) -> Result<(), DockerError>;
 }
@@ -233,6 +234,22 @@ impl DockerRuntime for ComposeDocker {
         Ok(())
     }
 
+    async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
+        let output = std::process::Command::new("docker")
+            .args(["build", "-t", tag, path])
+            .output()
+            .map_err(|e| DockerError::Unavailable(format!("failed to build image: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(DockerError::Unavailable(format!(
+                "failed to build image from '{path}': {stderr}"
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
         // Remove any previous container with the same name (recreate path).
         let _ = std::process::Command::new("docker")
@@ -299,6 +316,7 @@ impl DockerRuntime for ComposeDocker {
 pub struct FakeDocker {
     pub apps: std::sync::Arc<std::sync::Mutex<Vec<ApplicationContainer>>>,
     pub pulled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    pub built: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 
 impl FakeDocker {
@@ -306,6 +324,7 @@ impl FakeDocker {
         FakeDocker {
             apps: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pulled: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            built: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -343,6 +362,11 @@ impl DockerRuntime for FakeDocker {
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
         self.pulled.lock().unwrap().push(image.to_string());
+        Ok(())
+    }
+
+    async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
+        self.built.lock().unwrap().push((path.to_string(), tag.to_string()));
         Ok(())
     }
 
@@ -390,6 +414,10 @@ where
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
         (**self).pull_image(image).await
+    }
+
+    async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
+        (**self).build_image(path, tag).await
     }
 
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
