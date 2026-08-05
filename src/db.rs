@@ -115,6 +115,13 @@ impl StateStore for PgStateStore {
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
 
+        // Migration: add source column if upgrading from older schema
+        let _ = sqlx::query(
+            "ALTER TABLE applications ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'image'",
+        )
+        .execute(&self.pool)
+        .await;
+
         Ok(())
     }
 
