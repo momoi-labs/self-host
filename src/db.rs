@@ -202,13 +202,15 @@ impl StateStore for PgStateStore {
 
         Ok(rows
             .into_iter()
-            .map(|(name, hostname, image, status, source)| ApplicationRecord {
-                name,
-                hostname,
-                image,
-                status,
-                source,
-            })
+            .map(
+                |(name, hostname, image, status, source)| ApplicationRecord {
+                    name,
+                    hostname,
+                    image,
+                    status,
+                    source,
+                },
+            )
             .collect())
     }
 
@@ -360,10 +362,7 @@ impl StateStore for FakeStateStore {
 
     async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError> {
         let env = self.env.read().await;
-        Ok(env
-            .get(app_name)
-            .and_then(|m| m.get(key))
-            .cloned())
+        Ok(env.get(app_name).and_then(|m| m.get(key)).cloned())
     }
 
     async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError> {

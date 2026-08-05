@@ -124,10 +124,24 @@ async fn deploy_app<S: StateStore>(
     let result = match (&body.image[..], &body.path[..]) {
         ("", "") => Err(apps::DeployError::MissingImage),
         (image, "") => {
-            apps::deploy_from_image(&state.store, state.docker.as_ref(), &body.name, image, hostname).await
+            apps::deploy_from_image(
+                &state.store,
+                state.docker.as_ref(),
+                &body.name,
+                image,
+                hostname,
+            )
+            .await
         }
         ("", path) => {
-            apps::deploy_from_path(&state.store, state.docker.as_ref(), &body.name, path, hostname).await
+            apps::deploy_from_path(
+                &state.store,
+                state.docker.as_ref(),
+                &body.name,
+                path,
+                hostname,
+            )
+            .await
         }
         _ => Err(apps::DeployError::MissingImage),
     };
@@ -182,7 +196,15 @@ async fn set_env<S: StateStore>(
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(body): Json<SetEnvRequest>,
 ) -> Response {
-    match apps::set_env(&state.store, state.docker.as_ref(), &name, &body.key, &body.value).await {
+    match apps::set_env(
+        &state.store,
+        state.docker.as_ref(),
+        &name,
+        &body.key,
+        &body.value,
+    )
+    .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => env_error_response(err),
     }
@@ -224,12 +246,7 @@ async fn stream_logs<S: StateStore>(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
     // Validate app exists
-    if !state
-        .store
-        .application_exists(&name)
-        .await
-        .unwrap_or(false)
-    {
+    if !state.store.application_exists(&name).await.unwrap_or(false) {
         return logs_error_response(&apps::LogsError::NotFound(name));
     }
 
@@ -696,28 +713,40 @@ mod tests {
 
         // Deploy two apps
         let r1 = post_json(
-            &app, "/apps", Some("test-key"),
+            &app,
+            "/apps",
+            Some("test-key"),
             json!({"name": "blog", "image": "nginx:alpine"}),
-        ).await;
+        )
+        .await;
         assert_eq!(r1.status(), StatusCode::CREATED);
 
         let r2 = post_json(
-            &app, "/apps", Some("test-key"),
+            &app,
+            "/apps",
+            Some("test-key"),
             json!({"name": "files", "image": "filebrowser/filebrowser"}),
-        ).await;
+        )
+        .await;
         assert_eq!(r2.status(), StatusCode::CREATED);
 
         // Both appear in list
         let list = send(&app, "/apps", Some("test-key")).await;
         let body = to_bytes(list.into_body(), 1024).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
-        let names: Vec<&str> = parsed.as_array().unwrap().iter()
+        let names: Vec<&str> = parsed
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|a| a["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, vec!["blog", "files"]);
 
         // Each has its own hostname
-        let hostnames: Vec<&str> = parsed.as_array().unwrap().iter()
+        let hostnames: Vec<&str> = parsed
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|a| a["hostname"].as_str().unwrap())
             .collect();
         assert_eq!(hostnames, vec!["blog.home.lan", "files.home.lan"]);
@@ -903,7 +932,10 @@ mod deploy_path_tests {
             req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
         }
         app.clone()
-            .oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap())
+            .oneshot(
+                req.body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
             .await
             .unwrap()
     }
