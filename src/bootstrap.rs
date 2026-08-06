@@ -61,8 +61,13 @@ pub async fn run_bootstrap(
         Ok(()) => info!("TLS certificates generated"),
         Err(e) => {
             warn!("Failed to generate TLS certificates: {e}");
-            warn!("HTTPS will not be available. Install openssl to enable HTTPS.");
+            warn!("HTTPS will not be available.");
         }
+    }
+
+    match tls::write_traefik_config() {
+        Ok(()) => info!("Traefik configuration written"),
+        Err(e) => warn!("Failed to write Traefik config: {e}"),
     }
 
     start_infra_containers(docker, dns_suffix, &host_ip).await?;
@@ -152,9 +157,10 @@ async fn start_infra_containers(
             volumes: vec![
                 "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
                 format!("{}:/certs:ro", tls::certs_dir().display()),
+                format!("{}:/etc/traefik/traefik.yml:ro", tls::traefik_config_path().display()),
             ],
             restart_policy: "unless-stopped".into(),
-            cmd: tls::traefik_tls_args(),
+            cmd: tls::traefik_args(),
             labels: vec![],
             networks: vec![PLATFORM_NETWORK.to_string()],
         })
