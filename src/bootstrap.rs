@@ -1,12 +1,14 @@
+use crate::compose;
 use crate::db::{DbError, StateStore};
 use crate::docker::{ContainerConfig, DockerError, DockerRuntime, PLATFORM_NETWORK};
 use rand::Rng;
+use std::io::Write;
 use tracing::info;
 
 const PG_IMAGE: &str = "postgres:18-alpine";
 const PG_CONTAINER: &str = "self-host-pg";
-const DNSMASQ_IMAGE: &str = "strm/dnsmasq";
-const DNSMASQ_CONTAINER: &str = "self-host-dnsmasq";
+const COREDNS_IMAGE: &str = "coredns/coredns:1.11.1";
+const COREDNS_CONTAINER: &str = "self-host-coredns";
 const TRAEFIK_IMAGE: &str = "traefik:v3";
 const TRAEFIK_CONTAINER: &str = "self-host-traefik";
 pub const DEFAULT_DNS_SUFFIX: &str = "home.lan";
@@ -111,22 +113,21 @@ async fn start_infra_containers(
         })
         .await?;
 
-    info!("configuring dnsmasq container");
+    info!("configuring CoreDNS container");
+    let coredns_config = generate_coredns_config(dns_suffix, host_ip);
+    write_coredns_config(&coredns_config)?;
     docker
         .ensure_container_running(ContainerConfig {
-            image: DNSMASQ_IMAGE.to_string(),
-            name: DNSMASQ_CONTAINER.to_string(),
+            image: COREDNS_IMAGE.to_string(),
+            name: COREDNS_CONTAINER.to_string(),
             ports: vec!["53:53/tcp".into(), "53:53/udp".into()],
             env: vec![],
-            volumes: vec![],
+            volumes: vec![format!(
+                "{}:/etc/coredns/Corefile:ro",
+                coredns_config_path().display()
+            )],
             restart_policy: "unless-stopped".into(),
-            // Wildcard *.dns_suffix → Host IP for Consumer Application Hostnames.
-            cmd: vec![
-                "--no-resolv".into(),
-                "--server=8.8.8.8".into(),
-                "--server=8.8.4.4".into(),
-                format!("--address=/{dns_suffix}/{host_ip}"),
-            ],
+            cmd: vec!["-conf".into(), "/etc/coredns/Corefile".into()],
             labels: vec![],
             networks: vec![PLATFORM_NETWORK.to_string()],
         })
@@ -168,6 +169,34 @@ fn detect_host_ip() -> String {
     "127.0.0.1".to_string()
 }
 
+fn generate_coredns_config(dns_suffix: &str, host_ip: &str) -> String {
+    let escaped_suffix = dns_suffix.replace('.', "\\.");
+    format!(
+        r#"{} {{
+    template IN A {{
+        match .*\.{}\.$
+        answer "{{{{ .Name }}}} 60 IN A {}"
+        fallthrough
+    }}
+    forward . 8.8.8.8 8.8.4.4
+}}"#,
+        dns_suffix, escaped_suffix, host_ip
+    )
+}
+
+fn coredns_config_path() -> std::path::PathBuf {
+    compose::platform_config_dir().join("Corefile")
+}
+
+fn write_coredns_config(config: &str) -> Result<(), BootstrapError> {
+    let path = coredns_config_path();
+    let mut file = std::fs::File::create(&path)
+        .map_err(|e| BootstrapError::ConfigWrite(format!("create Corefile: {e}")))?;
+    file.write_all(config.as_bytes())
+        .map_err(|e| BootstrapError::ConfigWrite(format!("write Corefile: {e}")))?;
+    Ok(())
+}
+
 pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!();
     println!("=== Bootstrap complete ===");
@@ -197,6 +226,7 @@ pub enum BootstrapError {
     Db(DbError),
     InvalidDnsSuffix(String),
     AlreadyInitialized,
+    ConfigWrite(String),
 }
 
 impl From<DockerError> for BootstrapError {
@@ -223,6 +253,7 @@ impl std::fmt::Display for BootstrapError {
                     "already initialized. Use 'self-host serve' to start the daemon"
                 )
             }
+            BootstrapError::ConfigWrite(msg) => write!(f, "failed to write CoreDNS config: {msg}"),
         }
     }
 }
@@ -234,5 +265,31 @@ impl std::error::Error for BootstrapError {
             BootstrapError::Db(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_coredns_config_creates_valid_template() {
+        let config = generate_coredns_config("home.lan", "192.168.1.100");
+        
+        assert!(config.contains("home.lan {"));
+        assert!(config.contains("template IN A {"));
+        assert!(config.contains("match .*\\.home\\.lan\\.$"));
+        assert!(config.contains("answer \"{{ .Name }} 60 IN A 192.168.1.100\""));
+        assert!(config.contains("forward . 8.8.8.8 8.8.4.4"));
+    }
+
+    #[test]
+    fn generate_coredns_config_handles_custom_suffix() {
+        let config = generate_coredns_config("custom.local", "10.0.0.1");
+        
+        assert!(config.contains("custom.local {"));
+        assert!(config.contains("template IN A {"));
+        assert!(config.contains("match .*\\.custom\\.local\\.$"));
+        assert!(config.contains("answer \"{{ .Name }} 60 IN A 10.0.0.1\""));
     }
 }
