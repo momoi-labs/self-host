@@ -158,6 +158,7 @@ async fn start_infra_containers(
                 "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
                 format!("{}:/certs:ro", tls::certs_dir().display()),
                 format!("{}:/etc/traefik/traefik.yml:ro", tls::traefik_config_path().display()),
+                format!("{}:/etc/traefik/dynamic:ro", tls::traefik_dynamic_dir().display()),
             ],
             restart_policy: "unless-stopped".into(),
             cmd: tls::traefik_args(),

@@ -4,6 +4,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
     KeyUsagePurpose, SanType,
 };
+use time::{Duration, OffsetDateTime};
 
 use crate::compose;
 
@@ -52,6 +53,9 @@ pub fn generate_certificates(dns_suffix: &str) -> Result<(), TlsError> {
     let key = key_path();
     let cert = cert_path();
 
+    let now = OffsetDateTime::now_utc();
+    let ten_years = Duration::days(365 * 10);
+
     let ca_key = KeyPair::generate()
         .map_err(|e| TlsError::CertGenerationFailed(format!("generate CA key: {e}")))?;
 
@@ -61,6 +65,8 @@ pub fn generate_certificates(dns_suffix: &str) -> Result<(), TlsError> {
     ca_params.distinguished_name = ca_dn;
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.not_before = now;
+    ca_params.not_after = now + ten_years;
 
     let ca_cert = ca_params
         .self_signed(&ca_key)
@@ -81,6 +87,8 @@ pub fn generate_certificates(dns_suffix: &str) -> Result<(), TlsError> {
         SanType::DnsName(wildcard_name.try_into().unwrap()),
         SanType::DnsName(dns_suffix.to_string().try_into().unwrap()),
     ];
+    cert_params.not_before = now;
+    cert_params.not_after = now + ten_years;
 
     let cert_key = KeyPair::generate()
         .map_err(|e| TlsError::CertGenerationFailed(format!("generate cert key: {e}")))?;
@@ -100,9 +108,12 @@ pub fn traefik_config_path() -> PathBuf {
     compose::platform_config_dir().join("traefik.yml")
 }
 
+pub fn traefik_dynamic_dir() -> std::path::PathBuf {
+    compose::platform_config_dir().join("traefik-dynamic")
+}
+
 pub fn write_traefik_config() -> Result<(), TlsError> {
-    let config = format!(
-        r#"entryPoints:
+    let config = r#"entryPoints:
   web:
     address: ":80"
     http:
@@ -112,21 +123,31 @@ pub fn write_traefik_config() -> Result<(), TlsError> {
           scheme: https
   websecure:
     address: ":443"
-    http:
-      tls:
-        certificates:
-          - certFile: /certs/cert.pem
-            keyFile: /certs/key.pem
 
 providers:
   docker:
     exposedByDefault: false
-"#
-    );
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+"#;
 
     let path = traefik_config_path();
     std::fs::write(&path, config)
         .map_err(|e| TlsError::ConfigWrite(format!("write traefik config: {e}")))?;
+
+    let dynamic_dir = traefik_dynamic_dir();
+    std::fs::create_dir_all(&dynamic_dir)
+        .map_err(|e| TlsError::ConfigWrite(format!("create dynamic dir: {e}")))?;
+
+    let tls_config = r#"tls:
+  certificates:
+    - certFile: /certs/cert.pem
+      keyFile: /certs/key.pem
+"#;
+    std::fs::write(dynamic_dir.join("tls.yml"), tls_config)
+        .map_err(|e| TlsError::ConfigWrite(format!("write tls.yml: {e}")))?;
+
     Ok(())
 }
 
