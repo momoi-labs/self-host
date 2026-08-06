@@ -1,9 +1,10 @@
 use crate::compose;
 use crate::db::{DbError, StateStore};
 use crate::docker::{ContainerConfig, DockerError, DockerRuntime, PLATFORM_NETWORK};
+use crate::tls;
 use rand::Rng;
 use std::io::Write;
-use tracing::info;
+use tracing::{info, warn};
 
 const PG_IMAGE: &str = "postgres:18-alpine";
 const PG_CONTAINER: &str = "self-host-pg";
@@ -55,6 +56,14 @@ pub async fn run_bootstrap(
 
     let api_key = generate_api_key();
     let host_ip = detect_host_ip();
+
+    match tls::generate_certificates(dns_suffix) {
+        Ok(()) => info!("TLS certificates generated"),
+        Err(e) => {
+            warn!("Failed to generate TLS certificates: {e}");
+            warn!("HTTPS will not be available. Install openssl to enable HTTPS.");
+        }
+    }
 
     start_infra_containers(docker, dns_suffix, &host_ip).await?;
 
@@ -138,15 +147,14 @@ async fn start_infra_containers(
         .ensure_container_running(ContainerConfig {
             image: TRAEFIK_IMAGE.to_string(),
             name: TRAEFIK_CONTAINER.to_string(),
-            ports: vec!["80:80".into()],
+            ports: vec!["80:80".into(), "443:443".into()],
             env: vec![],
-            volumes: vec!["/var/run/docker.sock:/var/run/docker.sock:ro".into()],
-            restart_policy: "unless-stopped".into(),
-            cmd: vec![
-                "--providers.docker=true".into(),
-                "--providers.docker.exposedbydefault=false".into(),
-                "--entrypoints.web.address=:80".into(),
+            volumes: vec![
+                "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
+                format!("{}:/certs:ro", tls::certs_dir().display()),
             ],
+            restart_policy: "unless-stopped".into(),
+            cmd: tls::traefik_tls_args(),
             labels: vec![],
             networks: vec![PLATFORM_NETWORK.to_string()],
         })
@@ -214,13 +222,26 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!("  DNS server: {} (port 53)", result.host_ip);
     println!();
     println!("Applications will be reachable at:");
-    println!("  http://<name>.{}", result.dns_suffix);
+    println!("  https://<name>.{}", result.dns_suffix);
     println!();
+
+    let ca_path = tls::ca_cert_path();
+    if ca_path.exists() {
+        println!("--- HTTPS Setup ---");
+        println!("To trust HTTPS certificates on other devices, install the CA certificate:");
+        println!("  CA certificate: {}", ca_path.display());
+        println!();
+        println!("  macOS:   security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}", ca_path.display());
+        println!("  Windows: certutil -addstore -f \"ROOT\" {}", ca_path.display());
+        println!("  Linux:   sudo cp {} /usr/local/share/ca-certificates/self-host-ca.crt && sudo update-ca-certificates", ca_path.display());
+        println!();
+    }
+
     println!("--- Operator API ---");
     println!("API listen address: http://{}", result.api_listen_addr);
     println!("API key: {}", result.api_key);
     println!();
-    println!("Consumer traffic enters on port 80 (Traefik).");
+    println!("Consumer traffic enters on port 443 (HTTPS) and 80 (redirects to HTTPS).");
     println!("Operator API is on port {OPERATOR_API_PORT}.");
     println!();
     println!("Start the daemon with: self-host serve");

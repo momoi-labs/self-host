@@ -97,7 +97,11 @@ pub fn traefik_labels(name: &str, hostname: &str) -> Vec<(String, String)> {
         ),
         (
             format!("traefik.http.routers.{name}.entrypoints"),
-            "web".into(),
+            "websecure".into(),
+        ),
+        (
+            format!("traefik.http.routers.{name}.tls"),
+            "true".into(),
         ),
         (
             format!("traefik.http.services.{name}.loadbalancer.server.port"),
@@ -521,6 +525,12 @@ mod tests {
         );
         assert!(labels.iter().any(|(k, v)| {
             k == "traefik.http.routers.blog.rule" && v == "Host(`blog.home.lan`)"
+        }));
+        assert!(labels.iter().any(|(k, v)| {
+            k == "traefik.http.routers.blog.entrypoints" && v == "websecure"
+        }));
+        assert!(labels.iter().any(|(k, v)| {
+            k == "traefik.http.routers.blog.tls" && v == "true"
         }));
     }
 

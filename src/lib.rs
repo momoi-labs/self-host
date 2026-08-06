@@ -21,6 +21,7 @@ pub mod config;
 pub mod console;
 pub mod db;
 pub mod docker;
+pub mod tls;
 
 use apps::{DeployError, RemoveError};
 use db::StateStore;
