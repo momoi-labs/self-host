@@ -6,7 +6,7 @@ pub const APP_CONTAINER_PORT: u16 = 80;
 pub use crate::db::ApplicationRecord;
 
 /// Names reserved for Platform Infra — remove must reject these.
-const PROTECTED_NAMES: &[&str] = &["postgres", "dnsmasq", "traefik"];
+const PROTECTED_NAMES: &[&str] = &["postgres", "coredns", "traefik"];
 
 #[derive(Debug)]
 pub enum DeployError {

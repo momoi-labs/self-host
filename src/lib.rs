@@ -867,7 +867,7 @@ mod tests {
     async fn remove_protected_name_returns_403() {
         let (app, _) = setup_initialized_app("test-key", "home.lan").await;
 
-        for name in &["postgres", "dnsmasq", "traefik"] {
+        for name in &["postgres", "coredns", "traefik"] {
             let response = delete_req(&app, &format!("/apps/{name}"), Some("test-key")).await;
             assert_eq!(
                 response.status(),
