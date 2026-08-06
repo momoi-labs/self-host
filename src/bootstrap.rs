@@ -190,12 +190,12 @@ fn coredns_config_path() -> std::path::PathBuf {
 
 fn write_coredns_config(config: &str) -> Result<(), BootstrapError> {
     let path = coredns_config_path();
-    
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| BootstrapError::ConfigWrite(format!("create config directory: {e}")))?;
     }
-    
+
     let mut file = std::fs::File::create(&path)
         .map_err(|e| BootstrapError::ConfigWrite(format!("create Corefile: {e}")))?;
     file.write_all(config.as_bytes())
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn generate_coredns_config_creates_valid_template() {
         let config = generate_coredns_config("home.lan", "192.168.1.100");
-        
+
         assert!(config.contains("home.lan {"));
         assert!(config.contains("template IN A {"));
         assert!(config.contains("match .*\\.home\\.lan\\.$"));
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn generate_coredns_config_handles_custom_suffix() {
         let config = generate_coredns_config("custom.local", "10.0.0.1");
-        
+
         assert!(config.contains("custom.local {"));
         assert!(config.contains("template IN A {"));
         assert!(config.contains("match .*\\.custom\\.local\\.$"));

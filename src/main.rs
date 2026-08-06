@@ -410,10 +410,10 @@ async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>
         println!("All deployed applications will be lost.");
         print!("Continue? [y/N] ");
         std::io::Write::flush(&mut std::io::stdout())?;
-        
+
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
-        
+
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("Reset cancelled.");
             return Ok(());
@@ -424,7 +424,7 @@ async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>
     let output = std::process::Command::new("docker")
         .args(["ps", "-aq", "--filter", "name=self-host"])
         .output()?;
-    
+
     let container_ids = String::from_utf8_lossy(&output.stdout);
     if !container_ids.trim().is_empty() {
         let mut remove_cmd = std::process::Command::new("docker");
@@ -442,7 +442,7 @@ async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>
     let output = std::process::Command::new("docker")
         .args(["volume", "ls", "-q", "--filter", "name=self-host"])
         .output()?;
-    
+
     let volume_names = String::from_utf8_lossy(&output.stdout);
     if !volume_names.trim().is_empty() {
         let mut remove_cmd = std::process::Command::new("docker");

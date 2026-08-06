@@ -11,8 +11,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use rand::Rng;
 use crate::db::DbError;
+use rand::Rng;
 
 pub mod apps;
 pub mod bootstrap;
@@ -305,9 +305,7 @@ struct CreateKeyResponse {
     key: String,
 }
 
-async fn list_keys<S: StateStore>(
-    state: axum::extract::State<AppState<S>>,
-) -> Response {
+async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
     match state.store.list_api_keys().await {
         Ok(keys) => {
             let body: Vec<ApiKeyResponse> = keys
