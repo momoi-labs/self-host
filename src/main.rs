@@ -37,6 +37,12 @@ enum Command {
         /// Application name
         app: String,
     },
+    /// Reset the platform (remove all containers, volumes, and config)
+    Reset {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -120,6 +126,12 @@ async fn main() {
         }
         Some(Command::Logs { app }) => {
             if let Err(e) = run_logs_command(&app).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Reset { force }) => {
+            if let Err(e) = run_reset_command(force).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -389,6 +401,76 @@ async fn run_logs_command(app_name: &str) -> Result<(), Box<dyn std::error::Erro
         }
     }
 
+    Ok(())
+}
+
+async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if !force {
+        println!("This will remove all self-host containers, volumes, and configuration.");
+        println!("All deployed applications will be lost.");
+        print!("Continue? [y/N] ");
+        
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Reset cancelled.");
+            return Ok(());
+        }
+    }
+
+    println!("Stopping and removing containers...");
+    let output = std::process::Command::new("docker")
+        .args(["ps", "-aq", "--filter", "name=self-host"])
+        .output()?;
+    
+    let container_ids = String::from_utf8_lossy(&output.stdout);
+    if !container_ids.trim().is_empty() {
+        let mut remove_cmd = std::process::Command::new("docker");
+        remove_cmd.arg("rm").arg("-f");
+        for id in container_ids.trim().split_whitespace() {
+            remove_cmd.arg(id);
+        }
+        remove_cmd.output()?;
+        println!("Containers removed.");
+    } else {
+        println!("No containers found.");
+    }
+
+    println!("Removing volumes...");
+    let output = std::process::Command::new("docker")
+        .args(["volume", "ls", "-q", "--filter", "name=self-host"])
+        .output()?;
+    
+    let volume_names = String::from_utf8_lossy(&output.stdout);
+    if !volume_names.trim().is_empty() {
+        let mut remove_cmd = std::process::Command::new("docker");
+        remove_cmd.arg("volume").arg("rm");
+        for name in volume_names.trim().split_whitespace() {
+            remove_cmd.arg(name);
+        }
+        remove_cmd.output()?;
+        println!("Volumes removed.");
+    } else {
+        println!("No volumes found.");
+    }
+
+    println!("Removing network...");
+    let _ = std::process::Command::new("docker")
+        .args(["network", "rm", "self-host"])
+        .output();
+    println!("Network removed.");
+
+    let config_dir = self_host::compose::platform_config_dir();
+    if config_dir.exists() {
+        println!("Removing configuration directory...");
+        std::fs::remove_dir_all(&config_dir)?;
+        println!("Configuration removed.");
+    } else {
+        println!("No configuration directory found.");
+    }
+
+    println!("\nReset complete. You can run 'self-host init' to start fresh.");
     Ok(())
 }
 
