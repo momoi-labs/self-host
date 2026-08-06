@@ -190,6 +190,12 @@ fn coredns_config_path() -> std::path::PathBuf {
 
 fn write_coredns_config(config: &str) -> Result<(), BootstrapError> {
     let path = coredns_config_path();
+    
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| BootstrapError::ConfigWrite(format!("create config directory: {e}")))?;
+    }
+    
     let mut file = std::fs::File::create(&path)
         .map_err(|e| BootstrapError::ConfigWrite(format!("create Corefile: {e}")))?;
     file.write_all(config.as_bytes())
