@@ -217,12 +217,44 @@ fn write_coredns_config(config: &str) -> Result<(), BootstrapError> {
     Ok(())
 }
 
+fn configure_macos_resolver(dns_suffix: &str, host_ip: &str) -> Result<(), String> {
+    let resolver_dir = std::path::Path::new("/etc/resolver");
+    if !resolver_dir.exists() {
+        return Err("/etc/resolver directory does not exist".into());
+    }
+
+    let resolver_file = resolver_dir.join(dns_suffix);
+    let content = format!("nameserver {host_ip}\n");
+
+    std::fs::write(&resolver_file, content)
+        .map_err(|e| format!("failed to write resolver file: {e}"))?;
+
+    Ok(())
+}
+
 pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!();
     println!("=== Bootstrap complete ===");
     println!();
     println!("DNS Suffix: {}", result.dns_suffix);
     println!();
+
+    // Configure macOS resolver for the DNS suffix
+    if cfg!(target_os = "macos") {
+        match configure_macos_resolver(&result.dns_suffix, &result.host_ip) {
+            Ok(()) => {
+                println!("macOS resolver configured for .{}", result.dns_suffix);
+            }
+            Err(e) => {
+                println!("Could not configure macOS resolver: {e}");
+                println!("Run manually:");
+                println!("  sudo mkdir -p /etc/resolver");
+                println!("  echo 'nameserver {}' | sudo tee /etc/resolver/{}", result.host_ip, result.dns_suffix);
+            }
+        }
+        println!();
+    }
+
     println!("--- Consumer DNS Setup ---");
     println!("Point your LAN devices (or router) to use this Host as DNS server:");
     println!("  DNS server: {} (port 53)", result.host_ip);
