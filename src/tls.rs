@@ -96,18 +96,45 @@ pub fn generate_certificates(dns_suffix: &str) -> Result<(), TlsError> {
     Ok(())
 }
 
-pub fn traefik_tls_args() -> Vec<String> {
+pub fn traefik_config_path() -> PathBuf {
+    compose::platform_config_dir().join("traefik.yml")
+}
+
+pub fn write_traefik_config() -> Result<(), TlsError> {
+    let config = format!(
+        r#"entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certificates:
+          - certFile: /certs/cert.pem
+            keyFile: /certs/key.pem
+
+providers:
+  docker:
+    exposedByDefault: false
+"#
+    );
+
+    let path = traefik_config_path();
+    std::fs::write(&path, config)
+        .map_err(|e| TlsError::ConfigWrite(format!("write traefik config: {e}")))?;
+    Ok(())
+}
+
+pub fn traefik_args() -> Vec<String> {
     vec![
         "--providers.docker=true".into(),
         "--providers.docker.exposedbydefault=false".into(),
-        "--entrypoints.web.address=:80".into(),
-        "--entrypoints.web.http.redirections.entrypoint.to=websecure".into(),
-        "--entrypoints.web.http.redirections.entrypoint.scheme=https".into(),
-        "--entrypoints.websecure.address=:443".into(),
-        "--entrypoints.websecure.http.tls=true".into(),
-        "--certificatesresolvers.default.file.certificates[0].certfile=/certs/cert.pem".into(),
-        "--certificatesresolvers.default.file.certificates[0].keyfile=/certs/key.pem".into(),
-        "--entrypoints.websecure.http.tls.certresolver=default".into(),
+        "--configfile=/etc/traefik/traefik.yml".into(),
     ]
 }
 
@@ -122,9 +149,8 @@ mod tests {
     }
 
     #[test]
-    fn traefik_tls_args_include_redirection() {
-        let args = traefik_tls_args();
-        assert!(args.iter().any(|a| a.contains("redirections")));
-        assert!(args.iter().any(|a| a.contains("websecure")));
+    fn traefik_args_include_configfile() {
+        let args = traefik_args();
+        assert!(args.iter().any(|a| a.contains("configfile")));
     }
 }
