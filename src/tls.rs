@@ -1,12 +1,14 @@
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+
+use rcgen::{
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
+    KeyUsagePurpose, SanType,
+};
 
 use crate::compose;
 
 #[derive(Debug)]
 pub enum TlsError {
-    OpenSslNotFound,
     CertGenerationFailed(String),
     ConfigWrite(String),
 }
@@ -14,9 +16,6 @@ pub enum TlsError {
 impl std::fmt::Display for TlsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TlsError::OpenSslNotFound => {
-                write!(f, "openssl not found; install openssl to enable HTTPS")
-            }
             TlsError::CertGenerationFailed(msg) => {
                 write!(f, "certificate generation failed: {msg}")
             }
@@ -48,142 +47,51 @@ pub fn generate_certificates(dns_suffix: &str) -> Result<(), TlsError> {
     std::fs::create_dir_all(&dir)
         .map_err(|e| TlsError::ConfigWrite(format!("create certs directory: {e}")))?;
 
-    let ca_key = dir.join("ca-key.pem");
-    let ca_cert = ca_cert_path();
+    let ca_key_path = dir.join("ca-key.pem");
+    let ca_cert_file = ca_cert_path();
     let key = key_path();
     let cert = cert_path();
 
-    generate_ca(&ca_key, &ca_cert)?;
-    generate_wildcard_cert(&ca_key, &ca_cert, &key, &cert, dns_suffix)?;
+    let ca_key = KeyPair::generate()
+        .map_err(|e| TlsError::CertGenerationFailed(format!("generate CA key: {e}")))?;
 
-    Ok(())
-}
+    let mut ca_params = CertificateParams::default();
+    let mut ca_dn = DistinguishedName::new();
+    ca_dn.push(DnType::CommonName, "Self-Host LAN CA");
+    ca_params.distinguished_name = ca_dn;
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
 
-fn find_openssl() -> Option<String> {
-    // Prefer system openssl on macOS (has config file)
-    if std::path::Path::new("/usr/bin/openssl").exists() {
-        return Some("/usr/bin/openssl".to_string());
-    }
-    // Fall back to PATH
-    if Command::new("openssl").arg("version").output().is_ok() {
-        return Some("openssl".to_string());
-    }
-    None
-}
+    let ca_cert = ca_params
+        .self_signed(&ca_key)
+        .map_err(|e| TlsError::CertGenerationFailed(format!("generate CA cert: {e}")))?;
 
-fn generate_ca(ca_key: &PathBuf, ca_cert: &PathBuf) -> Result<(), TlsError> {
-    let openssl = find_openssl().ok_or(TlsError::OpenSslNotFound)?;
-    
-    let output = Command::new(&openssl)
-        .args([
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:4096",
-            "-nodes",
-            "-sha256",
-            "-days",
-            "3650",
-            "-keyout",
-            ca_key.to_str().unwrap(),
-            "-out",
-            ca_cert.to_str().unwrap(),
-            "-subj",
-            "/CN=Self-Host LAN CA",
-        ])
-        .output()
-        .map_err(|_| TlsError::OpenSslNotFound)?;
+    std::fs::write(&ca_cert_file, ca_cert.pem())
+        .map_err(|e| TlsError::ConfigWrite(format!("write CA cert: {e}")))?;
+    std::fs::write(&ca_key_path, ca_key.serialize_pem())
+        .map_err(|e| TlsError::ConfigWrite(format!("write CA key: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TlsError::CertGenerationFailed(format!(
-            "CA generation failed: {stderr}"
-        )));
-    }
+    let mut cert_params = CertificateParams::default();
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, format!("*.{}", dns_suffix));
+    cert_params.distinguished_name = dn;
 
-    Ok(())
-}
+    let wildcard_name = format!("*.{}", dns_suffix);
+    cert_params.subject_alt_names = vec![
+        SanType::DnsName(wildcard_name.try_into().unwrap()),
+        SanType::DnsName(dns_suffix.to_string().try_into().unwrap()),
+    ];
 
-fn generate_wildcard_cert(
-    ca_key: &PathBuf,
-    ca_cert: &PathBuf,
-    key: &PathBuf,
-    cert: &PathBuf,
-    dns_suffix: &str,
-) -> Result<(), TlsError> {
-    let openssl = find_openssl().ok_or(TlsError::OpenSslNotFound)?;
-    let csr = certs_dir().join("cert.csr");
-    let ext_file = certs_dir().join("ext.cnf");
+    let cert_key = KeyPair::generate()
+        .map_err(|e| TlsError::CertGenerationFailed(format!("generate cert key: {e}")))?;
+    let cert_obj = cert_params
+        .signed_by(&cert_key, &ca_cert, &ca_key)
+        .map_err(|e| TlsError::CertGenerationFailed(format!("sign cert: {e}")))?;
 
-    let ext_content = format!(
-        "authorityKeyIdentifier=keyid,issuer\n\
-         basicConstraints=CA:FALSE\n\
-         keyUsage=digitalSignature,keyEncipherment\n\
-         extendedKeyUsage=serverAuth\n\
-         subjectAltName=DNS:*.{},DNS:{}\n",
-        dns_suffix, dns_suffix
-    );
-
-    let mut file = std::fs::File::create(&ext_file)
-        .map_err(|e| TlsError::ConfigWrite(format!("create ext file: {e}")))?;
-    file.write_all(ext_content.as_bytes())
-        .map_err(|e| TlsError::ConfigWrite(format!("write ext file: {e}")))?;
-
-    let output = Command::new(&openssl)
-        .args([
-            "req",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-sha256",
-            "-keyout",
-            key.to_str().unwrap(),
-            "-out",
-            csr.to_str().unwrap(),
-            "-subj",
-            &format!("/CN=*.{}", dns_suffix),
-        ])
-        .output()
-        .map_err(|_| TlsError::OpenSslNotFound)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TlsError::CertGenerationFailed(format!(
-            "CSR generation failed: {stderr}"
-        )));
-    }
-
-    let output = Command::new(&openssl)
-        .args([
-            "x509",
-            "-req",
-            "-sha256",
-            "-days",
-            "825",
-            "-in",
-            csr.to_str().unwrap(),
-            "-CA",
-            ca_cert.to_str().unwrap(),
-            "-CAkey",
-            ca_key.to_str().unwrap(),
-            "-CAcreateserial",
-            "-out",
-            cert.to_str().unwrap(),
-            "-extfile",
-            ext_file.to_str().unwrap(),
-        ])
-        .output()
-        .map_err(|_| TlsError::OpenSslNotFound)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TlsError::CertGenerationFailed(format!(
-            "cert signing failed: {stderr}"
-        )));
-    }
-
-    let _ = std::fs::remove_file(&csr);
-    let _ = std::fs::remove_file(&ext_file);
+    std::fs::write(&cert, cert_obj.pem())
+        .map_err(|e| TlsError::ConfigWrite(format!("write cert: {e}")))?;
+    std::fs::write(&key, cert_key.serialize_pem())
+        .map_err(|e| TlsError::ConfigWrite(format!("write key: {e}")))?;
 
     Ok(())
 }
