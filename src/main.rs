@@ -429,7 +429,7 @@ async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>
     if !container_ids.trim().is_empty() {
         let mut remove_cmd = std::process::Command::new("docker");
         remove_cmd.arg("rm").arg("-f");
-        for id in container_ids.trim().split_whitespace() {
+        for id in container_ids.split_whitespace() {
             remove_cmd.arg(id);
         }
         remove_cmd.output()?;
@@ -447,7 +447,7 @@ async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>
     if !volume_names.trim().is_empty() {
         let mut remove_cmd = std::process::Command::new("docker");
         remove_cmd.arg("volume").arg("rm");
-        for name in volume_names.trim().split_whitespace() {
+        for name in volume_names.split_whitespace() {
             remove_cmd.arg(name);
         }
         remove_cmd.output()?;
