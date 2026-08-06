@@ -409,6 +409,7 @@ async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>
         println!("This will remove all self-host containers, volumes, and configuration.");
         println!("All deployed applications will be lost.");
         print!("Continue? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
         
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
