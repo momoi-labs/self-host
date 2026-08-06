@@ -531,7 +531,7 @@ mod tests {
         let config = ContainerConfig {
             image: "postgres:18-alpine".into(),
             name: "test-pg".into(),
-            ports: vec!["5433:5432".into()],
+            ports: vec!["15432:5432".into()],
             env: vec!["POSTGRES_USER=test".into()],
             volumes: vec!["pg-data:/var/lib/postgresql".into()],
             restart_policy: "unless-stopped".into(),

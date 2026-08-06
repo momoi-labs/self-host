@@ -14,7 +14,7 @@ const TRAEFIK_IMAGE: &str = "traefik:v3";
 const TRAEFIK_CONTAINER: &str = "self-host-traefik";
 pub const DEFAULT_DNS_SUFFIX: &str = "home.lan";
 pub const OPERATOR_API_PORT: u16 = 3721;
-pub const PG_DB_URL: &str = "postgres://selfhost:selfhost@localhost:5433/selfhost";
+pub const PG_DB_URL: &str = "postgres://selfhost:selfhost@localhost:15432/selfhost";
 
 #[derive(Debug)]
 pub struct BootstrapResult {
@@ -108,7 +108,7 @@ async fn start_infra_containers(
         .ensure_container_running(ContainerConfig {
             image: PG_IMAGE.to_string(),
             name: PG_CONTAINER.to_string(),
-            ports: vec!["5433:5432".into()],
+            ports: vec!["15432:5432".into()],
             env: vec![
                 "POSTGRES_USER=selfhost".into(),
                 "POSTGRES_PASSWORD=selfhost".into(),
