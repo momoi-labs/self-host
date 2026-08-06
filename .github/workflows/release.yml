@@ -19,6 +19,10 @@ jobs:
         with:
           toolchain: stable
 
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
