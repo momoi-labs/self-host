@@ -543,6 +543,11 @@ async fn run_server() {
         let _ = store.store_state("api_key", &api_key).await;
     }
 
+    // Log the admin dashboard URL if we know the DNS suffix.
+    if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
+        info!("admin dashboard: https://admin.{dns_suffix}");
+    }
+
     let app = build_app(store, docker);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)

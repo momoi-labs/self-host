@@ -70,9 +70,14 @@ pub async fn run_bootstrap(
         Err(e) => warn!("Failed to write Traefik config: {e}"),
     }
 
+    match tls::write_admin_route(dns_suffix) {
+        Ok(()) => info!("admin route configured"),
+        Err(e) => warn!("Failed to write admin route: {e}"),
+    }
+
     start_infra_containers(docker, dns_suffix, &host_ip).await?;
 
-    let api_listen_addr = format!("{host_ip}:{OPERATOR_API_PORT}");
+    let api_listen_addr = format!("0.0.0.0:{OPERATOR_API_PORT}");
 
     info!("bootstrap complete: dns_suffix={dns_suffix}, api_listen={api_listen_addr}");
 
@@ -262,6 +267,9 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!();
     println!("Applications will be reachable at:");
     println!("  https://<name>.{}", result.dns_suffix);
+    println!();
+    println!("--- Admin Dashboard ---");
+    println!("  https://admin.{}", result.dns_suffix);
     println!();
 
     let ca_path = tls::ca_cert_path();

@@ -151,6 +151,36 @@ providers:
     Ok(())
 }
 
+pub fn write_admin_route(dns_suffix: &str) -> Result<(), TlsError> {
+    let dynamic_dir = traefik_dynamic_dir();
+    std::fs::create_dir_all(&dynamic_dir)
+        .map_err(|e| TlsError::ConfigWrite(format!("create dynamic dir: {e}")))?;
+
+    let admin_config = format!(
+        r#"http:
+  routers:
+    admin:
+      rule: "Host(`admin.{dns_suffix}`)"
+      entryPoints:
+        - websecure
+      tls: {{}}
+      service: admin-api
+  services:
+    admin-api:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:{OPERATOR_API_PORT}"
+"#,
+        dns_suffix = dns_suffix,
+        OPERATOR_API_PORT = crate::bootstrap::OPERATOR_API_PORT,
+    );
+
+    std::fs::write(dynamic_dir.join("admin.yml"), admin_config)
+        .map_err(|e| TlsError::ConfigWrite(format!("write admin.yml: {e}")))?;
+
+    Ok(())
+}
+
 pub fn traefik_args() -> Vec<String> {
     vec![
         "--providers.docker=true".into(),
