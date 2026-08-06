@@ -59,8 +59,22 @@ pub fn generate_certificates(dns_suffix: &str) -> Result<(), TlsError> {
     Ok(())
 }
 
+fn find_openssl() -> Option<String> {
+    // Prefer system openssl on macOS (has config file)
+    if std::path::Path::new("/usr/bin/openssl").exists() {
+        return Some("/usr/bin/openssl".to_string());
+    }
+    // Fall back to PATH
+    if Command::new("openssl").arg("version").output().is_ok() {
+        return Some("openssl".to_string());
+    }
+    None
+}
+
 fn generate_ca(ca_key: &PathBuf, ca_cert: &PathBuf) -> Result<(), TlsError> {
-    let output = Command::new("openssl")
+    let openssl = find_openssl().ok_or(TlsError::OpenSslNotFound)?;
+    
+    let output = Command::new(&openssl)
         .args([
             "req",
             "-x509",
@@ -97,6 +111,7 @@ fn generate_wildcard_cert(
     cert: &PathBuf,
     dns_suffix: &str,
 ) -> Result<(), TlsError> {
+    let openssl = find_openssl().ok_or(TlsError::OpenSslNotFound)?;
     let csr = certs_dir().join("cert.csr");
     let ext_file = certs_dir().join("ext.cnf");
 
@@ -114,7 +129,7 @@ fn generate_wildcard_cert(
     file.write_all(ext_content.as_bytes())
         .map_err(|e| TlsError::ConfigWrite(format!("write ext file: {e}")))?;
 
-    let output = Command::new("openssl")
+    let output = Command::new(&openssl)
         .args([
             "req",
             "-newkey",
@@ -138,7 +153,7 @@ fn generate_wildcard_cert(
         )));
     }
 
-    let output = Command::new("openssl")
+    let output = Command::new(&openssl)
         .args([
             "x509",
             "-req",
