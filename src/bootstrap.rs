@@ -162,8 +162,14 @@ async fn start_infra_containers(
             volumes: vec![
                 "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
                 format!("{}:/certs:ro", tls::certs_dir().display()),
-                format!("{}:/etc/traefik/traefik.yml:ro", tls::traefik_config_path().display()),
-                format!("{}:/etc/traefik/dynamic:ro", tls::traefik_dynamic_dir().display()),
+                format!(
+                    "{}:/etc/traefik/traefik.yml:ro",
+                    tls::traefik_config_path().display()
+                ),
+                format!(
+                    "{}:/etc/traefik/dynamic:ro",
+                    tls::traefik_dynamic_dir().display()
+                ),
             ],
             restart_policy: "unless-stopped".into(),
             cmd: tls::traefik_args(),
@@ -255,7 +261,10 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
                 println!("Could not configure macOS resolver: {e}");
                 println!("Run manually:");
                 println!("  sudo mkdir -p /etc/resolver");
-                println!("  echo 'nameserver {}' | sudo tee /etc/resolver/{}", result.host_ip, result.dns_suffix);
+                println!(
+                    "  echo 'nameserver {}' | sudo tee /etc/resolver/{}",
+                    result.host_ip, result.dns_suffix
+                );
             }
         }
         println!();
@@ -278,9 +287,18 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
         println!("To trust HTTPS certificates on other devices, install the CA certificate:");
         println!("  CA certificate: {}", ca_path.display());
         println!();
-        println!("  macOS:   security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}", ca_path.display());
-        println!("  Windows: certutil -addstore -f \"ROOT\" {}", ca_path.display());
-        println!("  Linux:   sudo cp {} /usr/local/share/ca-certificates/self-host-ca.crt && sudo update-ca-certificates", ca_path.display());
+        println!(
+            "  macOS:   security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}",
+            ca_path.display()
+        );
+        println!(
+            "  Windows: certutil -addstore -f \"ROOT\" {}",
+            ca_path.display()
+        );
+        println!(
+            "  Linux:   sudo cp {} /usr/local/share/ca-certificates/self-host-ca.crt && sudo update-ca-certificates",
+            ca_path.display()
+        );
         println!();
     }
 

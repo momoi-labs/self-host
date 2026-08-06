@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
-    KeyUsagePurpose, SanType,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
+    SanType,
 };
 use time::{Duration, OffsetDateTime};
 
