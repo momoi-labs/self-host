@@ -29,7 +29,14 @@ async fn static_asset(axum::extract::Path(path): axum::extract::Path<String>) ->
     let path = path.trim_start_matches('/');
 
     // Only allow known asset files (no directory traversal)
-    let allowed = ["app.js", "setup.html", "api-keys.html"];
+    let allowed = [
+        "app.js",
+        "theme.js",
+        "tokens.css",
+        "console.css",
+        "setup.html",
+        "api-keys.html",
+    ];
     if !allowed.contains(&path) {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -85,4 +92,52 @@ async fn root_redirect() -> Response<Body> {
         .header(header::LOCATION, "/console")
         .body(Body::empty())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use tower::ServiceExt;
+
+    use super::console_router;
+
+    #[tokio::test]
+    async fn serves_console_assets() {
+        for (asset, content_type) in [
+            ("tokens.css", "text/css"),
+            ("console.css", "text/css"),
+            ("theme.js", "text/javascript"),
+        ] {
+            let response = console_router()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/console/{asset}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_console_assets() {
+        let response = console_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/console/unknown.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }
