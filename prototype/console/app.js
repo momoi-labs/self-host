@@ -26,6 +26,10 @@ async function init() {
   await loadApps();
   setupSplitter();
   document.getElementById('deploy-btn').addEventListener('click', showDeployModal);
+  document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
+  document.getElementById('deploy-cancel').addEventListener('click', closeDeployModal);
+  document.getElementById('deploy-form').addEventListener('submit', deploy);
+  document.addEventListener('keydown', handleDialogKeydown);
 }
 
 async function loadBootstrap() {
@@ -37,7 +41,7 @@ async function loadBootstrap() {
 
     const hr = await fetch('/health', { headers: authHeaders() });
     if (hr.ok) {
-      document.getElementById('health-dot').className = 'status-dot rounded-full bg-emerald-500 inline-block';
+      document.getElementById('health-dot').className = 'status-dot success';
       document.getElementById('health-text').textContent = 'Healthy';
     }
   } catch {}
@@ -56,12 +60,12 @@ async function loadApps() {
 function render() {
   const list = document.getElementById('sidebar');
   if (apps.length === 0) {
-    list.innerHTML = '<p class="text-xs text-gray-400 px-3 py-4 text-center">No applications yet</p>';
+    list.innerHTML = '<p class="muted">No applications yet.</p>';
   } else {
     list.innerHTML = apps.map(a => `
-      <button class="app-item w-full text-left px-3 py-2.5 rounded-lg mb-0.5 transition-colors hover:bg-gray-50 flex items-center gap-2.5" data-name="${esc(a.name)}">
-        <span class="status-dot rounded-full ${a.status === 'running' ? 'bg-emerald-500' : 'bg-red-500'} inline-block flex-shrink-0"></span>
-        <span class="text-sm font-medium truncate flex-1">${esc(a.name)}</span>
+      <button class="app-item" type="button" data-name="${esc(a.name)}" aria-pressed="false">
+        <span class="status-dot ${a.status === 'running' ? 'success' : 'danger'}" aria-hidden="true"></span>
+        <span>${esc(a.name)}</span><span class="metadata">${esc(a.status)}</span>
       </button>
     `).join('');
 
@@ -88,6 +92,7 @@ function showEmpty() {
   document.getElementById('empty-state').classList.remove('hidden');
   document.getElementById('detail').classList.add('hidden');
   document.querySelectorAll('#sidebar .app-item').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('#sidebar .app-item').forEach(el => el.setAttribute('aria-pressed', 'false'));
 }
 
 function selectApp(name) {
@@ -98,63 +103,42 @@ function selectApp(name) {
 
   document.querySelectorAll('#sidebar .app-item').forEach(el => el.classList.remove('active'));
   const btn = document.querySelector(`#sidebar [data-name="${CSS.escape(name)}"]`);
-  if (btn) btn.classList.add('active');
+  if (btn) { btn.classList.add('active'); btn.setAttribute('aria-pressed', 'true'); }
 
   document.getElementById('empty-state').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 
   document.getElementById('config-panel').innerHTML = `
-    <div class="flex items-center justify-between mb-6">
+    <div class="row-between">
       <div>
-        <h2 class="text-xl font-bold">${esc(app.name)}</h2>
-        <a href="http://${esc(app.hostname)}" target="_blank" class="text-indigo-600 hover:text-indigo-800 text-sm mono">${esc(app.hostname)} ↗</a>
+        <h1>${esc(app.name)}</h1>
+        <a href="http://${esc(app.hostname)}" target="_blank" rel="noreferrer" class="mono">${esc(app.hostname)} ↗</a>
       </div>
-      <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${app.status === 'running' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}">
-        <span class="status-dot rounded-full ${app.status === 'running' ? 'bg-emerald-500' : 'bg-red-500'} inline-block"></span>
+      <span class="badge ${app.status === 'running' ? 'success' : 'danger'}">
+        <span class="status-dot" aria-hidden="true"></span>
         ${app.status}
       </span>
     </div>
-    <div class="space-y-4">
+    <div class="stack">
       <div>
-        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Image</p>
-        <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-4 py-2.5">
-          <span class="mono text-sm">${esc(app.image)}</span>
-        </div>
+        <p class="section-label">Image</p><div class="value mono">${esc(app.image)}</div>
       </div>
       <div>
-        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Container</p>
-        <p class="mono text-sm bg-gray-50 rounded-lg px-4 py-2.5">self-host-app-${esc(app.name)}</p>
+        <p class="section-label">Container</p><p class="value mono">self-host-app-${esc(app.name)}</p>
       </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Hostname</p>
-          <p class="mono text-sm bg-gray-50 rounded-lg px-4 py-2.5">${esc(app.hostname)}</p>
-        </div>
-        <div>
-          <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Status</p>
-          <p class="mono text-sm bg-gray-50 rounded-lg px-4 py-2.5 capitalize">${app.status}</p>
-        </div>
+      <div class="details-grid">
+        <div><p class="section-label">Hostname</p><p class="value mono">${esc(app.hostname)}</p></div>
+        <div><p class="section-label">Status</p><p class="value mono">${esc(app.status)}</p></div>
       </div>
     </div>
-    <div class="mt-8 pt-6 border-t border-gray-100">
-      <button id="remove-btn" class="text-sm text-red-500 hover:text-red-700 font-medium transition-colors">
-        Remove application
-      </button>
-    </div>
+    <p><button id="remove-btn" type="button" class="button button-danger">Remove application</button></p>
   `;
 
   document.getElementById('remove-btn').addEventListener('click', () => removeApp(app.name));
 
   document.getElementById('logs-panel').innerHTML = `
-    <div class="flex items-center gap-2 mb-4">
-      <div class="flex gap-1.5">
-        <span class="w-3 h-3 rounded-full bg-red-400"></span>
-        <span class="w-3 h-3 rounded-full bg-yellow-400"></span>
-        <span class="w-3 h-3 rounded-full bg-emerald-400"></span>
-      </div>
-      <span class="mono text-xs text-gray-400">logs — ${esc(app.name)}</span>
-    </div>
-    <div id="logs-content" class="mono text-xs text-emerald-400 space-y-0.5"></div>
+    <p class="section-label mono">Logs — ${esc(app.name)}</p>
+    <div id="logs-content" class="mono" role="log" aria-live="polite"></div>
   `;
 
   startLogStream(app.name);
@@ -179,7 +163,7 @@ async function startLogStream(name) {
     });
 
     if (!res.ok) {
-      contentEl.innerHTML = '<p class="text-red-400">Failed to connect</p>';
+      contentEl.innerHTML = '<p class="danger">Could not connect to the log stream.</p>';
       return;
     }
 
@@ -211,7 +195,7 @@ async function startLogStream(name) {
   } catch (err) {
     if (err.name !== 'AbortError') {
       const p = document.createElement('p');
-      p.className = 'text-red-400';
+      p.className = 'danger';
       p.textContent = 'Connection lost';
       contentEl.appendChild(p);
     }
@@ -222,6 +206,7 @@ async function startLogStream(name) {
 
 // ── Deploy ──────────────────────────────────────────────────────
 function showDeployModal() {
+  document.querySelector('.app-shell').inert = true;
   document.getElementById('deploy-modal').classList.remove('hidden');
   document.getElementById('deploy-name').focus();
   document.getElementById('deploy-error').classList.add('hidden');
@@ -229,6 +214,20 @@ function showDeployModal() {
 
 function closeDeployModal() {
   document.getElementById('deploy-modal').classList.add('hidden');
+  document.querySelector('.app-shell').inert = false;
+  document.getElementById('deploy-btn').focus();
+}
+
+function handleDialogKeydown(event) {
+  const modal = document.getElementById('deploy-modal');
+  if (modal.classList.contains('hidden')) return;
+  if (event.key === 'Escape') { closeDeployModal(); return; }
+  if (event.key !== 'Tab') return;
+  const controls = [...modal.querySelectorAll('button, input')].filter(el => !el.disabled);
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 
 async function deploy(e) {

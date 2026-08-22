@@ -1,164 +1,54 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DNS Setup — homelab</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-  body { font-family: 'Inter', system-ui, sans-serif; }
-  .mono { font-family: 'JetBrains Mono', monospace; }
-  details summary { cursor: pointer; }
-  details[open] summary { margin-bottom: 0.75rem; }
-  code { font-family: 'JetBrains Mono', monospace; background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-  pre { background: #1f2937; color: #e5e7eb; border-radius: 0.75rem; padding: 1rem 1.25rem; overflow-x: auto; font-size: 0.8125rem; line-height: 1.6; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DNS setup — homelab</title>
+  <link rel="stylesheet" href="/console/tokens.css">
+  <link rel="stylesheet" href="/console/console.css">
+  <script src="/console/theme.js"></script>
 </head>
-<body class="bg-gray-50 text-gray-900 min-h-screen">
-
-<div class="max-w-3xl mx-auto px-6 py-12">
-  <div class="flex items-center gap-3 mb-10">
-    <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center flex-shrink-0">
-      <span class="text-white font-bold text-sm">H</span>
-    </div>
-    <div>
-      <h1 class="text-2xl font-bold tracking-tight">DNS Setup</h1>
-      <p class="text-sm text-gray-500">Configure your local network to reach apps by hostname</p>
-    </div>
-  </div>
-
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-8">
-    <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Your Homelab</h2>
-    <div class="grid grid-cols-2 gap-6">
-      <div>
-        <p class="text-xs text-gray-400 mb-1">Host IP</p>
-        <p class="mono text-lg font-semibold" id="host-ip">…</p>
+<body>
+  <main class="page">
+    <header class="page-header row-between">
+      <div><h1>DNS setup</h1><p class="muted">Configure your network to reach applications by hostname.</p></div>
+      <div class="row"><button type="button" class="button button-ghost theme-toggle" data-theme-toggle>Light theme</button><a class="button" href="/console/">Back to console</a></div>
+    </header>
+    <section class="card page-section" aria-labelledby="host-heading">
+      <h2 id="host-heading" class="section-label">Your homelab</h2>
+      <div class="info-grid">
+        <div><p class="muted">Host IP</p><p class="mono" id="host-ip">…</p></div>
+        <div><p class="muted">DNS suffix</p><p class="mono" id="dns-suffix">…</p></div>
       </div>
-      <div>
-        <p class="text-xs text-gray-400 mb-1">DNS Suffix</p>
-        <p class="mono text-lg font-semibold" id="dns-suffix">…</p>
-      </div>
-    </div>
-  </div>
-
-  <div class="space-y-4 mb-10">
-    <h2 class="text-lg font-semibold">Step-by-step Instructions</h2>
-    <p class="text-sm text-gray-500">Point your device's DNS resolver to the Host IP so that <code id="suffix-example">*.home.lan</code> hostnames resolve correctly.</p>
-
-    <div class="space-y-3">
-      <details class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 group">
-        <summary class="text-base font-semibold list-none flex items-center gap-2">
-          <svg class="w-5 h-5 text-gray-400 group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-          macOS
-        </summary>
-        <ol class="mt-3 space-y-2 text-sm text-gray-600 pl-7 list-decimal">
-          <li>Open <strong>System Settings</strong> → <strong>Network</strong></li>
-          <li>Select your active connection (Wi-Fi or Ethernet) and click <strong>Details</strong></li>
-          <li>Go to the <strong>DNS</strong> tab</li>
-          <li>Click <strong>+</strong> under "DNS Servers" and enter the Host IP shown above</li>
-          <li>Click <strong>OK</strong>, then <strong>Apply</strong></li>
-        </ol>
-      </details>
-
-      <details class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 group">
-        <summary class="text-base font-semibold list-none flex items-center gap-2">
-          <svg class="w-5 h-5 text-gray-400 group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-          Linux
-        </summary>
-        <div class="mt-3 pl-7 space-y-3">
-          <div>
-            <p class="text-sm font-medium text-gray-700 mb-1">Using <code>resolvectl</code> (systemd-resolved):</p>
-            <pre>sudo resolvectl dns INTERFACE HOST_IP
-sudo resolvectl domain INTERFACE ~SUFFIX</pre>
-            <p class="text-xs text-gray-400 mt-1">Replace <code>INTERFACE</code> with your network interface (e.g. <code>eth0</code>, <code>wlan0</code>).</p>
-          </div>
-          <div>
-            <p class="text-sm font-medium text-gray-700 mb-1">Using <code>/etc/resolv.conf</code> (traditional):</p>
-            <pre># Add to /etc/resolv.conf (may be overwritten by DHCP)
-nameserver HOST_IP</pre>
-          </div>
-        </div>
-      </details>
-
-      <details class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 group">
-        <summary class="text-base font-semibold list-none flex items-center gap-2">
-          <svg class="w-5 h-5 text-gray-400 group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-          Windows
-        </summary>
-        <ol class="mt-3 space-y-2 text-sm text-gray-600 pl-7 list-decimal">
-          <li>Open <strong>Control Panel</strong> → <strong>Network and Sharing Center</strong></li>
-          <li>Click your active connection (e.g. "Ethernet" or "Wi-Fi")</li>
-          <li>Click <strong>Properties</strong> → select <strong>Internet Protocol Version 4 (TCP/IPv4)</strong> → <strong>Properties</strong></li>
-          <li>Select <strong>Use the following DNS server addresses</strong></li>
-          <li>Enter the Host IP as the <strong>Preferred DNS server</strong></li>
-          <li>Click <strong>OK</strong>, then <strong>Close</strong></li>
-        </ol>
-      </details>
-
-      <details class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 group">
-        <summary class="text-base font-semibold list-none flex items-center gap-2">
-          <svg class="w-5 h-5 text-gray-400 group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-          Mobile (iOS / Android)
-        </summary>
-        <div class="mt-3 pl-7 space-y-3">
-          <div>
-            <p class="text-sm font-medium text-gray-700 mb-1">iOS</p>
-            <ol class="text-sm text-gray-600 space-y-1 list-decimal pl-4">
-              <li>Open <strong>Settings</strong> → <strong>Wi-Fi</strong></li>
-              <li>Tap the <strong>(i)</strong> icon next to your network</li>
-              <li>Scroll to <strong>Configure DNS</strong> → select <strong>Manual</strong></li>
-              <li>Tap <strong>Add Server</strong> and enter the Host IP</li>
-              <li>Tap <strong>Save</strong></li>
-            </ol>
-          </div>
-          <div>
-            <p class="text-sm font-medium text-gray-700 mb-1">Android</p>
-            <ol class="text-sm text-gray-600 space-y-1 list-decimal pl-4">
-              <li>Open <strong>Settings</strong> → <strong>Wi-Fi</strong></li>
-              <li>Long-press your network → <strong>Modify network</strong></li>
-              <li>Check <strong>Advanced options</strong></li>
-              <li>Set <strong>IP settings</strong> to <strong>Static</strong></li>
-              <li>Enter the Host IP under <strong>DNS 1</strong></li>
-              <li>Tap <strong>Save</strong></li>
-            </ol>
-          </div>
-        </div>
-      </details>
-    </div>
-  </div>
-
-  <div class="bg-indigo-50 rounded-2xl border border-indigo-100 p-6 mb-10">
-    <h2 class="text-sm font-semibold text-indigo-800 mb-2">Try it out</h2>
-    <p class="text-sm text-indigo-700">After setup, open your applications by hostname:</p>
-    <pre class="mt-3 bg-indigo-900 text-indigo-100" style="padding:1rem;border-radius:0.75rem" id="example-url">http://blog.home.lan</pre>
-  </div>
-
-  <a href="/console/" class="inline-flex items-center gap-2 text-sm text-gray-500 hover:text-indigo-600 transition-colors">
-    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-    Back to console
-  </a>
-</div>
-
-<script>
-(async function init() {
-  const apiKey = sessionStorage.getItem('api_key') || '';
-  document.getElementById('host-ip').textContent = window.location.hostname;
-
-  try {
-    const res = await fetch('/bootstrap/status', {
-      headers: { 'Authorization': 'Bearer ' + apiKey }
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const suffix = data.dns_suffix || 'home.lan';
-      document.getElementById('dns-suffix').textContent = suffix;
-      document.getElementById('suffix-example').textContent = '*.' + suffix;
-      document.getElementById('example-url').textContent = 'http://blog.' + suffix;
-    }
-  } catch {}
-})();
-</script>
-
+    </section>
+    <section class="page-section" aria-labelledby="instructions-heading">
+      <h2 id="instructions-heading">Instructions</h2>
+      <p class="muted">Point your device's DNS resolver to the Host IP so that <code id="suffix-example">*.home.lan</code> resolves locally.</p>
+      <details class="disclosure"><summary>macOS</summary><ol><li>Open System Settings → Network.</li><li>Open the active connection and select DNS.</li><li>Add the Host IP as a DNS server, then apply the change.</li></ol></details>
+      <details class="disclosure"><summary>Linux</summary><p>With systemd-resolved:</p><pre>sudo resolvectl dns INTERFACE HOST_IP
+sudo resolvectl domain INTERFACE ~SUFFIX</pre><p class="metadata">Replace INTERFACE, HOST_IP and SUFFIX with the values for your host.</p></details>
+      <details class="disclosure"><summary>Windows</summary><ol><li>Open Network Connections and the active adapter's properties.</li><li>Open Internet Protocol Version 4 (TCP/IPv4).</li><li>Use the Host IP as the preferred DNS server and save.</li></ol></details>
+      <details class="disclosure"><summary>iOS and Android</summary><p>Edit the active Wi-Fi network, choose manual or static DNS, and use the Host IP as the first DNS server.</p></details>
+    </section>
+    <section class="card" aria-labelledby="example-heading">
+      <h2 id="example-heading">Try it</h2><p class="muted">After setup, open an application by hostname:</p><pre id="example-url">http://blog.home.lan</pre>
+    </section>
+  </main>
+  <script>
+    (async function init() {
+      const apiKey = sessionStorage.getItem('api_key') || '';
+      if (!apiKey) { window.location.href = '/console'; return; }
+      document.getElementById('host-ip').textContent = window.location.hostname;
+      try {
+        const response = await fetch('/bootstrap/status', { headers: { Authorization: 'Bearer ' + apiKey } });
+        if (!response.ok) return;
+        const data = await response.json();
+        const suffix = data.dns_suffix || 'home.lan';
+        document.getElementById('dns-suffix').textContent = suffix;
+        document.getElementById('suffix-example').textContent = '*.' + suffix;
+        document.getElementById('example-url').textContent = 'http://blog.' + suffix;
+      } catch {}
+    })();
+  </script>
 </body>
 </html>
