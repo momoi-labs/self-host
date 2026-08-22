@@ -520,16 +520,10 @@ async fn run_server() {
     };
 
     let store = match PgStateStore::connect(bootstrap::PG_DB_URL).await {
-        Ok(s) => s,
-        Err(_) => {
-            tracing::warn!("PostgreSQL not available, running without persistent state");
-            let app = build_app_with_key(api_key);
-            let listener = tokio::net::TcpListener::bind(&listen_addr)
-                .await
-                .expect("failed to bind to listen address");
-            info!("listening on {listen_addr} (no DB)");
-            axum::serve(listener, app).await.expect("server error");
-            return;
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!("PostgreSQL unavailable: {error}");
+            std::process::exit(1);
         }
     };
 
@@ -557,69 +551,6 @@ async fn run_server() {
     info!("listening on {listen_addr}");
 
     axum::serve(listener, app).await.expect("server error");
-}
-
-fn build_app_with_key(api_key: String) -> axum::Router {
-    use axum::{
-        Json, Router,
-        extract::Request,
-        http::StatusCode,
-        middleware::{self, Next},
-        response::{IntoResponse, Response},
-        routing::get,
-    };
-    use serde::Serialize;
-
-    #[derive(Clone)]
-    struct SimpleState {
-        api_key: String,
-    }
-
-    #[derive(Serialize)]
-    struct HealthResponse {
-        status: String,
-    }
-
-    async fn health() -> Json<HealthResponse> {
-        Json(HealthResponse {
-            status: "ok".into(),
-        })
-    }
-
-    async fn require_key(
-        state: axum::extract::State<SimpleState>,
-        req: Request,
-        next: Next,
-    ) -> Response {
-        let auth_header = req
-            .headers()
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-
-        let expected = state.api_key.as_bytes();
-        let found = auth_header.unwrap_or("").as_bytes();
-
-        let matches = expected.len() == found.len()
-            && expected
-                .iter()
-                .zip(found.iter())
-                .fold(0, |acc, (x, y)| acc | (x ^ y))
-                == 0;
-
-        if matches {
-            next.run(req).await
-        } else {
-            (StatusCode::UNAUTHORIZED, "invalid api key").into_response()
-        }
-    }
-
-    let state = SimpleState { api_key };
-
-    Router::new()
-        .route("/health", get(health))
-        .layer(middleware::from_fn_with_state(state.clone(), require_key))
-        .with_state(state)
 }
 
 async fn resolve_server_config() -> (String, String) {
