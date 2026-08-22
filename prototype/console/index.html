@@ -1,106 +1,71 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>homelab console</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-  body { font-family: 'Inter', system-ui, sans-serif; }
-  .mono { font-family: 'JetBrains Mono', monospace; }
-  .status-dot { width: 8px; height: 8px; }
-  .app-item.active { background: #eef2ff; border-left: 3px solid #4f46e5; }
-  .splitter { width: 4px; cursor: col-resize; background: #e5e7eb; flex-shrink: 0; transition: background 0.15s; position: relative; }
-  .splitter:hover, .splitter.dragging { background: #4f46e5; }
-  .splitter::after { content: ''; position: absolute; inset: 0 -4px; }
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>homelab console</title>
+  <link rel="stylesheet" href="/console/tokens.css">
+  <link rel="stylesheet" href="/console/console.css">
+  <script src="/console/theme.js"></script>
 </head>
-<body class="bg-gray-50 text-gray-900">
-
-<div class="flex h-screen">
-  <!-- Sidebar -->
-  <aside class="w-72 bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
-    <div class="px-5 py-4 border-b border-gray-100">
-      <div class="flex items-center gap-2.5 mb-3">
-        <div class="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
-          <span class="text-white font-bold text-xs">H</span>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <header class="sidebar-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">H</span>
+          <div><h1>homelab</h1><p class="metadata mono" id="dns-suffix">…</p></div>
         </div>
-        <div>
-          <h1 class="font-semibold text-sm">homelab</h1>
-          <p class="text-[10px] text-gray-400 mono" id="dns-suffix">…</p>
+        <button id="deploy-btn" class="button button-primary button-block" type="button">Deploy application</button>
+      </header>
+      <p class="section-label sidebar-header">Applications</p>
+      <nav class="sidebar-nav" id="sidebar" aria-label="Applications"></nav>
+      <footer class="sidebar-footer">
+        <a href="/console/setup.html" class="nav-link">Setup</a>
+        <button type="button" class="button button-ghost theme-toggle" data-theme-toggle>Light theme</button>
+        <div class="row-between">
+          <span class="row muted"><span class="status-dot success" id="health-dot"></span><span id="health-text">Checking health…</span></span>
+          <button type="button" onclick="logout()" class="button button-ghost">Lock</button>
         </div>
-      </div>
-      <button id="deploy-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors">
-        + Deploy
-      </button>
-    </div>
-    <div class="px-3 py-3 border-b border-gray-100">
-      <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Applications</p>
-    </div>
-    <nav class="flex-1 overflow-y-auto px-2 py-1" id="sidebar"></nav>
-    <div class="px-3 py-2 border-t border-gray-100">
-      <a href="/console/setup.html" class="flex items-center gap-2 px-3 py-2 text-xs text-gray-400 hover:text-indigo-600 hover:bg-gray-50 rounded-lg transition-colors">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-        Setup
-      </a>
-    </div>
-    <div class="px-4 py-3 border-t border-gray-100 flex items-center justify-between">
-      <span class="flex items-center gap-2">
-        <span class="status-dot rounded-full bg-emerald-500 inline-block" id="health-dot"></span>
-        <span class="text-xs text-gray-500" id="health-text">…</span>
-      </span>
-      <button onclick="logout()" class="text-xs text-gray-400 hover:text-red-500 transition-colors">Lock</button>
-    </div>
-  </aside>
-
-  <!-- Detail: config (left) + logs (right) -->
-  <div class="flex-1 flex overflow-hidden">
-    <div id="empty-state" class="flex-1 flex items-center justify-center text-gray-400">
-      <div class="text-center">
-        <div class="text-5xl mb-3">📦</div>
-        <p class="text-sm">Select an application from the sidebar</p>
-      </div>
-    </div>
-    <div id="detail" class="flex-1 flex hidden">
-      <div class="overflow-y-auto p-6" id="config-panel" style="flex-basis:50%"></div>
-      <div class="splitter" id="splitter"></div>
-      <div class="flex-1 overflow-y-auto p-6 bg-gray-900" id="logs-panel"></div>
-    </div>
+      </footer>
+    </aside>
+    <main class="main">
+      <section id="empty-state" class="empty-state" aria-labelledby="empty-title">
+        <h2 id="empty-title">Select an application</h2>
+        <p>Choose an application from the list to inspect its configuration and logs.</p>
+      </section>
+      <section id="detail" class="detail hidden" aria-live="polite">
+        <div class="config-panel" id="config-panel"></div>
+        <div class="splitter" id="splitter" aria-hidden="true"></div>
+        <div class="logs-panel" id="logs-panel"></div>
+      </section>
+    </main>
   </div>
-</div>
-
-<!-- Deploy modal -->
-<div id="deploy-modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center" style="z-index:10001" onclick="if(event.target===this)closeDeployModal()">
-  <div class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6" onclick="event.stopPropagation()">
-    <div class="flex items-center justify-between mb-5">
-      <h3 class="text-lg font-semibold">Deploy Application</h3>
-      <button onclick="closeDeployModal()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
-    </div>
-    <form onsubmit="deploy(event)" class="space-y-4">
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1.5">Application name</label>
-        <input type="text" id="deploy-name" placeholder="my-app" required
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
-        <p class="text-xs text-gray-400 mt-1">Lowercase, hyphens, max 63 chars</p>
+  <div id="deploy-modal" class="dialog-overlay hidden">
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="deploy-title" aria-describedby="deploy-description">
+      <div class="row-between">
+        <h2 id="deploy-title">Deploy application</h2>
+        <button id="deploy-close" type="button" class="button button-ghost" aria-label="Close dialog">Close</button>
       </div>
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1.5">Docker image</label>
-        <input type="text" id="deploy-image" placeholder="nginx:alpine" required
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
-      </div>
-      <p id="deploy-error" class="hidden text-sm text-red-600"></p>
-      <div class="flex justify-end gap-2 pt-2">
-        <button type="button" onclick="closeDeployModal()" class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Cancel</button>
-        <button type="submit" class="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors">Deploy</button>
-      </div>
-    </form>
+      <p id="deploy-description" class="muted">Create an application from a container image.</p>
+      <form id="deploy-form" class="stack">
+        <div class="field">
+          <label for="deploy-name">Application name</label>
+          <input class="input" type="text" id="deploy-name" placeholder="my-app" required aria-describedby="deploy-name-help">
+          <small class="muted" id="deploy-name-help">Lowercase letters, numbers and hyphens; at most 63 characters.</small>
+        </div>
+        <div class="field">
+          <label for="deploy-image">Container image</label>
+          <input class="input mono" type="text" id="deploy-image" placeholder="nginx:alpine" required>
+        </div>
+        <p id="deploy-error" class="alert hidden" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="deploy-cancel" type="button" class="button">Cancel</button>
+          <button type="submit" class="button button-primary">Deploy</button>
+        </div>
+      </form>
+    </section>
   </div>
-</div>
-
-<script src="/console/app.js"></script>
+  <script src="/console/app.js"></script>
 </body>
 </html>
