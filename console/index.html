@@ -5,116 +5,157 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>homelab console</title>
   <link rel="stylesheet" href="/console/tokens.css">
+  <link rel="stylesheet" href="/console/ui.css">
   <link rel="stylesheet" href="/console/console.css">
   <script src="/console/theme.js"></script>
 </head>
 <body>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <header class="sidebar-header">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">H</span>
-          <div><h1>homelab</h1><p class="metadata mono" id="dns-suffix">…</p></div>
-        </div>
-        <button id="deploy-btn" class="button button-primary button-block" type="button">Deploy application</button>
-      </header>
-      <button type="button" class="section-label sidebar-header sidebar-home" data-home>Applications</button>
-      <nav class="sidebar-nav" id="sidebar" aria-label="Applications"></nav>
-      <footer class="sidebar-footer">
-        <a href="/console/setup.html" class="nav-link">Setup</a>
-        <div class="theme-toggle" data-theme-toggle></div>
-        <div class="row-between">
-          <span></span>
-          <button type="button" onclick="logout()" class="button button-ghost">Lock</button>
-        </div>
-      </footer>
-    </aside>
-    <main class="main">
-      <header class="topbar">
-        <nav class="breadcrumb" aria-label="Breadcrumb">
-          <a href="/console/">Console</a><span class="sep" aria-hidden="true">/</span><span aria-current="page">Overview</span>
-        </nav>
-        <span class="grow"></span>
-        <span class="row metadata"><span class="status-dot success" id="health-dot"></span><span id="health-text">Checking health…</span></span>
-      </header>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 5v3.5M8 11h.01"/></symbol>
+  <symbol id="i-box" viewBox="0 0 16 16"><path d="M2.5 5L8 2l5.5 3v6L8 14l-5.5-3z"/><path d="M2.5 5L8 8l5.5-3M8 8v6"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 16 16"><path d="M2 13.5h12"/><path d="M4 11V7M8 11V3M12 11V9"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.5l3.5 3.5L13 5"/></symbol>
+  <symbol id="i-key" viewBox="0 0 16 16"><circle cx="5" cy="11" r="2.75"/><path d="M7 9l6-6M11 5l1.5 1.5M9.5 6.5L11 8"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M1.8 8h12.4M8 1.75c3.2 3.4 3.2 9.1 0 12.5-3.2-3.4-3.2-9.1 0-12.5z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3.25" y="7" width="9.5" height="6.5" rx="1.25"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></symbol>
+</defs></svg>
 
-      <section id="dashboard" class="page" aria-labelledby="dashboard-title">
-        <header class="page-header">
-          <h1 id="dashboard-title">Overview</h1>
-          <p class="muted" id="dashboard-subtitle"></p>
-        </header>
-
-        <div id="dashboard-empty" class="card hidden">
-          <div class="empty">
-            <span class="empty-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><path d="m3.3 7 8.7 5 8.7-5M12 22V12"></path></svg>
-            </span>
-            <p class="empty-title">No applications yet</p>
-            <p>Deploy your first application from a container image and it will be reachable on your LAN.</p>
-            <button id="empty-deploy" class="button button-primary" type="button">Deploy application</button>
-          </div>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">H</span>
+        <div class="grow truncate">
+          <div class="t-label">homelab</div>
+          <div class="t-metadata muted mono" id="dns-suffix">…</div>
         </div>
-
-        <div id="dashboard-content">
-          <div class="stat-grid page-section" id="stat-grid"></div>
-          <div class="table-wrap">
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr><th>Application</th><th>Hostname</th><th>Image</th><th>Status</th><th class="numeric">Restarts</th></tr>
-                </thead>
-                <tbody id="app-rows"></tbody>
-              </table>
-            </div>
-            <p class="table-footer metadata" id="app-count"></p>
-          </div>
-        </div>
-      </section>
-      <section id="detail" class="detail hidden" aria-live="polite">
-        <div class="config-panel" id="config-panel"></div>
-        <div class="splitter" id="splitter" aria-hidden="true"></div>
-        <div class="logs-panel" id="logs-panel"></div>
-      </section>
-    </main>
-  </div>
-  <div id="deploy-modal" class="dialog-overlay hidden">
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="deploy-title" aria-describedby="deploy-description">
-      <div class="row-between">
-        <h2 id="deploy-title">Deploy application</h2>
-        <button id="deploy-close" type="button" class="button button-ghost" aria-label="Close dialog">Close</button>
       </div>
-      <p id="deploy-description" class="muted">Create an application from a container image.</p>
-      <form id="deploy-form" class="stack">
+      <button id="deploy-btn" class="btn btn-primary btn-sm btn-block" type="button">
+        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg>Deploy application
+      </button>
+    </div>
+
+    <div class="sidebar-body">
+      <div class="nav-group">
+        <button type="button" class="nav-item" data-home>
+          <svg class="icon icon-sm" aria-hidden="true"><use href="#i-chart"/></svg>Overview
+        </button>
+      </div>
+      <nav class="nav-group" id="sidebar" aria-label="Applications">
+        <p class="t-caps">Applications</p>
+      </nav>
+    </div>
+
+    <div class="sidebar-footer">
+      <a class="nav-item" href="/console/setup.html">
+        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-globe"/></svg>DNS setup
+      </a>
+      <a class="nav-item" href="/console/api-keys.html">
+        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg>API keys
+      </a>
+      <div data-theme-toggle></div>
+      <hr class="separator">
+      <button type="button" class="nav-item" onclick="logout()">
+        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-lock"/></svg>Lock
+      </button>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <a href="/console/">Console</a><span class="sep" aria-hidden="true">/</span><span aria-current="page">Overview</span>
+      </nav>
+      <span class="grow"></span>
+      <span class="row t-label"><span class="dot success" id="health-dot"></span><span class="muted" id="health-text">Checking health…</span></span>
+    </header>
+
+    <section id="dashboard" class="page" aria-labelledby="dashboard-title">
+      <div class="page-header">
+        <h1 class="t-h1" id="dashboard-title">Overview</h1>
+        <p class="muted t-label" id="dashboard-subtitle"></p>
+      </div>
+
+      <div id="dashboard-empty" class="card hidden">
+        <div class="empty hatch">
+          <span class="empty-icon" aria-hidden="true"><svg class="icon icon-lg"><use href="#i-box"/></svg></span>
+          <p class="t-h3 fg">No applications yet</p>
+          <p>Deploy your first application from a container image and it will be reachable on your LAN.</p>
+          <button id="empty-deploy" class="btn btn-primary btn-sm" type="button">
+            <svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg>Deploy application
+          </button>
+        </div>
+      </div>
+
+      <div id="dashboard-content" class="stack">
+        <div class="stat-grid" id="stat-grid"></div>
+        <div class="table-wrap">
+          <div class="table-scroll">
+            <table class="table">
+              <thead>
+                <tr><th scope="col">Application</th><th scope="col">Hostname</th><th scope="col">Image</th><th scope="col">Status</th><th scope="col" class="num">Restarts</th></tr>
+              </thead>
+              <tbody id="app-rows"></tbody>
+            </table>
+          </div>
+          <p class="table-footer" id="app-count"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="detail" class="page hidden" aria-live="polite"></section>
+  </main>
+</div>
+
+<div id="deploy-modal" class="overlay hidden">
+  <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="deploy-title" aria-describedby="deploy-description">
+    <div class="dialog-header">
+      <div class="between">
+        <h2 class="t-h3" id="deploy-title">Deploy application</h2>
+        <button id="deploy-close" type="button" class="btn btn-ghost btn-icon btn-sm" aria-label="Close dialog">
+          <svg class="icon icon-sm" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </div>
+      <p id="deploy-description" class="muted t-label">Create an application from a container image.</p>
+    </div>
+    <form id="deploy-form">
+      <div class="dialog-body">
         <div class="field">
           <label for="deploy-name">Application name</label>
           <input class="input" type="text" id="deploy-name" placeholder="my-app" required aria-describedby="deploy-name-help">
-          <small class="muted" id="deploy-name-help">Lowercase letters, numbers and hyphens; at most 63 characters.</small>
+          <small class="field-hint" id="deploy-name-help">Lowercase letters, numbers and hyphens; at most 63 characters.</small>
         </div>
         <div class="field">
           <label for="deploy-image">Container image</label>
           <input class="input mono" type="text" id="deploy-image" placeholder="nginx:alpine" required>
         </div>
         <div id="deploy-error" class="hidden"></div>
-        <div class="dialog-actions">
-          <button id="deploy-cancel" type="button" class="button">Cancel</button>
-          <button type="submit" class="button button-primary">Deploy</button>
-        </div>
-      </form>
-    </section>
-  </div>
-  <div id="confirm-modal" class="dialog-overlay hidden">
-    <section class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
-      <h2 id="confirm-title">Remove application</h2>
-      <p id="confirm-body" class="muted"></p>
-      <div class="dialog-actions">
-        <button id="confirm-cancel" type="button" class="button">Cancel</button>
-        <button id="confirm-accept" type="button" class="button button-danger">Remove</button>
       </div>
-    </section>
-  </div>
+      <div class="dialog-footer">
+        <button id="deploy-cancel" type="button" class="btn btn-outline btn-sm">Cancel</button>
+        <button type="submit" class="btn btn-primary btn-sm">Deploy</button>
+      </div>
+    </form>
+  </section>
+</div>
 
-  <div class="toast-region" data-toasts role="status" aria-live="polite"></div>
+<div id="confirm-modal" class="overlay hidden">
+  <section class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+    <div class="dialog-header">
+      <h2 class="t-h3" id="confirm-title">Remove application</h2>
+    </div>
+    <div class="dialog-body"><p id="confirm-body" class="muted t-label"></p></div>
+    <div class="dialog-footer">
+      <button id="confirm-cancel" type="button" class="btn btn-outline btn-sm">Cancel</button>
+      <button id="confirm-accept" type="button" class="btn btn-danger btn-sm">Remove</button>
+    </div>
+  </section>
+</div>
 
-  <script src="/console/app.js"></script>
+<div class="toast-region" data-toasts role="status" aria-live="polite"></div>
+
+<script src="/console/app.js"></script>
 </body>
 </html>

@@ -5,47 +5,61 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>homelab — login</title>
   <link rel="stylesheet" href="/console/tokens.css">
+  <link rel="stylesheet" href="/console/ui.css">
   <link rel="stylesheet" href="/console/console.css">
   <script src="/console/theme.js"></script>
 </head>
 <body>
-  <main class="auth-shell">
-    <section class="auth-panel" aria-labelledby="login-title">
-      <div class="row-between">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">H</span>
-          <div><h1 id="login-title">homelab</h1><p class="muted">Unlock the operator console</p></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-alert" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 5v3.5M8 11h.01"/></symbol>
+</defs></svg>
+
+<main class="auth-shell">
+  <section class="auth-panel stack" aria-labelledby="login-title">
+    <div class="between">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">H</span>
+        <div>
+          <h1 class="t-h2" id="login-title">homelab</h1>
+          <p class="muted t-label">Unlock the operator console</p>
         </div>
-        <div class="theme-toggle" data-theme-toggle></div>
       </div>
-      <form id="login-form" class="card stack">
+    </div>
+    <form id="login-form" class="card">
+      <div class="card-body">
         <div class="field">
           <label for="key">API key</label>
           <input class="input mono" type="password" id="key" placeholder="sk-…" autocomplete="off" required autofocus>
         </div>
-        <p id="error" class="alert hidden" role="alert"></p>
-        <button type="submit" class="button button-primary button-block">Unlock</button>
-        <p class="metadata">Run <code>self-host serve</code> to get your API key.</p>
-      </form>
-    </section>
-  </main>
-  <script>
-    document.getElementById('login-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const key = document.getElementById('key').value.trim();
-      const error = document.getElementById('error');
-      error.classList.add('hidden');
-      try {
-        const response = await fetch('/health', { headers: { Authorization: 'Bearer ' + key } });
-        if (!response.ok) throw new Error('That API key was not accepted. Check it and try again.');
-        sessionStorage.setItem('api_key', key);
-        window.location.href = '/console/';
-      } catch (cause) {
-        error.textContent = cause.message || 'Could not reach the host. Check the connection and try again.';
-        error.classList.remove('hidden');
-        document.getElementById('key').focus();
-      }
-    });
-  </script>
+        <div id="error" class="alert alert-danger hidden" role="alert">
+          <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+          <p class="alert-body" id="error-body"></p>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Unlock</button>
+        <p class="t-metadata muted">Run <code>self-host serve</code> to get your API key.</p>
+      </div>
+    </form>
+    <div data-theme-toggle></div>
+  </section>
+</main>
+<script>
+  document.getElementById('login-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const key = document.getElementById('key').value.trim();
+    const error = document.getElementById('error');
+    error.classList.add('hidden');
+    try {
+      const response = await fetch('/health', { headers: { Authorization: 'Bearer ' + key } });
+      if (!response.ok) throw new Error('That API key was not accepted. Check it and try again.');
+      sessionStorage.setItem('api_key', key);
+      window.location.href = '/console/';
+    } catch (cause) {
+      document.getElementById('error-body').textContent =
+        cause.message || 'Could not reach the host. Check the connection and try again.';
+      error.classList.remove('hidden');
+      document.getElementById('key').focus();
+    }
+  });
+</script>
 </body>
 </html>
