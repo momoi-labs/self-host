@@ -8,11 +8,7 @@
 
 set -euo pipefail
 
-# Tokens ship on npm. Blocks are excluded from that package on purpose, so
-# ui.css comes from the blueprint repo — pinned to a commit and not a tag,
-# because blocks are illustrations and move between token releases.
-KISO_VERSION="0.2.0"
-BLUEPRINT_COMMIT="d1e90b37c9e267aa429fa5037483661cabee455c"
+KISO_VERSION="0.3.0"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 update=false
@@ -23,23 +19,23 @@ trap 'rm -rf "$work"' EXIT
 
 (cd "$work" && npm pack "@momoi-labs/kiso@$KISO_VERSION" >/dev/null 2>&1)
 tar -xzf "$work"/momoi-labs-kiso-*.tgz -C "$work"
-cp "$work/package/tokens/build/tokens.css" "$work/tokens.upstream.css"
 
-curl -fsSL \
-  "https://raw.githubusercontent.com/momoi-labs/blueprint/$BLUEPRINT_COMMIT/kiso/blocks/ui.css" \
-  -o "$work/ui.upstream.css"
+# Paths of the package's own exports: ./tokens.css and ./ui.css.
+declare -A upstream=(
+  [tokens]="$work/package/tokens/build/tokens.css"
+  [ui]="$work/package/kiso/ui.css"
+)
 
 status=0
 for asset in tokens ui; do
-  upstream="$work/$asset.upstream.css"
   vendored="$repo_root/console/$asset.css"
 
   if $update; then
-    cp "$upstream" "$vendored"
+    cp "${upstream[$asset]}" "$vendored"
     echo "updated console/$asset.css"
-  elif ! cmp -s "$upstream" "$vendored"; then
-    echo "console/$asset.css has drifted from upstream:" >&2
-    diff -u "$vendored" "$upstream" >&2 || true
+  elif ! cmp -s "${upstream[$asset]}" "$vendored"; then
+    echo "console/$asset.css has drifted from kiso@$KISO_VERSION:" >&2
+    diff -u "$vendored" "${upstream[$asset]}" >&2 || true
     status=1
   fi
 done
