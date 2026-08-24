@@ -27,6 +27,7 @@ async function init() {
   setupSplitter();
   document.getElementById('deploy-btn').addEventListener('click', showDeployModal);
   document.getElementById('dashboard-deploy').addEventListener('click', showDeployModal);
+  document.getElementById('empty-deploy').addEventListener('click', showDeployModal);
   document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-cancel').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-form').addEventListener('submit', deploy);
@@ -99,6 +100,17 @@ function statusTone(status) {
 }
 
 function renderDashboard() {
+  const empty = apps.length === 0;
+  document.getElementById('dashboard-empty').classList.toggle('hidden', !empty);
+  document.getElementById('dashboard-content').classList.toggle('hidden', empty);
+
+  const suffix = document.getElementById('dns-suffix').textContent;
+  document.getElementById('dashboard-subtitle').textContent = empty
+    ? 'Nothing deployed on ' + suffix + ' yet.'
+    : apps.length + (apps.length === 1 ? ' application on ' : ' applications on ') + suffix;
+
+  if (empty) return;
+
   const running = apps.filter(a => a.status === 'running').length;
   const failed = apps.filter(a => a.status === 'failed').length;
 
@@ -109,10 +121,6 @@ function renderDashboard() {
   `;
 
   const rows = document.getElementById('app-rows');
-  if (apps.length === 0) {
-    rows.innerHTML = '<tr><td colspan="4" class="muted">No applications yet. Deploy one to get started.</td></tr>';
-    return;
-  }
   rows.innerHTML = apps.map(a => `
     <tr data-id="${esc(a.id)}" tabindex="0">
       <td>${esc(a.name)}</td>
@@ -129,13 +137,20 @@ function renderDashboard() {
   });
 }
 
+function setCrumb(label) {
+  document.querySelector('.breadcrumb [aria-current]').textContent = label;
+}
+
 function showDashboard() {
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
+  setCrumb('Overview');
   document.getElementById('dashboard').classList.remove('hidden');
   document.getElementById('detail').classList.add('hidden');
-  document.querySelectorAll('#sidebar .app-item').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('#sidebar .app-item').forEach(el => el.setAttribute('aria-pressed', 'false'));
+  document.querySelectorAll('#sidebar .app-item').forEach(el => {
+    el.classList.remove('active');
+    el.setAttribute('aria-pressed', 'false');
+  });
 }
 
 function selectApp(id) {
@@ -150,6 +165,7 @@ function selectApp(id) {
     el.setAttribute('aria-pressed', String(on));
   });
 
+  setCrumb(app.name);
   document.getElementById('dashboard').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 

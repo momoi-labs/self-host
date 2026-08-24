@@ -24,8 +24,8 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 /* Corner registration marks — the panel language, in place of a rounded corner.
    Two outward ticks per corner. A four-armed cross does not work here: the two
    inward arms land on the panel's own 1px border and disappear. */
-.card, .dialog, .table-wrap, .disclosure, pre { position: relative; }
-.card::after, .dialog::after, .table-wrap::after, .disclosure::after, pre::after {
+.card, .dialog, .table-wrap, .disclosure { position: relative; }
+.card::after, .dialog::after, .table-wrap::after, .disclosure::after {
   content: "";
   position: absolute;
   inset: calc(-1 * (var(--corner-mark-tick) + var(--corner-mark-gap)));
@@ -121,8 +121,11 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .sidebar-footer { border-top: 1px solid var(--color-border); display: grid; gap: var(--spacing-sm); }
 .nav-link { align-items: center; border-radius: var(--radius-md); color: var(--color-foreground); display: flex; min-height: var(--size-control-md); padding: 0 var(--spacing-md); text-decoration: none; }
 .nav-link:hover { background: var(--color-elevated-surface); }
-.main { min-width: 0; overflow: hidden; }
-.detail { display: flex; height: 100vh; min-width: 0; }
+.main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.main > .page { flex: 1; overflow-y: auto; }
+/* Sits under the topbar now, so it takes the remaining height rather
+   than assuming the whole viewport. */
+.detail { display: flex; flex: 1; min-height: 0; min-width: 0; }
 .config-panel, .logs-panel { min-width: 0; overflow: auto; padding: var(--spacing-xl); }
 .config-panel { flex: 0 0 50%; }
 .logs-panel { background: var(--color-surface); flex: 1; }
@@ -139,7 +142,7 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .dialog h2 { font-size: var(--type-size-h3); margin: 0; }
 .dialog-actions { display: flex; gap: var(--spacing-sm); justify-content: flex-end; }
 
-.page { margin: 0 auto; max-width: var(--size-content-max); padding: var(--spacing-3xl) var(--spacing-xl); }
+.page { margin: 0 auto; max-width: var(--size-content-max); padding: var(--spacing-2xl) var(--spacing-xl); width: 100%; }
 .page-header { margin-bottom: var(--spacing-2xl); }
 .page-section { margin-bottom: var(--spacing-xl); }
 .info-grid { display: grid; gap: var(--spacing-xl); grid-template-columns: 1fr 1fr; }
@@ -149,11 +152,31 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 code, pre { font-family: var(--font-mono); }
 code { background: var(--color-surface); border-radius: var(--radius-sm); padding: 2px var(--spacing-xs); }
 pre { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); color: var(--color-foreground); overflow-x: auto; padding: var(--spacing-lg); }
-.table-wrap { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); overflow-x: auto; }
+/* The marks are drawn outside the box, so the panel cannot be the scroller —
+   it would clip them and grow a scrollbar for the overflow it just created.
+   The scroller is a child. */
+.table-wrap { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); }
+.table-scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
 th, td { border-bottom: 1px solid var(--color-border); padding: var(--spacing-sm) var(--spacing-lg); text-align: left; }
 th { color: var(--color-muted-foreground); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
 tr:last-child td { border-bottom: 0; }
+
+/* Topbar */
+.topbar { align-items: center; border-bottom: 1px solid var(--color-border); display: flex; gap: var(--spacing-md); height: var(--size-control-lg); padding: 0 var(--spacing-xl); }
+.breadcrumb { align-items: center; color: var(--color-muted-foreground); display: flex; font-size: var(--type-size-label); gap: var(--spacing-sm); }
+.breadcrumb a { color: var(--color-muted-foreground); text-decoration: none; }
+.breadcrumb a:hover { color: var(--color-foreground); }
+.breadcrumb .sep { color: var(--color-subtle-foreground); }
+.breadcrumb [aria-current] { color: var(--color-foreground); }
+
+/* Empty state */
+.empty { align-items: center; display: grid; gap: var(--spacing-sm); justify-items: center; padding: var(--spacing-3xl) var(--spacing-xl); text-align: center; }
+.empty p { color: var(--color-muted-foreground); margin: 0; max-width: 42ch; }
+.empty-title { color: var(--color-foreground) !important; font-size: var(--type-size-h3); font-weight: var(--type-weight-semibold); }
+.empty-icon { align-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-muted-foreground); display: inline-flex; height: var(--size-control-lg); justify-content: center; margin-bottom: var(--spacing-sm); width: var(--size-control-lg); }
+.empty-icon svg { fill: none; height: 20px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 20px; }
+.empty .button { margin-top: var(--spacing-md); }
 
 /* Dashboard */
 .stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(3, 1fr); }
@@ -183,7 +206,7 @@ tbody tr[data-id]:hover { background: var(--color-elevated-surface); }
   .stat-grid { grid-template-columns: 1fr; }
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { border-bottom: 1px solid var(--color-border); border-right: 0; max-height: 42vh; }
-  .detail { display: block; height: auto; }
+  .detail { display: block; flex: none; }
   .config-panel, .logs-panel { min-height: 50vh; }
   .config-panel { width: 100%; }
   .splitter { display: none; }
