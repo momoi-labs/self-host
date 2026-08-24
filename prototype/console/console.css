@@ -162,6 +162,12 @@ th, td { border-bottom: 1px solid var(--color-border); padding: var(--spacing-sm
 th { color: var(--color-muted-foreground); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
 tr:last-child td { border-bottom: 0; }
 
+/* The section heading doubles as the way back to the dashboard, so it has to
+   look clickable without turning into a button. */
+.sidebar-home { background: transparent; border: 0; cursor: pointer; display: block; text-align: left; width: 100%; }
+.sidebar-home:hover { color: var(--color-foreground); }
+.sidebar-home[aria-current="page"] { color: var(--color-foreground); }
+
 /* Topbar */
 .topbar { align-items: center; border-bottom: 1px solid var(--color-border); display: flex; gap: var(--spacing-md); height: var(--size-control-lg); padding: 0 var(--spacing-xl); }
 .breadcrumb { align-items: center; color: var(--color-muted-foreground); display: flex; font-size: var(--type-size-label); gap: var(--spacing-sm); }

@@ -28,6 +28,7 @@ async function init() {
   document.getElementById('deploy-btn').addEventListener('click', showDeployModal);
   document.getElementById('dashboard-deploy').addEventListener('click', showDeployModal);
   document.getElementById('empty-deploy').addEventListener('click', showDeployModal);
+  document.querySelector('[data-home]').addEventListener('click', showDashboard);
   document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-cancel').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-form').addEventListener('submit', deploy);
@@ -145,6 +146,7 @@ function showDashboard() {
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
   setCrumb('Overview');
+  document.querySelector('[data-home]').setAttribute('aria-current', 'page');
   document.getElementById('dashboard').classList.remove('hidden');
   document.getElementById('detail').classList.add('hidden');
   document.querySelectorAll('#sidebar .app-item').forEach(el => {
@@ -166,6 +168,7 @@ function selectApp(id) {
   });
 
   setCrumb(app.name);
+  document.querySelector('[data-home]').removeAttribute('aria-current');
   document.getElementById('dashboard').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 
