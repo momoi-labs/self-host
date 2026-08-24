@@ -26,7 +26,6 @@ async function init() {
   await loadApps();
   setupSplitter();
   document.getElementById('deploy-btn').addEventListener('click', showDeployModal);
-  document.getElementById('dashboard-deploy').addEventListener('click', showDeployModal);
   document.getElementById('empty-deploy').addEventListener('click', showDeployModal);
   document.querySelector('[data-home]').addEventListener('click', showDashboard);
   document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
