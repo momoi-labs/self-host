@@ -228,13 +228,44 @@ async fn pending_record(
     })
 }
 
-pub async fn deploy_from_image(
+/// A deploy that is on record but not yet carried out. The row is already
+/// `pending`, so the caller can either finish it inline — the CLI, which must
+/// report the outcome — or hand it to a task and answer straight away.
+pub struct PendingDeploy {
+    pub record: ApplicationRecord,
+    work: DeployWork,
+}
+
+impl PendingDeploy {
+    /// True when there is nothing left for Docker to do, and therefore nothing
+    /// to wait for.
+    pub fn is_settled(&self) -> bool {
+        matches!(self.work, DeployWork::Settled)
+    }
+}
+
+enum DeployWork {
+    /// A rename of a running Application: the container and the Traefik router
+    /// are keyed by id, so Docker sees no change at all.
+    Settled,
+    Pull,
+    Build {
+        path: String,
+    },
+    /// An existing container has to go before the new one can take its name.
+    Recreate {
+        pull: bool,
+    },
+}
+
+/// Writes the `pending` row for an image deploy. Nothing has reached Docker
+/// yet; `finish_deploy` is what does the pulling.
+pub async fn prepare_deploy_from_image(
     store: &impl StateStore,
-    docker: &(impl DockerRuntime + ?Sized),
     name: &str,
     image: &str,
     hostname_override: Option<&str>,
-) -> Result<ApplicationRecord, DeployError> {
+) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
 
     if image.is_empty() {
@@ -248,14 +279,88 @@ pub async fn deploy_from_image(
     let record = pending_record(store, name, image.to_string(), "image", hostname_override).await?;
     store.insert_application(&record).await?;
 
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::Pull,
+    })
+}
+
+/// Carries out the Docker half of a deploy and records how it went.
+pub async fn finish_deploy(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    pending: PendingDeploy,
+) -> Result<ApplicationRecord, DeployError> {
+    let PendingDeploy { record, work } = pending;
+
+    if matches!(work, DeployWork::Settled) {
+        return Ok(record);
+    }
+
     let result = async {
         docker.ensure_network(PLATFORM_NETWORK).await?;
-        docker.pull_image(image).await?;
+        match &work {
+            DeployWork::Pull => docker.pull_image(&record.image).await?,
+            DeployWork::Build { path } => docker.build_image(path, &record.image).await?,
+            DeployWork::Recreate { pull } => {
+                if *pull {
+                    docker.pull_image(&record.image).await?;
+                }
+                let _ = docker
+                    .remove_container(&container_name_for(&record.id))
+                    .await;
+            }
+            DeployWork::Settled => unreachable!(),
+        }
         start_container(store, docker, &record).await
     }
     .await;
 
     record_outcome(store, record, result).await
+}
+
+/// A row left `pending` by a process that died mid-deploy is indistinguishable
+/// from one still being pulled, so settle them at boot: whatever Docker is
+/// actually running is `running`, and the rest are `failed` — on record, with
+/// a reason, and one click from being deployed again.
+pub async fn reconcile_pending(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+) -> Result<(), DeployError> {
+    for mut app in store.list_applications().await? {
+        if app.status != STATUS_PENDING {
+            continue;
+        }
+
+        let running = docker
+            .container_running(&container_name_for(&app.id))
+            .await
+            .unwrap_or(false);
+
+        if running {
+            app.status = STATUS_RUNNING.into();
+            app.last_error = None;
+        } else {
+            tracing::warn!("Application {} was left mid-deploy by a restart", app.name);
+            app.status = STATUS_FAILED.into();
+            app.last_error = Some("deploy was interrupted by a platform restart".into());
+        }
+
+        store.insert_application(&app).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn deploy_from_image(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    name: &str,
+    image: &str,
+    hostname_override: Option<&str>,
+) -> Result<ApplicationRecord, DeployError> {
+    let pending = prepare_deploy_from_image(store, name, image, hostname_override).await?;
+    finish_deploy(store, docker, pending).await
 }
 
 pub async fn list_applications(
@@ -295,6 +400,17 @@ pub async fn update_application(
     id: &str,
     update: ApplicationUpdate,
 ) -> Result<ApplicationRecord, DeployError> {
+    let pending = prepare_update(store, id, update).await?;
+    finish_deploy(store, docker, pending).await
+}
+
+/// Saves the change and writes the row back as `pending`; the redeploy itself
+/// is `finish_deploy`.
+pub async fn prepare_update(
+    store: &impl StateStore,
+    id: &str,
+    update: ApplicationUpdate,
+) -> Result<PendingDeploy, DeployError> {
     if !store.is_initialized().await? {
         return Err(DeployError::NotInitialized);
     }
@@ -333,31 +449,28 @@ pub async fn update_application(
     if !image_changed && !hostname_changed && current.status == STATUS_RUNNING {
         record.status = STATUS_RUNNING.into();
         store.insert_application(&record).await?;
-        return Ok(record);
+        return Ok(PendingDeploy {
+            record,
+            work: DeployWork::Settled,
+        });
     }
 
-    let result = async {
-        docker.ensure_network(PLATFORM_NETWORK).await?;
-        if image_changed && record.source == "image" {
-            docker.pull_image(&record.image).await?;
-        }
-        let _ = docker
-            .remove_container(&container_name_for(&record.id))
-            .await;
-        start_container(store, docker, &record).await
-    }
-    .await;
-
-    record_outcome(store, record, result).await
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::Recreate {
+            pull: image_changed && current.source == "image",
+        },
+    })
 }
 
-pub async fn deploy_from_path(
+/// Writes the `pending` row for a build-from-source deploy. The path rides
+/// along in the work: it is the caller's, not something the record keeps.
+pub async fn prepare_deploy_from_path(
     store: &impl StateStore,
-    docker: &(impl DockerRuntime + ?Sized),
     name: &str,
     path: &str,
     hostname_override: Option<&str>,
-) -> Result<ApplicationRecord, DeployError> {
+) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
 
     if path.is_empty() {
@@ -369,17 +482,26 @@ pub async fn deploy_from_path(
     }
 
     let image_tag = format!("self-host-{name}:latest");
-    let record = pending_record(store, name, image_tag.clone(), "path", hostname_override).await?;
+    let record = pending_record(store, name, image_tag, "path", hostname_override).await?;
     store.insert_application(&record).await?;
 
-    let result = async {
-        docker.ensure_network(PLATFORM_NETWORK).await?;
-        docker.build_image(path, &image_tag).await?;
-        start_container(store, docker, &record).await
-    }
-    .await;
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::Build {
+            path: path.to_string(),
+        },
+    })
+}
 
-    record_outcome(store, record, result).await
+pub async fn deploy_from_path(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    name: &str,
+    path: &str,
+    hostname_override: Option<&str>,
+) -> Result<ApplicationRecord, DeployError> {
+    let pending = prepare_deploy_from_path(store, name, path, hostname_override).await?;
+    finish_deploy(store, docker, pending).await
 }
 
 pub fn container_name_for(app_id: &str) -> String {
@@ -649,6 +771,82 @@ impl From<DbError> for LogsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::FakeStateStore;
+    use crate::docker::FakeDocker;
+
+    async fn initialized_store() -> FakeStateStore {
+        let store = FakeStateStore::new();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn preparing_a_deploy_records_it_without_touching_docker() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+
+        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None)
+            .await
+            .unwrap();
+
+        assert_eq!(pending.record.status, STATUS_PENDING);
+        assert!(!pending.is_settled());
+        assert!(docker.pulled.lock().unwrap().is_empty());
+        assert!(docker.deployed_apps().is_empty());
+
+        let deployed = finish_deploy(&store, &docker, pending).await.unwrap();
+        assert_eq!(deployed.status, STATUS_RUNNING);
+        assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
+    }
+
+    #[tokio::test]
+    async fn reconcile_keeps_a_pending_application_whose_container_is_up() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        deploy_from_image(&store, &docker, "blog", "nginx:alpine", None)
+            .await
+            .unwrap();
+
+        // Back to pending, as a process that died mid-deploy would leave it.
+        let mut app = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        app.status = STATUS_PENDING.into();
+        store.insert_application(&app).await.unwrap();
+
+        reconcile_pending(&store, &docker).await.unwrap();
+
+        let settled = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(settled.status, STATUS_RUNNING);
+        assert_eq!(settled.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn reconcile_fails_a_pending_application_with_no_container() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None)
+            .await
+            .unwrap();
+        // The row is written; the deploy never ran.
+        drop(pending);
+
+        reconcile_pending(&store, &docker).await.unwrap();
+
+        let settled = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(settled.status, STATUS_FAILED);
+        assert!(settled.last_error.unwrap().contains("restart"));
+    }
 
     #[test]
     fn default_hostname_uses_dns_suffix() {

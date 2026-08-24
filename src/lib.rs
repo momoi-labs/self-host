@@ -41,7 +41,7 @@ pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Rou
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .route("/apps/{name}", delete(remove_app::<S>))
-        .route("/apps/id/{id}", axum::routing::put(update_app::<S>))
+        .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
         .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
@@ -145,9 +145,8 @@ async fn update_app<S: StateStore>(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<UpdateApplicationRequest>,
 ) -> Response {
-    match apps::update_application(
+    match apps::prepare_update(
         &state.store,
-        state.docker.as_ref(),
         &id,
         apps::ApplicationUpdate {
             name: body.name,
@@ -157,6 +156,41 @@ async fn update_app<S: StateStore>(
     )
     .await
     {
+        Ok(pending) => accept_deploy(&state, pending),
+        Err(e) => deploy_error_response(e),
+    }
+}
+
+/// Answers with the `pending` row and finishes the deploy on a task. A
+/// `docker pull` of a large image takes minutes, and holding the request open
+/// for it leaves the console with nothing to show.
+///
+/// A deploy with no Docker work — a rename — is already done, and says so with
+/// a plain `200`.
+fn accept_deploy<S: StateStore>(state: &AppState<S>, pending: apps::PendingDeploy) -> Response {
+    let body = Json(ApplicationResponse::from(pending.record.clone()));
+
+    if pending.is_settled() {
+        return (StatusCode::OK, body).into_response();
+    }
+
+    let store = state.store.clone();
+    let docker = state.docker.clone();
+    let name = pending.record.name.clone();
+    tokio::spawn(async move {
+        if let Err(e) = apps::finish_deploy(&store, docker.as_ref(), pending).await {
+            tracing::warn!("deploy of Application '{name}' failed: {e}");
+        }
+    });
+
+    (StatusCode::ACCEPTED, body).into_response()
+}
+
+async fn get_app<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match apps::get_application(&state.store, &id).await {
         Ok(app) => (StatusCode::OK, Json(ApplicationResponse::from(app))).into_response(),
         Err(e) => deploy_error_response(e),
     }
@@ -168,33 +202,19 @@ async fn deploy_app<S: StateStore>(
 ) -> Response {
     let hostname = body.hostname.as_deref();
 
-    let result = match (&body.image[..], &body.path[..]) {
+    let prepared = match (&body.image[..], &body.path[..]) {
         ("", "") => Err(apps::DeployError::MissingImage),
         (image, "") => {
-            apps::deploy_from_image(
-                &state.store,
-                state.docker.as_ref(),
-                &body.name,
-                image,
-                hostname,
-            )
-            .await
+            apps::prepare_deploy_from_image(&state.store, &body.name, image, hostname).await
         }
         ("", path) => {
-            apps::deploy_from_path(
-                &state.store,
-                state.docker.as_ref(),
-                &body.name,
-                path,
-                hostname,
-            )
-            .await
+            apps::prepare_deploy_from_path(&state.store, &body.name, path, hostname).await
         }
         _ => Err(apps::DeployError::MissingImage),
     };
 
-    match result {
-        Ok(app) => (StatusCode::CREATED, Json(ApplicationResponse::from(app))).into_response(),
+    match prepared {
+        Ok(pending) => accept_deploy(&state, pending),
         Err(err) => deploy_error_response(err),
     }
 }
@@ -505,6 +525,21 @@ mod tests {
             .unwrap()
     }
 
+    /// A deploy finishes on a task now, so a test that wants to see its
+    /// outcome has to wait for it the same way the console does.
+    async fn settle(store: &FakeStateStore, name: &str) -> apps::ApplicationRecord {
+        for _ in 0..200 {
+            let found = store.find_application_by_name(name).await.unwrap();
+            if let Some(app) = found
+                && app.status != apps::STATUS_PENDING
+            {
+                return app;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the deploy of '{name}' never left pending");
+    }
+
     async fn setup_app(api_key: &str) -> (Router, FakeStateStore, FakeDocker) {
         let store = FakeStateStore::new();
         store.store_state("api_key", api_key).await.unwrap();
@@ -537,12 +572,11 @@ mod tests {
             json!({"name": "blog", "image": "nginx:typo"}),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
 
         // The deploy failed, but the Application is on record — otherwise the
         // operator would have to retype it instead of fixing the image.
-        let saved = store.find_application_by_name("blog").await.unwrap();
-        let saved = saved.expect("a failed deploy must still leave a row");
+        let saved = settle(&store, "blog").await;
         assert_eq!(saved.status, apps::STATUS_FAILED);
         assert_eq!(saved.image, "nginx:typo");
         assert!(saved.last_error.unwrap().contains("nginx:typo"));
@@ -564,6 +598,7 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
+        settle(&store, "blog").await;
         let before = apps_handle.lock().unwrap().len();
         let id = store
             .find_application_by_name("blog")
@@ -755,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn deploy_application_from_image_returns_hostname_under_dns_suffix() {
-        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
 
         let response = post_json(
             &app,
@@ -765,18 +800,22 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::CREATED);
+        // Accepted, not done: the answer comes back with the row as written,
+        // before Docker has been asked for anything.
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["name"], json!("blog"));
         assert_eq!(parsed["hostname"], json!("blog.home.lan"));
         assert_eq!(parsed["image"], json!("nginx:alpine"));
-        assert_eq!(parsed["status"], json!("running"));
+        assert_eq!(parsed["status"], json!("pending"));
+
+        assert_eq!(settle(&store, "blog").await.status, apps::STATUS_RUNNING);
     }
 
     #[tokio::test]
     async fn list_applications_includes_deployed_app() {
-        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
 
         let deploy = post_json(
             &app,
@@ -785,7 +824,8 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(deploy.status(), StatusCode::CREATED);
+        assert_eq!(deploy.status(), StatusCode::ACCEPTED);
+        settle(&store, "blog").await;
 
         let response = send(&app, "/apps", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -822,7 +862,7 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(first.status(), StatusCode::CREATED);
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
 
         let second = post_json(
             &app,
@@ -831,7 +871,7 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(second.status(), StatusCode::CREATED);
+        assert_eq!(second.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
@@ -854,7 +894,7 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker.clone()));
+        let app = build_app(store.clone(), Arc::new(docker.clone()));
 
         let response = post_json(
             &app,
@@ -863,7 +903,8 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        settle(&store, "blog").await;
 
         assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
 
@@ -903,7 +944,7 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(second.status(), StatusCode::CREATED);
+        assert_eq!(second.status(), StatusCode::ACCEPTED);
         let body = to_bytes(second.into_body(), 1024).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["name"], json!("blog"));
@@ -916,7 +957,7 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker.clone()));
+        let app = build_app(store.clone(), Arc::new(docker.clone()));
 
         // Deploy two apps
         let r1 = post_json(
@@ -926,7 +967,7 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(r1.status(), StatusCode::CREATED);
+        assert_eq!(r1.status(), StatusCode::ACCEPTED);
 
         let r2 = post_json(
             &app,
@@ -935,7 +976,9 @@ mod tests {
             json!({"name": "files", "image": "filebrowser/filebrowser"}),
         )
         .await;
-        assert_eq!(r2.status(), StatusCode::CREATED);
+        assert_eq!(r2.status(), StatusCode::ACCEPTED);
+        settle(&store, "blog").await;
+        settle(&store, "files").await;
 
         // Both appear in list
         let list = send(&app, "/apps", Some("test-key")).await;
@@ -974,7 +1017,8 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
-        assert_eq!(deploy.status(), StatusCode::CREATED);
+        assert_eq!(deploy.status(), StatusCode::ACCEPTED);
+        settle(&store, "blog").await;
 
         let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -1030,6 +1074,7 @@ mod tests {
             json!({"name": "blog", "image": "nginx:alpine"}),
         )
         .await;
+        settle(&store, "blog").await;
 
         let deployed = docker.deployed_apps();
         assert_eq!(deployed.len(), 1);
@@ -1155,7 +1200,7 @@ mod deploy_path_tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker.clone()));
+        let app = build_app(store.clone(), Arc::new(docker.clone()));
 
         let response = post_json(
             &app,
@@ -1165,13 +1210,23 @@ mod deploy_path_tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["name"], json!("api"));
         assert_eq!(parsed["hostname"], json!("api.home.lan"));
         assert_eq!(parsed["image"], json!("self-host-api:latest"));
-        assert_eq!(parsed["status"], json!("running"));
+        assert_eq!(parsed["status"], json!("pending"));
+
+        // The build runs on a task; wait for it before asking Docker what it
+        // was told to do.
+        for _ in 0..200 {
+            let app = store.find_application_by_name("api").await.unwrap();
+            if app.is_some_and(|a| a.status == apps::STATUS_RUNNING) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
 
         let built = docker.built.lock().unwrap();
         assert_eq!(built.len(), 1);
