@@ -139,6 +139,11 @@ struct ApplicationResponse {
     /// Present when `status` is `failed`, so the console can say why.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
+    /// How many times the container restarted, when there is a container to
+    /// ask about. The console has no metrics to show, but this much says
+    /// whether an Application is settled or flapping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restarts: Option<u32>,
 }
 
 impl From<apps::ApplicationRecord> for ApplicationResponse {
@@ -152,6 +157,7 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             status: app.status,
             source: app.source,
             last_error: app.last_error,
+            restarts: None,
         }
     }
 }
@@ -260,8 +266,20 @@ async fn deploy_app<S: StateStore>(
 async fn list_apps<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
     match apps::list_applications(&state.store).await {
         Ok(apps) => {
-            let body: Vec<ApplicationResponse> =
-                apps.into_iter().map(ApplicationResponse::from).collect();
+            let mut body: Vec<ApplicationResponse> = Vec::with_capacity(apps.len());
+            for app in apps {
+                // A runtime that cannot answer must not take the list down with
+                // it: the column just stays empty.
+                let restarts = state
+                    .docker
+                    .restart_count(&apps::container_name_for(&app.id))
+                    .await
+                    .unwrap_or(None);
+                body.push(ApplicationResponse {
+                    restarts,
+                    ..ApplicationResponse::from(app)
+                });
+            }
             (StatusCode::OK, Json(body)).into_response()
         }
         Err(err) => deploy_error_response(err),
@@ -913,7 +931,8 @@ mod tests {
                 "aliases": [],
                 "image": "nginx:alpine",
                 "status": "running",
-                "source": "image"
+                "source": "image",
+                "restarts": 0
             }])
         );
     }

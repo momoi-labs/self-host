@@ -96,6 +96,9 @@ pub trait DockerRuntime: Send + Sync {
     async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError>;
     async fn commit(&self) -> Result<(), DockerError>;
     async fn container_running(&self, name: &str) -> Result<bool, DockerError>;
+    /// How many times the runtime restarted the container. `None` when there
+    /// is no container to ask about.
+    async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError>;
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError>;
     async fn pull_image(&self, image: &str) -> Result<(), DockerError>;
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError>;
@@ -204,6 +207,19 @@ impl DockerRuntime for ComposeDocker {
         // A container that is not there at all makes `inspect` exit non-zero,
         // which is an answer, not an error.
         Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
+    }
+
+    async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
+        let output = std::process::Command::new("docker")
+            .args(["inspect", "-f", "{{.RestartCount}}", name])
+            .output()
+            .map_err(|e| DockerError::Unavailable(e.to_string()))?;
+
+        // As with `container_running`, a missing container is an answer.
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok())
     }
 
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
@@ -446,6 +462,11 @@ impl DockerRuntime for FakeDocker {
         Ok(self.apps.lock().unwrap().iter().any(|a| a.name == name))
     }
 
+    async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
+        let running = self.apps.lock().unwrap().iter().any(|a| a.name == name);
+        Ok(running.then_some(0))
+    }
+
     async fn ensure_network(&self, _name: &str) -> Result<(), DockerError> {
         Ok(())
     }
@@ -513,6 +534,10 @@ where
 
     async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
         (**self).container_running(name).await
+    }
+
+    async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
+        (**self).restart_count(name).await
     }
 
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
