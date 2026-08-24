@@ -7,6 +7,7 @@ use self_host::build_app;
 use self_host::config::CliConfig;
 use self_host::db::{PgStateStore, StateStore};
 use self_host::docker::{ComposeDocker, DockerRuntime};
+use self_host::error::ErrorReport;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -104,6 +105,34 @@ enum EnvCommand {
     },
 }
 
+/// A failure the platform reported over HTTP, back as a chain.
+///
+/// The API answers `{"error": ..., "caused_by": [...]}`. Rebuilding the layers
+/// here means a failure on the Host prints exactly like one raised in the CLI,
+/// instead of arriving as one line of JSON.
+fn api_error(what: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    let report = serde_json::from_str::<ErrorReport>(body)
+        .unwrap_or_else(|_| ErrorReport::plain(body.trim()));
+
+    chain_from(report).context(format!("{what} ({status})"))
+}
+
+/// Stacks a report back into an `anyhow` chain, innermost cause first, so
+/// `{:?}` renders the layers the platform kept apart.
+fn chain_from(report: ErrorReport) -> anyhow::Error {
+    let mut causes = report.caused_by.into_iter().rev();
+
+    let Some(innermost) = causes.next() else {
+        return anyhow::Error::msg(report.error);
+    };
+
+    let mut err = anyhow::Error::msg(innermost);
+    for cause in causes {
+        err = err.context(cause);
+    }
+    err.context(report.error)
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -117,25 +146,25 @@ async fn main() {
     match cli.command {
         Some(Command::Init { dns }) => {
             if let Err(e) = run_init_command(&dns).await {
-                eprintln!("Error: {e}");
+                eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
         }
         Some(Command::Apps { command }) => {
             if let Err(e) = run_apps_command(command).await {
-                eprintln!("Error: {e}");
+                eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
         }
         Some(Command::Logs { app }) => {
             if let Err(e) = run_logs_command(&app).await {
-                eprintln!("Error: {e}");
+                eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
         }
         Some(Command::Reset { force }) => {
             if let Err(e) = run_reset_command(force).await {
-                eprintln!("Error: {e}");
+                eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
         }
@@ -145,7 +174,7 @@ async fn main() {
     }
 }
 
-async fn run_init_command(dns_suffix: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_init_command(dns_suffix: &str) -> anyhow::Result<()> {
     info!("bootstrapping with DNS suffix: {dns_suffix}");
 
     let docker = ComposeDocker::new()?;
@@ -163,7 +192,7 @@ async fn run_init_command(dns_suffix: &str) -> Result<(), Box<dyn std::error::Er
             eprintln!("Start the daemon with: self-host serve");
             return Ok(());
         }
-        Err(e) => return Err(Box::new(e)),
+        Err(e) => return Err(e.into()),
     }
 
     save_cli_config(&result)?;
@@ -180,7 +209,7 @@ async fn wait_for_deploy(
     client: &reqwest::Client,
     config: &CliConfig,
     id: &str,
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+) -> anyhow::Result<serde_json::Value> {
     let url = format!(
         "{}/apps/id/{}",
         config.api_base_url.trim_end_matches('/'),
@@ -194,7 +223,7 @@ async fn wait_for_deploy(
         let status = response.status();
         let body = response.text().await?;
         if !status.is_success() {
-            return Err(format!("Deploy status unavailable ({status}): {body}").into());
+            return Err(api_error("Deploy status unavailable", status, &body));
         }
 
         let parsed: serde_json::Value = serde_json::from_str(&body)?;
@@ -204,7 +233,7 @@ async fn wait_for_deploy(
     }
 }
 
-async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
     let config = CliConfig::load()?.ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -226,10 +255,9 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             let path = path.unwrap_or_default();
 
             if image.is_empty() && path.is_empty() {
-                return Err(
+                return Err(anyhow::anyhow!(
                     "Either --image or --path is required for deploy. Use --image <ref> or --path <dir>."
-                        .into(),
-                );
+                ));
             }
 
             let mut body = serde_json::json!({ "name": name, "image": image, "path": path });
@@ -251,7 +279,7 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             let status = response.status();
             let body = response.text().await?;
             if !status.is_success() {
-                return Err(format!("Deploy failed ({status}): {body}").into());
+                return Err(api_error("Deploy failed", status, &body));
             }
 
             let parsed: serde_json::Value = serde_json::from_str(&body)?;
@@ -267,11 +295,9 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             };
 
             if deployed["status"].as_str() == Some("failed") {
-                return Err(format!(
-                    "Deploy failed: {}",
-                    deployed["last_error"].as_str().unwrap_or("unknown error")
-                )
-                .into());
+                let report = serde_json::from_value(deployed["last_error"].clone())
+                    .unwrap_or_else(|_| ErrorReport::plain("unknown error"));
+                return Err(chain_from(report).context("Deploy failed"));
             }
 
             println!(
@@ -291,7 +317,7 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             let status = response.status();
             let body = response.text().await?;
             if !status.is_success() {
-                return Err(format!("List failed ({status}): {body}").into());
+                return Err(api_error("List failed", status, &body));
             }
 
             let apps: Vec<serde_json::Value> = serde_json::from_str(&body)?;
@@ -326,7 +352,7 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             let status = response.status();
             if !status.is_success() {
                 let body = response.text().await?;
-                return Err(format!("Remove failed ({status}): {body}").into());
+                return Err(api_error("Remove failed", status, &body));
             }
 
             println!("Removed Application '{name}'");
@@ -343,14 +369,14 @@ async fn run_env_command(
     config: &CliConfig,
     client: &reqwest::Client,
     command: EnvCommand,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let base = config.api_base_url.trim_end_matches('/');
 
     match command {
         EnvCommand::Set { app, key_value } => {
             let (key, value) = key_value
                 .split_once('=')
-                .ok_or("env must be in KEY=value format")?;
+                .ok_or_else(|| anyhow::anyhow!("env must be in KEY=value format"))?;
             let url = format!("{base}/apps/{app}/env");
             let response = client
                 .post(&url)
@@ -362,7 +388,7 @@ async fn run_env_command(
             let status = response.status();
             if !status.is_success() {
                 let body = response.text().await?;
-                return Err(format!("env set failed ({status}): {body}").into());
+                return Err(api_error("env set failed", status, &body));
             }
             println!("Set {key}={value} on '{app}'");
         }
@@ -373,7 +399,7 @@ async fn run_env_command(
                 let status = response.status();
                 if !status.is_success() {
                     let body = response.text().await?;
-                    return Err(format!("env get failed ({status}): {body}").into());
+                    return Err(api_error("env get failed", status, &body));
                 }
                 let vars: Vec<(String, String)> = response.json().await?;
                 if let Some((_, value)) = vars.iter().find(|(k, _)| k == &key) {
@@ -387,7 +413,7 @@ async fn run_env_command(
                 let status = response.status();
                 if !status.is_success() {
                     let body = response.text().await?;
-                    return Err(format!("env get failed ({status}): {body}").into());
+                    return Err(api_error("env get failed", status, &body));
                 }
                 let vars: Vec<(String, String)> = response.json().await?;
                 if vars.is_empty() {
@@ -410,7 +436,7 @@ async fn run_env_command(
             let status = response.status();
             if !status.is_success() {
                 let body = response.text().await?;
-                return Err(format!("env unset failed ({status}): {body}").into());
+                return Err(api_error("env unset failed", status, &body));
             }
             println!("Removed env '{key}' from '{app}'");
         }
@@ -419,7 +445,7 @@ async fn run_env_command(
     Ok(())
 }
 
-async fn run_logs_command(app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_logs_command(app_name: &str) -> anyhow::Result<()> {
     let config = CliConfig::load()?.ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -442,7 +468,7 @@ async fn run_logs_command(app_name: &str) -> Result<(), Box<dyn std::error::Erro
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await?;
-        return Err(format!("Logs failed ({status}): {body}").into());
+        return Err(api_error("Logs failed", status, &body));
     }
 
     use futures_util::StreamExt;
@@ -464,7 +490,7 @@ async fn run_logs_command(app_name: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     if !force {
         println!("This will remove all self-host containers, volumes, and configuration.");
         println!("All deployed applications will be lost.");
@@ -535,7 +561,7 @@ async fn run_reset_command(force: bool) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-async fn wait_for_postgres() -> Result<(), Box<dyn std::error::Error>> {
+async fn wait_for_postgres() -> anyhow::Result<()> {
     let max_attempts = 30;
     for attempt in 1..=max_attempts {
         match PgStateStore::connect(bootstrap::PG_DB_URL).await {
@@ -547,15 +573,15 @@ async fn wait_for_postgres() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
             Err(e) => {
-                return Err(Box::new(e));
+                return Err(e.into());
             }
         }
     }
 
-    Err("PostgreSQL did not become ready in time".into())
+    Err(anyhow::anyhow!("PostgreSQL did not become ready in time"))
 }
 
-fn save_cli_config(result: &BootstrapResult) -> Result<(), Box<dyn std::error::Error>> {
+fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
     let config = CliConfig {
         api_base_url: format!("http://{}", result.api_listen_addr),
         api_key: result.api_key.clone(),
@@ -697,4 +723,41 @@ async fn resolve_server_config() -> (String, String) {
         env::var("SELF_HOST_LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{OPERATOR_API_PORT}"));
 
     (api_key, listen_addr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_api_failure_prints_as_a_chain() {
+        let body = r#"{"error":"failed to start the Application container",
+                       "caused_by":["Docker unavailable: pull access denied for a"]}"#;
+
+        let err = api_error(
+            "Deploy failed",
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            body,
+        );
+
+        assert_eq!(
+            format!("{err:?}"),
+            "Deploy failed (500 Internal Server Error)\n\n\
+             Caused by:\n\
+             \x20   0: failed to start the Application container\n\
+             \x20   1: Docker unavailable: pull access denied for a"
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_report_is_still_the_failure() {
+        let err = api_error(
+            "List failed",
+            reqwest::StatusCode::BAD_GATEWAY,
+            "  gateway down  ",
+        );
+
+        assert_eq!(err.to_string(), "List failed (502 Bad Gateway)");
+        assert_eq!(err.source().unwrap().to_string(), "gateway down");
+    }
 }

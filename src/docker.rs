@@ -4,29 +4,111 @@ use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum DockerError {
+    /// Docker is not there to talk to: not installed, or the daemon is down.
     Unavailable(String),
+    /// A `docker` command did not work out. The step is ours to name; the
+    /// reason belongs to whatever refused, and stays underneath instead of
+    /// being glued into our sentence.
+    Command(String, Box<dyn std::error::Error + Send + Sync>),
     Compose(ComposeError),
 }
 
+/// Docker answered and refused, in Docker's own words.
+///
+/// Docker is written in Go, and Go wraps an error by writing `outer: inner`.
+/// A refusal is therefore already a chain, serialised onto one line — so it
+/// gets taken apart into the layers Docker had, rather than reworded by us.
+#[derive(Debug)]
+pub struct DockerRefusal {
+    message: String,
+    inner: Option<Box<DockerRefusal>>,
+}
+
+impl DockerRefusal {
+    /// Rebuilds the layers Docker flattened.
+    ///
+    /// The separator is a colon *and a space*, which is the whole reason this
+    /// is safe: `nginx:1.2.3` and `1.2.3.4:443` have no space after the colon
+    /// and come through untouched.
+    ///
+    /// Output spanning several lines is not a wrapped error — it is a build
+    /// log — so it stays as it is.
+    fn parse(stderr: &str) -> Option<Self> {
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            return None;
+        }
+
+        let layers: Vec<&str> = if stderr.lines().count() > 1 {
+            vec![stderr]
+        } else {
+            stderr.split(": ").map(str::trim).collect()
+        };
+
+        // Fold from the innermost layer out, so each one points at its cause.
+        layers
+            .into_iter()
+            .filter(|layer| !layer.is_empty())
+            .rev()
+            .fold(None, |inner, message| {
+                Some(DockerRefusal {
+                    message: message.to_string(),
+                    inner: inner.map(Box::new),
+                })
+            })
+    }
+}
+
+impl std::fmt::Display for DockerRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DockerRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.as_deref().map(|e| e as &dyn std::error::Error)
+    }
+}
+
 impl DockerError {
+    /// A command that ran and was refused, with Docker's own layers underneath.
+    fn refused(step: impl Into<String>, output: &std::process::Output) -> Self {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match DockerRefusal::parse(&stderr) {
+            Some(refusal) => DockerError::Command(step.into(), Box::new(refusal)),
+            // Docker refused and said nothing. The exit code is all there is.
+            None => DockerError::Command(
+                step.into(),
+                Box::new(DockerRefusal {
+                    message: "docker exited without saying why".into(),
+                    inner: None,
+                }),
+            ),
+        }
+    }
+
+    /// A command that never started.
+    fn spawn(step: impl Into<String>, e: std::io::Error) -> Self {
+        DockerError::Command(step.into(), Box::new(e))
+    }
+
     pub fn from_compose_error(err: ComposeError) -> Self {
-        match &err {
+        match err {
             ComposeError::PortConflict { port, suggestion } => {
                 DockerError::Unavailable(format!("Port {port} is already in use.\n{suggestion}"))
             }
-            ComposeError::Command(_cmd, e) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    DockerError::Unavailable(
-                        "Docker is not installed or not in PATH. Install Docker and try again."
-                            .into(),
-                    )
-                } else {
-                    DockerError::Unavailable(format!(
-                        "Failed to run Docker. Is the Docker daemon running?\nDetails: {e}"
-                    ))
-                }
+            ComposeError::Command(_, e) if e.kind() == std::io::ErrorKind::NotFound => {
+                DockerError::Unavailable(
+                    "Docker is not installed or not in PATH. Install Docker and try again.".into(),
+                )
             }
-            _ => DockerError::Compose(err),
+            // The daemon is the usual suspect, but the io error underneath is
+            // what actually knows, so it says so itself.
+            ComposeError::Command(_cmd, e) => {
+                DockerError::spawn("Failed to run Docker. Is the Docker daemon running?", e)
+            }
+            other => DockerError::Compose(other),
         }
     }
 }
@@ -35,7 +117,8 @@ impl std::fmt::Display for DockerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DockerError::Unavailable(msg) => write!(f, "Docker unavailable: {msg}"),
-            DockerError::Compose(e) => write!(f, "{e}"),
+            DockerError::Command(step, _) => write!(f, "{step}"),
+            DockerError::Compose(_) => write!(f, "the Docker Compose command failed"),
         }
     }
 }
@@ -43,6 +126,7 @@ impl std::fmt::Display for DockerError {
 impl std::error::Error for DockerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            DockerError::Command(_, e) => Some(&**e),
             DockerError::Compose(e) => Some(e),
             _ => None,
         }
@@ -172,7 +256,7 @@ impl DockerRuntime for ComposeDocker {
                         "Docker is not installed. Install Docker and try again.".into(),
                     )
                 } else {
-                    DockerError::Unavailable(format!("failed to run docker: {e}"))
+                    DockerError::spawn("failed to run 'docker info'", e)
                 }
             })?;
 
@@ -226,7 +310,7 @@ impl DockerRuntime for ComposeDocker {
         let output = std::process::Command::new("docker")
             .args(["network", "inspect", name])
             .output()
-            .map_err(|e| DockerError::Unavailable(format!("failed to inspect network: {e}")))?;
+            .map_err(|e| DockerError::spawn("failed to inspect the Docker network", e))?;
 
         if output.status.success() {
             return Ok(());
@@ -235,13 +319,13 @@ impl DockerRuntime for ComposeDocker {
         let create = std::process::Command::new("docker")
             .args(["network", "create", name])
             .output()
-            .map_err(|e| DockerError::Unavailable(format!("failed to create network: {e}")))?;
+            .map_err(|e| DockerError::spawn("failed to create the Docker network", e))?;
 
         if !create.status.success() {
-            let stderr = String::from_utf8_lossy(&create.stderr);
-            return Err(DockerError::Unavailable(format!(
-                "failed to create docker network '{name}': {stderr}"
-            )));
+            return Err(DockerError::refused(
+                format!("failed to create the Docker network '{name}'"),
+                &create,
+            ));
         }
 
         Ok(())
@@ -251,13 +335,13 @@ impl DockerRuntime for ComposeDocker {
         let output = std::process::Command::new("docker")
             .args(["pull", image])
             .output()
-            .map_err(|e| DockerError::Unavailable(format!("failed to pull image: {e}")))?;
+            .map_err(|e| DockerError::spawn(format!("failed to pull image '{image}'"), e))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DockerError::Unavailable(format!(
-                "failed to pull image '{image}': {stderr}"
-            )));
+            return Err(DockerError::refused(
+                format!("failed to pull image '{image}'"),
+                &output,
+            ));
         }
 
         Ok(())
@@ -267,13 +351,13 @@ impl DockerRuntime for ComposeDocker {
         let output = std::process::Command::new("docker")
             .args(["build", "-t", tag, path])
             .output()
-            .map_err(|e| DockerError::Unavailable(format!("failed to build image: {e}")))?;
+            .map_err(|e| DockerError::spawn(format!("failed to build image from '{path}'"), e))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DockerError::Unavailable(format!(
-                "failed to build image from '{path}': {stderr}"
-            )));
+            return Err(DockerError::refused(
+                format!("failed to build image from '{path}'"),
+                &output,
+            ));
         }
 
         Ok(())
@@ -316,14 +400,18 @@ impl DockerRuntime for ComposeDocker {
         let output = std::process::Command::new("docker")
             .args(&args)
             .output()
-            .map_err(|e| DockerError::Unavailable(format!("failed to run application: {e}")))?;
+            .map_err(|e| {
+                DockerError::spawn(
+                    format!("failed to start Application container '{}'", config.name),
+                    e,
+                )
+            })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DockerError::Unavailable(format!(
-                "failed to start Application container '{}': {stderr}",
-                config.name
-            )));
+            return Err(DockerError::refused(
+                format!("failed to start Application container '{}'", config.name),
+                &output,
+            ));
         }
 
         Ok(())
@@ -333,13 +421,13 @@ impl DockerRuntime for ComposeDocker {
         let output = std::process::Command::new("docker")
             .args(["rm", "-f", name])
             .output()
-            .map_err(|e| DockerError::Unavailable(format!("failed to remove container: {e}")))?;
+            .map_err(|e| DockerError::spawn(format!("failed to remove container '{name}'"), e))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DockerError::Unavailable(format!(
-                "failed to remove container '{name}': {stderr}"
-            )));
+            return Err(DockerError::refused(
+                format!("failed to remove container '{name}'"),
+                &output,
+            ));
         }
 
         Ok(())
@@ -473,7 +561,10 @@ impl DockerRuntime for FakeDocker {
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
         if let Some(message) = &self.pull_failure {
-            return Err(DockerError::Unavailable(message.clone()));
+            return Err(DockerError::Command(
+                format!("failed to pull image '{image}'"),
+                Box::new(DockerRefusal::parse(message).expect("a pull failure says something")),
+            ));
         }
         self.pulled.lock().unwrap().push(image.to_string());
         Ok(())
@@ -571,6 +662,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorReport;
 
     #[test]
     fn container_config_to_compose_service() {
@@ -590,5 +682,79 @@ mod tests {
         assert_eq!(svc.name, "test-pg");
         assert_eq!(svc.image, "postgres:18-alpine");
         assert_eq!(svc.restart_policy, "unless-stopped");
+    }
+
+    /// Builds the error a refused `docker pull` produces, from real stderr.
+    fn refused_pull(stderr: &str) -> DockerError {
+        DockerError::Command(
+            "failed to pull image 'b'".into(),
+            Box::new(DockerRefusal::parse(stderr).unwrap()),
+        )
+    }
+
+    #[test]
+    fn a_refused_command_keeps_our_step_apart_from_dockers_answer() {
+        let err = refused_pull(
+            "Error response from daemon: pull access denied for b, \
+             repository does not exist or may require 'docker login': \
+             denied: requested access to the resource is denied",
+        );
+
+        let report = ErrorReport::new(&err);
+
+        assert_eq!(report.error, "failed to pull image 'b'");
+        assert_eq!(
+            report.caused_by,
+            [
+                "Error response from daemon",
+                "pull access denied for b, repository does not exist or may require 'docker login'",
+                "denied",
+                "requested access to the resource is denied",
+            ]
+        );
+    }
+
+    /// The reason the separator is a colon *and a space*: an image tag is not
+    /// a layer, and neither is a port.
+    #[test]
+    fn a_tag_survives_being_taken_apart() {
+        let err = refused_pull(
+            "Error response from daemon: manifest for nginx:1.2.3 not found: manifest unknown",
+        );
+
+        let report = ErrorReport::new(&err);
+
+        assert_eq!(
+            report.caused_by,
+            [
+                "Error response from daemon",
+                "manifest for nginx:1.2.3 not found",
+                "manifest unknown",
+            ]
+        );
+    }
+
+    /// A failed build writes its log to stderr. That is output, not a wrapped
+    /// error, and chopping it on every colon would be nonsense.
+    #[test]
+    fn output_spanning_lines_is_left_alone() {
+        let log = "Step 1/3 : FROM alpine\n ---> aded1e1a5b37\nStep 2/3 : RUN false";
+
+        let report = ErrorReport::new(&refused_pull(log));
+
+        assert_eq!(report.caused_by, [log]);
+    }
+
+    #[test]
+    fn a_command_that_never_ran_blames_the_io_error() {
+        let err = DockerError::spawn(
+            "failed to pull image 'b'",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+
+        let report = ErrorReport::new(&err);
+
+        assert_eq!(report.error, "failed to pull image 'b'");
+        assert_eq!(report.caused_by.len(), 1);
     }
 }

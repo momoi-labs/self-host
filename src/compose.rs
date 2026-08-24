@@ -249,9 +249,9 @@ pub enum ComposeError {
 impl std::fmt::Display for ComposeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ComposeError::Io(path, e) => write!(f, "failed to write {}: {e}", path.display()),
+            ComposeError::Io(path, _) => write!(f, "failed to write {}", path.display()),
             ComposeError::Serialize(msg) => write!(f, "failed to generate compose file: {msg}"),
-            ComposeError::Command(cmd, e) => write!(f, "failed to run '{cmd}': {e}"),
+            ComposeError::Command(cmd, _) => write!(f, "failed to run '{cmd}'"),
             ComposeError::ComposeError(msg) => write!(f, "{msg}"),
             ComposeError::PortConflict { port, suggestion } => {
                 write!(f, "Port {port} is already in use.\n{suggestion}")

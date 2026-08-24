@@ -1,5 +1,6 @@
 use crate::db::{DbError, StateStore};
 use crate::docker::{ApplicationContainer, DockerError, DockerRuntime, PLATFORM_NETWORK};
+use crate::error::ErrorReport;
 use crate::routes::{RouteError, RouteStore};
 
 pub const APP_CONTAINER_PORT: u16 = 80;
@@ -64,9 +65,9 @@ impl std::fmt::Display for DeployError {
             }
             DeployError::MissingImage => write!(f, "image is required"),
             DeployError::MissingPath => write!(f, "path is required"),
-            DeployError::Docker(e) => write!(f, "{e}"),
-            DeployError::Routing(e) => write!(f, "{e}"),
-            DeployError::Db(e) => write!(f, "{e}"),
+            DeployError::Docker(_) => write!(f, "failed to deploy the Application"),
+            DeployError::Routing(_) => write!(f, "failed to publish the Application on the LAN"),
+            DeployError::Db(_) => write!(f, "failed to record the Application"),
         }
     }
 }
@@ -213,7 +214,7 @@ async fn record_outcome(
         }
         Err(e) => {
             record.status = STATUS_FAILED.into();
-            record.last_error = Some(e.to_string());
+            record.last_error = Some(ErrorReport::new(&e));
             // The deploy error is what the caller needs; a failure to write the
             // reason down must not replace it.
             let _ = store.insert_application(&record).await;
@@ -431,7 +432,9 @@ pub async fn reconcile(
             } else {
                 tracing::warn!("Application {} was left mid-deploy by a restart", app.name);
                 app.status = STATUS_FAILED.into();
-                app.last_error = Some("deploy was interrupted by a platform restart".into());
+                app.last_error = Some(ErrorReport::plain(
+                    "deploy was interrupted by a platform restart",
+                ));
             }
 
             store.insert_application(&app).await?;
@@ -637,9 +640,11 @@ impl std::fmt::Display for RemoveError {
                     "'{name}' is Platform Infra and cannot be removed as an Application"
                 )
             }
-            RemoveError::Docker(e) => write!(f, "{e}"),
-            RemoveError::Routing(e) => write!(f, "{e}"),
-            RemoveError::Db(e) => write!(f, "{e}"),
+            RemoveError::Docker(_) => write!(f, "failed to remove the Application container"),
+            RemoveError::Routing(_) => {
+                write!(f, "failed to withdraw the Application from the LAN")
+            }
+            RemoveError::Db(_) => write!(f, "failed to delete the Application record"),
         }
     }
 }
@@ -724,8 +729,8 @@ impl std::fmt::Display for EnvError {
                 write!(f, "platform is not initialized; run 'self-host init' first")
             }
             EnvError::NotFound(name) => write!(f, "Application '{name}' not found"),
-            EnvError::Docker(e) => write!(f, "{e}"),
-            EnvError::Db(e) => write!(f, "{e}"),
+            EnvError::Docker(_) => write!(f, "failed to restart the Application container"),
+            EnvError::Db(_) => write!(f, "failed to read or write the Application environment"),
         }
     }
 }
@@ -859,8 +864,8 @@ impl std::fmt::Display for LogsError {
                 write!(f, "platform is not initialized; run 'self-host init' first")
             }
             LogsError::NotFound(name) => write!(f, "Application '{name}' not found"),
-            LogsError::Docker(e) => write!(f, "{e}"),
-            LogsError::Db(e) => write!(f, "{e}"),
+            LogsError::Docker(_) => write!(f, "failed to stream the Application logs"),
+            LogsError::Db(_) => write!(f, "failed to look up the Application"),
         }
     }
 }
@@ -974,7 +979,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(settled.status, STATUS_FAILED);
-        assert!(settled.last_error.unwrap().contains("restart"));
+        let report = settled.last_error.unwrap();
+        assert!(report.error.contains("restart"));
+        assert!(report.caused_by.is_empty());
     }
 
     #[test]
