@@ -122,9 +122,6 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .nav-link { align-items: center; border-radius: var(--radius-md); color: var(--color-foreground); display: flex; min-height: var(--size-control-md); padding: 0 var(--spacing-md); text-decoration: none; }
 .nav-link:hover { background: var(--color-elevated-surface); }
 .main { min-width: 0; overflow: hidden; }
-.empty-state { align-content: center; min-height: 100vh; padding: var(--spacing-xl); text-align: center; }
-.empty-state h2 { font-size: var(--type-size-h3); margin: 0 0 var(--spacing-sm); }
-.empty-state p { color: var(--color-muted-foreground); margin: 0; }
 .detail { display: flex; height: 100vh; min-width: 0; }
 .config-panel, .logs-panel { min-width: 0; overflow: auto; padding: var(--spacing-xl); }
 .config-panel { flex: 0 0 50%; }
@@ -158,6 +155,22 @@ th, td { border-bottom: 1px solid var(--color-border); padding: var(--spacing-sm
 th { color: var(--color-muted-foreground); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
 tr:last-child td { border-bottom: 0; }
 
+/* Dashboard */
+.stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(3, 1fr); }
+.stat { display: grid; gap: var(--spacing-xs); }
+.stat-value { font-size: var(--type-size-display); font-weight: var(--type-weight-semibold); line-height: 1.1; }
+.stat-value.danger { color: var(--color-danger); }
+tbody tr[data-id] { cursor: pointer; }
+tbody tr[data-id]:hover { background: var(--color-elevated-surface); }
+
+/* Marks the chart slot the dashboard does not have data for yet, rather than
+   drawing a chart out of numbers we do not collect. */
+.hatch {
+  background-image: repeating-linear-gradient(var(--hatch-angle),
+    var(--color-hatch) 0, var(--color-hatch) var(--hatch-line),
+    transparent var(--hatch-line), transparent var(--hatch-period));
+}
+
 /* Touch targets are a pointer concern, not a layout constant. On a mouse the
    36px control is correct; only coarse pointers need the 44px WCAG target. */
 @media (pointer: coarse) {
@@ -167,6 +180,7 @@ tr:last-child td { border-bottom: 0; }
 
 /* Marks sit outside the panel box, so they need room at the edges. */
 @media (max-width: 767px) {
+  .stat-grid { grid-template-columns: 1fr; }
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { border-bottom: 1px solid var(--color-border); border-right: 0; max-height: 42vh; }
   .detail { display: block; height: auto; }
@@ -174,7 +188,6 @@ tr:last-child td { border-bottom: 0; }
   .config-panel { width: 100%; }
   .splitter { display: none; }
   .details-grid, .info-grid { grid-template-columns: 1fr; }
-  .empty-state { min-height: 58vh; }
-  .page { padding: var(--spacing-xl) var(--spacing-lg); }
+    .page { padding: var(--spacing-xl) var(--spacing-lg); }
   #create-form { align-items: stretch; flex-direction: column; }
 }
