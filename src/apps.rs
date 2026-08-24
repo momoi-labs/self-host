@@ -1,5 +1,5 @@
 use crate::db::{DbError, StateStore};
-use crate::docker::{ApplicationContainer, DockerError, DockerRuntime, PLATFORM_NETWORK};
+use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
 use crate::routes::{RouteError, RouteStore};
 
@@ -240,7 +240,7 @@ async fn start_container(
             name: container_name_for(&record.id),
             image: record.image.clone(),
             labels: identity_labels(&record.id, &record.name),
-            network: PLATFORM_NETWORK.to_string(),
+            network: APP_NETWORK.to_string(),
             ports: vec![],
             env,
         })
@@ -378,7 +378,7 @@ pub async fn finish_deploy(
     }
 
     let result = async {
-        docker.ensure_network(PLATFORM_NETWORK).await?;
+        docker.ensure_network(APP_NETWORK).await?;
         match &work {
             DeployWork::Pull => docker.pull_image(&record.image).await?,
             DeployWork::Build { path } => docker.build_image(path, &record.image).await?,
@@ -844,7 +844,7 @@ async fn recreate_with_env(
             name: container_name,
             image: app.image.clone(),
             labels: identity_labels(&app.id, &app.name),
-            network: PLATFORM_NETWORK.to_string(),
+            network: APP_NETWORK.to_string(),
             ports: vec![],
             env: env_vars,
         })
@@ -934,6 +934,22 @@ mod tests {
         assert_eq!(deployed.status, STATUS_RUNNING);
         assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
         assert!(routes.get(&deployed.id).unwrap().contains("blog.home.lan"));
+    }
+
+    #[tokio::test]
+    async fn a_deployed_application_only_joins_the_application_network() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+
+        // Off the Platform Infra bridge, an Application cannot open a socket
+        // on the state store, whose password is the same on every install.
+        let containers = docker.apps.lock().unwrap();
+        assert_eq!(containers[0].network, APP_NETWORK);
     }
 
     #[tokio::test]
