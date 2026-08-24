@@ -61,6 +61,9 @@ enum AppsCommand {
         /// Override the default Application Hostname
         #[arg(long)]
         hostname: Option<String>,
+        /// Extra Hostname the Application also answers on (repeatable)
+        #[arg(long = "alias")]
+        aliases: Vec<String>,
     },
     /// List Applications
     List,
@@ -217,6 +220,7 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             image,
             path,
             hostname,
+            aliases,
         } => {
             let image = image.unwrap_or_default();
             let path = path.unwrap_or_default();
@@ -231,6 +235,9 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             let mut body = serde_json::json!({ "name": name, "image": image, "path": path });
             if let Some(h) = &hostname {
                 body["hostname"] = serde_json::json!(h);
+            }
+            if !aliases.is_empty() {
+                body["aliases"] = serde_json::json!(aliases);
             }
 
             let url = format!("{}/apps", config.api_base_url.trim_end_matches('/'));
@@ -268,11 +275,14 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             }
 
             println!(
-                "Deployed {} → http://{} ({})",
+                "Deployed {} → https://{} ({})",
                 deployed["name"].as_str().unwrap_or(&name),
                 deployed["hostname"].as_str().unwrap_or("?"),
                 deployed["status"].as_str().unwrap_or("?")
             );
+            for alias in deployed["aliases"].as_array().unwrap_or(&vec![]) {
+                println!("  also at https://{}", alias.as_str().unwrap_or("?"));
+            }
         }
         AppsCommand::List => {
             let url = format!("{}/apps", config.api_base_url.trim_end_matches('/'));
@@ -595,8 +605,11 @@ async fn run_server() {
 
     // A row left `pending` by a restart is nobody's deploy any more; settle it
     // against what Docker is actually running before serving.
-    if let Err(e) = self_host::apps::reconcile_pending(&store, docker.as_ref()).await {
-        tracing::warn!("failed to reconcile pending Applications: {e}");
+    let routes: Arc<dyn self_host::routes::RouteStore> =
+        Arc::new(self_host::routes::FileRoutes::new());
+
+    if let Err(e) = self_host::apps::reconcile(&store, docker.as_ref(), routes.as_ref()).await {
+        tracing::warn!("failed to reconcile Applications: {e}");
     }
 
     // Log the admin dashboard URL if we know the DNS suffix.
@@ -604,7 +617,7 @@ async fn run_server() {
         info!("admin dashboard: https://admin.{dns_suffix}");
     }
 
-    let app = build_app(store, docker);
+    let app = build_app(store, docker, routes);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
