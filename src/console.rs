@@ -57,6 +57,9 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, content_type)
+                // Without this the browser caches the file it was served
+                // first, which defeats the whole point of reading from disk.
+                .header(header::CACHE_CONTROL, "no-store")
                 .body(Body::from(content))
                 .unwrap();
         }

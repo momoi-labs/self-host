@@ -96,8 +96,11 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
   color: var(--color-foreground); min-height: var(--size-control-md); padding: 0 var(--spacing-md); width: 100%;
 }
 .input::placeholder { color: var(--color-subtle-foreground); }
-.alert { border: 1px solid var(--color-danger); border-radius: var(--radius-md); color: var(--color-danger); font-size: var(--type-size-label); padding: var(--spacing-md); }
-.notice { border-color: var(--color-info); color: var(--color-info); }
+/* One message, said once: icon, what failed, why, and the way out. */
+.alert { align-items: flex-start; background: var(--color-danger-surface); border: 1px solid var(--color-danger-border); border-radius: var(--radius-md); color: var(--color-danger-foreground); display: flex; gap: var(--spacing-md); padding: var(--spacing-md); }
+.alert svg { fill: none; flex: none; height: 18px; margin-top: 1px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 18px; }
+.alert .button { flex: none; }
+.notice { background: transparent; border-color: var(--color-info); color: var(--color-info); }
 .badge { align-items: center; border: 1px solid currentColor; border-radius: var(--radius-full); display: inline-flex; font-size: var(--type-size-label); gap: var(--spacing-sm); padding: var(--spacing-xs) var(--spacing-sm); }
 .success { color: var(--color-success); }
 .danger { color: var(--color-danger); }

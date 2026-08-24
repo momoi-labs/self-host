@@ -183,7 +183,8 @@ function selectApp(id) {
         ${esc(app.status)}
       </span>
     </div>
-    ${app.last_error ? `<p class="alert" role="alert">${esc(app.last_error)}</p>` : ''}
+    ${app.last_error ? `<div class="alert" role="alert">${alertMarkup('Could not start ' + app.name, app.last_error, 'Retry')}</div>` : ''}
+    <div id="edit-error" class="hidden"></div>
     <form class="card stack" id="edit-form">
       <div class="field">
         <label for="edit-name">Name</label>
@@ -202,7 +203,6 @@ function selectApp(id) {
         <span class="section-label">Container</span>
         <p class="value mono">sf-app-${esc(app.id)}</p>
       </div>
-      <p id="edit-error" class="alert hidden" role="alert"></p>
       <div class="dialog-actions">
         <button id="remove-btn" type="button" class="button button-danger">Remove application</button>
         <button type="submit" class="button button-primary">Save and redeploy</button>
@@ -213,6 +213,10 @@ function selectApp(id) {
   document.querySelector('[data-back]').addEventListener('click', showDashboard);
   document.getElementById('remove-btn').addEventListener('click', () => removeApp(app.name));
   document.getElementById('edit-form').addEventListener('submit', e => saveApp(e, app.id));
+  const retry = document.querySelector('[data-retry]');
+  if (retry) retry.addEventListener('click', () => {
+    document.getElementById('edit-form').requestSubmit();
+  });
 
   if (reselecting) return;
 
@@ -312,7 +316,7 @@ function handleDialogKeydown(event) {
 
 async function saveApp(e, id) {
   e.preventDefault();
-  document.getElementById('edit-error').classList.add('hidden');
+  document.getElementById('edit-error').className = 'hidden';
 
   const body = {
     name: document.getElementById('edit-name').value.trim(),
@@ -340,18 +344,13 @@ async function saveApp(e, id) {
   await loadApps();
 
   if (!failure) return;
-  toast('danger', 'Could not save ' + body.name, failure);
 
-  // Only write it on the form when the record does not already say it —
-  // otherwise the same sentence appears twice, once above the form and once
-  // inside it.
+  // The record already carries the reason when the deploy itself failed, and
+  // selectApp rendered it. Only errors that never reached the database — a
+  // rejected name, a clash — need saying here.
   const saved = apps.find(a => a.id === id);
   if (saved && saved.last_error) return;
-  const errEl = document.getElementById('edit-error');
-  if (errEl) {
-    errEl.textContent = failure;
-    errEl.classList.remove('hidden');
-  }
+  showAlert(document.getElementById('edit-error'), 'Could not save ' + body.name, failure);
 }
 
 async function deploy(e) {
@@ -375,8 +374,7 @@ async function deploy(e) {
     // A rejected name never reached the database. Keep the dialog open with
     // what was typed, so the fix is one edit rather than a retype.
     if (failure && !created) {
-      errEl.textContent = failure;
-      errEl.classList.remove('hidden');
+      showAlert(errEl, 'Could not deploy ' + name, failure);
       return;
     }
 
@@ -388,18 +386,15 @@ async function deploy(e) {
     // instead of reporting an error the operator cannot act on.
     if (created) selectApp(created.id);
 
-    if (failure) {
-      // One toast, and no inline copy: the record was saved with last_error,
-      // so selectApp already rendered the same text above the form.
-      toast('danger', 'Could not start ' + name, failure);
-    } else {
+    if (!failure) {
       toast('success', 'Application deployed', created
         ? name + ' is reachable at ' + created.hostname + '.'
         : name + ' was created.');
     }
+    // A failure needs no toast: selectApp already rendered the reason as the
+    // application's alert, and that one stays on screen.
   } catch (err) {
-    errEl.textContent = 'Network error: ' + err.message;
-    errEl.classList.remove('hidden');
+    showAlert(errEl, 'Could not reach the platform', err.message);
   }
 }
 
@@ -422,6 +417,29 @@ async function removeApp(name) {
   }
   selected = null;
   await loadApps();
+}
+
+// ── Alerts ──────────────────────────────────────────────────────
+const ALERT_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
+
+/* The single place an error gets rendered. Title says what failed, body says
+   why, and the action is the way out — the same shape every time. */
+function alertMarkup(title, body, actionLabel) {
+  return `
+    ${ALERT_ICON}
+    <div class="grow">
+      <p class="alert-title">${esc(title)}</p>
+      <p class="alert-body">${esc(body)}</p>
+    </div>
+    ${actionLabel ? `<button type="button" class="button" data-retry>${esc(actionLabel)}</button>` : ''}
+  `;
+}
+
+function showAlert(el, title, body, actionLabel) {
+  if (!el) return;
+  el.className = 'alert';
+  el.setAttribute('role', 'alert');
+  el.innerHTML = alertMarkup(title, body, actionLabel);
 }
 
 // ── Toasts and confirmation ─────────────────────────────────────
