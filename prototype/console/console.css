@@ -97,7 +97,10 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 }
 .input::placeholder { color: var(--color-subtle-foreground); }
 /* One message, said once: icon, what failed, why, and the way out. */
-.alert { align-items: flex-start; background: var(--color-danger-surface); border: 1px solid var(--color-danger-border); border-radius: var(--radius-md); color: var(--color-danger-foreground); display: flex; gap: var(--spacing-md); padding: var(--spacing-md); }
+/* --color-danger-foreground is the text of a *filled* danger button — white.
+   On the 10% tint an alert uses, it is invisible. */
+.alert { align-items: flex-start; background: var(--color-danger-surface); border: 1px solid var(--color-danger-border); border-radius: var(--radius-md); color: var(--color-danger); display: flex; gap: var(--spacing-md); padding: var(--spacing-md); }
+.config-panel > .alert { margin-block-end: var(--spacing-lg); }
 .alert svg { fill: none; flex: none; height: 18px; margin-top: 1px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 18px; }
 .alert .button { flex: none; }
 .notice { background: transparent; border-color: var(--color-info); color: var(--color-info); }
