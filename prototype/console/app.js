@@ -123,7 +123,7 @@ function render() {
    but only failed is an error. */
 function appSignature(app) {
   return [app.status, app.name, app.image, app.hostname,
-          hostnames(app).join(','), app.last_error || ''].join('|');
+          hostnames(app).join(','), JSON.stringify(app.last_error || null)].join('|');
 }
 
 /* Every Hostname the application answers on: its Hostname, then its aliases. */
@@ -227,7 +227,7 @@ function selectApp(id) {
         ${esc(app.status)}
       </span>
     </div>
-    ${app.last_error ? `<div class="alert" role="alert">${alertMarkup('Could not start ' + app.name, app.last_error, 'Retry')}</div>` : ''}
+    ${app.last_error ? `<div class="alert" role="alert">${alertMarkup(app.last_error, 'Retry')}</div>` : ''}
     <div id="edit-error" class="hidden"></div>
     <form class="card stack" id="edit-form">
       <div class="field">
@@ -397,10 +397,10 @@ async function saveApp(e, id) {
     } else if (res.ok) {
       toast('success', 'Changes saved', body.name + ' was updated.');
     } else {
-      failure = await res.text();
+      failure = await failureOf(res);
     }
   } catch (err) {
-    failure = 'Network error: ' + err.message;
+    failure = { error: 'Network error', caused_by: [err.message] };
   }
 
   // Reload either way: a failed redeploy still changed the stored record.
@@ -413,7 +413,7 @@ async function saveApp(e, id) {
   // rejected name, a clash — need saying here.
   const saved = apps.find(a => a.id === id);
   if (saved && saved.last_error) return;
-  showAlert(document.getElementById('edit-error'), 'Could not save ' + body.name, failure);
+  showAlert(document.getElementById('edit-error'), failure);
 }
 
 async function deploy(e) {
@@ -429,7 +429,7 @@ async function deploy(e) {
       headers: authHeaders(),
       body: JSON.stringify({ name, image }),
     });
-    const failure = res.ok ? null : await res.text();
+    const failure = res.ok ? null : await failureOf(res);
 
     await loadApps();
     const created = apps.find(a => a.name === name);
@@ -437,7 +437,7 @@ async function deploy(e) {
     // A rejected name never reached the database. Keep the dialog open with
     // what was typed, so the fix is one edit rather than a retype.
     if (failure && !created) {
-      showAlert(errEl, 'Could not deploy ' + name, failure);
+      showAlert(errEl, failure);
       return;
     }
 
@@ -457,7 +457,7 @@ async function deploy(e) {
     // A failure needs no toast: selectApp already rendered the reason as the
     // application's alert, and that one stays on screen.
   } catch (err) {
-    showAlert(errEl, 'Could not reach the platform', err.message);
+    showAlert(errEl, { error: 'Could not reach the platform', caused_by: [err.message] });
   }
 }
 
@@ -470,7 +470,7 @@ async function removeApp(name) {
       headers: authHeaders(),
     });
     if (!res.ok) {
-      toast('danger', 'Could not remove ' + name, await res.text());
+      toast('danger', 'Could not remove ' + name, await failureOf(res));
       return;
     }
     toast('success', 'Application removed', name + ' and its container are gone.');
@@ -485,24 +485,54 @@ async function removeApp(name) {
 // ── Alerts ──────────────────────────────────────────────────────
 const ALERT_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
 
+/* Every failure reaches the console as { error, caused_by }: the API answers
+   that shape and a stored last_error keeps it. Anything else — a network
+   error, a body that is not JSON — is a failure with nothing underneath. */
+function asReport(value) {
+  if (value && typeof value === 'object' && typeof value.error === 'string') {
+    return { error: value.error, caused_by: value.caused_by || [] };
+  }
+  return { error: String(value || 'Something went wrong.'), caused_by: [] };
+}
+
+/* Reads a failed response as a report. A body that is not JSON — a proxy
+   error, an empty 502 — still says something, so it becomes the failure. */
+async function failureOf(res) {
+  const body = await res.text();
+  try {
+    return asReport(JSON.parse(body));
+  } catch {
+    return asReport(body.trim() || res.statusText);
+  }
+}
+
+/* One layer per line, in the order the platform stacked them. Naming the
+   layers is the whole point: the reader can tell the Platform's framing apart
+   from what Docker said. */
+function causesMarkup(report) {
+  if (!report.caused_by.length) return '';
+  return `<ol class="alert-causes">${report.caused_by.map(c => `<li>${esc(c)}</li>`).join('')}</ol>`;
+}
+
 /* The single place an error gets rendered. Title says what failed, body says
    why, and the action is the way out — the same shape every time. */
-function alertMarkup(title, body, actionLabel) {
+function alertMarkup(failure, actionLabel) {
+  const report = asReport(failure);
   return `
     ${ALERT_ICON}
     <div class="grow">
-      <p class="alert-title">${esc(title)}</p>
-      <p class="alert-body">${esc(body)}</p>
+      <p class="alert-title">${esc(report.error)}</p>
+      ${causesMarkup(report)}
     </div>
     ${actionLabel ? `<button type="button" class="button" data-retry>${esc(actionLabel)}</button>` : ''}
   `;
 }
 
-function showAlert(el, title, body, actionLabel) {
+function showAlert(el, failure, actionLabel) {
   if (!el) return;
   el.className = 'alert';
   el.setAttribute('role', 'alert');
-  el.innerHTML = alertMarkup(title, body, actionLabel);
+  el.innerHTML = alertMarkup(failure, actionLabel);
 }
 
 // ── Toasts and confirmation ─────────────────────────────────────
@@ -511,17 +541,20 @@ const TOAST_ICONS = {
   danger: '<svg viewBox="0 0 24 24" class="danger"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16h.01"></path></svg>',
 };
 
+/* A toast shows up detached from whatever raised it, so the title has to name
+   the Application. The failure and its causes go in the body, under it. */
 function toast(kind, title, body) {
   const region = document.querySelector('[data-toasts]');
   if (!region) return;
 
+  const report = body ? asReport(body) : null;
   const el = document.createElement('div');
   el.className = 'toast';
   el.innerHTML = `
     ${TOAST_ICONS[kind] || ''}
     <div class="grow">
       <p class="alert-title">${esc(title)}</p>
-      ${body ? `<p class="alert-body">${esc(body)}</p>` : ''}
+      ${report ? `<p class="alert-body">${esc(report.error)}</p>${causesMarkup(report)}` : ''}
     </div>
     <button type="button" class="button button-ghost" aria-label="Dismiss">✕</button>
   `;

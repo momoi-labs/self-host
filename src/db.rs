@@ -4,6 +4,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
+use crate::error::ErrorReport;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationRecord {
     /// Stable identity. The container and the Traefik router are named from
@@ -17,8 +19,10 @@ pub struct ApplicationRecord {
     pub image: String,
     pub status: String,
     pub source: String,
-    /// Why the last deploy failed, when `status` is `failed`.
-    pub last_error: Option<String>,
+    /// Why the last deploy failed, when `status` is `failed`. Kept as a
+    /// report rather than a sentence so the console can put the failure in the
+    /// alert's title and the causes in its body.
+    pub last_error: Option<ErrorReport>,
 }
 
 #[derive(Debug)]
@@ -92,7 +96,7 @@ struct PgApplicationRow {
     image: String,
     status: String,
     source: String,
-    last_error: Option<String>,
+    last_error: Option<sqlx::types::Json<ErrorReport>>,
 }
 
 impl From<PgApplicationRow> for ApplicationRecord {
@@ -105,7 +109,7 @@ impl From<PgApplicationRow> for ApplicationRecord {
             image: r.image,
             status: r.status,
             source: r.source,
-            last_error: r.last_error,
+            last_error: r.last_error.map(|j| j.0),
         }
     }
 }
@@ -149,7 +153,7 @@ impl StateStore for PgStateStore {
                 image TEXT NOT NULL,
                 status TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT 'image',
-                last_error TEXT
+                last_error JSONB
             )
             "#,
         )
@@ -229,9 +233,49 @@ impl StateStore for PgStateStore {
         .execute(&self.pool)
         .await;
 
-        let _ = sqlx::query("ALTER TABLE applications ADD COLUMN IF NOT EXISTS last_error TEXT")
+        let _ = sqlx::query("ALTER TABLE applications ADD COLUMN IF NOT EXISTS last_error JSONB")
             .execute(&self.pool)
             .await;
+
+        // Migration: last_error used to be one flattened sentence. It is now a
+        // failure plus its causes, so an install that already has rows keeps
+        // what it recorded — as a failure with nothing underneath it.
+        sqlx::query(
+            r#"
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'applications'
+                      AND column_name = 'last_error'
+                      AND data_type = 'text'
+                ) THEN
+                    ALTER TABLE applications
+                        ALTER COLUMN last_error TYPE JSONB
+                        USING CASE
+                            WHEN last_error IS NULL THEN NULL
+                            ELSE jsonb_build_object(
+                                'error', last_error,
+                                'caused_by', '[]'::jsonb
+                            )
+                        END;
+                END IF;
+            END $$;
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+
+        // An Application with no failure has no report, not a report with
+        // nothing in it. The first cut of the migration above wrote one anyway
+        // for every row that had never failed; those rows cannot be read back.
+        let _ = sqlx::query(
+            "UPDATE applications SET last_error = NULL \
+             WHERE last_error IS NOT NULL AND last_error->>'error' IS NULL",
+        )
+        .execute(&self.pool)
+        .await;
 
         sqlx::query(
             r#"
@@ -304,7 +348,7 @@ impl StateStore for PgStateStore {
         .bind(&app.image)
         .bind(&app.status)
         .bind(&app.source)
-        .bind(&app.last_error)
+        .bind(app.last_error.as_ref().map(sqlx::types::Json))
         .execute(&self.pool)
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;

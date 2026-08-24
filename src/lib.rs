@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
 use crate::db::DbError;
+use crate::error::ErrorReport;
 use rand::Rng;
 
 pub mod apps;
@@ -21,6 +22,7 @@ pub mod config;
 pub mod console;
 pub mod db;
 pub mod docker;
+pub mod error;
 pub mod routes;
 pub mod tls;
 
@@ -138,7 +140,7 @@ struct ApplicationResponse {
     source: String,
     /// Present when `status` is `failed`, so the console can say why.
     #[serde(skip_serializing_if = "Option::is_none")]
-    last_error: Option<String>,
+    last_error: Option<ErrorReport>,
     /// How many times the container restarted, when there is a container to
     /// ask about. The console has no metrics to show, but this much says
     /// whether an Application is settled or flapping.
@@ -221,7 +223,10 @@ async fn accept_deploy<S: StateStore>(
     tokio::spawn(async move {
         if let Err(e) = apps::finish_deploy(&store, docker.as_ref(), routes.as_ref(), pending).await
         {
-            tracing::warn!("deploy of Application '{name}' failed: {e}");
+            tracing::warn!(
+                "deploy of Application '{name}' failed: {}",
+                ErrorReport::new(&e)
+            );
         }
     });
 
@@ -303,16 +308,22 @@ async fn remove_app<S: StateStore>(
     }
 }
 
+/// Every error leaves the API as `{"error": ..., "caused_by": [...]}`, so a
+/// client never has to split one sentence back into layers.
+fn error_response(status: StatusCode, err: &dyn std::error::Error) -> Response {
+    (status, Json(ErrorReport::new(err))).into_response()
+}
+
 fn remove_error_response(err: RemoveError) -> Response {
-    let (status, message) = match &err {
-        RemoveError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
-        RemoveError::ProtectedName(_) => (StatusCode::FORBIDDEN, err.to_string()),
-        RemoveError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
+    let status = match &err {
+        RemoveError::NotFound(_) => StatusCode::NOT_FOUND,
+        RemoveError::ProtectedName(_) => StatusCode::FORBIDDEN,
+        RemoveError::NotInitialized => StatusCode::PRECONDITION_FAILED,
         RemoveError::Docker(_) | RemoveError::Routing(_) | RemoveError::Db(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            StatusCode::INTERNAL_SERVER_ERROR
         }
     };
-    (status, message).into_response()
+    error_response(status, &err)
 }
 
 #[derive(Deserialize)]
@@ -361,14 +372,12 @@ async fn unset_env<S: StateStore>(
 }
 
 fn env_error_response(err: apps::EnvError) -> Response {
-    let (status, message) = match &err {
-        apps::EnvError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
-        apps::EnvError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
-        apps::EnvError::Docker(_) | apps::EnvError::Db(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
-        }
+    let status = match &err {
+        apps::EnvError::NotFound(_) => StatusCode::NOT_FOUND,
+        apps::EnvError::NotInitialized => StatusCode::PRECONDITION_FAILED,
+        apps::EnvError::Docker(_) | apps::EnvError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    (status, message).into_response()
+    error_response(status, &err)
 }
 
 async fn stream_logs<S: StateStore>(
@@ -400,14 +409,12 @@ async fn stream_logs<S: StateStore>(
 }
 
 fn logs_error_response(err: &apps::LogsError) -> Response {
-    let (status, message) = match err {
-        apps::LogsError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
-        apps::LogsError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
-        apps::LogsError::Docker(_) | apps::LogsError::Db(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
-        }
+    let status = match err {
+        apps::LogsError::NotFound(_) => StatusCode::NOT_FOUND,
+        apps::LogsError::NotInitialized => StatusCode::PRECONDITION_FAILED,
+        apps::LogsError::Docker(_) | apps::LogsError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    (status, message).into_response()
+    error_response(status, err)
 }
 
 #[derive(Deserialize)]
@@ -443,7 +450,7 @@ async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
                 .collect();
             (StatusCode::OK, Json(body)).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
@@ -465,7 +472,7 @@ async fn create_key<S: StateStore>(
             };
             (StatusCode::CREATED, Json(response)).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
@@ -475,25 +482,27 @@ async fn revoke_key<S: StateStore>(
 ) -> Response {
     match state.store.revoke_api_key(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(DbError::NotFound(_)) => (StatusCode::NOT_FOUND, "key not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(DbError::NotFound(_)) => {
+            error_response(StatusCode::NOT_FOUND, &DbError::NotFound("key".into()))
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
 fn deploy_error_response(err: DeployError) -> Response {
-    let (status, message) = match &err {
-        DeployError::AlreadyExists(_) => (StatusCode::CONFLICT, err.to_string()),
+    let status = match &err {
+        DeployError::AlreadyExists(_) => StatusCode::CONFLICT,
         DeployError::InvalidName(_)
         | DeployError::InvalidHostname(_)
         | DeployError::MissingImage
-        | DeployError::MissingPath => (StatusCode::BAD_REQUEST, err.to_string()),
-        DeployError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
-        DeployError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
+        | DeployError::MissingPath => StatusCode::BAD_REQUEST,
+        DeployError::NotFound(_) => StatusCode::NOT_FOUND,
+        DeployError::NotInitialized => StatusCode::PRECONDITION_FAILED,
         DeployError::Docker(_) | DeployError::Routing(_) | DeployError::Db(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            StatusCode::INTERNAL_SERVER_ERROR
         }
     };
-    (status, message).into_response()
+    error_response(status, &err)
 }
 
 async fn require_api_key<S: StateStore>(
@@ -517,7 +526,11 @@ async fn require_api_key<S: StateStore>(
 
     match auth_header {
         Some(key) if constant_time_eq(key, &expected_key) => next.run(req).await,
-        _ => (StatusCode::UNAUTHORIZED, "invalid api key").into_response(),
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorReport::plain("invalid api key")),
+        )
+            .into_response(),
     }
 }
 
@@ -655,7 +668,11 @@ mod tests {
         let saved = settle(&store, "blog").await;
         assert_eq!(saved.status, apps::STATUS_FAILED);
         assert_eq!(saved.image, "nginx:typo");
-        assert!(saved.last_error.unwrap().contains("nginx:typo"));
+        // The Platform's framing and what Docker said stay apart, so the
+        // console can put one in the alert's title and the other in its body.
+        let report = saved.last_error.unwrap();
+        assert_eq!(report.error, "failed to deploy the Application");
+        assert!(report.caused_by.iter().any(|c| c.contains("nginx:typo")));
     }
 
     #[tokio::test]
@@ -1140,6 +1157,21 @@ mod tests {
 
         let response = delete_req(&app, "/apps/nonexistent", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_failure_answers_with_the_error_and_its_causes() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = delete_req(&app, "/apps/nonexistent", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed,
+            json!({"error": "Application 'nonexistent' not found", "caused_by": []})
+        );
     }
 
     #[tokio::test]
