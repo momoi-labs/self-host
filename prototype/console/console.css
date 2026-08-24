@@ -21,27 +21,78 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .grow { flex: 1; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-md); }
 
+/* Corner registration marks — the panel language, in place of a rounded corner.
+   Two outward ticks per corner. A four-armed cross does not work here: the two
+   inward arms land on the panel's own 1px border and disappear. */
+.card, .dialog, .table-wrap, .disclosure, .value, pre { position: relative; }
+.card::after, .dialog::after, .table-wrap::after, .disclosure::after, .value::after, pre::after {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * (var(--corner-mark-tick) + var(--corner-mark-gap)));
+  pointer-events: none;
+  opacity: var(--corner-mark);
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark));
+  background-size:
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick);
+  background-position:
+    left 0 top calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    left calc(var(--corner-mark-tick) + var(--corner-mark-gap)) top 0,
+    right 0 top calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    right calc(var(--corner-mark-tick) + var(--corner-mark-gap)) top 0,
+    left 0 bottom calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    left calc(var(--corner-mark-tick) + var(--corner-mark-gap)) bottom 0,
+    right 0 bottom calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    right calc(var(--corner-mark-tick) + var(--corner-mark-gap)) bottom 0;
+}
+
 .button {
   align-items: center; background: var(--color-surface); border: 1px solid var(--color-border);
   border-radius: var(--radius-md); color: var(--color-foreground); cursor: pointer; display: inline-flex;
   font-size: var(--type-size-label); font-weight: var(--type-weight-medium); justify-content: center;
-  min-height: 44px; padding: var(--spacing-sm) var(--spacing-md); text-decoration: none;
+  min-height: var(--size-control-md); padding: 0 var(--spacing-md); text-decoration: none;
   transition: background var(--motion-duration-fast) var(--motion-easing-standard);
 }
 .button:hover { background: var(--color-elevated-surface); }
-.button-primary { color: var(--color-primary); border-color: var(--color-primary); font-weight: var(--type-weight-semibold); }
+/* Primary is a solid fill. As an outline it read as secondary, which is what
+   made a violet design system render as grey. */
+.button-primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-primary-foreground); font-weight: var(--type-weight-semibold); }
+.button-primary:hover { background: var(--color-primary-hover); border-color: var(--color-primary-hover); }
 .button-danger { color: var(--color-danger); border-color: var(--color-danger); }
 .button-ghost { background: transparent; border-color: transparent; }
+.button-ghost:hover { background: var(--color-elevated-surface); }
 .button-block { width: 100%; }
-.theme-toggle { flex-shrink: 0; gap: var(--spacing-sm); white-space: nowrap; }
-.theme-toggle svg { fill: none; height: 18px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 18px; }
 
-.card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: var(--spacing-xl); box-shadow: var(--shadow-sm); }
+/* Theme control — label left, segmented control right. System is the default. */
+.theme-toggle { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-md); }
+.theme-toggle > span { color: var(--color-muted-foreground); font-size: var(--type-size-label); }
+.segmented { display: inline-flex; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1px; }
+.segmented button {
+  background: transparent; border: 0; border-radius: var(--radius-sm); color: var(--color-muted-foreground);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  height: var(--size-control-sm); width: var(--size-control-sm);
+}
+.segmented button:hover { color: var(--color-foreground); }
+.segmented button[aria-checked="true"] { background: var(--color-elevated-surface); color: var(--color-foreground); }
+.segmented svg { fill: none; height: 16px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 16px; }
+
+.card { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); padding: var(--spacing-xl); box-shadow: var(--shadow-sm); }
 .field { display: grid; gap: var(--spacing-xs); }
 .field label { font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
 .input {
   background: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-md);
-  color: var(--color-foreground); min-height: 44px; padding: var(--spacing-sm) var(--spacing-md); width: 100%;
+  color: var(--color-foreground); min-height: var(--size-control-md); padding: 0 var(--spacing-md); width: 100%;
 }
 .input::placeholder { color: var(--color-subtle-foreground); }
 .alert { border: 1px solid var(--color-danger); border-radius: var(--radius-md); color: var(--color-danger); font-size: var(--type-size-label); padding: var(--spacing-md); }
@@ -54,20 +105,21 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .auth-shell { display: grid; min-height: 100vh; padding: var(--spacing-xl); place-items: center; }
 .auth-panel { max-width: 400px; width: 100%; }
 .brand { display: flex; align-items: center; gap: var(--spacing-md); margin-bottom: var(--spacing-xl); }
-.brand-mark { align-items: center; border: 1px solid var(--color-primary); border-radius: var(--radius-md); color: var(--color-primary); display: inline-flex; font-weight: var(--type-weight-bold); height: 40px; justify-content: center; width: 40px; }
+.brand-mark { align-items: center; background: var(--color-primary); border-radius: var(--radius-md); color: var(--color-primary-foreground); display: inline-flex; font-weight: var(--type-weight-bold); height: var(--size-control-lg); justify-content: center; width: var(--size-control-lg); }
 .brand h1, .page-header h1 { font-size: var(--type-size-h2); letter-spacing: var(--type-letter-spacing-heading); margin: 0; }
 .brand p, .page-header p { margin: var(--spacing-xs) 0 0; }
 
-.app-shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
+.app-shell { display: grid; grid-template-columns: var(--size-sidebar) minmax(0, 1fr); min-height: 100vh; }
 .sidebar { background: var(--color-surface); border-right: 1px solid var(--color-border); display: flex; flex-direction: column; min-width: 0; }
 .sidebar-header, .sidebar-footer { padding: var(--spacing-lg); }
 .sidebar-header { border-bottom: 1px solid var(--color-border); }
 .sidebar-nav { flex: 1; overflow-y: auto; padding: var(--spacing-sm); }
-.app-item { background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--color-foreground); cursor: pointer; display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs); min-height: 44px; padding: var(--spacing-sm) var(--spacing-md); text-align: left; width: 100%; }
+.app-item { background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--color-foreground); cursor: pointer; display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs); min-height: var(--size-control-md); padding: var(--spacing-xs) var(--spacing-md); text-align: left; width: 100%; }
 .app-item:hover { background: var(--color-elevated-surface); }
-.app-item.active { border-color: var(--color-primary); color: var(--color-primary); }
+.app-item.active { background: var(--color-elevated-surface); border-color: var(--color-border-strong); color: var(--color-foreground); }
 .sidebar-footer { border-top: 1px solid var(--color-border); display: grid; gap: var(--spacing-sm); }
-.nav-link { align-items: center; color: var(--color-foreground); display: flex; min-height: 44px; padding: var(--spacing-sm); text-decoration: none; }
+.nav-link { align-items: center; border-radius: var(--radius-md); color: var(--color-foreground); display: flex; min-height: var(--size-control-md); padding: 0 var(--spacing-md); text-decoration: none; }
+.nav-link:hover { background: var(--color-elevated-surface); }
 .main { min-width: 0; overflow: hidden; }
 .empty-state { align-content: center; min-height: 100vh; padding: var(--spacing-xl); text-align: center; }
 .empty-state h2 { font-size: var(--type-size-h3); margin: 0 0 var(--spacing-sm); }
@@ -76,33 +128,41 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .config-panel, .logs-panel { min-width: 0; overflow: auto; padding: var(--spacing-xl); }
 .config-panel { flex: 0 0 50%; }
 .logs-panel { background: var(--color-surface); flex: 1; }
-.value { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow-wrap: anywhere; padding: var(--spacing-md); }
+.value { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); overflow-wrap: anywhere; padding: var(--spacing-md); }
 .details-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: 1fr 1fr; }
 .splitter { background: var(--color-border); cursor: col-resize; flex: 0 0 4px; position: relative; }
 .splitter:hover, .splitter.dragging { background: var(--color-primary); }
 .splitter::after { content: ""; inset: 0 -4px; position: absolute; }
 
-.dialog-overlay { align-items: center; background: rgb(0 0 0 / 60%); display: flex; inset: 0; justify-content: center; padding: var(--spacing-lg); position: fixed; z-index: 10; }
-.dialog { background: var(--color-elevated-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); max-width: 480px; padding: var(--spacing-xl); width: 100%; }
+.dialog-overlay { align-items: center; background: var(--color-overlay); display: flex; inset: 0; justify-content: center; padding: var(--spacing-lg); position: fixed; z-index: 10; }
+.dialog { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); box-shadow: var(--shadow-md); max-width: 480px; padding: var(--spacing-xl); width: 100%; }
 .dialog h2 { font-size: var(--type-size-h3); margin: 0; }
 .dialog-actions { display: flex; gap: var(--spacing-sm); justify-content: flex-end; }
 
-.page { margin: 0 auto; max-width: 860px; padding: var(--spacing-3xl) var(--spacing-xl); }
+.page { margin: 0 auto; max-width: var(--size-content-max); padding: var(--spacing-3xl) var(--spacing-xl); }
 .page-header { margin-bottom: var(--spacing-2xl); }
 .page-section { margin-bottom: var(--spacing-xl); }
 .info-grid { display: grid; gap: var(--spacing-xl); grid-template-columns: 1fr 1fr; }
-.disclosure { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--spacing-lg); }
-.disclosure + .disclosure { margin-top: var(--spacing-sm); }
+.disclosure { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); padding: var(--spacing-lg); }
+.disclosure + .disclosure { margin-top: var(--spacing-lg); }
 .disclosure summary { cursor: pointer; font-weight: var(--type-weight-semibold); }
 code, pre { font-family: var(--font-mono); }
 code { background: var(--color-surface); border-radius: var(--radius-sm); padding: 2px var(--spacing-xs); }
-pre { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-foreground); overflow-x: auto; padding: var(--spacing-lg); }
-.table-wrap { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow-x: auto; }
+pre { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); color: var(--color-foreground); overflow-x: auto; padding: var(--spacing-lg); }
+.table-wrap { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
-th, td { border-bottom: 1px solid var(--color-border); padding: var(--spacing-md) var(--spacing-lg); text-align: left; }
+th, td { border-bottom: 1px solid var(--color-border); padding: var(--spacing-sm) var(--spacing-lg); text-align: left; }
 th { color: var(--color-muted-foreground); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
 tr:last-child td { border-bottom: 0; }
 
+/* Touch targets are a pointer concern, not a layout constant. On a mouse the
+   36px control is correct; only coarse pointers need the 44px WCAG target. */
+@media (pointer: coarse) {
+  .button, .input, .app-item, .nav-link { min-height: var(--size-touch-min); }
+  .segmented button { height: var(--size-touch-min); width: var(--size-touch-min); }
+}
+
+/* Marks sit outside the panel box, so they need room at the edges. */
 @media (max-width: 767px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { border-bottom: 1px solid var(--color-border); border-right: 0; max-height: 42vh; }

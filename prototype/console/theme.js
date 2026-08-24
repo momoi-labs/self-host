@@ -1,40 +1,47 @@
+/* Theme selection. Three states, and "system" is the default.
+   System means no data-theme attribute at all: the tokens are built on CSS
+   light-dark(), so `color-scheme` on :root already follows the OS. Only an
+   explicit choice is stored. */
 const themeKey = 'console_theme';
-const themeIcons = {
-  light: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>',
-  dark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"></path></svg>',
+const themes = {
+  system: { label: 'System', icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>' },
+  light: { label: 'Light', icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>' },
+  dark: { label: 'Dark', icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"></path></svg>' },
 };
 
+function currentTheme() {
+  const stored = localStorage.getItem(themeKey);
+  return Object.hasOwn(themes, stored ?? "") ? stored : "system";
+}
+
 function applyTheme(theme) {
-  document.documentElement.toggleAttribute('data-theme', theme === 'light');
-  if (theme === 'light') document.documentElement.dataset.theme = 'light';
-  document.querySelectorAll('[data-theme-toggle]').forEach(button => {
-    const nextTheme = theme === 'light' ? 'dark' : 'light';
-    const label = `${nextTheme[0].toUpperCase()}${nextTheme.slice(1)} theme`;
-    button.innerHTML = `${themeIcons[nextTheme]}<span>${label}</span>`;
-    button.setAttribute('aria-label', `Use ${nextTheme} theme`);
-    button.setAttribute('aria-pressed', String(theme === 'light'));
+  if (theme === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  document.querySelectorAll('[data-theme-toggle] button').forEach(button => {
+    button.setAttribute('aria-checked', String(button.dataset.themeValue === theme));
   });
 }
 
-function currentTheme() {
-  const override = localStorage.getItem(themeKey);
-  if (override === 'light' || override === 'dark') return override;
-  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-}
-
+/* Runs before the body parses, so the stored theme is on :root for the first
+   paint and there is no flash of the wrong theme. */
 applyTheme(currentTheme());
 
 document.addEventListener('DOMContentLoaded', () => {
-  applyTheme(currentTheme());
-  document.querySelectorAll('[data-theme-toggle]').forEach(button => {
-    button.addEventListener('click', () => {
-      const theme = currentTheme() === 'light' ? 'dark' : 'light';
-      localStorage.setItem(themeKey, theme);
+  document.querySelectorAll('[data-theme-toggle]').forEach(host => {
+    host.innerHTML =
+      '<span>Theme</span><div class="segmented" role="radiogroup" aria-label="Theme">' +
+      Object.entries(themes).map(([value, { label, icon }]) =>
+        `<button type="button" role="radio" data-theme-value="${value}" aria-checked="false" aria-label="${label} theme" title="${label}">${icon}</button>`
+      ).join('') +
+      '</div>';
+    host.addEventListener('click', event => {
+      const button = event.target.closest('[data-theme-value]');
+      if (!button) return;
+      const theme = button.dataset.themeValue;
+      if (theme === 'system') localStorage.removeItem(themeKey);
+      else localStorage.setItem(themeKey, theme);
       applyTheme(theme);
     });
   });
-});
-
-window.matchMedia?.('(prefers-color-scheme: light)').addEventListener('change', event => {
-  if (localStorage.getItem(themeKey) === null) applyTheme(event.matches ? 'light' : 'dark');
+  applyTheme(currentTheme());
 });

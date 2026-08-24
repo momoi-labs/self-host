@@ -1,8 +1,12 @@
-/* Kiso design tokens — generated from tokens/tokens.json. Do not edit. */
+/* Kiso design tokens, vendored from @momoi-labs/kiso@0.2.0.
+   Generated file — do not edit here. To update, copy tokens/build/tokens.css
+   from the blueprint repo at the tag you want. */
 
 :root {
+  color-scheme: light dark;
   --color-white: #ffffff;
   --color-black: #000000;
+  --color-neutral-50: #fffefc;
   --color-neutral-100: #faf9f7;
   --color-neutral-200: #f4f2ee;
   --color-neutral-300: #e0dcd6;
@@ -12,43 +16,86 @@
   --color-neutral-700: #312f37;
   --color-neutral-800: #26252b;
   --color-neutral-900: #1b1a1e;
+  --color-neutral-950: #131217;
+  --color-accent-50: #f7f4ff;
   --color-accent-200: #ede8fd;
   --color-accent-300: #ded5fb;
   --color-accent-400: #c4b4f5;
+  --color-accent-500: #a690ea;
   --color-accent-600: #7d68d1;
   --color-accent-700: #6552b8;
   --color-accent-800: #46309e;
   --color-accent-900: #2e2170;
-  --color-accent-base: #cbbdf7;
-  --color-status-success: #4ed69a;
-  --color-status-warning: #e8c05a;
-  --color-status-danger: #f4867f;
-  --color-status-info: #8fc9f5;
-  --color-background: var(--color-neutral-900);
-  --color-surface: var(--color-neutral-800);
-  --color-elevated-surface: var(--color-neutral-700);
-  --color-foreground: var(--color-neutral-100);
-  --color-muted-foreground: var(--color-neutral-400);
+  --color-accent-950: #211741;
+  --color-accent-base: light-dark(#5b3fc4, #cbbdf7);
+  --color-status-success: light-dark(#0c6b43, #4ed69a);
+  --color-status-warning: light-dark(#7a5000, #e8c05a);
+  --color-status-danger: light-dark(#ad2f29, #f4867f);
+  --color-status-info: light-dark(#15559e, #8fc9f5);
+  --color-background: light-dark(var(--color-neutral-200), var(--color-neutral-900));
+  --color-surface: light-dark(var(--color-neutral-100), var(--color-neutral-800));
+  --color-elevated-surface: light-dark(var(--color-white), var(--color-neutral-700));
+  --color-foreground: light-dark(var(--color-neutral-900), var(--color-neutral-100));
+  --color-muted-foreground: light-dark(var(--color-neutral-600), var(--color-neutral-400));
   --color-subtle-foreground: var(--color-neutral-500);
-  --color-border: var(--color-neutral-600);
+  --color-border: light-dark(var(--color-neutral-300), var(--color-neutral-600));
   --color-primary: var(--color-accent-base);
-  --color-accent: var(--color-accent-300);
+  --color-accent: light-dark(var(--color-accent-800), var(--color-accent-300));
   --color-success: var(--color-status-success);
   --color-warning: var(--color-status-warning);
   --color-danger: var(--color-status-danger);
   --color-info: var(--color-status-info);
-  --color-focus: var(--color-accent-300);
-  --color-disabled: var(--color-neutral-600);
+  --color-focus: light-dark(var(--color-accent-base), var(--color-accent-300));
+  --color-disabled: light-dark(var(--color-neutral-400), var(--color-neutral-600));
+  --color-card: light-dark(var(--color-neutral-100), var(--color-neutral-800));
+  --color-card-foreground: var(--color-foreground);
+  --color-popover: light-dark(var(--color-white), var(--color-neutral-700));
+  --color-popover-foreground: var(--color-foreground);
+  --color-muted: light-dark(var(--color-neutral-200), var(--color-neutral-700));
+  --color-sidebar: light-dark(var(--color-neutral-100), var(--color-neutral-950));
+  --color-sidebar-border: var(--color-border);
+  --color-border-strong: var(--color-neutral-500);
+  --color-input: var(--color-border);
+  --color-primary-foreground: light-dark(var(--color-white), var(--color-neutral-900));
+  --color-primary-hover: light-dark(var(--color-accent-800), var(--color-accent-300));
+  --color-link: var(--color-primary);
+  --color-accent-surface: light-dark(var(--color-accent-50), var(--color-accent-950));
+  --color-accent-surface-hover: light-dark(var(--color-accent-200), var(--color-accent-900));
+  --color-selected: light-dark(var(--color-accent-200), var(--color-accent-900));
+  --color-selected-foreground: var(--color-foreground);
+  --color-secondary: light-dark(var(--color-neutral-300), var(--color-neutral-700));
+  --color-secondary-foreground: var(--color-foreground);
+  --color-secondary-hover: light-dark(var(--color-neutral-400), var(--color-neutral-600));
+  --color-ring: var(--color-focus);
+  --color-disabled-surface: light-dark(var(--color-neutral-200), var(--color-neutral-800));
+  --color-skeleton: light-dark(var(--color-neutral-300), var(--color-neutral-700));
+  --color-overlay: light-dark(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.6));
+  --color-hatch: light-dark(var(--color-neutral-300), var(--color-neutral-700));
+  --color-corner-mark: var(--color-border-strong);
+  --color-shadow-hairline: light-dark(rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.3));
+  --color-shadow-contact: light-dark(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.4));
+  --color-success-surface: light-dark(rgba(12, 107, 67, 0.1), rgba(78, 214, 154, 0.12));
+  --color-success-border: light-dark(rgba(12, 107, 67, 0.3), rgba(78, 214, 154, 0.35));
+  --color-warning-surface: light-dark(rgba(122, 80, 0, 0.1), rgba(232, 192, 90, 0.12));
+  --color-warning-border: light-dark(rgba(122, 80, 0, 0.3), rgba(232, 192, 90, 0.35));
+  --color-danger-surface: light-dark(rgba(173, 47, 41, 0.1), rgba(244, 134, 127, 0.12));
+  --color-danger-border: light-dark(rgba(173, 47, 41, 0.3), rgba(244, 134, 127, 0.35));
+  --color-info-surface: light-dark(rgba(21, 85, 158, 0.1), rgba(143, 201, 245, 0.12));
+  --color-info-border: light-dark(rgba(21, 85, 158, 0.3), rgba(143, 201, 245, 0.35));
+  --color-danger-foreground: light-dark(var(--color-white), var(--color-neutral-900));
+  --color-warning-on-dark: #e8c05a;
+  --color-danger-on-dark: #f4867f;
+  --color-info-on-dark: #8fc9f5;
   --font-heading: Inter, system-ui, sans-serif;
   --font-body: Inter, system-ui, sans-serif;
   --font-mono: JetBrains Mono, ui-monospace, monospace;
   --type-size-metadata: 11px;
-  --type-size-label: 13px;
-  --type-size-body: 16px;
-  --type-size-h3: 19px;
-  --type-size-h2: 23px;
-  --type-size-h1: 28px;
-  --type-size-display: 33px;
+  --type-size-label: 12px;
+  --type-size-body: 14px;
+  --type-size-h3: 16px;
+  --type-size-h2: 18px;
+  --type-size-h1: 22px;
+  --type-size-display: 30px;
   --type-weight-regular: 400;
   --type-weight-medium: 500;
   --type-weight-semibold: 600;
@@ -56,13 +103,16 @@
   --type-line-height-tight: 1.2;
   --type-line-height-normal: 1.5;
   --type-line-height-relaxed: 1.6;
+  --type-line-height-snug: 1.35;
   --type-letter-spacing-heading: -0.01rem;
   --type-letter-spacing-normal: 0rem;
   --type-letter-spacing-label: 0.02rem;
+  --type-letter-spacing-display: -0.02rem;
+  --type-letter-spacing-caps: 0.06rem;
   --type-role-display-font-family: var(--font-heading);
   --type-role-display-font-size: var(--type-size-display);
   --type-role-display-font-weight: var(--type-weight-medium);
-  --type-role-display-letter-spacing: var(--type-letter-spacing-heading);
+  --type-role-display-letter-spacing: var(--type-letter-spacing-display);
   --type-role-display-line-height: var(--type-line-height-tight);
   --type-role-heading-font-family: var(--font-heading);
   --type-role-heading-font-size: var(--type-size-h1);
@@ -94,6 +144,7 @@
   --type-role-numeric-font-weight: var(--type-weight-regular);
   --type-role-numeric-letter-spacing: var(--type-letter-spacing-normal);
   --type-role-numeric-line-height: var(--type-line-height-normal);
+  --spacing-2xs: 2px;
   --spacing-xs: 4px;
   --spacing-sm: 8px;
   --spacing-md: 12px;
@@ -102,12 +153,16 @@
   --spacing-2xl: 32px;
   --spacing-3xl: 48px;
   --spacing-4xl: 64px;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
   --radius-full: 9999px;
-  --shadow-sm: 0px 1px 2px 0px rgba(0, 0, 0, 0.24);
-  --shadow-md: 0px 2px 8px 0px rgba(0, 0, 0, 0.32);
+  --radius-surface: 0px;
+  --shadow-xs: 0px 1px 1px 0px var(--color-shadow-hairline);
+  --shadow-sm: 0px 1px 2px 0px var(--color-shadow-contact);
+  --shadow-md: 0px 2px 8px 0px var(--color-shadow-contact);
+  --shadow-lg: 0px 8px 24px 0px var(--color-shadow-contact);
   --motion-duration-fast: 120ms;
   --motion-duration-normal: 200ms;
   --motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
@@ -115,24 +170,31 @@
   --breakpoint-md: 768px;
   --breakpoint-lg: 1024px;
   --breakpoint-xl: 1280px;
+  --size-control-xs: 24px;
+  --size-control-sm: 32px;
+  --size-control-md: 36px;
+  --size-control-lg: 40px;
+  --size-touch-min: 44px;
+  --size-icon-sm: 14px;
+  --size-icon-md: 16px;
+  --size-icon-lg: 20px;
+  --size-sidebar: 248px;
+  --size-content-max: 1280px;
+  --corner-mark: 1;
+  --corner-mark-tick: 4px;
+  --corner-mark-gap: 2px;
+  --hatch-line: 5px;
+  --hatch-period: 10px;
+  --hatch-angle: 45deg;
   --font-variant-numeric: tabular-nums;
 }
 
 [data-theme="light"] {
-  --color-accent-base: #5b3fc4;
-  --color-status-success: #0c6b43;
-  --color-status-warning: #7a5000;
-  --color-status-danger: #ad2f29;
-  --color-status-info: #15559e;
-  --color-background: var(--color-neutral-200);
-  --color-surface: var(--color-neutral-100);
-  --color-elevated-surface: var(--color-white);
-  --color-foreground: var(--color-neutral-900);
-  --color-muted-foreground: var(--color-neutral-600);
-  --color-border: var(--color-neutral-300);
-  --color-accent: var(--color-accent-800);
-  --color-focus: var(--color-accent-base);
-  --color-disabled: var(--color-neutral-400);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 @media (prefers-reduced-motion: reduce) {
