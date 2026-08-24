@@ -312,8 +312,7 @@ function handleDialogKeydown(event) {
 
 async function saveApp(e, id) {
   e.preventDefault();
-  const errEl = document.getElementById('edit-error');
-  errEl.classList.add('hidden');
+  document.getElementById('edit-error').classList.add('hidden');
 
   const body = {
     name: document.getElementById('edit-name').value.trim(),
@@ -321,6 +320,7 @@ async function saveApp(e, id) {
     hostname: document.getElementById('edit-hostname').value.trim(),
   };
 
+  let failure = null;
   try {
     const res = await fetch('/apps/id/' + encodeURIComponent(id), {
       method: 'PUT',
@@ -330,16 +330,28 @@ async function saveApp(e, id) {
     if (res.ok) {
       toast('success', 'Changes saved', body.name + ' was redeployed.');
     } else {
-      // Same rule as deploy: the error goes on the form, not into a toast.
-      errEl.textContent = await res.text();
-      errEl.classList.remove('hidden');
+      failure = await res.text();
     }
   } catch (err) {
-    errEl.textContent = 'Network error: ' + err.message;
-    errEl.classList.remove('hidden');
+    failure = 'Network error: ' + err.message;
   }
+
   // Reload either way: a failed redeploy still changed the stored record.
   await loadApps();
+
+  if (!failure) return;
+  toast('danger', 'Could not save ' + body.name, failure);
+
+  // Only write it on the form when the record does not already say it —
+  // otherwise the same sentence appears twice, once above the form and once
+  // inside it.
+  const saved = apps.find(a => a.id === id);
+  if (saved && saved.last_error) return;
+  const errEl = document.getElementById('edit-error');
+  if (errEl) {
+    errEl.textContent = failure;
+    errEl.classList.remove('hidden');
+  }
 }
 
 async function deploy(e) {
@@ -347,6 +359,7 @@ async function deploy(e) {
   const name = document.getElementById('deploy-name').value.trim();
   const image = document.getElementById('deploy-image').value.trim();
   const errEl = document.getElementById('deploy-error');
+  errEl.classList.add('hidden');
 
   try {
     const res = await fetch('/apps', {
@@ -354,31 +367,35 @@ async function deploy(e) {
       headers: authHeaders(),
       body: JSON.stringify({ name, image }),
     });
+    const failure = res.ok ? null : await res.text();
+
+    await loadApps();
+    const created = apps.find(a => a.name === name);
+
+    // A rejected name never reached the database. Keep the dialog open with
+    // what was typed, so the fix is one edit rather than a retype.
+    if (failure && !created) {
+      errEl.textContent = failure;
+      errEl.classList.remove('hidden');
+      return;
+    }
+
     document.getElementById('deploy-name').value = '';
     document.getElementById('deploy-image').value = '';
     closeDeployModal();
-    await loadApps();
 
     // The Application is on record even when the deploy failed, so open it
     // instead of reporting an error the operator cannot act on.
-    const created = apps.find(a => a.name === name);
     if (created) selectApp(created.id);
 
-    if (res.ok) {
+    if (failure) {
+      // One toast, and no inline copy: the record was saved with last_error,
+      // so selectApp already rendered the same text above the form.
+      toast('danger', 'Could not start ' + name, failure);
+    } else {
       toast('success', 'Application deployed', created
         ? name + ' is reachable at ' + created.hostname + '.'
         : name + ' was created.');
-    } else {
-      // The response already carries the reason. Put it on the form next to
-      // the field that caused it — a toast on top of that would be the same
-      // news twice, and the toast is the copy that disappears.
-      const errored = document.getElementById('edit-error');
-      if (errored) {
-        errored.textContent = await res.text();
-        errored.classList.remove('hidden');
-      } else {
-        toast('danger', 'Could not deploy ' + name, await res.text());
-      }
     }
   } catch (err) {
     errEl.textContent = 'Network error: ' + err.message;
