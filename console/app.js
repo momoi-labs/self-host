@@ -110,7 +110,7 @@ function render() {
     if (app) {
       // Redrawing on every poll would wipe out whatever is being typed into
       // the edit form, so only redraw when the record actually moved.
-      if (appSignature(app) !== detailSignature) selectApp(selected, true);
+      if (appSignature(app) !== detailSignature) selectApp(selected);
     } else {
       selected = null;
       showDashboard();
@@ -205,10 +205,9 @@ function showDashboard() {
   });
 }
 
-function selectApp(id, moved = false) {
+function selectApp(id) {
   const app = apps.find(a => a.id === id);
   if (!app) return;
-  const sameApp = selected === id;
   selected = id;
   detailSignature = appSignature(app);
 
@@ -285,15 +284,13 @@ function selectApp(id, moved = false) {
     document.getElementById('edit-form').requestSubmit();
   });
 
-  // A poll that saw the record move must redraw the logs too — a redeploy
-  // replaces the container, and a stale stream would keep printing output that
-  // belongs to a previous moment. Only a plain reselect of the same,
-  // unchanged record keeps the live stream running.
-  if (sameApp && logAbort && !moved) return;
-
+  // Rendering the detail replaced the log pane, so the stream always restarts:
+  // the element the running one holds is no longer in the document. This also
+  // keeps a redeploy honest — it replaces the container, and output from the
+  // previous one must not keep scrolling past.
   document.getElementById('logs-panel').innerHTML = `
     <p class="t-caps">Logs from sf-app-${esc(app.id)}</p>
-    <div id="logs-content" class="logview" role="log" aria-live="polite"></div>
+    <div class="logview"><div id="logs-content" role="log" aria-live="polite"></div></div>
   `;
 
   startLogStream(app.id);
@@ -341,10 +338,10 @@ async function startLogStream(id) {
         if (line === '') continue;
         const data = line.startsWith('data: ') ? line.slice(6) : line;
         if (data === 'keepalive' || data === '') continue;
-        const line = document.createElement('div');
-        line.textContent = data;
-        if (currentEvent === 'notice') line.className = 'log-info';
-        contentEl.appendChild(line);
+        const el = document.createElement('div');
+        el.textContent = data;
+        if (currentEvent === 'notice') el.className = 'log-info';
+        contentEl.appendChild(el);
         currentEvent = 'message';
       }
 
@@ -352,10 +349,10 @@ async function startLogStream(id) {
     }
   } catch (err) {
     if (err.name !== 'AbortError') {
-      const line = document.createElement('div');
-      line.className = 'log-error';
-      line.textContent = 'Connection lost';
-      contentEl.appendChild(line);
+      const el = document.createElement('div');
+      el.className = 'log-error';
+      el.textContent = 'Connection lost';
+      contentEl.appendChild(el);
     }
   } finally {
     if (logAbort === abort) logAbort = null;
