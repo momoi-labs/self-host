@@ -122,7 +122,13 @@ function render() {
 /* running is the only good outcome; pending and failed both need attention,
    but only failed is an error. */
 function appSignature(app) {
-  return [app.status, app.name, app.image, app.hostname, app.last_error || ''].join('|');
+  return [app.status, app.name, app.image, app.hostname,
+          hostnames(app).join(','), app.last_error || ''].join('|');
+}
+
+/* Every Hostname the application answers on: its Hostname, then its aliases. */
+function hostnames(app) {
+  return [app.hostname, ...(app.aliases || [])];
 }
 
 function statusTone(status) {
@@ -157,7 +163,7 @@ function renderDashboard() {
     <tr data-id="${esc(a.id)}" tabindex="0">
       <td>${esc(a.name)}</td>
       <td class="mono">${esc(a.image)}</td>
-      <td class="mono">${esc(a.hostname)}</td>
+      <td class="mono">${esc(a.hostname)}${(a.aliases || []).length ? `<span class="metadata"> +${(a.aliases || []).length}</span>` : ''}</td>
       <td><span class="badge ${statusTone(a.status)}"><span class="status-dot" aria-hidden="true"></span>${esc(a.status)}</span></td>
     </tr>
   `).join('');
@@ -210,7 +216,7 @@ function selectApp(id) {
       <div>
         <button class="button button-ghost" type="button" data-back>← All applications</button>
         <h1>${esc(app.name)}</h1>
-        <a href="http://${esc(app.hostname)}" target="_blank" rel="noreferrer" class="mono">${esc(app.hostname)} ↗</a>
+        ${hostnames(app).map(h => `<a href="http://${esc(h)}" target="_blank" rel="noreferrer" class="mono">${esc(h)} ↗</a>`).join(' ')}
       </div>
       <span class="badge ${statusTone(app.status)}">
         <span class="status-dot" aria-hidden="true"></span>
@@ -231,7 +237,13 @@ function selectApp(id) {
       <div class="field">
         <label for="edit-hostname">Hostname</label>
         <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required>
-        <small class="muted">Changing this restarts the container.</small>
+        <small class="muted">Takes effect immediately; the container keeps running.</small>
+      </div>
+      <div class="field">
+        <label for="edit-aliases">Aliases</label>
+        <input class="input mono" type="text" id="edit-aliases" value="${esc((app.aliases || []).join(', '))}"
+               placeholder="old-name.${esc(dnsSuffix())}" aria-describedby="edit-aliases-help">
+        <small class="muted" id="edit-aliases-help">Other hostnames this application also answers on, comma separated. Keep the old one here to change the Hostname without breaking it.</small>
       </div>
       <div class="field">
         <span class="section-label">Container</span>
@@ -348,6 +360,16 @@ function handleDialogKeydown(event) {
   if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 
+/* A comma or a space both read as "and another one" to someone typing a list,
+   so accept either rather than rejecting the one that was not asked for. */
+function parseAliases(value) {
+  return value.split(/[,\s]+/).map(a => a.trim()).filter(Boolean);
+}
+
+function dnsSuffix() {
+  return document.getElementById('dns-suffix').textContent;
+}
+
 async function saveApp(e, id) {
   e.preventDefault();
   document.getElementById('edit-error').className = 'hidden';
@@ -356,6 +378,7 @@ async function saveApp(e, id) {
     name: document.getElementById('edit-name').value.trim(),
     image: document.getElementById('edit-image').value.trim(),
     hostname: document.getElementById('edit-hostname').value.trim(),
+    aliases: parseAliases(document.getElementById('edit-aliases').value),
   };
 
   let failure = null;

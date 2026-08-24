@@ -36,6 +36,10 @@ _Avoid_: release, publish, ship (as official synonyms)
 The DNS name Consumers use to reach an Application on the LAN, usually `name.<suffix>` with an optional explicit override.
 _Avoid_: URL (URLs include scheme/path), public domain
 
+**Hostname Alias**:
+An additional Application Hostname the same Application answers on, alongside its Hostname. Aliases are always explicit: changing a Hostname never leaves one behind on its own.
+_Avoid_: CNAME, redirect (an alias serves the Application, it does not forward)
+
 **DNS Suffix**:
 The configurable local zone suffix for the Platform under which Application Hostnames are derived. The MVP has a single DNS Suffix, set via `self-host init --dns` (default **`home.lan`**, intentionally not `.local` because of mDNS conflicts). Multiple suffixes are out of MVP scope.
 _Avoid_: domain, TLD, zone (as raw DNS jargon in the glossary), home.local (as default)

@@ -1,5 +1,6 @@
 use crate::db::{DbError, StateStore};
 use crate::docker::{ApplicationContainer, DockerError, DockerRuntime, PLATFORM_NETWORK};
+use crate::routes::{RouteError, RouteStore};
 
 pub const APP_CONTAINER_PORT: u16 = 80;
 
@@ -39,9 +40,11 @@ pub enum DeployError {
     AlreadyExists(String),
     NotFound(String),
     InvalidName(String),
+    InvalidHostname(String),
     MissingImage,
     MissingPath,
     Docker(DockerError),
+    Routing(RouteError),
     Db(DbError),
 }
 
@@ -56,9 +59,13 @@ impl std::fmt::Display for DeployError {
             }
             DeployError::NotFound(id) => write!(f, "Application '{id}' not found"),
             DeployError::InvalidName(msg) => write!(f, "invalid Application name: {msg}"),
+            DeployError::InvalidHostname(msg) => {
+                write!(f, "invalid Application Hostname: {msg}")
+            }
             DeployError::MissingImage => write!(f, "image is required"),
             DeployError::MissingPath => write!(f, "path is required"),
             DeployError::Docker(e) => write!(f, "{e}"),
+            DeployError::Routing(e) => write!(f, "{e}"),
             DeployError::Db(e) => write!(f, "{e}"),
         }
     }
@@ -68,6 +75,7 @@ impl std::error::Error for DeployError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             DeployError::Docker(e) => Some(e),
+            DeployError::Routing(e) => Some(e),
             DeployError::Db(e) => Some(e),
             _ => None,
         }
@@ -77,6 +85,12 @@ impl std::error::Error for DeployError {
 impl From<DockerError> for DeployError {
     fn from(e: DockerError) -> Self {
         DeployError::Docker(e)
+    }
+}
+
+impl From<RouteError> for DeployError {
+    fn from(e: RouteError) -> Self {
+        DeployError::Routing(e)
     }
 }
 
@@ -115,26 +129,67 @@ pub fn default_hostname(name: &str, dns_suffix: &str) -> String {
     format!("{name}.{dns_suffix}")
 }
 
-/// `id` keys the Traefik router, `name` rides along as a label so an
-/// Application is still findable in `docker ps` after a rename.
-pub fn traefik_labels(id: &str, name: &str, hostname: &str) -> Vec<(String, String)> {
+/// A Hostname ends up inside a Traefik `Host(`…`)` rule, so anything that is
+/// not a DNS name is refused here rather than written into the router file.
+pub fn validate_hostname(hostname: &str) -> Result<(), DeployError> {
+    if hostname.is_empty() {
+        return Err(DeployError::InvalidHostname("must not be empty".into()));
+    }
+    if hostname.len() > 253 {
+        return Err(DeployError::InvalidHostname(
+            "must be at most 253 characters".into(),
+        ));
+    }
+    let valid = hostname
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.');
+    if !valid {
+        return Err(DeployError::InvalidHostname(
+            "must be lowercase alphanumeric, hyphens and dots".into(),
+        ));
+    }
+    if hostname.starts_with(['-', '.']) || hostname.ends_with(['-', '.']) {
+        return Err(DeployError::InvalidHostname(
+            "must not start or end with a hyphen or a dot".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Checks the Hostname and every alias an Application is about to be saved
+/// with, and refuses an alias that another Application already answers on.
+async fn validate_routing(
+    store: &impl StateStore,
+    record: &ApplicationRecord,
+) -> Result<(), DeployError> {
+    for hostname in crate::routes::hostnames(record) {
+        validate_hostname(hostname)?;
+    }
+
+    for other in store.list_applications().await? {
+        if other.id == record.id {
+            continue;
+        }
+        for taken in crate::routes::hostnames(&other) {
+            if crate::routes::hostnames(record).contains(&taken) {
+                return Err(DeployError::InvalidHostname(format!(
+                    "'{taken}' is already answered by Application '{}'",
+                    other.name
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// What the container says about itself. Routing is not in here: it lives in
+/// a Traefik file-provider route (ADR-0009), so that changing where an
+/// Application answers never has to recreate a container.
+pub fn identity_labels(id: &str, name: &str) -> Vec<(String, String)> {
     vec![
-        ("traefik.enable".into(), "true".into()),
         ("sf.app.id".into(), id.to_string()),
         ("sf.app.name".into(), name.to_string()),
-        (
-            format!("traefik.http.routers.{id}.rule"),
-            format!("Host(`{hostname}`)"),
-        ),
-        (
-            format!("traefik.http.routers.{id}.entrypoints"),
-            "websecure".into(),
-        ),
-        (format!("traefik.http.routers.{id}.tls"), "true".into()),
-        (
-            format!("traefik.http.services.{id}.loadbalancer.server.port"),
-            APP_CONTAINER_PORT.to_string(),
-        ),
     ]
 }
 
@@ -183,7 +238,7 @@ async fn start_container(
         .run_application(ApplicationContainer {
             name: container_name_for(&record.id),
             image: record.image.clone(),
-            labels: traefik_labels(&record.id, &record.name, &record.hostname),
+            labels: identity_labels(&record.id, &record.name),
             network: PLATFORM_NETWORK.to_string(),
             ports: vec![],
             env,
@@ -201,6 +256,7 @@ async fn pending_record(
     image: String,
     source: &str,
     hostname_override: Option<&str>,
+    aliases: Option<&[String]>,
 ) -> Result<ApplicationRecord, DeployError> {
     let dns_suffix = store
         .get_state("dns_suffix")
@@ -213,19 +269,29 @@ async fn pending_record(
         (None, Some(app)) => app.hostname.clone(),
         (None, None) => default_hostname(name, &dns_suffix),
     };
+    let aliases = match (aliases, &existing) {
+        (Some(a), _) => a.to_vec(),
+        (None, Some(app)) => app.aliases.clone(),
+        (None, None) => vec![],
+    };
 
-    Ok(ApplicationRecord {
+    let record = ApplicationRecord {
         id: existing
             .as_ref()
             .map(|a| a.id.clone())
             .unwrap_or_else(generate_app_id),
         name: name.to_string(),
         hostname,
+        aliases,
         image,
         status: STATUS_PENDING.into(),
         source: source.to_string(),
         last_error: None,
-    })
+    };
+
+    validate_routing(store, &record).await?;
+
+    Ok(record)
 }
 
 /// A deploy that is on record but not yet carried out. The row is already
@@ -245,8 +311,9 @@ impl PendingDeploy {
 }
 
 enum DeployWork {
-    /// A rename of a running Application: the container and the Traefik router
-    /// are keyed by id, so Docker sees no change at all.
+    /// Nothing for Docker to do: a rename, or a change of Hostname or
+    /// aliases. The container is keyed by id and the router is a file, so
+    /// only the route has to be rewritten.
     Settled,
     Pull,
     Build {
@@ -265,6 +332,7 @@ pub async fn prepare_deploy_from_image(
     name: &str,
     image: &str,
     hostname_override: Option<&str>,
+    aliases: Option<&[String]>,
 ) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
 
@@ -276,7 +344,15 @@ pub async fn prepare_deploy_from_image(
         return Err(DeployError::NotInitialized);
     }
 
-    let record = pending_record(store, name, image.to_string(), "image", hostname_override).await?;
+    let record = pending_record(
+        store,
+        name,
+        image.to_string(),
+        "image",
+        hostname_override,
+        aliases,
+    )
+    .await?;
     store.insert_application(&record).await?;
 
     Ok(PendingDeploy {
@@ -289,11 +365,14 @@ pub async fn prepare_deploy_from_image(
 pub async fn finish_deploy(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
     pending: PendingDeploy,
 ) -> Result<ApplicationRecord, DeployError> {
     let PendingDeploy { record, work } = pending;
 
+    // Nothing for Docker, but the route may be exactly what changed.
     if matches!(work, DeployWork::Settled) {
+        routes.publish(&record)?;
         return Ok(record);
     }
 
@@ -312,41 +391,55 @@ pub async fn finish_deploy(
             }
             DeployWork::Settled => unreachable!(),
         }
-        start_container(store, docker, &record).await
+        start_container(store, docker, &record).await?;
+        // Published after the container is up, so Traefik never routes at a
+        // backend that is not there yet.
+        routes.publish(&record)?;
+        Ok(())
     }
     .await;
 
     record_outcome(store, record, result).await
 }
 
+/// Brings Docker and Traefik back in line with the database at boot.
+///
 /// A row left `pending` by a process that died mid-deploy is indistinguishable
-/// from one still being pulled, so settle them at boot: whatever Docker is
-/// actually running is `running`, and the rest are `failed` — on record, with
-/// a reason, and one click from being deployed again.
-pub async fn reconcile_pending(
+/// from one still being pulled, so settle them: whatever Docker is actually
+/// running is `running`, and the rest are `failed` — on record, with a reason,
+/// and one click from being deployed again.
+///
+/// Every Application that ends up running then has its route rewritten. The
+/// dynamic directory is a projection of the database (ADR-0009), so losing it
+/// costs a restart rather than a redeploy, and an install upgrading from
+/// label-based routing gets its route files without touching a container.
+pub async fn reconcile(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
 ) -> Result<(), DeployError> {
     for mut app in store.list_applications().await? {
-        if app.status != STATUS_PENDING {
-            continue;
+        if app.status == STATUS_PENDING {
+            let running = docker
+                .container_running(&container_name_for(&app.id))
+                .await
+                .unwrap_or(false);
+
+            if running {
+                app.status = STATUS_RUNNING.into();
+                app.last_error = None;
+            } else {
+                tracing::warn!("Application {} was left mid-deploy by a restart", app.name);
+                app.status = STATUS_FAILED.into();
+                app.last_error = Some("deploy was interrupted by a platform restart".into());
+            }
+
+            store.insert_application(&app).await?;
         }
 
-        let running = docker
-            .container_running(&container_name_for(&app.id))
-            .await
-            .unwrap_or(false);
-
-        if running {
-            app.status = STATUS_RUNNING.into();
-            app.last_error = None;
-        } else {
-            tracing::warn!("Application {} was left mid-deploy by a restart", app.name);
-            app.status = STATUS_FAILED.into();
-            app.last_error = Some("deploy was interrupted by a platform restart".into());
+        if app.status == STATUS_RUNNING {
+            routes.publish(&app)?;
         }
-
-        store.insert_application(&app).await?;
     }
 
     Ok(())
@@ -355,12 +448,14 @@ pub async fn reconcile_pending(
 pub async fn deploy_from_image(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
     name: &str,
     image: &str,
     hostname_override: Option<&str>,
+    aliases: Option<&[String]>,
 ) -> Result<ApplicationRecord, DeployError> {
-    let pending = prepare_deploy_from_image(store, name, image, hostname_override).await?;
-    finish_deploy(store, docker, pending).await
+    let pending = prepare_deploy_from_image(store, name, image, hostname_override, aliases).await?;
+    finish_deploy(store, docker, routes, pending).await
 }
 
 pub async fn list_applications(
@@ -387,21 +482,23 @@ pub struct ApplicationUpdate {
     pub name: Option<String>,
     pub image: Option<String>,
     pub hostname: Option<String>,
+    pub aliases: Option<Vec<String>>,
 }
 
 /// Saves the change and redeploys.
 ///
-/// A rename is only a row update: the container and the Traefik router are
-/// keyed by id. Changing the image or the hostname does recreate the
-/// container, because Docker cannot rewrite labels on a running one.
+/// A rename is only a row update, and so is a change of Hostname or aliases:
+/// the container is keyed by id and the router is a file Traefik watches. Only
+/// a new image recreates the container.
 pub async fn update_application(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
     id: &str,
     update: ApplicationUpdate,
 ) -> Result<ApplicationRecord, DeployError> {
     let pending = prepare_update(store, id, update).await?;
-    finish_deploy(store, docker, pending).await
+    finish_deploy(store, docker, routes, pending).await
 }
 
 /// Saves the change and writes the row back as `pending`; the redeploy itself
@@ -426,6 +523,10 @@ pub async fn prepare_update(
             .hostname
             .clone()
             .unwrap_or_else(|| current.hostname.clone()),
+        aliases: update
+            .aliases
+            .clone()
+            .unwrap_or_else(|| current.aliases.clone()),
         status: STATUS_PENDING.into(),
         last_error: None,
         ..current.clone()
@@ -440,13 +541,15 @@ pub async fn prepare_update(
         }
     }
 
+    validate_routing(store, &record).await?;
+
     let image_changed = record.image != current.image;
-    let hostname_changed = record.hostname != current.hostname;
 
     store.insert_application(&record).await?;
 
-    // A rename alone changes nothing Docker can see, so leave the container be.
-    if !image_changed && !hostname_changed && current.status == STATUS_RUNNING {
+    // Only the image is Docker's business. A rename, a new Hostname and an
+    // added alias are all a route rewrite, which costs no downtime.
+    if !image_changed && current.status == STATUS_RUNNING {
         record.status = STATUS_RUNNING.into();
         store.insert_application(&record).await?;
         return Ok(PendingDeploy {
@@ -470,6 +573,7 @@ pub async fn prepare_deploy_from_path(
     name: &str,
     path: &str,
     hostname_override: Option<&str>,
+    aliases: Option<&[String]>,
 ) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
 
@@ -482,7 +586,7 @@ pub async fn prepare_deploy_from_path(
     }
 
     let image_tag = format!("self-host-{name}:latest");
-    let record = pending_record(store, name, image_tag, "path", hostname_override).await?;
+    let record = pending_record(store, name, image_tag, "path", hostname_override, aliases).await?;
     store.insert_application(&record).await?;
 
     Ok(PendingDeploy {
@@ -496,12 +600,14 @@ pub async fn prepare_deploy_from_path(
 pub async fn deploy_from_path(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
     name: &str,
     path: &str,
     hostname_override: Option<&str>,
+    aliases: Option<&[String]>,
 ) -> Result<ApplicationRecord, DeployError> {
-    let pending = prepare_deploy_from_path(store, name, path, hostname_override).await?;
-    finish_deploy(store, docker, pending).await
+    let pending = prepare_deploy_from_path(store, name, path, hostname_override, aliases).await?;
+    finish_deploy(store, docker, routes, pending).await
 }
 
 pub fn container_name_for(app_id: &str) -> String {
@@ -514,6 +620,7 @@ pub enum RemoveError {
     NotFound(String),
     ProtectedName(String),
     Docker(DockerError),
+    Routing(RouteError),
     Db(DbError),
 }
 
@@ -531,6 +638,7 @@ impl std::fmt::Display for RemoveError {
                 )
             }
             RemoveError::Docker(e) => write!(f, "{e}"),
+            RemoveError::Routing(e) => write!(f, "{e}"),
             RemoveError::Db(e) => write!(f, "{e}"),
         }
     }
@@ -540,6 +648,7 @@ impl std::error::Error for RemoveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             RemoveError::Docker(e) => Some(e),
+            RemoveError::Routing(e) => Some(e),
             RemoveError::Db(e) => Some(e),
             _ => None,
         }
@@ -549,6 +658,12 @@ impl std::error::Error for RemoveError {
 impl From<DockerError> for RemoveError {
     fn from(e: DockerError) -> Self {
         RemoveError::Docker(e)
+    }
+}
+
+impl From<RouteError> for RemoveError {
+    fn from(e: RouteError) -> Self {
+        RemoveError::Routing(e)
     }
 }
 
@@ -564,6 +679,7 @@ impl From<DbError> for RemoveError {
 pub async fn remove_application(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
     name: &str,
 ) -> Result<(), RemoveError> {
     if PROTECTED_NAMES.contains(&name) {
@@ -578,6 +694,10 @@ pub async fn remove_application(
         .find_application_by_name(name)
         .await?
         .ok_or_else(|| RemoveError::NotFound(name.to_string()))?;
+
+    // The route goes first: a Hostname still answering for an Application that
+    // is on its way out is worse than one that stops a moment early.
+    routes.withdraw(&app.id)?;
 
     store.delete_application(&app.id).await?;
 
@@ -705,7 +825,6 @@ async fn recreate_with_env(
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>();
 
-    let hostname = &app.hostname;
     let container_name = container_name_for(&app.id);
 
     docker.remove_container(&container_name).await?;
@@ -713,7 +832,7 @@ async fn recreate_with_env(
         .run_application(ApplicationContainer {
             name: container_name,
             image: app.image.clone(),
-            labels: traefik_labels(&app.id, &app.name, hostname),
+            labels: identity_labels(&app.id, &app.name),
             network: PLATFORM_NETWORK.to_string(),
             ports: vec![],
             env: env_vars,
@@ -773,6 +892,7 @@ mod tests {
     use super::*;
     use crate::db::FakeStateStore;
     use crate::docker::FakeDocker;
+    use crate::routes::FakeRoutes;
 
     async fn initialized_store() -> FakeStateStore {
         let store = FakeStateStore::new();
@@ -785,7 +905,9 @@ mod tests {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
 
-        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None)
+        let routes = FakeRoutes::new();
+
+        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None, None)
             .await
             .unwrap();
 
@@ -793,17 +915,22 @@ mod tests {
         assert!(!pending.is_settled());
         assert!(docker.pulled.lock().unwrap().is_empty());
         assert!(docker.deployed_apps().is_empty());
+        assert!(routes.ids().is_empty());
 
-        let deployed = finish_deploy(&store, &docker, pending).await.unwrap();
+        let deployed = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
         assert_eq!(deployed.status, STATUS_RUNNING);
         assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
+        assert!(routes.get(&deployed.id).unwrap().contains("blog.home.lan"));
     }
 
     #[tokio::test]
     async fn reconcile_keeps_a_pending_application_whose_container_is_up() {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
-        deploy_from_image(&store, &docker, "blog", "nginx:alpine", None)
+        let routes = FakeRoutes::new();
+        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
             .await
             .unwrap();
 
@@ -816,7 +943,7 @@ mod tests {
         app.status = STATUS_PENDING.into();
         store.insert_application(&app).await.unwrap();
 
-        reconcile_pending(&store, &docker).await.unwrap();
+        reconcile(&store, &docker, &routes).await.unwrap();
 
         let settled = store
             .find_application_by_name("blog")
@@ -825,19 +952,21 @@ mod tests {
             .unwrap();
         assert_eq!(settled.status, STATUS_RUNNING);
         assert_eq!(settled.last_error, None);
+        assert!(routes.get(&settled.id).is_some());
     }
 
     #[tokio::test]
     async fn reconcile_fails_a_pending_application_with_no_container() {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
-        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None)
+        let routes = FakeRoutes::new();
+        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None, None)
             .await
             .unwrap();
         // The row is written; the deploy never ran.
         drop(pending);
 
-        reconcile_pending(&store, &docker).await.unwrap();
+        reconcile(&store, &docker, &routes).await.unwrap();
 
         let settled = store
             .find_application_by_name("blog")
@@ -854,24 +983,134 @@ mod tests {
     }
 
     #[test]
-    fn traefik_labels_enable_host_routing_without_implying_host_ports() {
-        let labels = traefik_labels("k3n8qz4v2x1p", "blog", "blog.home.lan");
+    fn a_container_carries_its_identity_and_no_routing() {
+        let labels = identity_labels("k3n8qz4v2x1p", "blog");
         assert!(
             labels
                 .iter()
-                .any(|(k, v)| k == "traefik.enable" && v == "true")
+                .any(|(k, v)| k == "sf.app.id" && v == "k3n8qz4v2x1p")
         );
-        assert!(labels.iter().any(|(k, v)| {
-            k == "traefik.http.routers.k3n8qz4v2x1p.rule" && v == "Host(`blog.home.lan`)"
-        }));
-        assert!(labels.iter().any(|(k, v)| {
-            k == "traefik.http.routers.k3n8qz4v2x1p.entrypoints" && v == "websecure"
-        }));
         assert!(
             labels
                 .iter()
-                .any(|(k, v)| { k == "traefik.http.routers.k3n8qz4v2x1p.tls" && v == "true" })
+                .any(|(k, v)| k == "sf.app.name" && v == "blog")
         );
+        assert!(
+            !labels.iter().any(|(k, _)| k.starts_with("traefik.")),
+            "routing belongs to the file provider, not to a label"
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_the_hostname_rewrites_the_route_and_keeps_the_container() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let app = deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+        let deploys_before = docker.deployed_apps().len();
+
+        let updated = update_application(
+            &store,
+            &docker,
+            &routes,
+            &app.id,
+            ApplicationUpdate {
+                hostname: Some("writing.home.lan".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.status, STATUS_RUNNING);
+        assert_eq!(
+            docker.deployed_apps().len(),
+            deploys_before,
+            "a Hostname change must not recreate the container"
+        );
+        assert!(routes.get(&app.id).unwrap().contains("writing.home.lan"));
+    }
+
+    #[tokio::test]
+    async fn an_alias_keeps_the_old_hostname_answering_after_a_hostname_change() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let app = deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+
+        update_application(
+            &store,
+            &docker,
+            &routes,
+            &app.id,
+            ApplicationUpdate {
+                hostname: Some("writing.home.lan".into()),
+                aliases: Some(vec!["blog.home.lan".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let route = routes.get(&app.id).unwrap();
+        assert!(route.contains("Host(`writing.home.lan`) || Host(`blog.home.lan`)"));
+    }
+
+    #[tokio::test]
+    async fn removing_an_application_takes_its_route_down() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let app = deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+        assert!(routes.get(&app.id).is_some());
+
+        remove_application(&store, &docker, &routes, "blog")
+            .await
+            .unwrap();
+
+        assert!(routes.get(&app.id).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_alias_another_application_already_answers_on_is_refused() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+        let shop = deploy_from_image(&store, &docker, &routes, "shop", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+
+        let clash = update_application(
+            &store,
+            &docker,
+            &routes,
+            &shop.id,
+            ApplicationUpdate {
+                aliases: Some(vec!["blog.home.lan".into()]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(matches!(clash, Err(DeployError::InvalidHostname(_))));
+    }
+
+    #[test]
+    fn validate_hostname_rejects_a_traefik_rule_escape() {
+        assert!(validate_hostname("blog.home.lan`) || Host(`admin.home.lan").is_err());
     }
 
     #[test]

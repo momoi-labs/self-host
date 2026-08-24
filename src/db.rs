@@ -11,6 +11,9 @@ pub struct ApplicationRecord {
     pub id: String,
     pub name: String,
     pub hostname: String,
+    /// Extra Hostnames the same Application answers on, so changing the
+    /// Hostname does not have to break the old one (ADR-0009).
+    pub aliases: Vec<String>,
     pub image: String,
     pub status: String,
     pub source: String,
@@ -85,6 +88,7 @@ struct PgApplicationRow {
     id: String,
     name: String,
     hostname: String,
+    aliases: Vec<String>,
     image: String,
     status: String,
     source: String,
@@ -97,6 +101,7 @@ impl From<PgApplicationRow> for ApplicationRecord {
             id: r.id,
             name: r.name,
             hostname: r.hostname,
+            aliases: r.aliases,
             image: r.image,
             status: r.status,
             source: r.source,
@@ -140,6 +145,7 @@ impl StateStore for PgStateStore {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 hostname TEXT NOT NULL,
+                aliases TEXT[] NOT NULL DEFAULT '{}',
                 image TEXT NOT NULL,
                 status TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT 'image',
@@ -216,6 +222,13 @@ impl StateStore for PgStateStore {
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
 
+        // ADR-0009: an Application can answer on more than one Hostname.
+        let _ = sqlx::query(
+            "ALTER TABLE applications ADD COLUMN IF NOT EXISTS aliases TEXT[] NOT NULL DEFAULT '{}'",
+        )
+        .execute(&self.pool)
+        .await;
+
         let _ = sqlx::query("ALTER TABLE applications ADD COLUMN IF NOT EXISTS last_error TEXT")
             .execute(&self.pool)
             .await;
@@ -272,11 +285,12 @@ impl StateStore for PgStateStore {
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError> {
         sqlx::query(
             r#"
-            INSERT INTO applications (id, name, hostname, image, status, source, last_error)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO applications (id, name, hostname, aliases, image, status, source, last_error)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 hostname = EXCLUDED.hostname,
+                aliases = EXCLUDED.aliases,
                 image = EXCLUDED.image,
                 status = EXCLUDED.status,
                 source = EXCLUDED.source,
@@ -286,6 +300,7 @@ impl StateStore for PgStateStore {
         .bind(&app.id)
         .bind(&app.name)
         .bind(&app.hostname)
+        .bind(&app.aliases)
         .bind(&app.image)
         .bind(&app.status)
         .bind(&app.source)
@@ -309,7 +324,7 @@ impl StateStore for PgStateStore {
 
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError> {
         let rows = sqlx::query_as::<_, PgApplicationRow>(
-            "SELECT id, name, hostname, image, status, source, last_error \
+            "SELECT id, name, hostname, aliases, image, status, source, last_error \
              FROM applications ORDER BY name",
         )
         .fetch_all(&self.pool)
@@ -321,7 +336,7 @@ impl StateStore for PgStateStore {
 
     async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, DbError> {
         let row = sqlx::query_as::<_, PgApplicationRow>(
-            "SELECT id, name, hostname, image, status, source, last_error \
+            "SELECT id, name, hostname, aliases, image, status, source, last_error \
              FROM applications WHERE id = $1",
         )
         .bind(id)
@@ -337,7 +352,7 @@ impl StateStore for PgStateStore {
         name: &str,
     ) -> Result<Option<ApplicationRecord>, DbError> {
         let row = sqlx::query_as::<_, PgApplicationRow>(
-            "SELECT id, name, hostname, image, status, source, last_error \
+            "SELECT id, name, hostname, aliases, image, status, source, last_error \
              FROM applications WHERE name = $1",
         )
         .bind(name)

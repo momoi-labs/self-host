@@ -21,20 +21,31 @@ pub mod config;
 pub mod console;
 pub mod db;
 pub mod docker;
+pub mod routes;
 pub mod tls;
 
 use apps::{DeployError, RemoveError};
 use db::StateStore;
 use docker::DockerRuntime;
+use routes::RouteStore;
 
 #[derive(Clone)]
 struct AppState<S: StateStore> {
     store: S,
     docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
 }
 
-pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Router {
-    let state = AppState { store, docker };
+pub fn build_app<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
+) -> Router {
+    let state = AppState {
+        store,
+        docker,
+        routes,
+    };
 
     let api_routes = Router::new()
         .route("/health", get(health))
@@ -99,6 +110,9 @@ struct DeployApplicationRequest {
     path: String,
     #[serde(default)]
     hostname: Option<String>,
+    /// Extra Hostnames the Application also answers on.
+    #[serde(default)]
+    aliases: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -109,6 +123,8 @@ struct UpdateApplicationRequest {
     image: Option<String>,
     #[serde(default)]
     hostname: Option<String>,
+    #[serde(default)]
+    aliases: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -116,6 +132,7 @@ struct ApplicationResponse {
     id: String,
     name: String,
     hostname: String,
+    aliases: Vec<String>,
     image: String,
     status: String,
     source: String,
@@ -130,6 +147,7 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             id: app.id,
             name: app.name,
             hostname: app.hostname,
+            aliases: app.aliases,
             image: app.image,
             status: app.status,
             source: app.source,
@@ -152,11 +170,12 @@ async fn update_app<S: StateStore>(
             name: body.name,
             image: body.image,
             hostname: body.hostname,
+            aliases: body.aliases,
         },
     )
     .await
     {
-        Ok(pending) => accept_deploy(&state, pending),
+        Ok(pending) => accept_deploy(&state, pending).await,
         Err(e) => deploy_error_response(e),
     }
 }
@@ -167,18 +186,35 @@ async fn update_app<S: StateStore>(
 ///
 /// A deploy with no Docker work — a rename — is already done, and says so with
 /// a plain `200`.
-fn accept_deploy<S: StateStore>(state: &AppState<S>, pending: apps::PendingDeploy) -> Response {
+async fn accept_deploy<S: StateStore>(
+    state: &AppState<S>,
+    pending: apps::PendingDeploy,
+) -> Response {
     let body = Json(ApplicationResponse::from(pending.record.clone()));
 
+    // A settled deploy is only a route rewrite — fast enough to finish before
+    // answering, so the caller's next request already sees the new Hostname.
     if pending.is_settled() {
-        return (StatusCode::OK, body).into_response();
+        return match apps::finish_deploy(
+            &state.store,
+            state.docker.as_ref(),
+            state.routes.as_ref(),
+            pending,
+        )
+        .await
+        {
+            Ok(_) => (StatusCode::OK, body).into_response(),
+            Err(e) => deploy_error_response(e),
+        };
     }
 
     let store = state.store.clone();
     let docker = state.docker.clone();
+    let routes = state.routes.clone();
     let name = pending.record.name.clone();
     tokio::spawn(async move {
-        if let Err(e) = apps::finish_deploy(&store, docker.as_ref(), pending).await {
+        if let Err(e) = apps::finish_deploy(&store, docker.as_ref(), routes.as_ref(), pending).await
+        {
             tracing::warn!("deploy of Application '{name}' failed: {e}");
         }
     });
@@ -201,20 +237,22 @@ async fn deploy_app<S: StateStore>(
     Json(body): Json<DeployApplicationRequest>,
 ) -> Response {
     let hostname = body.hostname.as_deref();
+    let aliases = body.aliases.as_deref();
 
     let prepared = match (&body.image[..], &body.path[..]) {
         ("", "") => Err(apps::DeployError::MissingImage),
         (image, "") => {
-            apps::prepare_deploy_from_image(&state.store, &body.name, image, hostname).await
+            apps::prepare_deploy_from_image(&state.store, &body.name, image, hostname, aliases)
+                .await
         }
         ("", path) => {
-            apps::prepare_deploy_from_path(&state.store, &body.name, path, hostname).await
+            apps::prepare_deploy_from_path(&state.store, &body.name, path, hostname, aliases).await
         }
         _ => Err(apps::DeployError::MissingImage),
     };
 
     match prepared {
-        Ok(pending) => accept_deploy(&state, pending),
+        Ok(pending) => accept_deploy(&state, pending).await,
         Err(err) => deploy_error_response(err),
     }
 }
@@ -234,7 +272,14 @@ async fn remove_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
-    match apps::remove_application(&state.store, state.docker.as_ref(), &name).await {
+    match apps::remove_application(
+        &state.store,
+        state.docker.as_ref(),
+        state.routes.as_ref(),
+        &name,
+    )
+    .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => remove_error_response(err),
     }
@@ -245,7 +290,7 @@ fn remove_error_response(err: RemoveError) -> Response {
         RemoveError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
         RemoveError::ProtectedName(_) => (StatusCode::FORBIDDEN, err.to_string()),
         RemoveError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
-        RemoveError::Docker(_) | RemoveError::Db(_) => {
+        RemoveError::Docker(_) | RemoveError::Routing(_) | RemoveError::Db(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     };
@@ -420,12 +465,13 @@ async fn revoke_key<S: StateStore>(
 fn deploy_error_response(err: DeployError) -> Response {
     let (status, message) = match &err {
         DeployError::AlreadyExists(_) => (StatusCode::CONFLICT, err.to_string()),
-        DeployError::InvalidName(_) | DeployError::MissingImage | DeployError::MissingPath => {
-            (StatusCode::BAD_REQUEST, err.to_string())
-        }
+        DeployError::InvalidName(_)
+        | DeployError::InvalidHostname(_)
+        | DeployError::MissingImage
+        | DeployError::MissingPath => (StatusCode::BAD_REQUEST, err.to_string()),
         DeployError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
         DeployError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
-        DeployError::Docker(_) | DeployError::Db(_) => {
+        DeployError::Docker(_) | DeployError::Routing(_) | DeployError::Db(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
     };
@@ -544,7 +590,11 @@ mod tests {
         let store = FakeStateStore::new();
         store.store_state("api_key", api_key).await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker.clone()));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            Arc::new(routes::FakeRoutes::new()),
+        );
         (app, store, docker)
     }
 
@@ -553,7 +603,11 @@ mod tests {
         store.store_state("api_key", api_key).await.unwrap();
         store.store_state("dns_suffix", dns_suffix).await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+        );
         (app, store)
     }
 
@@ -563,7 +617,11 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::failing_pull("no such image: nginx:typo");
-        let app = build_app(store.clone(), Arc::new(docker));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+        );
 
         let response = post_json(
             &app,
@@ -589,7 +647,11 @@ mod tests {
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
         let apps_handle = docker.apps.clone();
-        let app = build_app(store.clone(), Arc::new(docker));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+        );
 
         post_json(
             &app,
@@ -689,7 +751,11 @@ mod tests {
     async fn bootstrap_status_returns_initialized_false_when_not_initialized() {
         let store = FakeStateStore::new();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+        );
 
         // Store an API key so auth passes
         store.store_state("api_key", "test-key").await.unwrap();
@@ -710,7 +776,7 @@ mod tests {
         store.store_state("dns_suffix", "home.lan").await.unwrap();
 
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker));
+        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
 
         let response = send(&app, "/bootstrap/status", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -726,7 +792,7 @@ mod tests {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker));
+        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
 
         let response = send(&app, "/bootstrap/status", None).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -748,7 +814,7 @@ mod tests {
             .expect("persist should succeed");
 
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker));
+        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
 
         let response = send(&app, "/bootstrap/status", Some("generated-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -844,6 +910,7 @@ mod tests {
             json!([{
                 "name": "blog",
                 "hostname": "blog.home.lan",
+                "aliases": [],
                 "image": "nginx:alpine",
                 "status": "running",
                 "source": "image"
@@ -894,7 +961,8 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker.clone()));
+        let route_store = Arc::new(routes::FakeRoutes::new());
+        let app = build_app(store.clone(), Arc::new(docker.clone()), route_store.clone());
 
         let response = post_json(
             &app,
@@ -908,20 +976,30 @@ mod tests {
 
         assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
 
-        let deployed = docker.apps.lock().unwrap();
-        assert_eq!(deployed.len(), 1);
-        assert!(deployed[0].ports.is_empty());
+        {
+            let deployed = docker.apps.lock().unwrap();
+            assert_eq!(deployed.len(), 1);
+            assert!(deployed[0].ports.is_empty());
+            // Routing is a file Traefik watches, not a label on the container.
+            assert!(
+                !deployed[0]
+                    .labels
+                    .iter()
+                    .any(|(k, _)| k.starts_with("traefik."))
+            );
+        }
+
+        let id = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
         assert!(
-            deployed[0]
-                .labels
-                .iter()
-                .any(|(k, v)| k == "traefik.enable" && v == "true")
-        );
-        assert!(
-            deployed[0]
-                .labels
-                .iter()
-                .any(|(k, v)| { k.ends_with(".rule") && v == "Host(`blog.home.lan`)" })
+            route_store
+                .get(&id)
+                .unwrap()
+                .contains("Host(`blog.home.lan`)")
         );
     }
 
@@ -957,7 +1035,11 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker.clone()));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            Arc::new(routes::FakeRoutes::new()),
+        );
 
         // Deploy two apps
         let r1 = post_json(
@@ -1008,7 +1090,11 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker.clone()));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            Arc::new(routes::FakeRoutes::new()),
+        );
 
         let deploy = post_json(
             &app,
@@ -1065,7 +1151,11 @@ mod tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker.clone()));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            Arc::new(routes::FakeRoutes::new()),
+        );
 
         let _ = post_json(
             &app,
@@ -1091,7 +1181,7 @@ mod tests {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker));
+        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
 
         let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
@@ -1200,7 +1290,11 @@ mod deploy_path_tests {
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store.clone(), Arc::new(docker.clone()));
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            Arc::new(routes::FakeRoutes::new()),
+        );
 
         let response = post_json(
             &app,
