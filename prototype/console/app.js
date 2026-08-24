@@ -327,7 +327,10 @@ async function saveApp(e, id) {
       headers: authHeaders(),
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
+    if (res.ok) {
+      toast('success', 'Changes saved', body.name + ' was redeployed.');
+    } else {
+      // Same rule as deploy: the error goes on the form, not into a toast.
       errEl.textContent = await res.text();
       errEl.classList.remove('hidden');
     }
@@ -360,11 +363,21 @@ async function deploy(e) {
     // instead of reporting an error the operator cannot act on.
     const created = apps.find(a => a.name === name);
     if (created) selectApp(created.id);
-    if (!res.ok) {
+
+    if (res.ok) {
+      toast('success', 'Application deployed', created
+        ? name + ' is reachable at ' + created.hostname + '.'
+        : name + ' was created.');
+    } else {
+      // The response already carries the reason. Put it on the form next to
+      // the field that caused it — a toast on top of that would be the same
+      // news twice, and the toast is the copy that disappears.
       const errored = document.getElementById('edit-error');
       if (errored) {
         errored.textContent = await res.text();
         errored.classList.remove('hidden');
+      } else {
+        toast('danger', 'Could not deploy ' + name, await res.text());
       }
     }
   } catch (err) {
@@ -375,15 +388,82 @@ async function deploy(e) {
 
 // ── Remove ──────────────────────────────────────────────────────
 async function removeApp(name) {
-  if (!confirm(`Remove "${name}"?`)) return;
+  if (!await confirmRemove(name)) return;
   try {
-    await fetch('/apps/' + encodeURIComponent(name), {
+    const res = await fetch('/apps/' + encodeURIComponent(name), {
       method: 'DELETE',
       headers: authHeaders(),
     });
-  } catch {}
+    if (!res.ok) {
+      toast('danger', 'Could not remove ' + name, await res.text());
+      return;
+    }
+    toast('success', 'Application removed', name + ' and its container are gone.');
+  } catch (err) {
+    toast('danger', 'Could not remove ' + name, err.message);
+    return;
+  }
   selected = null;
   await loadApps();
+}
+
+// ── Toasts and confirmation ─────────────────────────────────────
+const TOAST_ICONS = {
+  success: '<svg viewBox="0 0 24 24" class="success"><path d="M20 6 9 17l-5-5"></path></svg>',
+  danger: '<svg viewBox="0 0 24 24" class="danger"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16h.01"></path></svg>',
+};
+
+function toast(kind, title, body) {
+  const region = document.querySelector('[data-toasts]');
+  if (!region) return;
+
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = `
+    ${TOAST_ICONS[kind] || ''}
+    <div class="grow">
+      <p class="alert-title">${esc(title)}</p>
+      ${body ? `<p class="alert-body">${esc(body)}</p>` : ''}
+    </div>
+    <button type="button" class="button button-ghost" aria-label="Dismiss">✕</button>
+  `;
+  const dismiss = () => el.remove();
+  el.querySelector('button').addEventListener('click', dismiss);
+  region.appendChild(el);
+  setTimeout(dismiss, 6000);
+}
+
+/* Replaces window.confirm, which cannot be styled and says the hostname out
+   loud. Resolves true only if the destructive button is the one pressed. */
+function confirmRemove(name) {
+  return new Promise(resolve => {
+    const modal = document.getElementById('confirm-modal');
+    const accept = document.getElementById('confirm-accept');
+    const cancel = document.getElementById('confirm-cancel');
+    document.getElementById('confirm-body').textContent =
+      `"${name}" and its container will be removed. This cannot be undone.`;
+
+    const close = (answer) => {
+      modal.classList.add('hidden');
+      accept.removeEventListener('click', onAccept);
+      cancel.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+      resolve(answer);
+    };
+    const onAccept = () => close(true);
+    const onCancel = () => close(false);
+    const onBackdrop = (e) => { if (e.target === modal) close(false); };
+    const onKey = (e) => { if (e.key === 'Escape') close(false); };
+
+    accept.addEventListener('click', onAccept);
+    cancel.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+
+    modal.classList.remove('hidden');
+    accept.focus();
+  });
 }
 
 // ── Splitter ────────────────────────────────────────────────────
