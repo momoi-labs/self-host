@@ -290,7 +290,7 @@ function selectApp(id) {
   // previous one must not keep scrolling past.
   document.getElementById('logs-panel').innerHTML = `
     <p class="t-caps">Logs from sf-app-${esc(app.id)}</p>
-    <div class="logview"><div id="logs-content" role="log" aria-live="polite"></div></div>
+    <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite"></div></div>
   `;
 
   startLogStream(app.id);

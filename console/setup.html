@@ -37,8 +37,8 @@
     <p class="muted t-label">Point your device's DNS resolver to the Host IP so that <code id="suffix-example">*.home.lan</code> resolves locally.</p>
     <div>
       <details class="disclosure"><summary>macOS</summary><ol><li>Open System Settings → Network.</li><li>Open the active connection and select DNS.</li><li>Add the Host IP as a DNS server, then apply the change.</li></ol></details>
-      <details class="disclosure"><summary>Linux</summary><p class="muted t-label">With systemd-resolved:</p><pre>sudo resolvectl dns INTERFACE HOST_IP
-sudo resolvectl domain INTERFACE ~SUFFIX</pre><p class="t-metadata muted">Replace INTERFACE, HOST_IP and SUFFIX with the values for your host.</p></details>
+      <details class="disclosure"><summary>Linux</summary><p class="muted t-label">With systemd-resolved:</p><pre><code>sudo resolvectl dns INTERFACE HOST_IP
+sudo resolvectl domain INTERFACE ~SUFFIX</code></pre><p class="t-metadata muted">Replace INTERFACE, HOST_IP and SUFFIX with the values for your host.</p></details>
       <details class="disclosure"><summary>Windows</summary><ol><li>Open Network Connections and the active adapter's properties.</li><li>Open Internet Protocol Version 4 (TCP/IPv4).</li><li>Use the Host IP as the preferred DNS server and save.</li></ol></details>
       <details class="disclosure"><summary>iOS and Android</summary><p class="muted t-label">Edit the active Wi-Fi network, choose manual or static DNS, and use the Host IP as the first DNS server.</p></details>
     </div>
@@ -48,7 +48,7 @@ sudo resolvectl domain INTERFACE ~SUFFIX</pre><p class="t-metadata muted">Replac
     <div class="card-header"><h2 class="t-h3" id="example-heading">Try it</h2></div>
     <div class="card-body">
       <p class="muted t-label">After setup, open an application by hostname:</p>
-      <pre id="example-url">http://blog.home.lan</pre>
+      <pre><code id="example-url">http://blog.home.lan</code></pre>
     </div>
   </section>
 </main>

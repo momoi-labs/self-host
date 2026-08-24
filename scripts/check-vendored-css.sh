@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-KISO_VERSION="0.3.0"
+KISO_VERSION="0.4.0"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 update=false
