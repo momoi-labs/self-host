@@ -101,6 +101,19 @@
       </form>
     </section>
   </div>
+  <div id="confirm-modal" class="dialog-overlay hidden">
+    <section class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+      <h2 id="confirm-title">Remove application</h2>
+      <p id="confirm-body" class="muted"></p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel" type="button" class="button">Cancel</button>
+        <button id="confirm-accept" type="button" class="button button-danger">Remove</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast-region" data-toasts role="status" aria-live="polite"></div>
+
   <script src="/console/app.js"></script>
 </body>
 </html>
