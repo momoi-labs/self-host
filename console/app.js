@@ -18,7 +18,9 @@ function logout() {
 
 // ── State ───────────────────────────────────────────────────────
 let apps = [];
+let system = [];
 let selected = null;
+let selectedSystem = null;
 let logAbort = null;
 let pendingPoll = null;
 let detailSignature = null;
@@ -26,10 +28,13 @@ let detailSignature = null;
 async function init() {
   await loadBootstrap();
   await loadApps();
+  await loadSystem();
   setupSplitter();
   document.getElementById('deploy-btn').addEventListener('click', showDeployModal);
   document.getElementById('empty-deploy').addEventListener('click', showDeployModal);
   document.querySelector('[data-home]').addEventListener('click', showDashboard);
+  document.querySelector('[data-platform]').addEventListener('click', showPlatform);
+  document.getElementById('health-link').addEventListener('click', showPlatform);
   document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-cancel').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-form').addEventListener('submit', deploy);
@@ -61,6 +66,14 @@ async function loadApps() {
   announceSettled(before);
   render();
   schedulePendingPoll();
+}
+
+async function loadSystem() {
+  try {
+    const res = await fetch('/system', { headers: authHeaders() });
+    if (!res.ok) { system = []; return; }
+    system = await res.json();
+  } catch { system = []; }
 }
 
 /* A deploy is accepted before Docker starts pulling, so the row arrives as
@@ -115,6 +128,10 @@ function render() {
       selected = null;
       showDashboard();
     }
+  } else if (selectedSystem) {
+    // The Platform detail is read-only and nothing polls it, so leave it alone.
+  } else if (!document.getElementById('platform').classList.contains('hidden')) {
+    showPlatform();
   } else {
     showDashboard();
   }
@@ -195,20 +212,120 @@ function setCrumb(label) {
 function showDashboard() {
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
+  selectedSystem = null;
   detailSignature = null;
   setCrumb('Overview');
   document.querySelector('[data-home]').setAttribute('aria-current', 'page');
+  document.querySelector('[data-platform]').removeAttribute('aria-current');
   document.getElementById('dashboard').classList.remove('hidden');
+  document.getElementById('platform').classList.add('hidden');
   document.getElementById('detail').classList.add('hidden');
   document.querySelectorAll('#sidebar [data-id]').forEach(el => {
     el.removeAttribute('aria-current');
   });
 }
 
+function renderPlatform() {
+  const rows = document.getElementById('system-rows');
+  if (!rows) return;
+  rows.innerHTML = system.map(c => `
+    <tr data-role="${esc(c.role)}" tabindex="0">
+      <td class="mono">${esc(c.role)}</td>
+      <td class="mono">${esc(c.name)}</td>
+      <td class="mono">${esc(c.image)}</td>
+      <td><span class="badge ${statusBadge(c.status)}"><span class="dot" aria-hidden="true"></span>${esc(c.status)}</span></td>
+      <td class="num">${c.restarts === null || c.restarts === undefined ? '<span class="muted">—</span>' : c.restarts}</td>
+    </tr>
+  `).join('');
+  document.getElementById('system-count').textContent =
+    system.length + (system.length === 1 ? ' Platform Infra component' : ' Platform Infra components');
+  rows.querySelectorAll('tr[data-role]').forEach(tr => {
+    tr.addEventListener('click', () => selectSystem(tr.dataset.role));
+    tr.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectSystem(tr.dataset.role); }
+    });
+  });
+}
+
+function showPlatform() {
+  if (logAbort) { logAbort.abort(); logAbort = null; }
+  selected = null;
+  selectedSystem = null;
+  detailSignature = null;
+  setCrumb('Platform');
+  document.querySelector('[data-platform]').setAttribute('aria-current', 'page');
+  document.querySelector('[data-home]').removeAttribute('aria-current');
+  document.getElementById('platform').classList.remove('hidden');
+  document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('detail').classList.add('hidden');
+  document.querySelectorAll('#sidebar [data-id]').forEach(el => {
+    el.removeAttribute('aria-current');
+  });
+  renderPlatform();
+}
+
+/* The Platform Infra detail is the read-only twin of the Application detail:
+   the same split, with the edit form replaced by a .kv definition list. No
+   Remove, no Save — the absence of the actions is what says read-only. */
+function selectSystem(role) {
+  const c = system.find(x => x.role === role);
+  if (!c) return;
+  selected = null;
+  selectedSystem = role;
+  detailSignature = null;
+
+  setCrumb('Platform');
+  document.querySelector('[data-platform]').setAttribute('aria-current', 'page');
+  document.querySelector('[data-home]').removeAttribute('aria-current');
+  document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('platform').classList.add('hidden');
+  document.getElementById('detail').classList.remove('hidden');
+  document.querySelectorAll('#sidebar [data-id]').forEach(el => {
+    el.removeAttribute('aria-current');
+  });
+
+  const restarts = c.restarts === null || c.restarts === undefined ? '—' : String(c.restarts);
+
+  document.getElementById('detail').innerHTML = `
+    <div class="between">
+      <div class="page-header">
+        <h1 class="t-h1">${esc(c.role)}</h1>
+        <p class="muted t-label"><span class="mono">${esc(c.name)}</span></p>
+      </div>
+      <span class="badge ${statusBadge(c.status)}">
+        <span class="dot" aria-hidden="true"></span>${esc(c.status)}
+      </span>
+    </div>
+    <div class="card detail-panel">
+      <div class="split">
+        <div class="pane">
+          <p class="t-caps">Configuration</p>
+          <dl class="kv">
+            <dt>Role</dt><dd>${esc(c.role)}</dd>
+            <dt>Container</dt><dd>${esc(c.name)}</dd>
+            <dt>Image</dt><dd>${esc(c.image)}</dd>
+            <dt>Restarts</dt><dd>${esc(restarts)}</dd>
+          </dl>
+        </div>
+        <div class="splitter" id="splitter" aria-hidden="true"></div>
+        <div class="pane pane-logs" id="logs-panel"></div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('logs-panel').innerHTML = `
+    <p class="t-caps">Logs from ${esc(c.name)}</p>
+    <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite"></div></div>
+  `;
+
+  startSystemLogStream(role);
+}
+
 function selectApp(id) {
   const app = apps.find(a => a.id === id);
   if (!app) return;
   selected = id;
+  selectedSystem = null;
   detailSignature = appSignature(app);
 
   document.querySelectorAll('#sidebar [data-id]').forEach(el => {
@@ -218,7 +335,9 @@ function selectApp(id) {
 
   setCrumb(app.name);
   document.querySelector('[data-home]').removeAttribute('aria-current');
+  document.querySelector('[data-platform]').removeAttribute('aria-current');
   document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('platform').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 
   // The whole detail is one page: the identity is the page header, and the
@@ -298,6 +417,14 @@ function selectApp(id) {
 
 // ── Log streaming (fetch + ReadableStream) ──────────────────────
 async function startLogStream(id) {
+  await openLogStream('/apps/id/' + encodeURIComponent(id) + '/logs');
+}
+
+async function startSystemLogStream(role) {
+  await openLogStream('/system/' + encodeURIComponent(role) + '/logs');
+}
+
+async function openLogStream(url) {
   if (logAbort) { logAbort.abort(); logAbort = null; }
 
   const abort = new AbortController();
@@ -309,7 +436,7 @@ async function startLogStream(id) {
   contentEl.innerHTML = '';
 
   try {
-    const res = await fetch('/apps/id/' + encodeURIComponent(id) + '/logs', {
+    const res = await fetch(url, {
       headers: authHeaders(),
       signal: abort.signal,
     });

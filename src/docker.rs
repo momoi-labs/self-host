@@ -540,6 +540,25 @@ impl FakeDocker {
             .map(|a| a.name.clone())
             .collect()
     }
+
+    /// Makes the Platform Infra containers look running, so tests of `/system`
+    /// see the running state without going through `run_bootstrap`.
+    pub fn seed_system_containers(&self) {
+        let mut infra = self.infra.lock().unwrap();
+        for (role, image) in crate::bootstrap::SYSTEM_CONTAINERS {
+            infra.push(ContainerConfig {
+                image: image.to_string(),
+                name: crate::apps::system_container_name(role),
+                ports: vec![],
+                env: vec![],
+                volumes: vec![],
+                restart_policy: "unless-stopped".into(),
+                cmd: vec![],
+                labels: vec![],
+                networks: vec![],
+            });
+        }
+    }
 }
 
 #[async_trait]
@@ -558,11 +577,13 @@ impl DockerRuntime for FakeDocker {
     }
 
     async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
-        Ok(self.apps.lock().unwrap().iter().any(|a| a.name == name))
+        Ok(self.apps.lock().unwrap().iter().any(|a| a.name == name)
+            || self.infra.lock().unwrap().iter().any(|c| c.name == name))
     }
 
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
-        let running = self.apps.lock().unwrap().iter().any(|a| a.name == name);
+        let running = self.apps.lock().unwrap().iter().any(|a| a.name == name)
+            || self.infra.lock().unwrap().iter().any(|c| c.name == name);
         Ok(running.then_some(0))
     }
 
