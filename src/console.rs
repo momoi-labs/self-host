@@ -10,7 +10,7 @@ use rust_embed::RustEmbed;
 /// Embedded console assets (production).
 /// In debug builds, files are served from disk instead.
 #[derive(RustEmbed)]
-#[folder = "prototype/console/"]
+#[folder = "console/"]
 struct ConsoleAssets;
 
 /// Serves the login page at `/console`.
@@ -52,7 +52,7 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
     // In debug builds, read from disk for hot-reload.
     #[cfg(debug_assertions)]
     {
-        let file_path = std::path::Path::new("prototype/console").join(path);
+        let file_path = std::path::Path::new("console").join(path);
         if let Ok(content) = std::fs::read(&file_path) {
             return Response::builder()
                 .status(StatusCode::OK)
