@@ -271,7 +271,7 @@ function selectApp(id) {
   if (reselecting) return;
 
   document.getElementById('logs-panel').innerHTML = `
-    <p class="section-label mono">Logs — ${esc(app.name)}</p>
+    <p class="section-label mono">Logs from sf-app-${esc(app.id)}</p>
     <div id="logs-content" class="mono" role="log" aria-live="polite"></div>
   `;
 
