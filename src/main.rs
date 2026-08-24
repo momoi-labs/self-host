@@ -170,6 +170,37 @@ async fn run_init_command(dns_suffix: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// Polls an Application until its deploy settles. There is no upper bound on
+/// how long a `docker pull` takes, so there is none here either — Ctrl-C is
+/// the way out, and the Application keeps deploying without us.
+async fn wait_for_deploy(
+    client: &reqwest::Client,
+    config: &CliConfig,
+    id: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let url = format!(
+        "{}/apps/id/{}",
+        config.api_base_url.trim_end_matches('/'),
+        id
+    );
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let response = client.get(&url).bearer_auth(&config.api_key).send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(format!("Deploy status unavailable ({status}): {body}").into());
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body)?;
+        if parsed["status"].as_str() != Some("pending") {
+            return Ok(parsed);
+        }
+    }
+}
+
 async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error::Error>> {
     let config = CliConfig::load()?.ok_or_else(|| {
         std::io::Error::new(
@@ -217,11 +248,30 @@ async fn run_apps_command(command: AppsCommand) -> Result<(), Box<dyn std::error
             }
 
             let parsed: serde_json::Value = serde_json::from_str(&body)?;
+
+            // The API answers as soon as the Application is on record and
+            // pulls in the background. An operator at a terminal is waiting
+            // for the outcome, so wait for it here.
+            let deployed = if parsed["status"].as_str() == Some("pending") {
+                println!("Deploying {name}…");
+                wait_for_deploy(&client, &config, parsed["id"].as_str().unwrap_or_default()).await?
+            } else {
+                parsed
+            };
+
+            if deployed["status"].as_str() == Some("failed") {
+                return Err(format!(
+                    "Deploy failed: {}",
+                    deployed["last_error"].as_str().unwrap_or("unknown error")
+                )
+                .into());
+            }
+
             println!(
                 "Deployed {} → http://{} ({})",
-                parsed["name"].as_str().unwrap_or(&name),
-                parsed["hostname"].as_str().unwrap_or("?"),
-                parsed["status"].as_str().unwrap_or("?")
+                deployed["name"].as_str().unwrap_or(&name),
+                deployed["hostname"].as_str().unwrap_or("?"),
+                deployed["status"].as_str().unwrap_or("?")
             );
         }
         AppsCommand::List => {
@@ -541,6 +591,12 @@ async fn run_server() {
     // If we have a DB but no stored API key, use env var
     if store.get_api_key().await.ok().flatten().is_none() && !api_key.is_empty() {
         let _ = store.store_state("api_key", &api_key).await;
+    }
+
+    // A row left `pending` by a restart is nobody's deploy any more; settle it
+    // against what Docker is actually running before serving.
+    if let Err(e) = self_host::apps::reconcile_pending(&store, docker.as_ref()).await {
+        tracing::warn!("failed to reconcile pending Applications: {e}");
     }
 
     // Log the admin dashboard URL if we know the DNS suffix.

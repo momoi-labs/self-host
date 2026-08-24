@@ -195,8 +195,15 @@ impl DockerRuntime for ComposeDocker {
         self.flush()
     }
 
-    async fn container_running(&self, _name: &str) -> Result<bool, DockerError> {
-        Ok(true)
+    async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
+        let output = std::process::Command::new("docker")
+            .args(["inspect", "-f", "{{.State.Running}}", name])
+            .output()
+            .map_err(|e| DockerError::Unavailable(e.to_string()))?;
+
+        // A container that is not there at all makes `inspect` exit non-zero,
+        // which is an answer, not an error.
+        Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
     }
 
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
@@ -435,8 +442,8 @@ impl DockerRuntime for FakeDocker {
         Ok(())
     }
 
-    async fn container_running(&self, _name: &str) -> Result<bool, DockerError> {
-        Ok(true)
+    async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
+        Ok(self.apps.lock().unwrap().iter().any(|a| a.name == name))
     }
 
     async fn ensure_network(&self, _name: &str) -> Result<(), DockerError> {

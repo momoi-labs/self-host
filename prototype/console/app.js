@@ -20,6 +20,8 @@ function logout() {
 let apps = [];
 let selected = null;
 let logAbort = null;
+let pendingPoll = null;
+let detailSignature = null;
 
 async function init() {
   await loadBootstrap();
@@ -50,12 +52,36 @@ async function loadBootstrap() {
 }
 
 async function loadApps() {
+  const before = Object.fromEntries(apps.map(a => [a.id, a.status]));
   try {
     const res = await fetch('/apps', { headers: authHeaders() });
     if (!res.ok) return;
     apps = await res.json();
   } catch { apps = []; }
+  announceSettled(before);
   render();
+  schedulePendingPoll();
+}
+
+/* A deploy is accepted before Docker starts pulling, so the row arrives as
+   pending and settles minutes later. Keep asking while anything is in flight. */
+function schedulePendingPoll() {
+  if (pendingPoll) { clearTimeout(pendingPoll); pendingPoll = null; }
+  if (!apps.some(a => a.status === 'pending')) return;
+  pendingPoll = setTimeout(() => { pendingPoll = null; loadApps(); }, 2000);
+}
+
+/* The dialog is long gone by the time a pull finishes, so the outcome has to
+   find the operator wherever they are. */
+function announceSettled(before) {
+  for (const app of apps) {
+    if (before[app.id] !== 'pending' || app.status === 'pending') continue;
+    if (app.status === 'running') {
+      toast('success', 'Application deployed', app.name + ' is reachable at ' + app.hostname + '.');
+    } else {
+      toast('danger', 'Could not deploy ' + app.name, app.last_error || 'The deploy failed.');
+    }
+  }
 }
 
 // ── Render ──────────────────────────────────────────────────────
@@ -81,7 +107,9 @@ function render() {
   if (selected) {
     const app = apps.find(a => a.id === selected);
     if (app) {
-      selectApp(selected);
+      // Redrawing on every poll would wipe out whatever is being typed into
+      // the edit form, so only redraw when the record actually moved.
+      if (appSignature(app) !== detailSignature) selectApp(selected);
     } else {
       selected = null;
       showDashboard();
@@ -93,6 +121,10 @@ function render() {
 
 /* running is the only good outcome; pending and failed both need attention,
    but only failed is an error. */
+function appSignature(app) {
+  return [app.status, app.name, app.image, app.hostname, app.last_error || ''].join('|');
+}
+
 function statusTone(status) {
   if (status === 'running') return 'success';
   if (status === 'failed') return 'danger';
@@ -144,6 +176,7 @@ function setCrumb(label) {
 function showDashboard() {
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
+  detailSignature = null;
   setCrumb('Overview');
   document.querySelector('[data-home]').setAttribute('aria-current', 'page');
   document.getElementById('dashboard').classList.remove('hidden');
@@ -159,6 +192,7 @@ function selectApp(id) {
   if (!app) return;
   const reselecting = selected === id && logAbort;
   selected = id;
+  detailSignature = appSignature(app);
 
   document.querySelectorAll('#sidebar .app-item').forEach(el => {
     const on = el.dataset.id === id;
@@ -331,8 +365,10 @@ async function saveApp(e, id) {
       headers: authHeaders(),
       body: JSON.stringify(body),
     });
-    if (res.ok) {
-      toast('success', 'Changes saved', body.name + ' was redeployed.');
+    if (res.status === 202) {
+      toast('success', 'Changes saved', body.name + ' is redeploying.');
+    } else if (res.ok) {
+      toast('success', 'Changes saved', body.name + ' was updated.');
     } else {
       failure = await res.text();
     }
@@ -387,9 +423,9 @@ async function deploy(e) {
     if (created) selectApp(created.id);
 
     if (!failure) {
-      toast('success', 'Application deployed', created
-        ? name + ' is reachable at ' + created.hostname + '.'
-        : name + ' was created.');
+      // Accepted, not finished: the pull runs on the platform and the poll
+      // says how it went.
+      toast('success', 'Deploy started for ' + name, 'Pulling image ' + image + ' ...');
     }
     // A failure needs no toast: selectApp already rendered the reason as the
     // application's alert, and that one stays on screen.
