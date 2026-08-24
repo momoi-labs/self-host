@@ -133,6 +133,7 @@ impl std::error::Error for DockerError {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ContainerConfig {
     pub image: String,
     pub name: String,
@@ -498,6 +499,7 @@ impl DockerRuntime for ComposeDocker {
 #[derive(Clone, Default)]
 pub struct FakeDocker {
     pub apps: std::sync::Arc<std::sync::Mutex<Vec<ApplicationContainer>>>,
+    pub infra: std::sync::Arc<std::sync::Mutex<Vec<ContainerConfig>>>,
     pub pulled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub built: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     /// When set, `pull_image` fails with this message — the everyday case of a
@@ -509,6 +511,7 @@ impl FakeDocker {
     pub fn new() -> Self {
         FakeDocker {
             apps: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            infra: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pulled: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             built: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pull_failure: None,
@@ -520,6 +523,10 @@ impl FakeDocker {
             pull_failure: Some(message.to_string()),
             ..FakeDocker::new()
         }
+    }
+
+    pub fn infra_containers(&self) -> Vec<ContainerConfig> {
+        self.infra.lock().unwrap().clone()
     }
 
     pub fn deployed_apps(&self) -> Vec<String> {
@@ -538,7 +545,8 @@ impl DockerRuntime for FakeDocker {
         Ok(())
     }
 
-    async fn ensure_container_running(&self, _config: ContainerConfig) -> Result<(), DockerError> {
+    async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError> {
+        self.infra.lock().unwrap().push(config);
         Ok(())
     }
 
