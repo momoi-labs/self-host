@@ -162,11 +162,15 @@ function renderDashboard() {
   rows.innerHTML = apps.map(a => `
     <tr data-id="${esc(a.id)}" tabindex="0">
       <td>${esc(a.name)}</td>
-      <td class="mono">${esc(a.image)}</td>
       <td class="mono">${esc(a.hostname)}${(a.aliases || []).length ? `<span class="metadata"> +${(a.aliases || []).length}</span>` : ''}</td>
+      <td class="mono">${esc(a.image)}</td>
       <td><span class="badge ${statusTone(a.status)}"><span class="status-dot" aria-hidden="true"></span>${esc(a.status)}</span></td>
+      <td class="numeric">${a.restarts === undefined ? '<span class="muted">—</span>' : a.restarts}</td>
     </tr>
   `).join('');
+
+  document.getElementById('app-count').textContent =
+    apps.length + (apps.length === 1 ? ' application' : ' applications');
   rows.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', () => selectApp(tr.dataset.id));
     tr.addEventListener('keydown', e => {
