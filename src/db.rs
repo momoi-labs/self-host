@@ -6,11 +6,16 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationRecord {
+    /// Stable identity. The container and the Traefik router are named from
+    /// this, never from `name`, so renaming an Application touches only a row.
+    pub id: String,
     pub name: String,
     pub hostname: String,
     pub image: String,
     pub status: String,
     pub source: String,
+    /// Why the last deploy failed, when `status` is `failed`.
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -47,14 +52,21 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     }
 
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError>;
-    async fn application_exists(&self, name: &str) -> Result<bool, DbError>;
+    async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, DbError>;
+    async fn find_application_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<ApplicationRecord>, DbError>;
+    async fn application_exists(&self, name: &str) -> Result<bool, DbError> {
+        Ok(self.find_application_by_name(name).await?.is_some())
+    }
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError>;
-    async fn delete_application(&self, name: &str) -> Result<(), DbError>;
+    async fn delete_application(&self, id: &str) -> Result<(), DbError>;
 
-    async fn set_env(&self, app_name: &str, key: &str, value: &str) -> Result<(), DbError>;
-    async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError>;
-    async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError>;
-    async fn unset_env(&self, app_name: &str, key: &str) -> Result<(), DbError>;
+    async fn set_env(&self, app_id: &str, key: &str, value: &str) -> Result<(), DbError>;
+    async fn get_env(&self, app_id: &str, key: &str) -> Result<Option<String>, DbError>;
+    async fn get_all_env(&self, app_id: &str) -> Result<Vec<(String, String)>, DbError>;
+    async fn unset_env(&self, app_id: &str, key: &str) -> Result<(), DbError>;
 
     async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, DbError>;
     async fn create_api_key(&self, id: &str, label: &str) -> Result<(), DbError>;
@@ -66,6 +78,31 @@ pub struct ApiKeyRecord {
     pub id: String,
     pub label: String,
     pub created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PgApplicationRow {
+    id: String,
+    name: String,
+    hostname: String,
+    image: String,
+    status: String,
+    source: String,
+    last_error: Option<String>,
+}
+
+impl From<PgApplicationRow> for ApplicationRecord {
+    fn from(r: PgApplicationRow) -> Self {
+        ApplicationRecord {
+            id: r.id,
+            name: r.name,
+            hostname: r.hostname,
+            image: r.image,
+            status: r.status,
+            source: r.source,
+            last_error: r.last_error,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -100,11 +137,13 @@ impl StateStore for PgStateStore {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS applications (
-                name TEXT PRIMARY KEY,
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
                 hostname TEXT NOT NULL,
                 image TEXT NOT NULL,
                 status TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT 'image'
+                source TEXT NOT NULL DEFAULT 'image',
+                last_error TEXT
             )
             "#,
         )
@@ -115,10 +154,10 @@ impl StateStore for PgStateStore {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS application_env (
-                app_name TEXT NOT NULL REFERENCES applications(name) ON DELETE CASCADE,
+                app_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
-                PRIMARY KEY (app_name, key)
+                PRIMARY KEY (app_id, key)
             )
             "#,
         )
@@ -132,6 +171,54 @@ impl StateStore for PgStateStore {
         )
         .execute(&self.pool)
         .await;
+
+        // Migration: name used to be the primary key, which made renaming an
+        // Application mean recreating its container. Introduce a surrogate id.
+        //
+        // Existing rows get `id = name` on purpose: container_name_for(id) then
+        // resolves to the container that is already running, so upgrading does
+        // not restart anything.
+        sqlx::query(
+            r#"
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.key_column_usage
+                    WHERE constraint_name = 'applications_pkey'
+                      AND table_name = 'applications'
+                      AND column_name = 'name'
+                ) THEN
+                    ALTER TABLE applications ADD COLUMN IF NOT EXISTS id TEXT;
+                    UPDATE applications SET id = name WHERE id IS NULL;
+
+                    ALTER TABLE application_env ADD COLUMN IF NOT EXISTS app_id TEXT;
+                    UPDATE application_env SET app_id = app_name WHERE app_id IS NULL;
+
+                    ALTER TABLE application_env
+                        DROP CONSTRAINT IF EXISTS application_env_app_name_fkey;
+                    ALTER TABLE application_env DROP COLUMN IF EXISTS app_name;
+                    ALTER TABLE application_env ALTER COLUMN app_id SET NOT NULL;
+                    ALTER TABLE application_env ADD PRIMARY KEY (app_id, key);
+
+                    ALTER TABLE applications DROP CONSTRAINT applications_pkey;
+                    ALTER TABLE applications ALTER COLUMN id SET NOT NULL;
+                    ALTER TABLE applications ADD PRIMARY KEY (id);
+                    ALTER TABLE applications ADD CONSTRAINT applications_name_key UNIQUE (name);
+
+                    ALTER TABLE application_env
+                        ADD CONSTRAINT application_env_app_id_fkey
+                        FOREIGN KEY (app_id) REFERENCES applications(id) ON DELETE CASCADE;
+                END IF;
+            END $$;
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+
+        let _ = sqlx::query("ALTER TABLE applications ADD COLUMN IF NOT EXISTS last_error TEXT")
+            .execute(&self.pool)
+            .await;
 
         sqlx::query(
             r#"
@@ -185,20 +272,24 @@ impl StateStore for PgStateStore {
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError> {
         sqlx::query(
             r#"
-            INSERT INTO applications (name, hostname, image, status, source)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (name) DO UPDATE SET
+            INSERT INTO applications (id, name, hostname, image, status, source, last_error)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
                 hostname = EXCLUDED.hostname,
                 image = EXCLUDED.image,
                 status = EXCLUDED.status,
-                source = EXCLUDED.source
+                source = EXCLUDED.source,
+                last_error = EXCLUDED.last_error
             "#,
         )
+        .bind(&app.id)
         .bind(&app.name)
         .bind(&app.hostname)
         .bind(&app.image)
         .bind(&app.status)
         .bind(&app.source)
+        .bind(&app.last_error)
         .execute(&self.pool)
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
@@ -217,50 +308,69 @@ impl StateStore for PgStateStore {
     }
 
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
-            "SELECT name, hostname, image, status, source FROM applications ORDER BY name",
+        let rows = sqlx::query_as::<_, PgApplicationRow>(
+            "SELECT id, name, hostname, image, status, source, last_error \
+             FROM applications ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(name, hostname, image, status, source)| ApplicationRecord {
-                    name,
-                    hostname,
-                    image,
-                    status,
-                    source,
-                },
-            )
-            .collect())
+        Ok(rows.into_iter().map(ApplicationRecord::from).collect())
     }
 
-    async fn delete_application(&self, name: &str) -> Result<(), DbError> {
-        let result = sqlx::query("DELETE FROM applications WHERE name = $1")
-            .bind(name)
+    async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, DbError> {
+        let row = sqlx::query_as::<_, PgApplicationRow>(
+            "SELECT id, name, hostname, image, status, source, last_error \
+             FROM applications WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+
+        Ok(row.map(ApplicationRecord::from))
+    }
+
+    async fn find_application_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<ApplicationRecord>, DbError> {
+        let row = sqlx::query_as::<_, PgApplicationRow>(
+            "SELECT id, name, hostname, image, status, source, last_error \
+             FROM applications WHERE name = $1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+
+        Ok(row.map(ApplicationRecord::from))
+    }
+
+    async fn delete_application(&self, id: &str) -> Result<(), DbError> {
+        let result = sqlx::query("DELETE FROM applications WHERE id = $1")
+            .bind(id)
             .execute(&self.pool)
             .await
             .map_err(|e| DbError::Query(e.to_string()))?;
 
         if result.rows_affected() == 0 {
-            return Err(DbError::NotFound(name.to_string()));
+            return Err(DbError::NotFound(id.to_string()));
         }
 
         Ok(())
     }
 
-    async fn set_env(&self, app_name: &str, key: &str, value: &str) -> Result<(), DbError> {
+    async fn set_env(&self, app_id: &str, key: &str, value: &str) -> Result<(), DbError> {
         sqlx::query(
             r#"
-            INSERT INTO application_env (app_name, key, value)
+            INSERT INTO application_env (app_id, key, value)
             VALUES ($1, $2, $3)
-            ON CONFLICT (app_name, key) DO UPDATE SET value = EXCLUDED.value
+            ON CONFLICT (app_id, key) DO UPDATE SET value = EXCLUDED.value
             "#,
         )
-        .bind(app_name)
+        .bind(app_id)
         .bind(key)
         .bind(value)
         .execute(&self.pool)
@@ -269,11 +379,11 @@ impl StateStore for PgStateStore {
         Ok(())
     }
 
-    async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError> {
+    async fn get_env(&self, app_id: &str, key: &str) -> Result<Option<String>, DbError> {
         let row = sqlx::query_scalar::<_, String>(
-            "SELECT value FROM application_env WHERE app_name = $1 AND key = $2",
+            "SELECT value FROM application_env WHERE app_id = $1 AND key = $2",
         )
-        .bind(app_name)
+        .bind(app_id)
         .bind(key)
         .fetch_optional(&self.pool)
         .await
@@ -281,20 +391,20 @@ impl StateStore for PgStateStore {
         Ok(row)
     }
 
-    async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError> {
+    async fn get_all_env(&self, app_id: &str) -> Result<Vec<(String, String)>, DbError> {
         let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT key, value FROM application_env WHERE app_name = $1 ORDER BY key",
+            "SELECT key, value FROM application_env WHERE app_id = $1 ORDER BY key",
         )
-        .bind(app_name)
+        .bind(app_id)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
         Ok(rows)
     }
 
-    async fn unset_env(&self, app_name: &str, key: &str) -> Result<(), DbError> {
-        sqlx::query("DELETE FROM application_env WHERE app_name = $1 AND key = $2")
-            .bind(app_name)
+    async fn unset_env(&self, app_id: &str, key: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM application_env WHERE app_id = $1 AND key = $2")
+            .bind(app_id)
             .bind(key)
             .execute(&self.pool)
             .await
@@ -393,13 +503,25 @@ impl StateStore for FakeStateStore {
 
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError> {
         let mut apps = self.apps.write().await;
-        apps.insert(app.name.clone(), app.clone());
+        apps.insert(app.id.clone(), app.clone());
         Ok(())
     }
 
-    async fn application_exists(&self, name: &str) -> Result<bool, DbError> {
-        let apps = self.apps.read().await;
-        Ok(apps.contains_key(name))
+    async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, DbError> {
+        Ok(self.apps.read().await.get(id).cloned())
+    }
+
+    async fn find_application_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<ApplicationRecord>, DbError> {
+        Ok(self
+            .apps
+            .read()
+            .await
+            .values()
+            .find(|a| a.name == name)
+            .cloned())
     }
 
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError> {
@@ -409,42 +531,42 @@ impl StateStore for FakeStateStore {
         Ok(list)
     }
 
-    async fn delete_application(&self, name: &str) -> Result<(), DbError> {
+    async fn delete_application(&self, id: &str) -> Result<(), DbError> {
         let mut apps = self.apps.write().await;
-        if apps.remove(name).is_none() {
-            return Err(DbError::NotFound(name.to_string()));
+        if apps.remove(id).is_none() {
+            return Err(DbError::NotFound(id.to_string()));
         }
         let mut env = self.env.write().await;
-        env.remove(name);
+        env.remove(id);
         Ok(())
     }
 
-    async fn set_env(&self, app_name: &str, key: &str, value: &str) -> Result<(), DbError> {
+    async fn set_env(&self, app_id: &str, key: &str, value: &str) -> Result<(), DbError> {
         let mut env = self.env.write().await;
-        env.entry(app_name.to_string())
+        env.entry(app_id.to_string())
             .or_default()
             .insert(key.to_string(), value.to_string());
         Ok(())
     }
 
-    async fn get_env(&self, app_name: &str, key: &str) -> Result<Option<String>, DbError> {
+    async fn get_env(&self, app_id: &str, key: &str) -> Result<Option<String>, DbError> {
         let env = self.env.read().await;
-        Ok(env.get(app_name).and_then(|m| m.get(key)).cloned())
+        Ok(env.get(app_id).and_then(|m| m.get(key)).cloned())
     }
 
-    async fn get_all_env(&self, app_name: &str) -> Result<Vec<(String, String)>, DbError> {
+    async fn get_all_env(&self, app_id: &str) -> Result<Vec<(String, String)>, DbError> {
         let env = self.env.read().await;
         let mut vars: Vec<_> = env
-            .get(app_name)
+            .get(app_id)
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
         vars.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(vars)
     }
 
-    async fn unset_env(&self, app_name: &str, key: &str) -> Result<(), DbError> {
+    async fn unset_env(&self, app_id: &str, key: &str) -> Result<(), DbError> {
         let mut env = self.env.write().await;
-        if let Some(m) = env.get_mut(app_name) {
+        if let Some(m) = env.get_mut(app_id) {
             m.remove(key);
         }
         Ok(())
