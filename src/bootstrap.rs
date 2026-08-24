@@ -13,6 +13,17 @@ const COREDNS_IMAGE: &str = "coredns/coredns:1.11.1";
 const COREDNS_ROLE: &str = "dns";
 const TRAEFIK_IMAGE: &str = "traefik:v3";
 const TRAEFIK_ROLE: &str = "proxy";
+
+/// The Platform Infra the Platform starts for itself, as `(role, image)` pairs
+/// in display order: the state store, the local DNS, then the traffic proxy.
+/// The role is what names the component (`system_container_name`); the image is
+/// the product that fills it today.
+pub const SYSTEM_CONTAINERS: &[(&str, &str)] = &[
+    (PG_ROLE, PG_IMAGE),
+    (COREDNS_ROLE, COREDNS_IMAGE),
+    (TRAEFIK_ROLE, TRAEFIK_IMAGE),
+];
+
 pub const DEFAULT_DNS_SUFFIX: &str = "home.lan";
 pub const OPERATOR_API_PORT: u16 = 3721;
 pub const PG_DB_URL: &str = "postgres://selfhost:selfhost@localhost:15432/selfhost";
@@ -375,6 +386,19 @@ mod tests {
                 container.name.starts_with(SYSTEM_PREFIX),
                 "{} does not say it belongs to the Platform",
                 container.name
+            );
+        }
+    }
+
+    #[test]
+    fn system_containers_names_every_infra_container() {
+        let infra: std::collections::HashSet<String> =
+            infra_containers().into_iter().map(|c| c.name).collect();
+
+        for (role, _) in SYSTEM_CONTAINERS {
+            assert!(
+                infra.contains(&apps::system_container_name(role)),
+                "role '{role}' is listed in SYSTEM_CONTAINERS but has no infra container"
             );
         }
     }

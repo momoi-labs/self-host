@@ -42,6 +42,9 @@
         <button type="button" class="nav-item" data-home>
           <svg class="icon icon-sm" aria-hidden="true"><use href="#i-chart"/></svg>Overview
         </button>
+        <button type="button" class="nav-item" data-platform>
+          <svg class="icon icon-sm" aria-hidden="true"><use href="#i-box"/></svg>Platform
+        </button>
       </div>
       <nav class="nav-group" id="sidebar" aria-label="Applications">
         <p class="t-caps">Applications</p>
@@ -69,7 +72,7 @@
         <a href="/console/">Console</a><span class="sep" aria-hidden="true">/</span><span aria-current="page">Overview</span>
       </nav>
       <span class="grow"></span>
-      <span class="row t-label"><span class="dot success" id="health-dot"></span><span class="muted" id="health-text">Checking health…</span></span>
+      <span class="row t-label"><button type="button" class="health-link" id="health-link" title="Platform Infra"><span class="dot success" id="health-dot"></span><span class="muted" id="health-text">Checking health…</span></button></span>
     </header>
 
     <section id="dashboard" class="page" aria-labelledby="dashboard-title">
@@ -102,6 +105,24 @@
           </div>
           <p class="table-footer" id="app-count"></p>
         </div>
+      </div>
+    </section>
+
+    <section id="platform" class="page hidden" aria-labelledby="platform-title">
+      <div class="page-header">
+        <h1 class="t-h1" id="platform-title">Platform</h1>
+        <p class="muted t-label">Platform Infra the Platform runs for itself, not Applications.</p>
+      </div>
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr><th scope="col">Role</th><th scope="col">Container</th><th scope="col">Image</th><th scope="col">Status</th><th scope="col" class="num">Restarts</th></tr>
+            </thead>
+            <tbody id="system-rows"></tbody>
+          </table>
+        </div>
+        <p class="table-footer" id="system-count"></p>
       </div>
     </section>
 
