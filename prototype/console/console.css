@@ -24,8 +24,8 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 /* Corner registration marks — the panel language, in place of a rounded corner.
    Two outward ticks per corner. A four-armed cross does not work here: the two
    inward arms land on the panel's own 1px border and disappear. */
-.card, .dialog, .table-wrap, .disclosure, .value, pre { position: relative; }
-.card::after, .dialog::after, .table-wrap::after, .disclosure::after, .value::after, pre::after {
+.card, .dialog, .table-wrap, .disclosure, pre { position: relative; }
+.card::after, .dialog::after, .table-wrap::after, .disclosure::after, pre::after {
   content: "";
   position: absolute;
   inset: calc(-1 * (var(--corner-mark-tick) + var(--corner-mark-gap)));
@@ -90,6 +90,7 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .card { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); padding: var(--spacing-xl); box-shadow: var(--shadow-sm); }
 .field { display: grid; gap: var(--spacing-xs); }
 .field label { font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
+.field .section-label { margin: 0; }
 .input {
   background: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-md);
   color: var(--color-foreground); min-height: var(--size-control-md); padding: 0 var(--spacing-md); width: 100%;
@@ -128,7 +129,9 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .config-panel, .logs-panel { min-width: 0; overflow: auto; padding: var(--spacing-xl); }
 .config-panel { flex: 0 0 50%; }
 .logs-panel { background: var(--color-surface); flex: 1; }
-.value { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); overflow-wrap: anywhere; padding: var(--spacing-md); }
+/* A read-only field, not a panel. It reads as the disabled twin of .input,
+   so a detail view looks like one form instead of a stack of panels. */
+.value { align-items: center; background: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-muted-foreground); display: flex; margin: 0; min-height: var(--size-control-md); overflow-wrap: anywhere; padding: var(--spacing-xs) var(--spacing-md); }
 .details-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: 1fr 1fr; }
 .splitter { background: var(--color-border); cursor: col-resize; flex: 0 0 4px; position: relative; }
 .splitter:hover, .splitter.dragging { background: var(--color-primary); }
