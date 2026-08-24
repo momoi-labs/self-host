@@ -18,3 +18,11 @@ jobs:
       - run: cargo fmt --check
       - run: cargo test --no-fail-fast
       - run: cargo clippy -- -D warnings
+
+  # The console vendors its CSS instead of building it. Nothing else would
+  # notice a hand-edit of a generated file.
+  vendored-css:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-vendored-css.sh
