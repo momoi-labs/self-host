@@ -119,19 +119,21 @@ function selectApp(name) {
         ${app.status}
       </span>
     </div>
-    <div class="stack">
-      <div>
-        <p class="section-label">Image</p><div class="value mono">${esc(app.image)}</div>
+    <div class="card stack">
+      <div class="field">
+        <p class="section-label">Image</p><p class="value mono">${esc(app.image)}</p>
       </div>
-      <div>
+      <div class="field">
         <p class="section-label">Container</p><p class="value mono">self-host-app-${esc(app.name)}</p>
       </div>
       <div class="details-grid">
-        <div><p class="section-label">Hostname</p><p class="value mono">${esc(app.hostname)}</p></div>
-        <div><p class="section-label">Status</p><p class="value mono">${esc(app.status)}</p></div>
+        <div class="field"><p class="section-label">Hostname</p><p class="value mono">${esc(app.hostname)}</p></div>
+        <div class="field"><p class="section-label">Status</p><p class="value mono">${esc(app.status)}</p></div>
+      </div>
+      <div class="dialog-actions">
+        <button id="remove-btn" type="button" class="button button-danger">Remove application</button>
       </div>
     </div>
-    <p><button id="remove-btn" type="button" class="button button-danger">Remove application</button></p>
   `;
 
   document.getElementById('remove-btn').addEventListener('click', () => removeApp(app.name));
