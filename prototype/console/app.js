@@ -26,6 +26,7 @@ async function init() {
   await loadApps();
   setupSplitter();
   document.getElementById('deploy-btn').addEventListener('click', showDeployModal);
+  document.getElementById('dashboard-deploy').addEventListener('click', showDeployModal);
   document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-cancel').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-form').addEventListener('submit', deploy);
@@ -63,80 +64,139 @@ function render() {
     list.innerHTML = '<p class="muted">No applications yet.</p>';
   } else {
     list.innerHTML = apps.map(a => `
-      <button class="app-item" type="button" data-name="${esc(a.name)}" aria-pressed="false">
-        <span class="status-dot ${a.status === 'running' ? 'success' : 'danger'}" aria-hidden="true"></span>
-        <span>${esc(a.name)}</span><span class="metadata">${esc(a.status)}</span>
+      <button class="app-item" type="button" data-id="${esc(a.id)}" aria-pressed="false">
+        <span class="status-dot ${statusTone(a.status)}" aria-hidden="true"></span>
+        <span class="grow">${esc(a.name)}</span><span class="metadata">${esc(a.status)}</span>
       </button>
     `).join('');
 
     list.querySelectorAll('.app-item').forEach(btn => {
-      btn.addEventListener('click', () => selectApp(btn.dataset.name));
+      btn.addEventListener('click', () => selectApp(btn.dataset.id));
     });
   }
 
+  renderDashboard();
+
   if (selected) {
-    const app = apps.find(a => a.name === selected);
+    const app = apps.find(a => a.id === selected);
     if (app) {
       selectApp(selected);
     } else {
       selected = null;
-      showEmpty();
+      showDashboard();
     }
   } else {
-    showEmpty();
+    showDashboard();
   }
 }
 
-function showEmpty() {
+/* running is the only good outcome; pending and failed both need attention,
+   but only failed is an error. */
+function statusTone(status) {
+  if (status === 'running') return 'success';
+  if (status === 'failed') return 'danger';
+  return '';
+}
+
+function renderDashboard() {
+  const running = apps.filter(a => a.status === 'running').length;
+  const failed = apps.filter(a => a.status === 'failed').length;
+
+  document.getElementById('stat-grid').innerHTML = `
+    <div class="card stat"><span class="section-label">Applications</span><span class="stat-value">${apps.length}</span></div>
+    <div class="card stat"><span class="section-label">Running</span><span class="stat-value">${running}</span></div>
+    <div class="card stat"><span class="section-label">Failed</span><span class="stat-value${failed ? ' danger' : ''}">${failed}</span></div>
+  `;
+
+  const rows = document.getElementById('app-rows');
+  if (apps.length === 0) {
+    rows.innerHTML = '<tr><td colspan="4" class="muted">No applications yet. Deploy one to get started.</td></tr>';
+    return;
+  }
+  rows.innerHTML = apps.map(a => `
+    <tr data-id="${esc(a.id)}" tabindex="0">
+      <td>${esc(a.name)}</td>
+      <td class="mono">${esc(a.image)}</td>
+      <td class="mono">${esc(a.hostname)}</td>
+      <td><span class="badge ${statusTone(a.status)}"><span class="status-dot" aria-hidden="true"></span>${esc(a.status)}</span></td>
+    </tr>
+  `).join('');
+  rows.querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', () => selectApp(tr.dataset.id));
+    tr.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectApp(tr.dataset.id); }
+    });
+  });
+}
+
+function showDashboard() {
   if (logAbort) { logAbort.abort(); logAbort = null; }
-  document.getElementById('empty-state').classList.remove('hidden');
+  selected = null;
+  document.getElementById('dashboard').classList.remove('hidden');
   document.getElementById('detail').classList.add('hidden');
   document.querySelectorAll('#sidebar .app-item').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('#sidebar .app-item').forEach(el => el.setAttribute('aria-pressed', 'false'));
 }
 
-function selectApp(name) {
-  const app = apps.find(a => a.name === name);
+function selectApp(id) {
+  const app = apps.find(a => a.id === id);
   if (!app) return;
-  if (selected === name && logAbort) return;
-  selected = name;
+  const reselecting = selected === id && logAbort;
+  selected = id;
 
-  document.querySelectorAll('#sidebar .app-item').forEach(el => el.classList.remove('active'));
-  const btn = document.querySelector(`#sidebar [data-name="${CSS.escape(name)}"]`);
-  if (btn) { btn.classList.add('active'); btn.setAttribute('aria-pressed', 'true'); }
+  document.querySelectorAll('#sidebar .app-item').forEach(el => {
+    const on = el.dataset.id === id;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-pressed', String(on));
+  });
 
-  document.getElementById('empty-state').classList.add('hidden');
+  document.getElementById('dashboard').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 
   document.getElementById('config-panel').innerHTML = `
-    <div class="row-between">
+    <div class="row-between page-header">
       <div>
+        <button class="button button-ghost" type="button" data-back>← All applications</button>
         <h1>${esc(app.name)}</h1>
         <a href="http://${esc(app.hostname)}" target="_blank" rel="noreferrer" class="mono">${esc(app.hostname)} ↗</a>
       </div>
-      <span class="badge ${app.status === 'running' ? 'success' : 'danger'}">
+      <span class="badge ${statusTone(app.status)}">
         <span class="status-dot" aria-hidden="true"></span>
-        ${app.status}
+        ${esc(app.status)}
       </span>
     </div>
-    <div class="card stack">
+    ${app.last_error ? `<p class="alert" role="alert">${esc(app.last_error)}</p>` : ''}
+    <form class="card stack" id="edit-form">
       <div class="field">
-        <p class="section-label">Image</p><p class="value mono">${esc(app.image)}</p>
+        <label for="edit-name">Name</label>
+        <input class="input" type="text" id="edit-name" value="${esc(app.name)}" required>
       </div>
       <div class="field">
-        <p class="section-label">Container</p><p class="value mono">self-host-app-${esc(app.name)}</p>
+        <label for="edit-image">Image</label>
+        <input class="input mono" type="text" id="edit-image" value="${esc(app.image)}" required>
       </div>
-      <div class="details-grid">
-        <div class="field"><p class="section-label">Hostname</p><p class="value mono">${esc(app.hostname)}</p></div>
-        <div class="field"><p class="section-label">Status</p><p class="value mono">${esc(app.status)}</p></div>
+      <div class="field">
+        <label for="edit-hostname">Hostname</label>
+        <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required>
+        <small class="muted">Changing this restarts the container.</small>
       </div>
+      <div class="field">
+        <span class="section-label">Container</span>
+        <p class="value mono">sf-app-${esc(app.id)}</p>
+      </div>
+      <p id="edit-error" class="alert hidden" role="alert"></p>
       <div class="dialog-actions">
         <button id="remove-btn" type="button" class="button button-danger">Remove application</button>
+        <button type="submit" class="button button-primary">Save and redeploy</button>
       </div>
-    </div>
+    </form>
   `;
 
+  document.querySelector('[data-back]').addEventListener('click', showDashboard);
   document.getElementById('remove-btn').addEventListener('click', () => removeApp(app.name));
+  document.getElementById('edit-form').addEventListener('submit', e => saveApp(e, app.id));
+
+  if (reselecting) return;
 
   document.getElementById('logs-panel').innerHTML = `
     <p class="section-label mono">Logs — ${esc(app.name)}</p>
@@ -232,6 +292,35 @@ function handleDialogKeydown(event) {
   if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 
+async function saveApp(e, id) {
+  e.preventDefault();
+  const errEl = document.getElementById('edit-error');
+  errEl.classList.add('hidden');
+
+  const body = {
+    name: document.getElementById('edit-name').value.trim(),
+    image: document.getElementById('edit-image').value.trim(),
+    hostname: document.getElementById('edit-hostname').value.trim(),
+  };
+
+  try {
+    const res = await fetch('/apps/id/' + encodeURIComponent(id), {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      errEl.textContent = await res.text();
+      errEl.classList.remove('hidden');
+    }
+  } catch (err) {
+    errEl.textContent = 'Network error: ' + err.message;
+    errEl.classList.remove('hidden');
+  }
+  // Reload either way: a failed redeploy still changed the stored record.
+  await loadApps();
+}
+
 async function deploy(e) {
   e.preventDefault();
   const name = document.getElementById('deploy-name').value.trim();
@@ -244,17 +333,22 @@ async function deploy(e) {
       headers: authHeaders(),
       body: JSON.stringify({ name, image }),
     });
-    if (!res.ok) {
-      const body = await res.text();
-      errEl.textContent = body;
-      errEl.classList.remove('hidden');
-      return;
-    }
     document.getElementById('deploy-name').value = '';
     document.getElementById('deploy-image').value = '';
     closeDeployModal();
-    selected = name;
     await loadApps();
+
+    // The Application is on record even when the deploy failed, so open it
+    // instead of reporting an error the operator cannot act on.
+    const created = apps.find(a => a.name === name);
+    if (created) selectApp(created.id);
+    if (!res.ok) {
+      const errored = document.getElementById('edit-error');
+      if (errored) {
+        errored.textContent = await res.text();
+        errored.classList.remove('hidden');
+      }
+    }
   } catch (err) {
     errEl.textContent = 'Network error: ' + err.message;
     errEl.classList.remove('hidden');
