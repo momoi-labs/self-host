@@ -25,6 +25,8 @@ struct ComposeFile {
 struct ComposeService {
     image: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    container_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     ports: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     environment: Option<Vec<String>>,
@@ -66,6 +68,87 @@ pub struct ComposeServiceConfig {
     pub networks: Vec<String>,
 }
 
+fn render_compose(config: &ComposeConfig) -> Result<String, ComposeError> {
+    use indexmap::IndexMap;
+
+    let mut services = IndexMap::new();
+    let mut volumes = IndexMap::new();
+    let mut has_volumes = false;
+
+    for svc in &config.services {
+        // Without container_name the runtime name would be
+        // <project>-<service>-1, which is not the name ADR-0011 promises.
+        let mut service = ComposeService {
+            image: svc.image.clone(),
+            container_name: Some(svc.name.clone()),
+            restart: Some(svc.restart_policy.clone()),
+            ..Default::default()
+        };
+
+        if !svc.ports.is_empty() {
+            service.ports = Some(svc.ports.clone());
+        }
+        if !svc.env.is_empty() {
+            service.environment = Some(svc.env.clone());
+        }
+        if !svc.volumes.is_empty() {
+            service.volumes = Some(svc.volumes.clone());
+            has_volumes = true;
+        }
+        if !svc.cmd.is_empty() {
+            service.command = Some(svc.cmd.clone());
+        }
+        if !svc.labels.is_empty() {
+            let mut labels = IndexMap::new();
+            for (k, v) in &svc.labels {
+                labels.insert(k.clone(), v.clone());
+            }
+            service.labels = Some(labels);
+        }
+        if !svc.networks.is_empty() {
+            service.networks = Some(svc.networks.clone());
+        }
+
+        services.insert(svc.name.clone(), service);
+
+        // Collect named volumes (those without a path separator on the host side)
+        for vol in &svc.volumes {
+            if let Some(name) = vol.split(':').next()
+                && !name.starts_with('/')
+                && !name.starts_with('.')
+                && !name.starts_with('~')
+            {
+                volumes.entry(name.to_string()).or_insert(ComposeVolume {});
+            }
+        }
+    }
+
+    let networks = if config.networks.is_empty() {
+        None
+    } else {
+        let mut nets = IndexMap::new();
+        for name in &config.networks {
+            // Pre-created by DockerRuntime::ensure_network so apps and
+            // Infra share one bridge for Traefik Docker provider routing.
+            nets.insert(name.clone(), ComposeNetwork { external: true });
+        }
+        Some(nets)
+    };
+
+    let compose = ComposeFile {
+        version: "3.8".to_string(),
+        services,
+        volumes: if has_volumes && !volumes.is_empty() {
+            Some(volumes)
+        } else {
+            None
+        },
+        networks,
+    };
+
+    serde_yaml::to_string(&compose).map_err(|e| ComposeError::Serialize(e.to_string()))
+}
+
 pub struct ComposeRunner {
     compose_path: PathBuf,
 }
@@ -83,82 +166,7 @@ impl ComposeRunner {
     }
 
     pub fn write_compose_file(&self, config: &ComposeConfig) -> Result<(), ComposeError> {
-        use indexmap::IndexMap;
-
-        let mut services = IndexMap::new();
-        let mut volumes = IndexMap::new();
-        let mut has_volumes = false;
-
-        for svc in &config.services {
-            let mut service = ComposeService {
-                image: svc.image.clone(),
-                restart: Some(svc.restart_policy.clone()),
-                ..Default::default()
-            };
-
-            if !svc.ports.is_empty() {
-                service.ports = Some(svc.ports.clone());
-            }
-            if !svc.env.is_empty() {
-                service.environment = Some(svc.env.clone());
-            }
-            if !svc.volumes.is_empty() {
-                service.volumes = Some(svc.volumes.clone());
-                has_volumes = true;
-            }
-            if !svc.cmd.is_empty() {
-                service.command = Some(svc.cmd.clone());
-            }
-            if !svc.labels.is_empty() {
-                let mut labels = IndexMap::new();
-                for (k, v) in &svc.labels {
-                    labels.insert(k.clone(), v.clone());
-                }
-                service.labels = Some(labels);
-            }
-            if !svc.networks.is_empty() {
-                service.networks = Some(svc.networks.clone());
-            }
-
-            services.insert(svc.name.clone(), service);
-
-            // Collect named volumes (those without a path separator on the host side)
-            for vol in &svc.volumes {
-                if let Some(name) = vol.split(':').next()
-                    && !name.starts_with('/')
-                    && !name.starts_with('.')
-                    && !name.starts_with('~')
-                {
-                    volumes.entry(name.to_string()).or_insert(ComposeVolume {});
-                }
-            }
-        }
-
-        let networks = if config.networks.is_empty() {
-            None
-        } else {
-            let mut nets = IndexMap::new();
-            for name in &config.networks {
-                // Pre-created by DockerRuntime::ensure_network so apps and
-                // Infra share one bridge for Traefik Docker provider routing.
-                nets.insert(name.clone(), ComposeNetwork { external: true });
-            }
-            Some(nets)
-        };
-
-        let compose = ComposeFile {
-            version: "3.8".to_string(),
-            services,
-            volumes: if has_volumes && !volumes.is_empty() {
-                Some(volumes)
-            } else {
-                None
-            },
-            networks,
-        };
-
-        let yaml =
-            serde_yaml::to_string(&compose).map_err(|e| ComposeError::Serialize(e.to_string()))?;
+        let yaml = render_compose(config)?;
 
         let mut file = std::fs::File::create(&self.compose_path)
             .map_err(|e| ComposeError::Io(self.compose_path.clone(), e))?;
@@ -178,7 +186,10 @@ impl ComposeRunner {
         let output = Command::new("docker")
             .args(["compose", "-f"])
             .arg(&self.compose_path)
-            .args(["up", "-d"])
+            // Renaming a service leaves its old container behind, holding the
+            // ports the new one needs. The Platform owns this file entirely,
+            // so anything it no longer lists has no reason to be running.
+            .args(["up", "-d", "--remove-orphans"])
             .output()
             .map_err(|e| ComposeError::Command("docker compose up".into(), e))?;
 
@@ -267,5 +278,38 @@ impl std::error::Error for ComposeError {
             ComposeError::Command(_, e) => Some(e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn service(name: &str, networks: &[&str]) -> ComposeServiceConfig {
+        ComposeServiceConfig {
+            name: name.to_string(),
+            image: "postgres:18-alpine".into(),
+            ports: vec![],
+            env: vec![],
+            volumes: vec![],
+            restart_policy: "unless-stopped".into(),
+            cmd: vec![],
+            labels: vec![],
+            networks: networks.iter().map(|n| n.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_service_names_its_container_instead_of_letting_compose_number_it() {
+        let yaml = render_compose(&ComposeConfig {
+            services: vec![service("sf-system-db", &["sf-system"])],
+            networks: vec!["sf-system".into()],
+        })
+        .unwrap();
+
+        // Left to compose, this container would answer to
+        // <project>-sf-system-db-1, and `docker ps` would stop matching the
+        // name the Platform uses everywhere else.
+        assert!(yaml.contains("container_name: sf-system-db"), "{yaml}");
     }
 }

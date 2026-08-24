@@ -1,3 +1,4 @@
+use crate::apps;
 use crate::compose;
 use crate::db::{DbError, StateStore};
 use crate::docker::{ContainerConfig, DockerError, DockerRuntime, PLATFORM_NETWORK};
@@ -7,11 +8,11 @@ use std::io::Write;
 use tracing::{info, warn};
 
 const PG_IMAGE: &str = "postgres:18-alpine";
-const PG_CONTAINER: &str = "self-host-pg";
+const PG_ROLE: &str = "db";
 const COREDNS_IMAGE: &str = "coredns/coredns:1.11.1";
-const COREDNS_CONTAINER: &str = "self-host-coredns";
+const COREDNS_ROLE: &str = "dns";
 const TRAEFIK_IMAGE: &str = "traefik:v3";
-const TRAEFIK_CONTAINER: &str = "self-host-traefik";
+const TRAEFIK_ROLE: &str = "proxy";
 pub const DEFAULT_DNS_SUFFIX: &str = "home.lan";
 pub const OPERATOR_API_PORT: u16 = 3721;
 pub const PG_DB_URL: &str = "postgres://selfhost:selfhost@localhost:15432/selfhost";
@@ -113,11 +114,27 @@ async fn start_infra_containers(
 ) -> Result<(), BootstrapError> {
     docker.ensure_network(PLATFORM_NETWORK).await?;
 
-    info!("configuring PostgreSQL 18 container");
-    docker
-        .ensure_container_running(ContainerConfig {
+    let coredns_config = generate_coredns_config(dns_suffix, host_ip);
+    write_coredns_config(&coredns_config)?;
+
+    for container in infra_containers() {
+        info!("configuring {} container", container.name);
+        docker.ensure_container_running(container).await?;
+    }
+
+    info!("applying docker compose configuration");
+    docker.commit().await?;
+
+    info!("infra containers started successfully");
+    Ok(())
+}
+
+/// The Platform Infra containers, as configuration.
+fn infra_containers() -> Vec<ContainerConfig> {
+    vec![
+        ContainerConfig {
             image: PG_IMAGE.to_string(),
-            name: PG_CONTAINER.to_string(),
+            name: apps::system_container_name(PG_ROLE),
             ports: vec!["15432:5432".into()],
             env: vec![
                 "POSTGRES_USER=selfhost".into(),
@@ -129,16 +146,10 @@ async fn start_infra_containers(
             cmd: vec![],
             labels: vec![],
             networks: vec![PLATFORM_NETWORK.to_string()],
-        })
-        .await?;
-
-    info!("configuring CoreDNS container");
-    let coredns_config = generate_coredns_config(dns_suffix, host_ip);
-    write_coredns_config(&coredns_config)?;
-    docker
-        .ensure_container_running(ContainerConfig {
+        },
+        ContainerConfig {
             image: COREDNS_IMAGE.to_string(),
-            name: COREDNS_CONTAINER.to_string(),
+            name: apps::system_container_name(COREDNS_ROLE),
             ports: vec!["53:53/tcp".into(), "53:53/udp".into()],
             env: vec![],
             volumes: vec![format!(
@@ -149,14 +160,10 @@ async fn start_infra_containers(
             cmd: vec!["-conf".into(), "/etc/coredns/Corefile".into()],
             labels: vec![],
             networks: vec![PLATFORM_NETWORK.to_string()],
-        })
-        .await?;
-
-    info!("configuring Traefik container");
-    docker
-        .ensure_container_running(ContainerConfig {
+        },
+        ContainerConfig {
             image: TRAEFIK_IMAGE.to_string(),
-            name: TRAEFIK_CONTAINER.to_string(),
+            name: apps::system_container_name(TRAEFIK_ROLE),
             ports: vec!["80:80".into(), "443:443".into()],
             env: vec![],
             volumes: vec![
@@ -175,14 +182,8 @@ async fn start_infra_containers(
             cmd: tls::traefik_args(),
             labels: vec![],
             networks: vec![PLATFORM_NETWORK.to_string()],
-        })
-        .await?;
-
-    info!("applying docker compose configuration");
-    docker.commit().await?;
-
-    info!("infra containers started successfully");
-    Ok(())
+        },
+    ]
 }
 
 fn generate_api_key() -> String {
@@ -363,6 +364,18 @@ impl std::error::Error for BootstrapError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apps::SYSTEM_PREFIX;
+
+    #[test]
+    fn every_infra_container_is_named_as_platform_infra() {
+        for container in infra_containers() {
+            assert!(
+                container.name.starts_with(SYSTEM_PREFIX),
+                "{} does not say it belongs to the Platform",
+                container.name
+            );
+        }
+    }
 
     #[test]
     fn generate_coredns_config_creates_valid_template() {

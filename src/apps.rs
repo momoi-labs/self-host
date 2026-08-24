@@ -617,6 +617,12 @@ pub fn container_name_for(app_id: &str) -> String {
     format!("{APP_PREFIX}{app_id}")
 }
 
+/// Platform Infra containers are named after the role they play for the
+/// Platform, not after the product that fills it.
+pub fn system_container_name(role: &str) -> String {
+    format!("{SYSTEM_PREFIX}{role}")
+}
+
 #[derive(Debug)]
 pub enum RemoveError {
     NotInitialized,
