@@ -45,7 +45,7 @@ async function loadBootstrap() {
 
     const hr = await fetch('/health', { headers: authHeaders() });
     if (hr.ok) {
-      document.getElementById('health-dot').className = 'status-dot success';
+      document.getElementById('health-dot').className = 'dot success';
       document.getElementById('health-text').textContent = 'Healthy';
     }
   } catch {}
@@ -87,17 +87,18 @@ function announceSettled(before) {
 // ── Render ──────────────────────────────────────────────────────
 function render() {
   const list = document.getElementById('sidebar');
+  const label = '<p class="t-caps">Applications</p>';
   if (apps.length === 0) {
-    list.innerHTML = '<p class="muted">No applications yet.</p>';
+    list.innerHTML = label + '<p class="nav-item muted">None yet</p>';
   } else {
-    list.innerHTML = apps.map(a => `
-      <button class="app-item" type="button" data-id="${esc(a.id)}" aria-pressed="false">
-        <span class="status-dot ${statusTone(a.status)}" aria-hidden="true"></span>
-        <span class="grow">${esc(a.name)}</span><span class="metadata">${esc(a.status)}</span>
+    list.innerHTML = label + apps.map(a => `
+      <button class="nav-item" type="button" data-id="${esc(a.id)}">
+        <span class="dot ${statusTone(a.status) || 'subtle'}" aria-hidden="true"></span>
+        <span class="grow truncate">${esc(a.name)}</span>
       </button>
     `).join('');
 
-    list.querySelectorAll('.app-item').forEach(btn => {
+    list.querySelectorAll('[data-id]').forEach(btn => {
       btn.addEventListener('click', () => selectApp(btn.dataset.id));
     });
   }
@@ -137,6 +138,14 @@ function statusTone(status) {
   return '';
 }
 
+/* A status badge carries its own surface, so the tone has to name a badge
+   variant and not just a text colour. Pending is neutral: it is not good news
+   yet, and it is not bad news either. */
+function statusBadge(status) {
+  const tone = statusTone(status);
+  return tone ? 'badge-' + tone : 'badge-neutral';
+}
+
 function renderDashboard() {
   const empty = apps.length === 0;
   document.getElementById('dashboard-empty').classList.toggle('hidden', !empty);
@@ -153,19 +162,19 @@ function renderDashboard() {
   const failed = apps.filter(a => a.status === 'failed').length;
 
   document.getElementById('stat-grid').innerHTML = `
-    <div class="card stat"><span class="section-label">Applications</span><span class="stat-value">${apps.length}</span></div>
-    <div class="card stat"><span class="section-label">Running</span><span class="stat-value">${running}</span></div>
-    <div class="card stat"><span class="section-label">Failed</span><span class="stat-value${failed ? ' danger' : ''}">${failed}</span></div>
+    <div class="card"><div class="stat"><span class="stat-label">Applications</span><span class="stat-value">${apps.length}</span></div></div>
+    <div class="card"><div class="stat"><span class="stat-label">Running</span><span class="stat-value">${running}</span></div></div>
+    <div class="card"><div class="stat"><span class="stat-label">Failed</span><span class="stat-value${failed ? ' danger' : ''}">${failed}</span></div></div>
   `;
 
   const rows = document.getElementById('app-rows');
   rows.innerHTML = apps.map(a => `
     <tr data-id="${esc(a.id)}" tabindex="0">
       <td>${esc(a.name)}</td>
-      <td class="mono">${esc(a.hostname)}${(a.aliases || []).length ? `<span class="metadata"> +${(a.aliases || []).length}</span>` : ''}</td>
+      <td class="mono">${esc(a.hostname)}${(a.aliases || []).length ? `<span class="t-metadata muted"> +${(a.aliases || []).length}</span>` : ''}</td>
       <td class="mono">${esc(a.image)}</td>
-      <td><span class="badge ${statusTone(a.status)}"><span class="status-dot" aria-hidden="true"></span>${esc(a.status)}</span></td>
-      <td class="numeric">${a.restarts === undefined ? '<span class="muted">—</span>' : a.restarts}</td>
+      <td><span class="badge ${statusBadge(a.status)}"><span class="dot" aria-hidden="true"></span>${esc(a.status)}</span></td>
+      <td class="num">${a.restarts === undefined ? '<span class="muted">—</span>' : a.restarts}</td>
     </tr>
   `).join('');
 
@@ -191,9 +200,8 @@ function showDashboard() {
   document.querySelector('[data-home]').setAttribute('aria-current', 'page');
   document.getElementById('dashboard').classList.remove('hidden');
   document.getElementById('detail').classList.add('hidden');
-  document.querySelectorAll('#sidebar .app-item').forEach(el => {
-    el.classList.remove('active');
-    el.setAttribute('aria-pressed', 'false');
+  document.querySelectorAll('#sidebar [data-id]').forEach(el => {
+    el.removeAttribute('aria-current');
   });
 }
 
@@ -204,10 +212,9 @@ function selectApp(id, moved = false) {
   selected = id;
   detailSignature = appSignature(app);
 
-  document.querySelectorAll('#sidebar .app-item').forEach(el => {
-    const on = el.dataset.id === id;
-    el.classList.toggle('active', on);
-    el.setAttribute('aria-pressed', String(on));
+  document.querySelectorAll('#sidebar [data-id]').forEach(el => {
+    if (el.dataset.id === id) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
   });
 
   setCrumb(app.name);
@@ -215,52 +222,62 @@ function selectApp(id, moved = false) {
   document.getElementById('dashboard').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 
-  document.getElementById('config-panel').innerHTML = `
-    <div class="row-between page-header">
-      <div>
-        <button class="button button-ghost" type="button" data-back>← All applications</button>
-        <h1>${esc(app.name)}</h1>
-        ${hostnames(app).map(h => `<a href="http://${esc(h)}" target="_blank" rel="noreferrer" class="mono">${esc(h)} ↗</a>`).join(' ')}
+  // The whole detail is one page: the identity is the page header, and the
+  // split below it is only the two panes. Putting the header inside the
+  // config pane made the title half a window wide and scroll with the form.
+  document.getElementById('detail').innerHTML = `
+    <div class="between">
+      <div class="page-header">
+        <h1 class="t-h1">${esc(app.name)}</h1>
+        <p class="muted t-label">${hostnames(app).map(h =>
+          `<a href="http://${esc(h)}" target="_blank" rel="noreferrer" class="mono">${esc(h)}</a>`
+        ).join(' · ')}</p>
       </div>
-      <span class="badge ${statusTone(app.status)}">
-        <span class="status-dot" aria-hidden="true"></span>
-        ${esc(app.status)}
+      <span class="badge ${statusBadge(app.status)}">
+        <span class="dot" aria-hidden="true"></span>${esc(app.status)}
       </span>
     </div>
-    ${app.last_error ? `<div class="alert" role="alert">${alertMarkup(app.last_error, 'Retry')}</div>` : ''}
+    ${app.last_error ? `<div class="alert alert-danger" role="alert">${alertMarkup(app.last_error, 'Retry')}</div>` : ''}
     <div id="edit-error" class="hidden"></div>
-    <form class="card stack" id="edit-form">
-      <div class="field">
-        <label for="edit-name">Name</label>
-        <input class="input" type="text" id="edit-name" value="${esc(app.name)}" required>
+    <div class="card detail-panel">
+      <div class="split">
+        <div class="pane">
+          <form class="stack" id="edit-form">
+            <p class="t-caps">Configuration</p>
+            <div class="field">
+              <label for="edit-name">Name</label>
+              <input class="input" type="text" id="edit-name" value="${esc(app.name)}" required>
+            </div>
+            <div class="field">
+              <label for="edit-image">Image</label>
+              <input class="input mono" type="text" id="edit-image" value="${esc(app.image)}" required>
+            </div>
+            <div class="field">
+              <label for="edit-hostname">Hostname</label>
+              <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required>
+              <small class="field-hint">Takes effect immediately; the container keeps running.</small>
+            </div>
+            <div class="field">
+              <label for="edit-aliases">Aliases</label>
+              <input class="input mono" type="text" id="edit-aliases" value="${esc((app.aliases || []).join(', '))}"
+                     placeholder="old-name.${esc(dnsSuffix())}" aria-describedby="edit-aliases-help">
+              <small class="field-hint" id="edit-aliases-help">Other hostnames this application also answers on, comma separated. Keep the old one here to change the Hostname without breaking it.</small>
+            </div>
+            <dl class="kv">
+              <dt>Container</dt><dd>sf-app-${esc(app.id)}</dd>
+            </dl>
+            <div class="form-actions">
+              <button id="remove-btn" type="button" class="btn btn-danger-ghost btn-sm">Remove application</button>
+              <button type="submit" class="btn btn-primary btn-sm">Save and redeploy</button>
+            </div>
+          </form>
+        </div>
+        <div class="splitter" id="splitter" aria-hidden="true"></div>
+        <div class="pane pane-logs" id="logs-panel"></div>
       </div>
-      <div class="field">
-        <label for="edit-image">Image</label>
-        <input class="input mono" type="text" id="edit-image" value="${esc(app.image)}" required>
-      </div>
-      <div class="field">
-        <label for="edit-hostname">Hostname</label>
-        <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required>
-        <small class="muted">Takes effect immediately; the container keeps running.</small>
-      </div>
-      <div class="field">
-        <label for="edit-aliases">Aliases</label>
-        <input class="input mono" type="text" id="edit-aliases" value="${esc((app.aliases || []).join(', '))}"
-               placeholder="old-name.${esc(dnsSuffix())}" aria-describedby="edit-aliases-help">
-        <small class="muted" id="edit-aliases-help">Other hostnames this application also answers on, comma separated. Keep the old one here to change the Hostname without breaking it.</small>
-      </div>
-      <div class="field">
-        <span class="section-label">Container</span>
-        <p class="value mono">sf-app-${esc(app.id)}</p>
-      </div>
-      <div class="dialog-actions">
-        <button id="remove-btn" type="button" class="button button-danger">Remove application</button>
-        <button type="submit" class="button button-primary">Save and redeploy</button>
-      </div>
-    </form>
+    </div>
   `;
 
-  document.querySelector('[data-back]').addEventListener('click', showDashboard);
   document.getElementById('remove-btn').addEventListener('click', () => removeApp(app.name));
   document.getElementById('edit-form').addEventListener('submit', e => saveApp(e, app.id));
   const retry = document.querySelector('[data-retry]');
@@ -275,8 +292,8 @@ function selectApp(id, moved = false) {
   if (sameApp && logAbort && !moved) return;
 
   document.getElementById('logs-panel').innerHTML = `
-    <p class="section-label mono">Logs from sf-app-${esc(app.id)}</p>
-    <div id="logs-content" class="mono" role="log" aria-live="polite"></div>
+    <p class="t-caps">Logs from sf-app-${esc(app.id)}</p>
+    <div id="logs-content" class="logview" role="log" aria-live="polite"></div>
   `;
 
   startLogStream(app.id);
@@ -301,7 +318,7 @@ async function startLogStream(id) {
     });
 
     if (!res.ok) {
-      contentEl.innerHTML = '<p class="danger">Could not connect to the log stream.</p>';
+      contentEl.innerHTML = '<div class="log-error">Could not connect to the log stream.</div>';
       return;
     }
 
@@ -324,22 +341,21 @@ async function startLogStream(id) {
         if (line === '') continue;
         const data = line.startsWith('data: ') ? line.slice(6) : line;
         if (data === 'keepalive' || data === '') continue;
-        const p = document.createElement('p');
-        p.textContent = data;
-        if (currentEvent === 'notice') p.className = 'muted';
-        contentEl.appendChild(p);
+        const line = document.createElement('div');
+        line.textContent = data;
+        if (currentEvent === 'notice') line.className = 'log-info';
+        contentEl.appendChild(line);
         currentEvent = 'message';
       }
 
-      const panel = document.getElementById('logs-panel');
-      if (panel) panel.scrollTop = panel.scrollHeight;
+      contentEl.scrollTop = contentEl.scrollHeight;
     }
   } catch (err) {
     if (err.name !== 'AbortError') {
-      const p = document.createElement('p');
-      p.className = 'danger';
-      p.textContent = 'Connection lost';
-      contentEl.appendChild(p);
+      const line = document.createElement('div');
+      line.className = 'log-error';
+      line.textContent = 'Connection lost';
+      contentEl.appendChild(line);
     }
   } finally {
     if (logAbort === abort) logAbort = null;
@@ -491,7 +507,7 @@ async function removeApp(name) {
 }
 
 // ── Alerts ──────────────────────────────────────────────────────
-const ALERT_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16h.01"></path></svg>';
+const ALERT_ICON = '<svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>';
 
 /* Every failure reaches the console as { error, caused_by }: the API answers
    that shape and a stored last_error keeps it. Anything else — a network
@@ -532,21 +548,21 @@ function alertMarkup(failure, actionLabel) {
       <p class="alert-title">${esc(report.error)}</p>
       ${causesMarkup(report)}
     </div>
-    ${actionLabel ? `<button type="button" class="button" data-retry>${esc(actionLabel)}</button>` : ''}
+    ${actionLabel ? `<button type="button" class="btn btn-outline btn-sm" data-retry>${esc(actionLabel)}</button>` : ''}
   `;
 }
 
 function showAlert(el, failure, actionLabel) {
   if (!el) return;
-  el.className = 'alert';
+  el.className = 'alert alert-danger';
   el.setAttribute('role', 'alert');
   el.innerHTML = alertMarkup(failure, actionLabel);
 }
 
 // ── Toasts and confirmation ─────────────────────────────────────
 const TOAST_ICONS = {
-  success: '<svg viewBox="0 0 24 24" class="success"><path d="M20 6 9 17l-5-5"></path></svg>',
-  danger: '<svg viewBox="0 0 24 24" class="danger"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16h.01"></path></svg>',
+  success: '<svg class="icon success" aria-hidden="true"><use href="#i-check"/></svg>',
+  danger: '<svg class="icon danger" aria-hidden="true"><use href="#i-alert"/></svg>',
 };
 
 /* A toast shows up detached from whatever raised it, so the title has to name
@@ -564,7 +580,7 @@ function toast(kind, title, body) {
       <p class="alert-title">${esc(title)}</p>
       ${report ? `<p class="alert-body">${esc(report.error)}</p>${causesMarkup(report)}` : ''}
     </div>
-    <button type="button" class="button button-ghost" aria-label="Dismiss">✕</button>
+    <button type="button" class="btn btn-ghost btn-icon btn-sm" aria-label="Dismiss"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-x"/></svg></button>
   `;
   const dismiss = () => el.remove();
   el.querySelector('button').addEventListener('click', dismiss);
@@ -606,35 +622,40 @@ function confirmRemove(name) {
 }
 
 // ── Splitter ────────────────────────────────────────────────────
-function setupSplitter() {
-  const splitter = document.getElementById('splitter');
-  const config = document.getElementById('config-panel');
-  const logs = document.getElementById('logs-panel');
-  let dragging = false;
+const MIN_PANE = 320;
 
-  splitter.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    dragging = true;
+/* The form pane never shrinks past a readable measure and the log pane keeps
+   enough width for a line of output. Clamping in pixels rather than in
+   percent is the point: 15% of a wide window is a usable form, 15% of a
+   narrow one is a column of single words. */
+function setupSplitter() {
+  const detail = document.getElementById('detail');
+  let dragging = null;
+
+  detail.addEventListener('mousedown', (event) => {
+    const splitter = event.target.closest('.splitter');
+    if (!splitter) return;
+    event.preventDefault();
+    dragging = splitter.closest('.split');
     splitter.classList.add('dragging');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   });
 
-  document.addEventListener('mousemove', (e) => {
+  document.addEventListener('mousemove', (event) => {
     if (!dragging) return;
-    const detail = document.getElementById('detail');
-    const rect = detail.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const [config, splitter] = dragging.children;
+    const rect = dragging.getBoundingClientRect();
     const total = rect.width - splitter.offsetWidth;
-    const pct = Math.max(15, Math.min(85, (x / total) * 100));
-    config.style.flexBasis = pct + '%';
-    logs.style.flex = '1';
+    const min = MIN_PANE;
+    const max = Math.max(min, total - MIN_PANE);
+    config.style.flex = `0 0 ${Math.min(max, Math.max(min, event.clientX - rect.left))}px`;
   });
 
   document.addEventListener('mouseup', () => {
     if (!dragging) return;
-    dragging = false;
-    splitter.classList.remove('dragging');
+    dragging.querySelector('.splitter').classList.remove('dragging');
+    dragging = null;
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
   });

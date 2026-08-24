@@ -1,24 +1,40 @@
-/* Theme selection. Three states, and "system" is the default.
+/* Theme selection. Three values, and "system" is the default.
    System means no data-theme attribute at all: the tokens are built on CSS
    light-dark(), so `color-scheme` on :root already follows the OS. Only an
-   explicit choice is stored. */
-const themeKey = 'console_theme';
+   explicit choice narrows it. See kiso docs/components/theme-selector.md. */
+const themeKey = 'kiso-theme';
 const themes = {
-  system: { label: 'System', icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>' },
-  light: { label: 'Light', icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>' },
-  dark: { label: 'Dark', icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"></path></svg>' },
+  system: { name: 'Follow system', title: 'System', icon: 'i-monitor' },
+  light: { name: 'Light theme', title: 'Light', icon: 'i-sun' },
+  dark: { name: 'Dark theme', title: 'Dark', icon: 'i-moon' },
 };
 
+/* The three icons belong to this control, so it carries them itself rather
+   than making every page that hosts a theme row remember to include them. */
+const themeSprite = `
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-monitor" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="8.5" rx="1.25"/><path d="M5.5 14h5M8 11.25V14"/></symbol>
+<symbol id="i-sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3"/><path d="M8 1v1.5M8 13.5V15M15 8h-1.5M2.5 8H1M12.9 3.1l-1 1M4.1 11.9l-1 1M12.9 12.9l-1-1M4.1 4.1l-1-1"/></symbol>
+<symbol id="i-moon" viewBox="0 0 16 16"><path d="M13.5 9.5A5.75 5.75 0 016.5 2.5a5.75 5.75 0 107 7z"/></symbol>
+</defs></svg>`;
+
+/* Storage can be unavailable (private mode, disabled cookies). A failure has
+   to degrade to "system", not throw and leave the page half-built. */
 function currentTheme() {
-  const stored = localStorage.getItem(themeKey);
-  return Object.hasOwn(themes, stored ?? "") ? stored : "system";
+  let stored = null;
+  try { stored = localStorage.getItem(themeKey); } catch {}
+  return Object.hasOwn(themes, stored ?? '') ? stored : 'system';
+}
+
+function storeTheme(theme) {
+  try { localStorage.setItem(themeKey, theme); } catch {}
 }
 
 function applyTheme(theme) {
   if (theme === 'system') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = theme;
-  document.querySelectorAll('[data-theme-toggle] button').forEach(button => {
-    button.setAttribute('aria-checked', String(button.dataset.themeValue === theme));
+  document.querySelectorAll('[data-theme-toggle] [data-theme-value]').forEach(button => {
+    button.setAttribute('aria-selected', String(button.dataset.themeValue === theme));
   });
 }
 
@@ -27,20 +43,23 @@ function applyTheme(theme) {
 applyTheme(currentTheme());
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('[data-theme-toggle]').forEach(host => {
+  const hosts = document.querySelectorAll('[data-theme-toggle]');
+  if (hosts.length) document.body.insertAdjacentHTML('afterbegin', themeSprite);
+  hosts.forEach(host => {
+    host.classList.add('settings-row');
     host.innerHTML =
-      '<span>Theme</span><div class="segmented" role="radiogroup" aria-label="Theme">' +
-      Object.entries(themes).map(([value, { label, icon }]) =>
-        `<button type="button" role="radio" data-theme-value="${value}" aria-checked="false" aria-label="${label} theme" title="${label}">${icon}</button>`
+      '<span class="t-label">Theme</span>' +
+      '<div class="segmented" role="tablist" aria-label="Theme">' +
+      Object.entries(themes).map(([value, { name, title, icon }]) =>
+        `<button type="button" role="tab" data-theme-value="${value}" aria-selected="false"` +
+        ` aria-label="${name}" title="${title}"><svg class="icon icon-sm"><use href="#${icon}"/></svg></button>`
       ).join('') +
       '</div>';
     host.addEventListener('click', event => {
       const button = event.target.closest('[data-theme-value]');
       if (!button) return;
-      const theme = button.dataset.themeValue;
-      if (theme === 'system') localStorage.removeItem(themeKey);
-      else localStorage.setItem(themeKey, theme);
-      applyTheme(theme);
+      storeTheme(button.dataset.themeValue);
+      applyTheme(button.dataset.themeValue);
     });
   });
   applyTheme(currentTheme());

@@ -1,260 +1,68 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+/* Console-local layer, on top of the vendored kiso ui.css.
+   Everything here is either a screen kiso has a pattern for but no block, or
+   a rule kiso deliberately leaves to the product. Anything a second Momoi
+   product would also want belongs upstream in the blueprint, not here. */
 
-* { box-sizing: border-box; }
-html, body { margin: 0; min-height: 100%; }
-body {
-  background: var(--color-background);
-  color: var(--color-foreground);
-  font: var(--type-weight-regular) var(--type-size-body)/var(--type-line-height-normal) var(--font-body);
+/* Login. kiso specifies the login pattern but ships no block for it. */
+.auth-shell { display: grid; min-height: 100vh; place-items: center; padding: var(--spacing-xl); }
+.auth-panel { width: 100%; max-width: 400px; }
+
+/* The cause chain under a failure (ADR-0010). Numbered, because the order is
+   the point: each line is one layer further from the Platform and closer to
+   what actually broke. */
+.alert-causes {
+  margin: var(--spacing-xs) 0 0;
+  padding-inline-start: var(--spacing-lg);
+  list-style: decimal;
+  color: var(--color-muted-foreground);
+  font-size: var(--type-size-label);
+  overflow-wrap: anywhere;
 }
-button, input { font: inherit; }
-button, a { -webkit-tap-highlight-color: transparent; }
-a { color: var(--color-primary); text-underline-offset: 3px; }
-:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-.hidden { display: none !important; }
-.mono { font-family: var(--font-mono); font-size: var(--type-size-label); }
-.muted { color: var(--color-muted-foreground); }
-.metadata { color: var(--color-muted-foreground); font-size: var(--type-size-metadata); }
-.section-label { color: var(--color-muted-foreground); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); letter-spacing: var(--type-letter-spacing-label); }
-.stack { display: grid; gap: var(--spacing-lg); }
-.row { display: flex; align-items: center; gap: var(--spacing-md); }
-.grow { flex: 1; }
-.row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-md); }
-
-/* Corner registration marks — the panel language, in place of a rounded corner.
-   Two outward ticks per corner. A four-armed cross does not work here: the two
-   inward arms land on the panel's own 1px border and disappear. */
-.card, .dialog, .table-wrap, .disclosure { position: relative; }
-.card::after, .dialog::after, .table-wrap::after, .disclosure::after {
-  content: "";
-  position: absolute;
-  inset: calc(-1 * (var(--corner-mark-tick) + var(--corner-mark-gap)));
-  pointer-events: none;
-  opacity: var(--corner-mark);
-  background-repeat: no-repeat;
-  background-image:
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
-    linear-gradient(var(--color-corner-mark), var(--color-corner-mark));
-  background-size:
-    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
-    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
-    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
-    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick);
-  background-position:
-    left 0 top calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
-    left calc(var(--corner-mark-tick) + var(--corner-mark-gap)) top 0,
-    right 0 top calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
-    right calc(var(--corner-mark-tick) + var(--corner-mark-gap)) top 0,
-    left 0 bottom calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
-    left calc(var(--corner-mark-tick) + var(--corner-mark-gap)) bottom 0,
-    right 0 bottom calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
-    right calc(var(--corner-mark-tick) + var(--corner-mark-gap)) bottom 0;
-}
-
-.button {
-  align-items: center; background: var(--color-surface); border: 1px solid var(--color-border);
-  border-radius: var(--radius-md); color: var(--color-foreground); cursor: pointer; display: inline-flex;
-  font-size: var(--type-size-label); font-weight: var(--type-weight-medium); justify-content: center;
-  min-height: var(--size-control-md); padding: 0 var(--spacing-md); text-decoration: none;
-  transition: background var(--motion-duration-fast) var(--motion-easing-standard);
-}
-.button:hover { background: var(--color-elevated-surface); }
-/* Primary is a solid fill. As an outline it read as secondary, which is what
-   made a violet design system render as grey. */
-.button-primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-primary-foreground); font-weight: var(--type-weight-semibold); }
-.button-primary:hover { background: var(--color-primary-hover); border-color: var(--color-primary-hover); }
-.button-danger { color: var(--color-danger); border-color: var(--color-danger); }
-.button-ghost { background: transparent; border-color: transparent; }
-.button-ghost:hover { background: var(--color-elevated-surface); }
-.button-block { width: 100%; }
-
-/* Theme control — label left, segmented control right. System is the default. */
-.theme-toggle { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-md); }
-.theme-toggle > span { color: var(--color-muted-foreground); font-size: var(--type-size-label); }
-.segmented { display: inline-flex; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1px; }
-.segmented button {
-  background: transparent; border: 0; border-radius: var(--radius-sm); color: var(--color-muted-foreground);
-  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
-  height: var(--size-control-sm); width: var(--size-control-sm);
-}
-.segmented button:hover { color: var(--color-foreground); }
-.segmented button[aria-checked="true"] { background: var(--color-elevated-surface); color: var(--color-foreground); }
-.segmented svg { fill: none; height: 16px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 16px; }
-
-.card { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); padding: var(--spacing-xl); box-shadow: var(--shadow-sm); }
-.field { display: grid; gap: var(--spacing-xs); }
-.field label { font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
-.field .section-label { margin: 0; }
-.input {
-  background: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-md);
-  color: var(--color-foreground); min-height: var(--size-control-md); padding: 0 var(--spacing-md); width: 100%;
-}
-.input::placeholder { color: var(--color-subtle-foreground); }
-/* One message, said once: icon, what failed, why, and the way out. */
-/* --color-danger-foreground is the text of a *filled* danger button — white.
-   On the 10% tint an alert uses, it is invisible. */
-.alert { align-items: flex-start; background: var(--color-danger-surface); border: 1px solid var(--color-danger-border); border-radius: var(--radius-md); color: var(--color-danger); display: flex; gap: var(--spacing-md); padding: var(--spacing-md); }
-.config-panel > .alert { margin-block-end: var(--spacing-lg); }
-.alert svg { fill: none; flex: none; height: 18px; margin-top: 1px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 18px; }
-.alert .button { flex: none; }
-.notice { background: transparent; border-color: var(--color-info); color: var(--color-info); }
-/* A status reads at a glance from its tint, so the badge is a filled chip and
-   not an outline: the same surface/border pair the alert uses. */
-.badge {
-  align-items: center; background: var(--color-muted); border: 1px solid var(--color-border);
-  border-radius: var(--radius-md); color: var(--color-muted-foreground); display: inline-flex;
-  font-size: var(--type-size-label); font-weight: var(--type-weight-medium); gap: var(--spacing-xs);
-  padding: var(--spacing-2xs) var(--spacing-sm); text-transform: capitalize;
-}
-.badge.success { background: var(--color-success-surface); border-color: var(--color-success-border); }
-.badge.danger { background: var(--color-danger-surface); border-color: var(--color-danger-border); }
-.success { color: var(--color-success); }
-.danger { color: var(--color-danger); }
-.status-dot { background: currentColor; border-radius: var(--radius-full); display: inline-block; height: 8px; width: 8px; }
-.badge .status-dot { height: 6px; width: 6px; }
-
-.auth-shell { display: grid; min-height: 100vh; padding: var(--spacing-xl); place-items: center; }
-.auth-panel { max-width: 400px; width: 100%; }
-.brand { display: flex; align-items: center; gap: var(--spacing-md); margin-bottom: var(--spacing-xl); }
-.brand-mark { align-items: center; background: var(--color-primary); border-radius: var(--radius-md); color: var(--color-primary-foreground); display: inline-flex; font-weight: var(--type-weight-bold); height: var(--size-control-lg); justify-content: center; width: var(--size-control-lg); }
-.brand h1, .page-header h1 { font-size: var(--type-size-h2); letter-spacing: var(--type-letter-spacing-heading); margin: 0; }
-.brand p, .page-header p { margin: var(--spacing-xs) 0 0; }
-
-.app-shell { display: grid; grid-template-columns: var(--size-sidebar) minmax(0, 1fr); min-height: 100vh; }
-.sidebar { background: var(--color-surface); border-right: 1px solid var(--color-border); display: flex; flex-direction: column; min-width: 0; }
-.sidebar-header, .sidebar-footer { padding: var(--spacing-lg); }
-.sidebar-header { border-bottom: 1px solid var(--color-border); }
-.sidebar-nav { flex: 1; overflow-y: auto; padding: var(--spacing-sm); }
-.app-item { background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--color-foreground); cursor: pointer; display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs); min-height: var(--size-control-md); padding: var(--spacing-xs) var(--spacing-md); text-align: left; width: 100%; }
-.app-item:hover { background: var(--color-elevated-surface); }
-.app-item.active { background: var(--color-elevated-surface); border-color: var(--color-border-strong); color: var(--color-foreground); }
-.sidebar-footer { border-top: 1px solid var(--color-border); display: grid; gap: var(--spacing-sm); }
-.nav-link { align-items: center; border-radius: var(--radius-md); color: var(--color-foreground); display: flex; min-height: var(--size-control-md); padding: 0 var(--spacing-md); text-decoration: none; }
-.nav-link:hover { background: var(--color-elevated-surface); }
-.main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
-.main > .page { flex: 1; overflow-y: auto; }
-/* Sits under the topbar now, so it takes the remaining height rather
-   than assuming the whole viewport. */
-.detail { display: flex; flex: 1; min-height: 0; min-width: 0; }
-.config-panel, .logs-panel { min-width: 0; overflow: auto; padding: var(--spacing-xl); }
-.config-panel { flex: 0 0 50%; }
-.logs-panel { background: var(--color-surface); flex: 1; }
-/* A read-only field, not a panel. It reads as the disabled twin of .input,
-   so a detail view looks like one form instead of a stack of panels. */
-.value { align-items: center; background: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-muted-foreground); display: flex; margin: 0; min-height: var(--size-control-md); overflow-wrap: anywhere; padding: var(--spacing-xs) var(--spacing-md); }
-.details-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: 1fr 1fr; }
-.splitter { background: var(--color-border); cursor: col-resize; flex: 0 0 4px; position: relative; }
-.splitter:hover, .splitter.dragging { background: var(--color-primary); }
-.splitter::after { content: ""; inset: 0 -4px; position: absolute; }
-
-.dialog-overlay { align-items: center; background: var(--color-overlay); display: flex; inset: 0; justify-content: center; padding: var(--spacing-lg); position: fixed; z-index: 10; }
-.dialog { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); box-shadow: var(--shadow-md); max-width: 480px; padding: var(--spacing-xl); width: 100%; }
-.dialog h2 { font-size: var(--type-size-h3); margin: 0; }
-.dialog-actions { display: flex; gap: var(--spacing-sm); justify-content: flex-end; }
-
-.page { margin: 0 auto; max-width: var(--size-content-max); padding: var(--spacing-2xl) var(--spacing-xl); width: 100%; }
-.page-header { margin-bottom: var(--spacing-2xl); }
-.page-section { margin-bottom: var(--spacing-xl); }
-.info-grid { display: grid; gap: var(--spacing-xl); grid-template-columns: 1fr 1fr; }
-.disclosure { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); padding: var(--spacing-lg); }
-.disclosure + .disclosure { margin-top: var(--spacing-lg); }
-.disclosure summary { cursor: pointer; font-weight: var(--type-weight-semibold); }
-code, pre { font-family: var(--font-mono); }
-code { background: var(--color-surface); border-radius: var(--radius-sm); padding: 2px var(--spacing-xs); }
-pre { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); color: var(--color-foreground); overflow-x: auto; padding: var(--spacing-lg); }
-/* The marks are drawn outside the box, so the panel cannot be the scroller —
-   it would clip them and grow a scrollbar for the overflow it just created.
-   The scroller is a child. */
-.table-wrap { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-surface); }
-.table-scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; }
-th, td { border-bottom: 1px solid var(--color-border); padding: var(--spacing-sm) var(--spacing-lg); text-align: left; }
-th { color: var(--color-muted-foreground); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
-tr:last-child td { border-bottom: 0; }
-/* Counts line up on the digits, so a flapping Application stands out down the
-   column instead of having to be read row by row. */
-.numeric { font-variant-numeric: tabular-nums; text-align: right; }
-.table-footer { border-top: 1px solid var(--color-border); margin: 0; padding: var(--spacing-sm) var(--spacing-lg); }
-
-/* The section heading doubles as the way back to the dashboard, so it has to
-   look clickable without turning into a button. */
-.sidebar-home { background: transparent; border: 0; cursor: pointer; display: block; text-align: left; width: 100%; }
-.sidebar-home:hover { color: var(--color-foreground); }
-.sidebar-home[aria-current="page"] { color: var(--color-foreground); }
-
-/* Toasts */
-.toast-region { display: grid; gap: var(--spacing-sm); inset-block-end: var(--spacing-lg); inset-inline-end: var(--spacing-lg); position: fixed; z-index: 60; }
-.toast {
-  align-items: flex-start; animation: toast-in var(--motion-duration-normal) var(--motion-easing-standard);
-  background: var(--color-popover); border: 1px solid var(--color-border); border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg); display: flex; gap: var(--spacing-md); padding: var(--spacing-md); width: 340px;
-}
-.toast svg { fill: none; flex: none; height: 18px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 18px; }
-.alert-title { font-weight: var(--type-weight-medium); margin: 0; }
-.alert-body { color: var(--color-muted-foreground); font-size: var(--type-size-label); margin: var(--spacing-xs) 0 0; overflow-wrap: anywhere; }
-/* The cause chain under a failure. Numbered, because the order is the point:
-   each line is one layer further from the Platform and closer to what broke. */
-.alert-causes { color: var(--color-muted-foreground); font-size: var(--type-size-label); list-style: decimal; margin: var(--spacing-xs) 0 0; overflow-wrap: anywhere; padding-inline-start: var(--spacing-lg); }
 .alert-causes li { margin-block-start: var(--spacing-xs); }
 .alert-causes li::marker { font-variant-numeric: tabular-nums; }
-@keyframes toast-in { from { opacity: 0; translate: 0 12px; } }
-@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 
-/* Topbar */
-.topbar { align-items: center; border-bottom: 1px solid var(--color-border); display: flex; gap: var(--spacing-md); height: var(--size-control-lg); padding: 0 var(--spacing-xl); }
-.breadcrumb { align-items: center; color: var(--color-muted-foreground); display: flex; font-size: var(--type-size-label); gap: var(--spacing-sm); }
-.breadcrumb a { color: var(--color-muted-foreground); text-decoration: none; }
-.breadcrumb a:hover { color: var(--color-foreground); }
-.breadcrumb .sep { color: var(--color-subtle-foreground); }
-.breadcrumb [aria-current] { color: var(--color-foreground); }
+/* The KPI row on the Overview. kiso sizes the tile; how many fit per row is
+   the page's call. */
+.stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 
-/* Empty state */
-.empty { align-items: center; display: grid; gap: var(--spacing-sm); justify-items: center; padding: var(--spacing-3xl) var(--spacing-xl); text-align: center; }
-.empty p { color: var(--color-muted-foreground); margin: 0; max-width: 42ch; }
-.empty-title { color: var(--color-foreground) !important; font-size: var(--type-size-h3); font-weight: var(--type-weight-semibold); }
-.empty-icon { align-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-muted-foreground); display: inline-flex; height: var(--size-control-lg); justify-content: center; margin-bottom: var(--spacing-sm); width: var(--size-control-lg); }
-.empty-icon svg { fill: none; height: 20px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 20px; }
-.empty .button { margin-top: var(--spacing-md); }
+/* Split panes carry their own inset — kiso leaves .pane bare so a pane can
+   also hold something full-bleed. The log pane is one element tall, so it
+   fills rather than scrolls twice. */
+.split > .pane { padding: var(--spacing-lg); }
+.split > .pane.pane-logs { display: grid; grid-template-rows: auto 1fr; gap: var(--spacing-sm); overflow: hidden; }
+.pane-logs .logview { min-height: 0; }
 
-/* Dashboard */
-.stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(3, 1fr); }
-.stat { display: grid; gap: var(--spacing-xs); }
-.stat-value { font-size: var(--type-size-display); font-weight: var(--type-weight-semibold); line-height: 1.1; }
-.stat-value.danger { color: var(--color-danger); }
-tbody tr[data-id] { cursor: pointer; }
-tbody tr[data-id]:hover { background: var(--color-elevated-surface); }
+/* The application detail. The form pane opens at a readable measure instead
+   of at half the window: half of a wide screen is more form than the fields
+   need, and the log pane is the one that actually wants the extra room. The
+   panes bleed to the card's edge, so the card has to clip them. */
+.detail-panel { overflow: hidden; }
+.detail-panel .split { height: min(60vh, 560px); }
+.detail-panel .split > .pane:first-child { flex: 0 0 clamp(320px, 42%, 560px); }
+.detail-panel .split > .pane-logs { flex: 1; }
+.form-actions { display: flex; justify-content: flex-end; gap: var(--spacing-sm); }
 
-/* Marks the chart slot the dashboard does not have data for yet, rather than
-   drawing a chart out of numbers we do not collect. */
-.hatch {
-  background-image: repeating-linear-gradient(var(--hatch-angle),
-    var(--color-hatch) 0, var(--color-hatch) var(--hatch-line),
-    transparent var(--hatch-line), transparent var(--hatch-period));
-}
+/* Per-platform DNS instructions: a stack of disclosures, not a stack of
+   cards, because only one of them is ever relevant to the reader. */
+.disclosure { border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-card); padding: var(--spacing-md) var(--spacing-lg); }
+.disclosure + .disclosure { margin-block-start: var(--spacing-sm); }
+.disclosure summary { cursor: pointer; font-weight: var(--type-weight-medium); }
+.disclosure[open] summary { margin-block-end: var(--spacing-md); }
+.disclosure ol, .disclosure ul { margin: 0; padding-inline-start: var(--spacing-lg); color: var(--color-muted-foreground); }
 
-/* Touch targets are a pointer concern, not a layout constant. On a mouse the
-   36px control is correct; only coarse pointers need the 44px WCAG target. */
-@media (pointer: coarse) {
-  .button, .input, .app-item, .nav-link { min-height: var(--size-touch-min); }
-  .segmented button { height: var(--size-touch-min); width: var(--size-touch-min); }
-}
-
-/* Marks sit outside the panel box, so they need room at the edges. */
-@media (max-width: 767px) {
-  .stat-grid { grid-template-columns: 1fr; }
-  .app-shell { grid-template-columns: 1fr; }
-  .sidebar { border-bottom: 1px solid var(--color-border); border-right: 0; max-height: 42vh; }
-  .detail { display: block; flex: none; }
-  .config-panel, .logs-panel { min-height: 50vh; }
-  .config-panel { width: 100%; }
+/* ui.css hides the sidebar outright below 1024px. That is fine for a block
+   with four static links, but here the sidebar is the only way to reach the
+   Applications and the deploy action, and the Sidebar contract asks a narrow
+   viewport for "explicit compact navigation", not for nothing. Stack it above
+   the content instead. */
+@media (max-width: 1023px) {
+  .sidebar { display: flex; position: static; height: auto; max-height: 42vh; border-inline-end: 0; border-block-end: 1px solid var(--color-sidebar-border); }
+  .split { display: block; }
+  .split > .pane { overflow: visible; }
   .splitter { display: none; }
-  .details-grid, .info-grid { grid-template-columns: 1fr; }
-    .page { padding: var(--spacing-xl) var(--spacing-lg); }
-  #create-form { align-items: stretch; flex-direction: column; }
+  /* Stacked, the panes size themselves. Holding the split to one screen
+     height here would divide that height between them and leave the log pane
+     a few lines tall. */
+  .detail-panel .split { height: auto; }
+  .pane-logs .logview { min-height: 40vh; }
 }

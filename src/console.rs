@@ -33,6 +33,7 @@ async fn static_asset(axum::extract::Path(path): axum::extract::Path<String>) ->
         "app.js",
         "theme.js",
         "tokens.css",
+        "ui.css",
         "console.css",
         "setup.html",
         "api-keys.html",
@@ -111,6 +112,7 @@ mod tests {
     async fn serves_console_assets() {
         for (asset, content_type) in [
             ("tokens.css", "text/css"),
+            ("ui.css", "text/css"),
             ("console.css", "text/css"),
             ("theme.js", "text/javascript"),
         ] {
