@@ -1,6 +1,4 @@
-/* Kiso design tokens, vendored from @momoi-labs/kiso@0.2.0.
-   Generated file — do not edit here. To update, copy tokens/build/tokens.css
-   from the blueprint repo at the tag you want. */
+/* Kiso design tokens — generated from tokens/tokens.json. Do not edit. */
 
 :root {
   color-scheme: light dark;
