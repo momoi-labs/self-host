@@ -1,7 +1,7 @@
 use crate::apps;
 use crate::compose;
 use crate::db::{DbError, StateStore};
-use crate::docker::{ContainerConfig, DockerError, DockerRuntime, PLATFORM_NETWORK};
+use crate::docker::{APP_NETWORK, ContainerConfig, DockerError, DockerRuntime, SYSTEM_NETWORK};
 use crate::tls;
 use rand::Rng;
 use std::io::Write;
@@ -112,7 +112,8 @@ async fn start_infra_containers(
     dns_suffix: &str,
     host_ip: &str,
 ) -> Result<(), BootstrapError> {
-    docker.ensure_network(PLATFORM_NETWORK).await?;
+    docker.ensure_network(SYSTEM_NETWORK).await?;
+    docker.ensure_network(APP_NETWORK).await?;
 
     let coredns_config = generate_coredns_config(dns_suffix, host_ip);
     write_coredns_config(&coredns_config)?;
@@ -129,7 +130,8 @@ async fn start_infra_containers(
     Ok(())
 }
 
-/// The Platform Infra containers, as configuration.
+/// The Platform Infra containers, as configuration. Applications reach Traefik
+/// and nothing else: only the proxy is on both networks.
 fn infra_containers() -> Vec<ContainerConfig> {
     vec![
         ContainerConfig {
@@ -145,7 +147,7 @@ fn infra_containers() -> Vec<ContainerConfig> {
             restart_policy: "unless-stopped".into(),
             cmd: vec![],
             labels: vec![],
-            networks: vec![PLATFORM_NETWORK.to_string()],
+            networks: vec![SYSTEM_NETWORK.to_string()],
         },
         ContainerConfig {
             image: COREDNS_IMAGE.to_string(),
@@ -159,7 +161,7 @@ fn infra_containers() -> Vec<ContainerConfig> {
             restart_policy: "unless-stopped".into(),
             cmd: vec!["-conf".into(), "/etc/coredns/Corefile".into()],
             labels: vec![],
-            networks: vec![PLATFORM_NETWORK.to_string()],
+            networks: vec![SYSTEM_NETWORK.to_string()],
         },
         ContainerConfig {
             image: TRAEFIK_IMAGE.to_string(),
@@ -181,7 +183,7 @@ fn infra_containers() -> Vec<ContainerConfig> {
             restart_policy: "unless-stopped".into(),
             cmd: tls::traefik_args(),
             labels: vec![],
-            networks: vec![PLATFORM_NETWORK.to_string()],
+            networks: vec![SYSTEM_NETWORK.to_string(), APP_NETWORK.to_string()],
         },
     ]
 }
@@ -374,6 +376,26 @@ mod tests {
                 "{} does not say it belongs to the Platform",
                 container.name
             );
+        }
+    }
+
+    #[test]
+    fn only_the_proxy_reaches_across_to_the_applications() {
+        for container in infra_containers() {
+            let on_app_network = container.networks.iter().any(|n| n == APP_NETWORK);
+
+            // An Application shares a bridge with the proxy that serves it and
+            // with nothing else: the state store holds every Operator secret
+            // behind a fixed password.
+            if container.name == apps::system_container_name(TRAEFIK_ROLE) {
+                assert!(on_app_network, "the proxy cannot reach Applications");
+            } else {
+                assert!(
+                    !on_app_network,
+                    "{} is exposed to Applications",
+                    container.name
+                );
+            }
         }
     }
 

@@ -146,7 +146,10 @@ pub struct ContainerConfig {
     pub networks: Vec<String>,
 }
 
-pub const PLATFORM_NETWORK: &str = "self-host";
+/// Two bridges, so an Application cannot open a socket on Platform Infra.
+/// Traefik sits on both: it is the only component that must reach across.
+pub const SYSTEM_NETWORK: &str = "sf-system";
+pub const APP_NETWORK: &str = "sf-apps";
 
 /// Application container: Traefik Host routing via labels; no host port publish.
 #[derive(Debug, Clone)]
