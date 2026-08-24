@@ -729,10 +729,13 @@ async fn resolve_server_config() -> (String, String) {
 mod tests {
     use super::*;
 
+    /// The layers, not the rendering: `{:?}` on an anyhow error also carries a
+    /// backtrace wherever `RUST_BACKTRACE` is set, and CI sets it.
     #[test]
-    fn an_api_failure_prints_as_a_chain() {
-        let body = r#"{"error":"failed to start the Application container",
-                       "caused_by":["Docker unavailable: pull access denied for a"]}"#;
+    fn an_api_failure_comes_back_as_a_chain() {
+        let body = r#"{"error":"failed to deploy the Application",
+                       "caused_by":["failed to pull image 'b'",
+                                    "Error response from daemon"]}"#;
 
         let err = api_error(
             "Deploy failed",
@@ -740,12 +743,16 @@ mod tests {
             body,
         );
 
+        let layers: Vec<String> = err.chain().map(|layer| layer.to_string()).collect();
+
         assert_eq!(
-            format!("{err:?}"),
-            "Deploy failed (500 Internal Server Error)\n\n\
-             Caused by:\n\
-             \x20   0: failed to start the Application container\n\
-             \x20   1: Docker unavailable: pull access denied for a"
+            layers,
+            [
+                "Deploy failed (500 Internal Server Error)",
+                "failed to deploy the Application",
+                "failed to pull image 'b'",
+                "Error response from daemon",
+            ]
         );
     }
 
