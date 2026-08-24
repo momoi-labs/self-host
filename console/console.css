@@ -30,12 +30,7 @@
    fills rather than scrolls twice. */
 .split > .pane { padding: var(--spacing-lg); }
 .split > .pane.pane-logs { display: grid; grid-template-rows: auto 1fr; gap: var(--spacing-sm); overflow: hidden; }
-/* ui.css gives .logview both corner marks, drawn outside its box, and
-   overflow:auto — so the pane grows scrollbars for the marks it just drew.
-   That is the trap ui.css documents on .table-wrap, where it answers by
-   moving the scroller to a child. Same answer here. */
-.pane-logs .logview { display: grid; min-height: 0; overflow: visible; }
-.pane-logs .logview > * { min-height: 0; overflow: auto; }
+.pane-logs .logview { min-height: 0; }
 
 /* The application detail. The form pane opens at a readable measure instead
    of at half the window: half of a wide screen is more form than the fields

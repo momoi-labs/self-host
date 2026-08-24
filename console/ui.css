@@ -819,11 +819,16 @@ pre {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-surface);
   background: var(--color-muted);
-  overflow-x: auto;
+  /* The frame no longer scrolls, so it needs an explicit floor to stay
+     inside a grid or flex parent when a code line is long. */
+  min-inline-size: 0;
   font-size: var(--type-size-label);
   line-height: var(--type-line-height-relaxed);
 }
-pre code { padding: 0; background: none; border: 0; }
+/* Scrolling sits on the inner element, not on `pre`. A scroll container
+   scrolls for its own corner marks, which are absolutely positioned outside
+   the frame — the same reason `.table-scroll` exists. Write `<pre><code>`. */
+pre code { display: block; overflow-x: auto; padding: 0; background: none; border: 0; }
 
 .kv { display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr); gap: var(--spacing-sm) var(--spacing-lg); font-size: var(--type-size-body); }
 .kv dt { color: var(--color-muted-foreground); font-size: var(--type-size-label); }
@@ -831,16 +836,23 @@ pre code { padding: 0; background: none; border: 0; }
 
 .logview {
   position: relative;
+  display: flex;
+  flex-direction: column;
   background: var(--color-neutral-950);
   color: var(--color-neutral-300);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-surface);
   padding: var(--spacing-md);
+  min-inline-size: 0;
   font-family: var(--font-mono);
   font-size: var(--type-size-label);
   line-height: var(--type-line-height-relaxed);
-  overflow: auto;
 }
+/* The frame is `.logview`, the scroller is `.log-scroll` inside it — same
+   split as `.table-wrap` / `.table-scroll`, and for the same reason: a scroll
+   container scrolls for the corner marks it draws just outside its own frame.
+   Height goes on `.logview`; the scroller takes what is left. */
+.logview > .log-scroll { flex: 1 1 auto; min-block-size: 0; overflow: auto; }
 .logview .log-time { color: var(--color-neutral-600); margin-inline-end: var(--spacing-sm); }
 .logview .log-warn { color: var(--color-warning-on-dark); }
 .logview .log-error{ color: var(--color-danger-on-dark); }
