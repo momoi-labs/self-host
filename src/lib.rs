@@ -41,6 +41,7 @@ pub fn build_app<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>) -> Rou
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .route("/apps/{name}", delete(remove_app::<S>))
+        .route("/apps/id/{id}", axum::routing::put(update_app::<S>))
         .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
@@ -100,24 +101,64 @@ struct DeployApplicationRequest {
     hostname: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct UpdateApplicationRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+}
+
 #[derive(Serialize)]
 struct ApplicationResponse {
+    id: String,
     name: String,
     hostname: String,
     image: String,
     status: String,
     source: String,
+    /// Present when `status` is `failed`, so the console can say why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
 }
 
 impl From<apps::ApplicationRecord> for ApplicationResponse {
     fn from(app: apps::ApplicationRecord) -> Self {
         Self {
+            id: app.id,
             name: app.name,
             hostname: app.hostname,
             image: app.image,
             status: app.status,
             source: app.source,
+            last_error: app.last_error,
         }
+    }
+}
+
+/// Saves an edit and redeploys. Addressed by id, not name, because the name is
+/// exactly what an edit may be changing.
+async fn update_app<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<UpdateApplicationRequest>,
+) -> Response {
+    match apps::update_application(
+        &state.store,
+        state.docker.as_ref(),
+        &id,
+        apps::ApplicationUpdate {
+            name: body.name,
+            image: body.image,
+            hostname: body.hostname,
+        },
+    )
+    .await
+    {
+        Ok(app) => (StatusCode::OK, Json(ApplicationResponse::from(app))).into_response(),
+        Err(e) => deploy_error_response(e),
     }
 }
 
@@ -252,11 +293,11 @@ async fn stream_logs<S: StateStore>(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
     // Validate app exists
-    if !state.store.application_exists(&name).await.unwrap_or(false) {
+    let Ok(Some(app)) = state.store.find_application_by_name(&name).await else {
         return logs_error_response(&apps::LogsError::NotFound(name));
-    }
+    };
 
-    let container_name = apps::container_name_for(&name);
+    let container_name = apps::container_name_for(&app.id);
 
     match state.docker.stream_logs(&container_name).await {
         Ok(rx) => {
@@ -362,6 +403,7 @@ fn deploy_error_response(err: DeployError) -> Response {
         DeployError::InvalidName(_) | DeployError::MissingImage | DeployError::MissingPath => {
             (StatusCode::BAD_REQUEST, err.to_string())
         }
+        DeployError::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
         DeployError::NotInitialized => (StatusCode::PRECONDITION_FAILED, err.to_string()),
         DeployError::Docker(_) | DeployError::Db(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
@@ -440,6 +482,18 @@ mod tests {
             .unwrap()
     }
 
+    async fn put_json(app: &Router, uri: &str, api_key: Option<&str>, body: Value) -> Response {
+        let mut req = Request::builder().method("PUT").uri(uri);
+        if let Some(key) = api_key {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
+        }
+        req = req.header(header::CONTENT_TYPE, "application/json");
+        app.clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+
     async fn delete_req(app: &Router, uri: &str, api_key: Option<&str>) -> Response {
         let mut req = Request::builder().method("DELETE").uri(uri);
         if let Some(key) = api_key {
@@ -466,6 +520,73 @@ mod tests {
         let docker = FakeDocker::new();
         let app = build_app(store.clone(), Arc::new(docker));
         (app, store)
+    }
+
+    #[tokio::test]
+    async fn failed_deploy_still_records_the_application() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::failing_pull("no such image: nginx:typo");
+        let app = build_app(store.clone(), Arc::new(docker));
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:typo"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // The deploy failed, but the Application is on record — otherwise the
+        // operator would have to retype it instead of fixing the image.
+        let saved = store.find_application_by_name("blog").await.unwrap();
+        let saved = saved.expect("a failed deploy must still leave a row");
+        assert_eq!(saved.status, apps::STATUS_FAILED);
+        assert_eq!(saved.image, "nginx:typo");
+        assert!(saved.last_error.unwrap().contains("nginx:typo"));
+    }
+
+    #[tokio::test]
+    async fn renaming_an_application_leaves_its_container_alone() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let apps_handle = docker.apps.clone();
+        let app = build_app(store.clone(), Arc::new(docker));
+
+        post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        let before = apps_handle.lock().unwrap().len();
+        let id = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let response = put_json(
+            &app,
+            &format!("/apps/id/{id}"),
+            Some("test-key"),
+            json!({"name": "weblog"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // A rename is a row update. Docker must not have been asked to start
+        // anything a second time.
+        assert_eq!(apps_handle.lock().unwrap().len(), before);
+        let renamed = store.get_application(&id).await.unwrap().unwrap();
+        assert_eq!(renamed.name, "weblog");
+        assert_eq!(renamed.status, apps::STATUS_RUNNING);
     }
 
     #[tokio::test]
@@ -670,7 +791,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
-        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        let mut parsed: Value = serde_json::from_slice(&body).unwrap();
+
+        // The id is random; assert it is there and shaped right, then drop it
+        // so the rest of the payload can be compared literally.
+        let id = parsed[0]["id"].take();
+        assert_eq!(id.as_str().unwrap().len(), 12);
+        parsed[0].as_object_mut().unwrap().remove("id");
+
         assert_eq!(
             parsed,
             json!([{
@@ -748,9 +876,12 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == "traefik.enable" && v == "true")
         );
-        assert!(deployed[0].labels.iter().any(|(k, v)| {
-            k == "traefik.http.routers.blog.rule" && v == "Host(`blog.home.lan`)"
-        }));
+        assert!(
+            deployed[0]
+                .labels
+                .iter()
+                .any(|(k, v)| { k.ends_with(".rule") && v == "Host(`blog.home.lan`)" })
+        );
     }
 
     #[tokio::test]
@@ -900,7 +1031,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(docker.deployed_apps(), vec!["self-host-app-blog"]);
+        let deployed = docker.deployed_apps();
+        assert_eq!(deployed.len(), 1);
+        assert!(deployed[0].starts_with(apps::APP_PREFIX));
 
         let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);

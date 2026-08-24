@@ -389,6 +389,9 @@ pub struct FakeDocker {
     pub apps: std::sync::Arc<std::sync::Mutex<Vec<ApplicationContainer>>>,
     pub pulled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub built: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    /// When set, `pull_image` fails with this message — the everyday case of a
+    /// typo in an image tag.
+    pub pull_failure: Option<String>,
 }
 
 impl FakeDocker {
@@ -397,6 +400,14 @@ impl FakeDocker {
             apps: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pulled: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             built: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            pull_failure: None,
+        }
+    }
+
+    pub fn failing_pull(message: &str) -> Self {
+        FakeDocker {
+            pull_failure: Some(message.to_string()),
+            ..FakeDocker::new()
         }
     }
 
@@ -433,6 +444,9 @@ impl DockerRuntime for FakeDocker {
     }
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
+        if let Some(message) = &self.pull_failure {
+            return Err(DockerError::Unavailable(message.clone()));
+        }
         self.pulled.lock().unwrap().push(image.to_string());
         Ok(())
     }
