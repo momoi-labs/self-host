@@ -104,10 +104,20 @@ a { color: var(--color-primary); text-underline-offset: 3px; }
 .alert svg { fill: none; flex: none; height: 18px; margin-top: 1px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 18px; }
 .alert .button { flex: none; }
 .notice { background: transparent; border-color: var(--color-info); color: var(--color-info); }
-.badge { align-items: center; border: 1px solid currentColor; border-radius: var(--radius-full); display: inline-flex; font-size: var(--type-size-label); gap: var(--spacing-sm); padding: var(--spacing-xs) var(--spacing-sm); }
+/* A status reads at a glance from its tint, so the badge is a filled chip and
+   not an outline: the same surface/border pair the alert uses. */
+.badge {
+  align-items: center; background: var(--color-muted); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); color: var(--color-muted-foreground); display: inline-flex;
+  font-size: var(--type-size-label); font-weight: var(--type-weight-medium); gap: var(--spacing-xs);
+  padding: var(--spacing-2xs) var(--spacing-sm); text-transform: capitalize;
+}
+.badge.success { background: var(--color-success-surface); border-color: var(--color-success-border); }
+.badge.danger { background: var(--color-danger-surface); border-color: var(--color-danger-border); }
 .success { color: var(--color-success); }
 .danger { color: var(--color-danger); }
 .status-dot { background: currentColor; border-radius: var(--radius-full); display: inline-block; height: 8px; width: 8px; }
+.badge .status-dot { height: 6px; width: 6px; }
 
 .auth-shell { display: grid; min-height: 100vh; padding: var(--spacing-xl); place-items: center; }
 .auth-panel { max-width: 400px; width: 100%; }
