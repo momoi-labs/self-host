@@ -58,6 +58,7 @@ pub fn build_app<S: StateStore>(
         .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
+        .route("/apps/id/{id}/logs", get(stream_logs_by_id::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
         .layer(middleware::from_fn_with_state(
@@ -380,16 +381,43 @@ fn env_error_response(err: apps::EnvError) -> Response {
     error_response(status, &err)
 }
 
+/// The CLI still addresses logs by name; the console addresses them by id.
 async fn stream_logs<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
-    // Validate app exists
     let Ok(Some(app)) = state.store.find_application_by_name(&name).await else {
         return logs_error_response(&apps::LogsError::NotFound(name));
     };
+    stream_logs_for(state, app).await
+}
 
+async fn stream_logs_by_id<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match state.store.get_application(&id).await {
+        Ok(Some(app)) => stream_logs_for(state, app).await,
+        Ok(None) => logs_error_response(&apps::LogsError::NotFound(id)),
+        Err(err) => logs_error_response(&apps::LogsError::Db(err)),
+    }
+}
+
+/// The one place a log stream is opened. The name is the mutable field
+/// (ADR-0008), so a cached name can point at the wrong container; the id never
+/// does.
+async fn stream_logs_for<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    app: apps::ApplicationRecord,
+) -> Response {
     let container_name = apps::container_name_for(&app.id);
+
+    if let Some(message) = nothing_to_stream(&state, &app).await {
+        let stream = tokio_stream::once(Ok::<_, std::convert::Infallible>(
+            sse::Event::default().event("notice").data(message),
+        ));
+        return sse::Sse::new(stream).into_response();
+    }
 
     match state.docker.stream_logs(&container_name).await {
         Ok(rx) => {
@@ -405,6 +433,36 @@ async fn stream_logs<S: StateStore>(
                 .into_response()
         }
         Err(err) => logs_error_response(&apps::LogsError::Docker(err)),
+    }
+}
+
+/// A sentence for when there is no container to stream from, rather than
+/// silence or Docker's own "no such container" error dressed up as the
+/// Application's output.
+async fn nothing_to_stream<S: StateStore>(
+    state: &AppState<S>,
+    app: &apps::ApplicationRecord,
+) -> Option<String> {
+    if app.status == apps::STATUS_FAILED {
+        return Some("This application failed to deploy, so there are no logs to stream.".into());
+    }
+    if app.status == apps::STATUS_PENDING {
+        return Some(
+            "This application is deploying; logs will appear once the container starts.".into(),
+        );
+    }
+    match state
+        .docker
+        .container_running(&apps::container_name_for(&app.id))
+        .await
+    {
+        // A row that says running but whose container is gone deserves the
+        // same sentence as one that never started.
+        Ok(false) => Some(
+            "This application's container is not running, so there are no logs to stream.".into(),
+        ),
+        // Docker is not answering; let the stream itself surface the reason.
+        _ => None,
     }
 }
 
@@ -719,6 +777,80 @@ mod tests {
         let renamed = store.get_application(&id).await.unwrap().unwrap();
         assert_eq!(renamed.name, "weblog");
         assert_eq!(renamed.status, apps::STATUS_RUNNING);
+    }
+
+    #[tokio::test]
+    async fn logs_by_id_streams_the_application_container() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let _ = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        let record = settle(&store, "blog").await;
+        assert_eq!(record.status, apps::STATUS_RUNNING);
+
+        let response = send(
+            &app,
+            &format!("/apps/id/{}/logs", record.id),
+            Some("test-key"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8_lossy(&body).to_string();
+        assert!(text.contains("[fake] log line 1"));
+        assert!(text.contains("[fake] log line 3"));
+        assert!(!text.contains("event: notice"));
+    }
+
+    #[tokio::test]
+    async fn logs_by_id_says_when_there_is_nothing_to_stream() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::failing_pull("no such image: nginx:typo");
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+        );
+
+        let _ = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:typo"}),
+        )
+        .await;
+        let record = settle(&store, "blog").await;
+        assert_eq!(record.status, apps::STATUS_FAILED);
+
+        let response = send(
+            &app,
+            &format!("/apps/id/{}/logs", record.id),
+            Some("test-key"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8_lossy(&body).to_string();
+        assert!(text.contains("event: notice"));
+        assert!(text.contains("failed to deploy"));
+        assert!(!text.contains("[fake] log line"));
+    }
+
+    #[tokio::test]
+    async fn logs_by_id_returns_404_for_an_unknown_id() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = send(&app, "/apps/id/does-not-exist/logs", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

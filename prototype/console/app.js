@@ -109,7 +109,7 @@ function render() {
     if (app) {
       // Redrawing on every poll would wipe out whatever is being typed into
       // the edit form, so only redraw when the record actually moved.
-      if (appSignature(app) !== detailSignature) selectApp(selected);
+      if (appSignature(app) !== detailSignature) selectApp(selected, true);
     } else {
       selected = null;
       showDashboard();
@@ -197,10 +197,10 @@ function showDashboard() {
   });
 }
 
-function selectApp(id) {
+function selectApp(id, moved = false) {
   const app = apps.find(a => a.id === id);
   if (!app) return;
-  const reselecting = selected === id && logAbort;
+  const sameApp = selected === id;
   selected = id;
   detailSignature = appSignature(app);
 
@@ -268,18 +268,22 @@ function selectApp(id) {
     document.getElementById('edit-form').requestSubmit();
   });
 
-  if (reselecting) return;
+  // A poll that saw the record move must redraw the logs too — a redeploy
+  // replaces the container, and a stale stream would keep printing output that
+  // belongs to a previous moment. Only a plain reselect of the same,
+  // unchanged record keeps the live stream running.
+  if (sameApp && logAbort && !moved) return;
 
   document.getElementById('logs-panel').innerHTML = `
     <p class="section-label mono">Logs from sf-app-${esc(app.id)}</p>
     <div id="logs-content" class="mono" role="log" aria-live="polite"></div>
   `;
 
-  startLogStream(app.name);
+  startLogStream(app.id);
 }
 
 // ── Log streaming (fetch + ReadableStream) ──────────────────────
-async function startLogStream(name) {
+async function startLogStream(id) {
   if (logAbort) { logAbort.abort(); logAbort = null; }
 
   const abort = new AbortController();
@@ -291,7 +295,7 @@ async function startLogStream(name) {
   contentEl.innerHTML = '';
 
   try {
-    const res = await fetch('/apps/' + encodeURIComponent(name) + '/logs', {
+    const res = await fetch('/apps/id/' + encodeURIComponent(id) + '/logs', {
       headers: authHeaders(),
       signal: abort.signal,
     });
@@ -304,6 +308,7 @@ async function startLogStream(name) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let currentEvent = 'message';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -314,13 +319,16 @@ async function startLogStream(name) {
       buffer = lines.pop();
 
       for (const line of lines) {
+        // SSE format: "event: <name>" followed by "data: <content>".
+        if (line.startsWith('event: ')) { currentEvent = line.slice(7); continue; }
         if (line === '') continue;
-        // SSE format: "data: <content>"
         const data = line.startsWith('data: ') ? line.slice(6) : line;
         if (data === 'keepalive' || data === '') continue;
         const p = document.createElement('p');
         p.textContent = data;
+        if (currentEvent === 'notice') p.className = 'muted';
         contentEl.appendChild(p);
+        currentEvent = 'message';
       }
 
       const panel = document.getElementById('logs-panel');
