@@ -1235,6 +1235,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deploy_application_accepts_hostname_aliases() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "blog",
+                "image": "nginx:alpine",
+                "hostname": "writing.home.lan",
+                "aliases": ["blog.home.lan"]
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["hostname"], json!("writing.home.lan"));
+        assert_eq!(parsed["aliases"], json!(["blog.home.lan"]));
+        assert_eq!(settle(&store, "blog").await.status, apps::STATUS_RUNNING);
+    }
+
+    #[tokio::test]
+    async fn deploy_rejects_an_alias_answered_by_another_application() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let first = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        settle(&store, "blog").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "notes",
+                "image": "nginx:alpine",
+                "aliases": ["blog.home.lan"]
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed["error"],
+            json!(
+                "invalid Application Hostname: 'blog.home.lan' is already answered by Application 'blog'"
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn list_applications_includes_deployed_app() {
         let (app, store) = setup_initialized_app("test-key", "home.lan").await;
 

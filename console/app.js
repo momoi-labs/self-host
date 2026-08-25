@@ -372,14 +372,17 @@ function selectApp(id) {
             </div>
             <div class="field">
               <label for="edit-hostname">Hostname</label>
-              <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required>
-              <small class="field-hint">Takes effect immediately; the container keeps running.</small>
+              <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required
+                     aria-describedby="edit-hostname-help edit-hostname-error">
+              <small class="field-hint" id="edit-hostname-help">Takes effect immediately; the container keeps running.</small>
+              <small class="field-error hidden" id="edit-hostname-error"></small>
             </div>
             <div class="field">
               <label for="edit-aliases">Aliases</label>
               <input class="input mono" type="text" id="edit-aliases" value="${esc((app.aliases || []).join(', '))}"
-                     placeholder="old-name.${esc(dnsSuffix())}" aria-describedby="edit-aliases-help">
+                     placeholder="old-name.${esc(dnsSuffix())}" aria-describedby="edit-aliases-help edit-aliases-error">
               <small class="field-hint" id="edit-aliases-help">Other hostnames this application also answers on, comma separated. Keep the old one here to change the Hostname without breaking it.</small>
+              <small class="field-error hidden" id="edit-aliases-error"></small>
             </div>
             <dl class="kv">
               <dt>Container</dt><dd>sf-app-${esc(app.id)}</dd>
@@ -490,8 +493,12 @@ async function openLogStream(url) {
 function showDeployModal() {
   document.querySelector('.app-shell').inert = true;
   document.getElementById('deploy-modal').classList.remove('hidden');
+  document.getElementById('deploy-hostname').placeholder = 'my-app.' + dnsSuffix();
+  document.getElementById('deploy-aliases').placeholder = 'old-name.' + dnsSuffix();
   document.getElementById('deploy-name').focus();
   document.getElementById('deploy-error').classList.add('hidden');
+  clearFieldError('deploy-hostname');
+  clearFieldError('deploy-aliases');
 }
 
 function closeDeployModal() {
@@ -522,15 +529,41 @@ function dnsSuffix() {
   return document.getElementById('dns-suffix').textContent;
 }
 
+function clearFieldError(inputId) {
+  const input = document.getElementById(inputId);
+  const error = document.getElementById(inputId + '-error');
+  input.removeAttribute('aria-invalid');
+  error.textContent = '';
+  error.classList.add('hidden');
+}
+
+function showFieldError(inputId, failure) {
+  const input = document.getElementById(inputId);
+  const error = document.getElementById(inputId + '-error');
+  input.setAttribute('aria-invalid', 'true');
+  error.textContent = asReport(failure).error;
+  error.classList.remove('hidden');
+  input.focus();
+}
+
+function routingErrorField(prefix, failure, aliases) {
+  const message = asReport(failure).error;
+  const conflictingAlias = aliases.some(alias => message.includes("'" + alias + "'"));
+  return prefix + (conflictingAlias ? '-aliases' : '-hostname');
+}
+
 async function saveApp(e, id) {
   e.preventDefault();
   document.getElementById('edit-error').className = 'hidden';
+  clearFieldError('edit-hostname');
+  clearFieldError('edit-aliases');
 
+  const aliases = parseAliases(document.getElementById('edit-aliases').value);
   const body = {
     name: document.getElementById('edit-name').value.trim(),
     image: document.getElementById('edit-image').value.trim(),
     hostname: document.getElementById('edit-hostname').value.trim(),
-    aliases: parseAliases(document.getElementById('edit-aliases').value),
+    aliases,
   };
 
   let failure = null;
@@ -556,6 +589,11 @@ async function saveApp(e, id) {
 
   if (!failure) return;
 
+  if (failure.error.startsWith('invalid Application Hostname:')) {
+    showFieldError(routingErrorField('edit', failure, aliases), failure);
+    return;
+  }
+
   // The record already carries the reason when the deploy itself failed, and
   // selectApp rendered it. Only errors that never reached the database — a
   // rejected name, a clash — need saying here.
@@ -568,14 +606,21 @@ async function deploy(e) {
   e.preventDefault();
   const name = document.getElementById('deploy-name').value.trim();
   const image = document.getElementById('deploy-image').value.trim();
+  const hostname = document.getElementById('deploy-hostname').value.trim();
+  const aliases = parseAliases(document.getElementById('deploy-aliases').value);
   const errEl = document.getElementById('deploy-error');
   errEl.classList.add('hidden');
+  clearFieldError('deploy-hostname');
+  clearFieldError('deploy-aliases');
+
+  const body = { name, image, aliases };
+  if (hostname) body.hostname = hostname;
 
   try {
     const res = await fetch('/apps', {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ name, image }),
+      body: JSON.stringify(body),
     });
     const failure = res.ok ? null : await failureOf(res);
 
@@ -585,12 +630,18 @@ async function deploy(e) {
     // A rejected name never reached the database. Keep the dialog open with
     // what was typed, so the fix is one edit rather than a retype.
     if (failure && !created) {
+      if (failure.error.startsWith('invalid Application Hostname:')) {
+        showFieldError(routingErrorField('deploy', failure, aliases), failure);
+        return;
+      }
       showAlert(errEl, failure);
       return;
     }
 
     document.getElementById('deploy-name').value = '';
     document.getElementById('deploy-image').value = '';
+    document.getElementById('deploy-hostname').value = '';
+    document.getElementById('deploy-aliases').value = '';
     closeDeployModal();
 
     // The Application is on record even when the deploy failed, so open it
