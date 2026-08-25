@@ -152,6 +152,20 @@
           <label for="deploy-image">Container image</label>
           <input class="input mono" type="text" id="deploy-image" placeholder="nginx:alpine" required>
         </div>
+        <div class="field">
+          <label for="deploy-hostname">Hostname</label>
+          <input class="input mono" type="text" id="deploy-hostname" placeholder="my-app.home.lan"
+                 aria-describedby="deploy-hostname-help deploy-hostname-error">
+          <small class="field-hint" id="deploy-hostname-help">Leave empty to use the application name and DNS suffix.</small>
+          <small class="field-error hidden" id="deploy-hostname-error"></small>
+        </div>
+        <div class="field">
+          <label for="deploy-aliases">Aliases</label>
+          <input class="input mono" type="text" id="deploy-aliases" placeholder="old-name.home.lan"
+                 aria-describedby="deploy-aliases-help deploy-aliases-error">
+          <small class="field-hint" id="deploy-aliases-help">Other hostnames this application also answers on, comma separated.</small>
+          <small class="field-error hidden" id="deploy-aliases-error"></small>
+        </div>
         <div id="deploy-error" class="hidden"></div>
       </div>
       <div class="dialog-footer">
