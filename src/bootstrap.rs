@@ -7,7 +7,9 @@ use rand::Rng;
 use std::io::Write;
 use tracing::{info, warn};
 
-const PG_IMAGE: &str = "postgres:18-alpine";
+/// Also the image the schema tests run against, so a migration is never
+/// proven on a Postgres the Platform does not actually ship.
+pub const PG_IMAGE: &str = "postgres:18-alpine";
 const PG_ROLE: &str = "db";
 const COREDNS_IMAGE: &str = "coredns/coredns:1.11.1";
 const COREDNS_ROLE: &str = "dns";
