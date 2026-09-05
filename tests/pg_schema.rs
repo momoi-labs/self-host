@@ -375,6 +375,9 @@ async fn a_fresh_install_stores_an_application_with_its_env() {
             status: "running".into(),
             source: "image".into(),
             last_error: None,
+            compose: None,
+            web_service: None,
+            web_port: None,
         })
         .await
         .expect("insert an Application");

@@ -23,6 +23,15 @@ pub struct ApplicationRecord {
     /// report rather than a sentence so the console can put the failure in the
     /// alert's title and the causes in its body.
     pub last_error: Option<ErrorReport>,
+    /// The Operator's Compose definition, verbatim, when `source` is
+    /// `compose`. What the Platform runs is rendered from it every time.
+    pub compose: Option<String>,
+    /// The Compose service the Hostname routes to. `None` for a
+    /// single-container Application, whose only container is the target.
+    pub web_service: Option<String>,
+    /// The container port the Hostname routes to. `None` means the default
+    /// HTTP port of a single-container Application.
+    pub web_port: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -97,6 +106,9 @@ struct PgApplicationRow {
     status: String,
     source: String,
     last_error: Option<sqlx::types::Json<ErrorReport>>,
+    compose: Option<String>,
+    web_service: Option<String>,
+    web_port: Option<i32>,
 }
 
 impl From<PgApplicationRow> for ApplicationRecord {
@@ -110,9 +122,15 @@ impl From<PgApplicationRow> for ApplicationRecord {
             status: r.status,
             source: r.source,
             last_error: r.last_error.map(|j| j.0),
+            compose: r.compose,
+            web_service: r.web_service,
+            web_port: r.web_port.and_then(|p| u16::try_from(p).ok()),
         }
     }
 }
+
+const APPLICATION_COLUMNS: &str = "id, name, hostname, aliases, image, status, source, last_error, \
+     compose, web_service, web_port";
 
 #[derive(Clone)]
 pub struct PgStateStore {
@@ -153,7 +171,10 @@ impl StateStore for PgStateStore {
                 image TEXT NOT NULL,
                 status TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT 'image',
-                last_error JSONB
+                last_error JSONB,
+                compose TEXT,
+                web_service TEXT,
+                web_port INTEGER
             )
             "#,
         )
@@ -277,6 +298,16 @@ impl StateStore for PgStateStore {
         .execute(&self.pool)
         .await;
 
+        // ADR-0014: an Application may be a Compose project. The definition
+        // and the routed service ride on the row; nothing else changes shape.
+        for column in ["compose TEXT", "web_service TEXT", "web_port INTEGER"] {
+            let _ = sqlx::query(&format!(
+                "ALTER TABLE applications ADD COLUMN IF NOT EXISTS {column}"
+            ))
+            .execute(&self.pool)
+            .await;
+        }
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS api_keys (
@@ -329,8 +360,10 @@ impl StateStore for PgStateStore {
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), DbError> {
         sqlx::query(
             r#"
-            INSERT INTO applications (id, name, hostname, aliases, image, status, source, last_error)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO applications
+                (id, name, hostname, aliases, image, status, source, last_error,
+                 compose, web_service, web_port)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 hostname = EXCLUDED.hostname,
@@ -338,7 +371,10 @@ impl StateStore for PgStateStore {
                 image = EXCLUDED.image,
                 status = EXCLUDED.status,
                 source = EXCLUDED.source,
-                last_error = EXCLUDED.last_error
+                last_error = EXCLUDED.last_error,
+                compose = EXCLUDED.compose,
+                web_service = EXCLUDED.web_service,
+                web_port = EXCLUDED.web_port
             "#,
         )
         .bind(&app.id)
@@ -349,6 +385,9 @@ impl StateStore for PgStateStore {
         .bind(&app.status)
         .bind(&app.source)
         .bind(app.last_error.as_ref().map(sqlx::types::Json))
+        .bind(&app.compose)
+        .bind(&app.web_service)
+        .bind(app.web_port.map(i32::from))
         .execute(&self.pool)
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
@@ -367,10 +406,9 @@ impl StateStore for PgStateStore {
     }
 
     async fn list_applications(&self) -> Result<Vec<ApplicationRecord>, DbError> {
-        let rows = sqlx::query_as::<_, PgApplicationRow>(
-            "SELECT id, name, hostname, aliases, image, status, source, last_error \
-             FROM applications ORDER BY name",
-        )
+        let rows = sqlx::query_as::<_, PgApplicationRow>(&format!(
+            "SELECT {APPLICATION_COLUMNS} FROM applications ORDER BY name"
+        ))
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
@@ -379,10 +417,9 @@ impl StateStore for PgStateStore {
     }
 
     async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, DbError> {
-        let row = sqlx::query_as::<_, PgApplicationRow>(
-            "SELECT id, name, hostname, aliases, image, status, source, last_error \
-             FROM applications WHERE id = $1",
-        )
+        let row = sqlx::query_as::<_, PgApplicationRow>(&format!(
+            "SELECT {APPLICATION_COLUMNS} FROM applications WHERE id = $1"
+        ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -395,10 +432,9 @@ impl StateStore for PgStateStore {
         &self,
         name: &str,
     ) -> Result<Option<ApplicationRecord>, DbError> {
-        let row = sqlx::query_as::<_, PgApplicationRow>(
-            "SELECT id, name, hostname, aliases, image, status, source, last_error \
-             FROM applications WHERE name = $1",
-        )
+        let row = sqlx::query_as::<_, PgApplicationRow>(&format!(
+            "SELECT {APPLICATION_COLUMNS} FROM applications WHERE name = $1"
+        ))
         .bind(name)
         .fetch_optional(&self.pool)
         .await

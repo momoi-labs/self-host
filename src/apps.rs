@@ -1,3 +1,4 @@
+use crate::compose_app::{self, ComposeDefinition, ComposeDefinitionError, ComposeProject};
 use crate::db::{DbError, StateStore};
 use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
@@ -26,11 +27,20 @@ pub fn generate_app_id() -> String {
 
 pub use crate::db::ApplicationRecord;
 
-/// The three states an Application row can be in. `pending` is written before
-/// any Docker work starts, so a crash mid-deploy is visible rather than silent.
+/// The states an Application row can be in. `pending` is written before any
+/// Docker work starts, so a crash mid-deploy is visible rather than silent.
+/// `stopped` is the Operator's doing and survives a Platform restart: a
+/// stopped Application is not brought back until asked.
 pub const STATUS_PENDING: &str = "pending";
 pub const STATUS_RUNNING: &str = "running";
 pub const STATUS_FAILED: &str = "failed";
+pub const STATUS_STOPPED: &str = "stopped";
+
+/// How an Application was defined. A Compose Application (ADR-0014) carries
+/// its definition on the row; the other two carry an image reference.
+pub const SOURCE_IMAGE: &str = "image";
+pub const SOURCE_PATH: &str = "path";
+pub const SOURCE_COMPOSE: &str = "compose";
 
 /// Names reserved for Platform Infra — remove must reject these.
 const PROTECTED_NAMES: &[&str] = &["postgres", "coredns", "traefik"];
@@ -44,6 +54,8 @@ pub enum DeployError {
     InvalidHostname(String),
     MissingImage,
     MissingPath,
+    MissingCompose,
+    InvalidCompose(ComposeDefinitionError),
     Docker(DockerError),
     Routing(RouteError),
     Db(DbError),
@@ -65,6 +77,8 @@ impl std::fmt::Display for DeployError {
             }
             DeployError::MissingImage => write!(f, "image is required"),
             DeployError::MissingPath => write!(f, "path is required"),
+            DeployError::MissingCompose => write!(f, "a Compose definition is required"),
+            DeployError::InvalidCompose(_) => write!(f, "invalid Compose definition"),
             DeployError::Docker(_) => write!(f, "failed to deploy the Application"),
             DeployError::Routing(_) => write!(f, "failed to publish the Application on the LAN"),
             DeployError::Db(_) => write!(f, "failed to record the Application"),
@@ -75,6 +89,7 @@ impl std::fmt::Display for DeployError {
 impl std::error::Error for DeployError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            DeployError::InvalidCompose(e) => Some(e),
             DeployError::Docker(e) => Some(e),
             DeployError::Routing(e) => Some(e),
             DeployError::Db(e) => Some(e),
@@ -98,6 +113,12 @@ impl From<RouteError> for DeployError {
 impl From<DbError> for DeployError {
     fn from(e: DbError) -> Self {
         DeployError::Db(e)
+    }
+}
+
+impl From<ComposeDefinitionError> for DeployError {
+    fn from(e: ComposeDefinitionError) -> Self {
+        DeployError::InvalidCompose(e)
     }
 }
 
@@ -258,6 +279,7 @@ async fn pending_record(
     source: &str,
     hostname_override: Option<&str>,
     aliases: Option<&[String]>,
+    definition: Option<ComposeSpec>,
 ) -> Result<ApplicationRecord, DeployError> {
     let dns_suffix = store
         .get_state("dns_suffix")
@@ -288,6 +310,9 @@ async fn pending_record(
         status: STATUS_PENDING.into(),
         source: source.to_string(),
         last_error: None,
+        compose: definition.as_ref().map(|d| d.compose.clone()),
+        web_service: definition.as_ref().and_then(|d| d.web_service.clone()),
+        web_port: definition.as_ref().and_then(|d| d.web_port),
     };
 
     validate_routing(store, &record).await?;
@@ -295,9 +320,19 @@ async fn pending_record(
     Ok(record)
 }
 
+/// What a Compose deploy carries besides a name: the file, the image behind
+/// the Hostname and where in the file the Hostname points.
+struct ComposeSpec {
+    compose: String,
+    image: String,
+    web_service: Option<String>,
+    web_port: Option<u16>,
+}
+
 /// A deploy that is on record but not yet carried out. The row is already
 /// `pending`, so the caller can either finish it inline — the CLI, which must
 /// report the outcome — or hand it to a task and answer straight away.
+#[derive(Debug)]
 pub struct PendingDeploy {
     pub record: ApplicationRecord,
     work: DeployWork,
@@ -311,6 +346,7 @@ impl PendingDeploy {
     }
 }
 
+#[derive(Debug)]
 enum DeployWork {
     /// Nothing for Docker to do: a rename, or a change of Hostname or
     /// aliases. The container is keyed by id and the router is a file, so
@@ -324,6 +360,9 @@ enum DeployWork {
     Recreate {
         pull: bool,
     },
+    /// `docker compose up`: Compose pulls what is missing and recreates only
+    /// the services whose definition changed.
+    ComposeUp,
 }
 
 /// Writes the `pending` row for an image deploy. Nothing has reached Docker
@@ -349,9 +388,10 @@ pub async fn prepare_deploy_from_image(
         store,
         name,
         image.to_string(),
-        "image",
+        SOURCE_IMAGE,
         hostname_override,
         aliases,
+        None,
     )
     .await?;
     store.insert_application(&record).await?;
@@ -360,6 +400,102 @@ pub async fn prepare_deploy_from_image(
         record,
         work: DeployWork::Pull,
     })
+}
+
+/// Checks a Compose definition and resolves where its Hostname points. The
+/// resolved target is what gets recorded, so the route never has to guess
+/// again: what the console shows is what Traefik uses.
+fn check_compose(
+    compose: &str,
+    web_service: Option<&str>,
+    web_port: Option<u16>,
+) -> Result<ComposeSpec, DeployError> {
+    if compose.trim().is_empty() {
+        return Err(DeployError::MissingCompose);
+    }
+    let definition = ComposeDefinition::parse(compose)?;
+    let target = definition.web_target(web_service, web_port)?;
+    let image = definition
+        .service(&target.service)
+        .map(|s| s.image.clone())
+        .unwrap_or_default();
+    Ok(ComposeSpec {
+        compose: compose.to_string(),
+        image,
+        web_service: Some(target.service),
+        web_port: Some(target.port),
+    })
+}
+
+/// Writes the `pending` row for a Compose deploy. The definition is checked
+/// here, before anything is recorded, so a file the Platform will not run is
+/// refused with the reason and nothing to clean up.
+pub async fn prepare_deploy_from_compose(
+    store: &impl StateStore,
+    name: &str,
+    compose: &str,
+    web_service: Option<&str>,
+    web_port: Option<u16>,
+    hostname_override: Option<&str>,
+    aliases: Option<&[String]>,
+) -> Result<PendingDeploy, DeployError> {
+    validate_app_name(name)?;
+
+    let spec = check_compose(compose, web_service, web_port)?;
+
+    if !store.is_initialized().await? {
+        return Err(DeployError::NotInitialized);
+    }
+
+    let record = pending_record(
+        store,
+        name,
+        spec.image.clone(),
+        SOURCE_COMPOSE,
+        hostname_override,
+        aliases,
+        Some(spec),
+    )
+    .await?;
+    store.insert_application(&record).await?;
+
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::ComposeUp,
+    })
+}
+
+/// The Compose project name doubles as the container prefix, so `docker ps`
+/// reads `sf-app-<id>-<service>` for every service of the Application.
+pub fn project_name_for(app_id: &str) -> String {
+    container_name_for(app_id)
+}
+
+/// Where a Compose Application keeps its file and its data.
+pub fn project_dir_for(app_id: &str) -> std::path::PathBuf {
+    crate::compose::platform_config_dir()
+        .join("apps")
+        .join(app_id)
+}
+
+/// Renders the project the runtime runs for a Compose Application, with the
+/// Platform's environment on top of the file's own.
+pub async fn project_for(
+    store: &impl StateStore,
+    record: &ApplicationRecord,
+) -> Result<ComposeProject, DeployError> {
+    let compose = record
+        .compose
+        .as_deref()
+        .ok_or(DeployError::MissingCompose)?;
+    let definition = ComposeDefinition::parse(compose)?;
+    let env = store.get_all_env(&record.id).await?;
+    Ok(definition.render(
+        &project_name_for(&record.id),
+        &project_dir_for(&record.id),
+        &identity_labels(&record.id, &record.name),
+        &env,
+    ))
 }
 
 /// Carries out the Docker half of a deploy and records how it went.
@@ -389,6 +525,12 @@ pub async fn finish_deploy(
                 let _ = docker
                     .remove_container(&container_name_for(&record.id))
                     .await;
+            }
+            DeployWork::ComposeUp => {
+                let project = project_for(store, &record).await?;
+                docker.compose_up(&project).await?;
+                routes.publish(&record)?;
+                return Ok(());
             }
             DeployWork::Settled => unreachable!(),
         }
@@ -421,10 +563,8 @@ pub async fn reconcile(
 ) -> Result<(), DeployError> {
     for mut app in store.list_applications().await? {
         if app.status == STATUS_PENDING {
-            let running = docker
-                .container_running(&container_name_for(&app.id))
-                .await
-                .unwrap_or(false);
+            let states = service_states(docker, &app).await;
+            let running = !states.is_empty() && states.iter().all(|s| s.state == "running");
 
             if running {
                 app.status = STATUS_RUNNING.into();
@@ -442,6 +582,10 @@ pub async fn reconcile(
 
         if app.status == STATUS_RUNNING {
             routes.publish(&app)?;
+        } else {
+            // A stopped or failed Application must not keep a route: Traefik
+            // would answer its Hostname with a gateway error.
+            routes.withdraw(&app.id)?;
         }
     }
 
@@ -486,6 +630,11 @@ pub struct ApplicationUpdate {
     pub image: Option<String>,
     pub hostname: Option<String>,
     pub aliases: Option<Vec<String>>,
+    pub compose: Option<String>,
+    /// An empty string means "back to the default", so the console can clear
+    /// the field.
+    pub web_service: Option<String>,
+    pub web_port: Option<u16>,
 }
 
 /// Saves the change and redeploys.
@@ -530,10 +679,30 @@ pub async fn prepare_update(
             .aliases
             .clone()
             .unwrap_or_else(|| current.aliases.clone()),
+        compose: update.compose.clone().or_else(|| current.compose.clone()),
+        web_service: match update.web_service.clone() {
+            Some(s) if s.trim().is_empty() => None,
+            Some(s) => Some(s),
+            None => current.web_service.clone(),
+        },
+        web_port: update.web_port.or(current.web_port),
         status: STATUS_PENDING.into(),
         last_error: None,
         ..current.clone()
     };
+
+    // A Compose Application shows the image behind its Hostname; the file is
+    // what the Operator edits.
+    if current.source == SOURCE_COMPOSE {
+        let spec = check_compose(
+            record.compose.as_deref().unwrap_or_default(),
+            record.web_service.as_deref(),
+            record.web_port,
+        )?;
+        record.image = spec.image;
+        record.web_service = spec.web_service;
+        record.web_port = spec.web_port;
+    }
 
     if record.name != current.name {
         validate_app_name(&record.name)?;
@@ -547,12 +716,19 @@ pub async fn prepare_update(
     validate_routing(store, &record).await?;
 
     let image_changed = record.image != current.image;
+    let file_changed = record.compose != current.compose;
 
     store.insert_application(&record).await?;
 
-    // Only the image is Docker's business. A rename, a new Hostname and an
-    // added alias are all a route rewrite, which costs no downtime.
-    if !image_changed && current.status == STATUS_RUNNING {
+    // Only the image is Docker's business. A rename, a new Hostname, an
+    // added alias and a new web target are all a route rewrite, which costs
+    // no downtime.
+    let needs_docker = if current.source == SOURCE_COMPOSE {
+        file_changed
+    } else {
+        image_changed
+    };
+    if !needs_docker && current.status == STATUS_RUNNING {
         record.status = STATUS_RUNNING.into();
         store.insert_application(&record).await?;
         return Ok(PendingDeploy {
@@ -561,10 +737,17 @@ pub async fn prepare_update(
         });
     }
 
+    if current.source == SOURCE_COMPOSE {
+        return Ok(PendingDeploy {
+            record,
+            work: DeployWork::ComposeUp,
+        });
+    }
+
     Ok(PendingDeploy {
         record,
         work: DeployWork::Recreate {
-            pull: image_changed && current.source == "image",
+            pull: image_changed && current.source == SOURCE_IMAGE,
         },
     })
 }
@@ -589,7 +772,16 @@ pub async fn prepare_deploy_from_path(
     }
 
     let image_tag = format!("self-host-{name}:latest");
-    let record = pending_record(store, name, image_tag, "path", hostname_override, aliases).await?;
+    let record = pending_record(
+        store,
+        name,
+        image_tag,
+        SOURCE_PATH,
+        hostname_override,
+        aliases,
+        None,
+    )
+    .await?;
     store.insert_application(&record).await?;
 
     Ok(PendingDeploy {
@@ -706,16 +898,215 @@ pub async fn remove_application(
         .await?
         .ok_or_else(|| RemoveError::NotFound(name.to_string()))?;
 
+    // The project is rendered before the row goes, because rendering reads
+    // the row's environment.
+    let project = if app.source == SOURCE_COMPOSE {
+        project_for(store, &app).await.ok()
+    } else {
+        None
+    };
+
     // The route goes first: a Hostname still answering for an Application that
     // is on its way out is worse than one that stops a moment early.
     routes.withdraw(&app.id)?;
 
     store.delete_application(&app.id).await?;
 
-    let container_name = container_name_for(&app.id);
-    let _ = docker.remove_container(&container_name).await;
+    match project {
+        // Containers go; named volumes and the data directory stay. Removing
+        // an Application is not permission to delete what it wrote.
+        Some(project) => {
+            let _ = docker.compose_down(&project).await;
+        }
+        None => {
+            let _ = docker.remove_container(&container_name_for(&app.id)).await;
+        }
+    }
 
     Ok(())
+}
+
+// ── Lifecycle ──────────────────────────────────────────────────
+
+/// Stops the Application's containers and takes its route down. The row says
+/// `stopped`, so a Platform restart leaves it that way.
+pub async fn stop_application(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
+    id: &str,
+) -> Result<ApplicationRecord, DeployError> {
+    let mut app = get_application(store, id).await?;
+
+    routes.withdraw(&app.id)?;
+    if app.source == SOURCE_COMPOSE {
+        docker
+            .compose_stop(&project_for(store, &app).await?)
+            .await?;
+    } else {
+        docker.stop_container(&container_name_for(&app.id)).await?;
+    }
+
+    app.status = STATUS_STOPPED.into();
+    app.last_error = None;
+    store.insert_application(&app).await?;
+    Ok(app)
+}
+
+/// Starts what is already there. A failed Application has nothing to start
+/// and is redeployed instead; this is for one the Operator stopped, or one
+/// whose containers fell over.
+pub async fn start_application(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
+    id: &str,
+) -> Result<ApplicationRecord, DeployError> {
+    let app = get_application(store, id).await?;
+    let result = async {
+        if app.source == SOURCE_COMPOSE {
+            docker
+                .compose_start(&project_for(store, &app).await?)
+                .await?;
+        } else {
+            docker.start_container(&container_name_for(&app.id)).await?;
+        }
+        routes.publish(&app)?;
+        Ok(())
+    }
+    .await;
+    record_outcome(store, app, result).await
+}
+
+pub async fn restart_application(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
+    id: &str,
+) -> Result<ApplicationRecord, DeployError> {
+    let app = get_application(store, id).await?;
+    let result = async {
+        if app.source == SOURCE_COMPOSE {
+            docker
+                .compose_restart(&project_for(store, &app).await?)
+                .await?;
+        } else {
+            docker
+                .restart_container(&container_name_for(&app.id))
+                .await?;
+        }
+        routes.publish(&app)?;
+        Ok(())
+    }
+    .await;
+    record_outcome(store, app, result).await
+}
+
+// ── State ──────────────────────────────────────────────────────
+
+/// One container of an Application, as Docker sees it right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceState {
+    pub service: String,
+    pub container: String,
+    /// Docker's word for it, or `missing` when there is no such container.
+    pub state: String,
+    pub exit_code: Option<i64>,
+    pub restarts: Option<u32>,
+}
+
+/// The containers an Application is made of, as `(service, container)`. A
+/// single-container Application has one service, called `app`.
+pub fn containers_of(record: &ApplicationRecord) -> Vec<(String, String)> {
+    if record.source != SOURCE_COMPOSE {
+        return vec![("app".to_string(), container_name_for(&record.id))];
+    }
+    let project = project_name_for(&record.id);
+    record
+        .compose
+        .as_deref()
+        .and_then(|c| ComposeDefinition::parse(c).ok())
+        .map(|definition| {
+            definition
+                .services
+                .iter()
+                .map(|s| {
+                    (
+                        s.name.clone(),
+                        compose_app::container_name(&project, &s.name),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Asks Docker about every container of the Application. A runtime that
+/// cannot answer reads as `missing` rather than taking the listing down.
+pub async fn service_states(
+    docker: &(impl DockerRuntime + ?Sized),
+    record: &ApplicationRecord,
+) -> Vec<ServiceState> {
+    let mut states = Vec::new();
+    for (service, container) in containers_of(record) {
+        let state = docker.container_state(&container).await.unwrap_or(None);
+        states.push(match state {
+            Some(s) => ServiceState {
+                service,
+                container,
+                state: s.status,
+                exit_code: Some(s.exit_code),
+                restarts: Some(s.restarts),
+            },
+            None => ServiceState {
+                service,
+                container,
+                state: "missing".into(),
+                exit_code: None,
+                restarts: None,
+            },
+        });
+    }
+    states
+}
+
+/// The status the console shows, which is the row's word checked against
+/// Docker: an Application on record as running whose container has exited
+/// is failing, and the reason is the container's, not the deploy's.
+pub fn live_status(
+    record: &ApplicationRecord,
+    services: &[ServiceState],
+) -> (String, Option<ErrorReport>) {
+    if record.status != STATUS_RUNNING || services.is_empty() {
+        return (record.status.clone(), record.last_error.clone());
+    }
+
+    let reasons: Vec<String> = services
+        .iter()
+        .filter(|s| s.state != "running")
+        .map(|s| match s.state.as_str() {
+            "missing" => format!("service '{}' has no container", s.service),
+            "exited" => format!(
+                "service '{}' exited with code {} after {} restarts",
+                s.service,
+                s.exit_code.unwrap_or_default(),
+                s.restarts.unwrap_or_default()
+            ),
+            other => format!("service '{}' is {other}", s.service),
+        })
+        .collect();
+
+    if reasons.is_empty() {
+        return (STATUS_RUNNING.into(), None);
+    }
+
+    (
+        STATUS_FAILED.into(),
+        Some(ErrorReport {
+            error: "the Application is not running".into(),
+            caused_by: reasons,
+        }),
+    )
 }
 
 // ── Env ────────────────────────────────────────────────────────
@@ -774,11 +1165,13 @@ pub async fn set_env(
         return Err(EnvError::NotInitialized);
     }
 
-    if !store.application_exists(app_name).await? {
-        return Err(EnvError::NotFound(app_name.to_string()));
-    }
+    // Env is keyed by id (ADR-0008); the CLI still speaks in names.
+    let app = store
+        .find_application_by_name(app_name)
+        .await?
+        .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
 
-    store.set_env(app_name, key, value).await?;
+    store.set_env(&app.id, key, value).await?;
 
     // Apply: recreate container with updated env
     recreate_with_env(store, docker, app_name).await?;
@@ -790,10 +1183,11 @@ pub async fn get_all_env(
     store: &impl StateStore,
     app_name: &str,
 ) -> Result<Vec<(String, String)>, EnvError> {
-    if !store.application_exists(app_name).await? {
-        return Err(EnvError::NotFound(app_name.to_string()));
-    }
-    Ok(store.get_all_env(app_name).await?)
+    let app = store
+        .find_application_by_name(app_name)
+        .await?
+        .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
+    Ok(store.get_all_env(&app.id).await?)
 }
 
 pub async fn unset_env(
@@ -806,11 +1200,12 @@ pub async fn unset_env(
         return Err(EnvError::NotInitialized);
     }
 
-    if !store.application_exists(app_name).await? {
-        return Err(EnvError::NotFound(app_name.to_string()));
-    }
+    let app = store
+        .find_application_by_name(app_name)
+        .await?
+        .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
 
-    store.unset_env(app_name, key).await?;
+    store.unset_env(&app.id, key).await?;
 
     // Apply: recreate container with updated env
     recreate_with_env(store, docker, app_name).await?;
@@ -835,6 +1230,16 @@ async fn recreate_with_env(
         .into_iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>();
+
+    if app.source == SOURCE_COMPOSE {
+        // The environment is rendered into the project; `up` recreates only
+        // the services whose definition changed.
+        let project = project_for(store, app)
+            .await
+            .map_err(|e| EnvError::Docker(DockerError::Unavailable(e.to_string())))?;
+        docker.compose_up(&project).await?;
+        return Ok(());
+    }
 
     let container_name = container_name_for(&app.id);
 
@@ -1135,6 +1540,311 @@ mod tests {
         .await;
 
         assert!(matches!(clash, Err(DeployError::InvalidHostname(_))));
+    }
+
+    const HERMES: &str = r#"
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    command: gateway run
+    ports:
+      - "8642:8642"
+      - "9119:9119"
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_DASHBOARD=1
+"#;
+
+    async fn deploy_hermes(
+        store: &FakeStateStore,
+        docker: &FakeDocker,
+        routes: &FakeRoutes,
+    ) -> ApplicationRecord {
+        let pending =
+            prepare_deploy_from_compose(store, "hermes", HERMES, None, Some(9119), None, None)
+                .await
+                .unwrap();
+        finish_deploy(store, docker, routes, pending).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_compose_deploy_brings_the_project_up_named_after_the_application() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let app = deploy_hermes(&store, &docker, &routes).await;
+
+        assert_eq!(app.status, STATUS_RUNNING);
+        assert_eq!(app.source, SOURCE_COMPOSE);
+        assert_eq!(app.image, "nousresearch/hermes-agent:latest");
+        // Left unsaid, the web service is the one that publishes a port; the
+        // port was said, because 8642 is the gateway and 9119 the chat.
+        assert_eq!(app.web_service.as_deref(), Some("hermes"));
+        assert_eq!(app.web_port, Some(9119));
+
+        let project = docker
+            .project(&format!("sf-app-{}", app.id))
+            .expect("the project was brought up");
+        assert_eq!(
+            project.containers,
+            vec![("hermes".to_string(), format!("sf-app-{}-hermes", app.id))]
+        );
+        assert!(project.dir.ends_with(format!("apps/{}", app.id)));
+
+        // The route points at the web service, not at a container that does
+        // not exist for a Compose Application.
+        let route = routes.get(&app.id).unwrap();
+        assert!(route.contains(&format!("http://sf-app-{}-hermes:9119", app.id)));
+    }
+
+    #[tokio::test]
+    async fn a_compose_file_the_platform_will_not_run_is_refused_before_anything_is_recorded() {
+        let store = initialized_store().await;
+
+        let err = prepare_deploy_from_compose(
+            &store,
+            "hermes",
+            "services:\n  hermes:\n    image: x\n    privileged: true\n",
+            None,
+            Some(80),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, DeployError::InvalidCompose(_)));
+        let report = ErrorReport::new(&err);
+        assert_eq!(report.error, "invalid Compose definition");
+        assert_eq!(
+            report.caused_by,
+            ["service 'hermes': 'privileged' is not supported"]
+        );
+        assert!(store.list_applications().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_compose_up_that_fails_leaves_the_application_on_record_with_the_reason() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::failing_compose("Error response from daemon: manifest unknown");
+        let routes = FakeRoutes::new();
+
+        let pending =
+            prepare_deploy_from_compose(&store, "hermes", HERMES, None, Some(9119), None, None)
+                .await
+                .unwrap();
+        let err = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DeployError::Docker(_)));
+
+        let saved = store
+            .find_application_by_name("hermes")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, STATUS_FAILED);
+        assert_eq!(saved.compose.as_deref(), Some(HERMES));
+        let report = saved.last_error.unwrap();
+        assert!(
+            report
+                .caused_by
+                .iter()
+                .any(|c| c.contains("manifest unknown"))
+        );
+        assert!(
+            routes.get(&saved.id).is_none(),
+            "no route for a project that is not up"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_takes_the_route_down_and_starting_puts_it_back() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+        let container = format!("sf-app-{}-hermes", app.id);
+
+        let stopped = stop_application(&store, &docker, &routes, &app.id)
+            .await
+            .unwrap();
+        assert_eq!(stopped.status, STATUS_STOPPED);
+        assert!(routes.get(&app.id).is_none());
+        assert_eq!(
+            docker
+                .container_state(&container)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "exited"
+        );
+
+        let started = start_application(&store, &docker, &routes, &app.id)
+            .await
+            .unwrap();
+        assert_eq!(started.status, STATUS_RUNNING);
+        assert!(routes.get(&app.id).is_some());
+        assert_eq!(
+            docker
+                .container_state(&container)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
+
+        // A stopped Application stays stopped across a Platform restart: its
+        // route is withdrawn again, not republished.
+        stop_application(&store, &docker, &routes, &app.id)
+            .await
+            .unwrap();
+        reconcile(&store, &docker, &routes).await.unwrap();
+        assert!(routes.get(&app.id).is_none());
+        assert_eq!(
+            store
+                .get_application(&app.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            STATUS_STOPPED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_that_fell_over_shows_as_failed_with_its_exit_code() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+
+        // The row says running: the deploy itself went fine.
+        docker.exit_container(&format!("sf-app-{}-hermes", app.id), 1);
+
+        let services = service_states(&docker, &app).await;
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].service, "hermes");
+        assert_eq!(services[0].state, "exited");
+        assert_eq!(services[0].exit_code, Some(1));
+
+        let (status, reason) = live_status(&app, &services);
+        assert_eq!(status, STATUS_FAILED);
+        let reason = reason.unwrap();
+        assert_eq!(reason.error, "the Application is not running");
+        assert_eq!(
+            reason.caused_by,
+            ["service 'hermes' exited with code 1 after 3 restarts"]
+        );
+        // The row itself is untouched: this is Docker's word, not the deploy's.
+        assert_eq!(
+            store
+                .get_application(&app.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            STATUS_RUNNING
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_the_compose_file_brings_the_project_up_again() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+
+        let edited = HERMES.replace(
+            "HERMES_DASHBOARD=1",
+            "HERMES_DASHBOARD=1\n      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=seba",
+        );
+        let updated = update_application(
+            &store,
+            &docker,
+            &routes,
+            &app.id,
+            ApplicationUpdate {
+                compose: Some(edited.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.status, STATUS_RUNNING);
+        assert_eq!(updated.compose.as_deref(), Some(edited.as_str()));
+        let project = docker.project(&format!("sf-app-{}", app.id)).unwrap();
+        assert!(
+            project
+                .yaml
+                .contains("HERMES_DASHBOARD_BASIC_AUTH_USERNAME: seba")
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_only_the_web_port_rewrites_the_route_without_docker() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+        let before = docker.project(&format!("sf-app-{}", app.id)).unwrap();
+
+        let pending = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                web_port: Some(8642),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(pending.is_settled());
+        finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+
+        assert!(routes.get(&app.id).unwrap().contains(":8642"));
+        assert_eq!(
+            docker.project(&format!("sf-app-{}", app.id)).unwrap(),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn platform_environment_is_rendered_into_the_project() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+
+        set_env(&store, &docker, "hermes", "OPENROUTER_API_KEY", "sk-test")
+            .await
+            .unwrap();
+
+        let project = docker.project(&format!("sf-app-{}", app.id)).unwrap();
+        assert!(project.yaml.contains("OPENROUTER_API_KEY: sk-test"));
+    }
+
+    #[tokio::test]
+    async fn removing_a_compose_application_takes_the_project_down() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+
+        remove_application(&store, &docker, &routes, "hermes")
+            .await
+            .unwrap();
+
+        assert!(docker.project(&format!("sf-app-{}", app.id)).is_none());
+        assert!(routes.get(&app.id).is_none());
+        assert!(store.get_application(&app.id).await.unwrap().is_none());
     }
 
     #[test]
