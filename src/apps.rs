@@ -414,6 +414,9 @@ fn check_compose(
         return Err(DeployError::MissingCompose);
     }
     let definition = ComposeDefinition::parse(compose)?;
+    // A form sends the field it shows, empty or not. Empty means "the
+    // default", the same as leaving it out.
+    let web_service = web_service.map(str::trim).filter(|s| !s.is_empty());
     let target = definition.web_target(web_service, web_port)?;
     let image = definition
         .service(&target.service)
@@ -1597,6 +1600,18 @@ services:
         // not exist for a Compose Application.
         let route = routes.get(&app.id).unwrap();
         assert!(route.contains(&format!("http://sf-app-{}-hermes:9119", app.id)));
+    }
+
+    #[tokio::test]
+    async fn an_empty_web_service_means_the_default_one() {
+        let store = initialized_store().await;
+
+        let pending =
+            prepare_deploy_from_compose(&store, "hermes", HERMES, Some(""), Some(9119), None, None)
+                .await
+                .unwrap();
+
+        assert_eq!(pending.record.web_service.as_deref(), Some("hermes"));
     }
 
     #[tokio::test]
