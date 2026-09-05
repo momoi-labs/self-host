@@ -10,7 +10,13 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
 
 Supported platforms: macOS (Intel / Apple Silicon) and Linux (amd64 / arm64).
 
+On macOS the installer also prepares a Docker runtime and installs the
+Platform as a launchd LaunchDaemon, so it starts at boot without a login.
+See [docs/macos-host.md](docs/macos-host.md) for prerequisites.
+
 ## Quick start
+
+On Linux, or with `SELF_HOST_BINARY_ONLY=1`:
 
 ```bash
 self-host init
@@ -18,6 +24,18 @@ self-host serve
 ```
 
 Then visit `https://admin.<your-dns-suffix>` (default: `https://admin.home.lan`).
+
+Deploy a container image, or a Compose file:
+
+```bash
+self-host apps add --name blog --image nginx:alpine
+self-host apps add --name hermes --compose-file hermes.yml --web-port 9119
+self-host apps stop hermes && self-host apps start hermes
+```
+
+The supported Compose subset is in
+[docs/compose-applications.md](docs/compose-applications.md); the Hermes
+workflow is in [docs/hermes.md](docs/hermes.md).
 
 ## Local HTTPS
 

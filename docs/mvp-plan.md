@@ -50,6 +50,16 @@ configuration steps must be explicit in the delivered workflow.
   Infra and Applications configured to start become available without login.
 - [ ] The supported Compose behavior and Host prerequisites are documented.
 
+## Where the implementation stands
+
+The Compose Application path, the console workflow, the lifecycle verbs, the
+state and log reporting and the macOS installer with its LaunchDaemons are
+implemented and covered by tests on Linux. The Hermes image was observed
+starting from environment alone on Linux. What remains is the validation
+that only the Mac can give; the checks and the record to fill are in
+[macos-host.md](macos-host.md), the workflow in [hermes.md](hermes.md) and
+the supported subset in [compose-applications.md](compose-applications.md).
+
 ## Validation
 
 Use focused tests for Compose lifecycle behavior, configuration and persistence
