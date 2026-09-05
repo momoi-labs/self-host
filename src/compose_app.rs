@@ -106,11 +106,34 @@ pub struct PublishedPort {
     pub container: u16,
 }
 
+/// Where a mount's data lives on the Host, as the Platform will arrange it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MountKind {
+    /// A named volume Compose creates under the project.
+    Named,
+    /// A path under the Application's data directory; `~` or `./` in the file.
+    Data,
+    /// An absolute Host path, passed through as written.
+    Host,
+    /// No source at all: Docker's anonymous volume, gone with the container.
+    Anonymous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mount {
+    pub source: String,
+    pub target: String,
+    pub kind: MountKind,
+    /// For `Data`, the path under the Application's data directory.
+    pub data_path: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServiceDefinition {
     pub name: String,
     pub image: String,
     pub ports: Vec<PublishedPort>,
+    pub mounts: Vec<Mount>,
     /// The service as the Operator wrote it, keys already checked.
     body: Mapping,
 }
@@ -429,6 +452,7 @@ fn parse_service(name: String, body: Mapping) -> Result<ServiceDefinition, Compo
         Some(_) => return Err(invalid("ports must be a list".into())),
     }
 
+    let mut mounts = Vec::new();
     match body.get("volumes") {
         None | Some(Value::Null) => {}
         Some(Value::Sequence(items)) => {
@@ -438,19 +462,36 @@ fn parse_service(name: String, body: Mapping) -> Result<ServiceDefinition, Compo
                         "volumes must use the short syntax, e.g. \"./data:/opt/data\"".into(),
                     ));
                 };
-                let (source, target) = split_mount(spec);
+                let (source, rest) = split_mount(spec);
+                let target = rest.split(':').next().unwrap_or(rest);
                 if target.is_empty() {
                     return Err(invalid(format!("volume '{spec}' has no container path")));
                 }
-                if let MountSource::Relative(rel) = classify_source(source)
-                    && rel
-                        .components()
-                        .any(|c| matches!(c, std::path::Component::ParentDir))
-                {
-                    return Err(invalid(format!(
-                        "volume '{spec}' leaves the Application's directory"
-                    )));
-                }
+                let (kind, data_path) = match classify_source(source) {
+                    MountSource::Relative(rel) => {
+                        if rel
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                        {
+                            return Err(invalid(format!(
+                                "volume '{spec}' leaves the Application's directory"
+                            )));
+                        }
+                        (
+                            MountKind::Data,
+                            Some(Path::new("data").join(rel).display().to_string()),
+                        )
+                    }
+                    MountSource::Named(_) => (MountKind::Named, None),
+                    MountSource::Absolute => (MountKind::Host, None),
+                    MountSource::Anonymous => (MountKind::Anonymous, None),
+                };
+                mounts.push(Mount {
+                    source: source.to_string(),
+                    target: target.to_string(),
+                    kind,
+                    data_path,
+                });
             }
         }
         Some(_) => return Err(invalid("volumes must be a list".into())),
@@ -475,6 +516,7 @@ fn parse_service(name: String, body: Mapping) -> Result<ServiceDefinition, Compo
         name,
         image,
         ports,
+        mounts,
         body,
     })
 }
@@ -663,6 +705,20 @@ services:
                 .contains("container_name: sf-app-k3n8qz4v2x1p-hermes")
         );
         assert!(!project.yaml.contains("container_name: hermes\n"));
+    }
+
+    #[test]
+    fn a_mount_says_where_its_data_will_live() {
+        let def = hermes();
+        assert_eq!(
+            def.services[0].mounts,
+            vec![Mount {
+                source: "~/.hermes".into(),
+                target: "/opt/data".into(),
+                kind: MountKind::Data,
+                data_path: Some("data/.hermes".into()),
+            }]
+        );
     }
 
     #[test]

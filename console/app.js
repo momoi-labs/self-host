@@ -564,18 +564,17 @@ function formMarkup(app) {
     <div class="field-row ${creating ? 'hidden' : ''}" data-source="compose">
       <div class="field">
         <label for="f-web-service">Web service</label>
-        <input class="input mono" type="text" id="f-web-service" value="${esc(app?.web_service || '')}" placeholder="first with ports"
-               list="f-web-service-options" autocomplete="off">
-        <datalist id="f-web-service-options"></datalist>
+        <select class="select mono" id="f-web-service" data-current="${esc(app?.web_service || '')}"></select>
       </div>
       <div class="field">
         <label for="f-web-port">Web port</label>
-        <input class="input mono" type="number" id="f-web-port" min="1" max="65535" value="${app?.web_port || ''}" placeholder="9119"
-               list="f-web-port-options" autocomplete="off">
-        <datalist id="f-web-port-options"></datalist>
+        <select class="select mono" id="f-web-port" data-current="${app?.web_port || ''}"></select>
+        <input class="input mono hidden" type="number" id="f-web-port-custom" min="1" max="65535"
+               placeholder="9119" value="${app?.web_port || ''}" aria-label="Web port">
       </div>
     </div>
-    <small class="field-hint ${creating ? 'hidden' : ''}" data-source="compose" id="f-web-help">The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.</small>`;
+    <small class="field-hint ${creating ? 'hidden' : ''}" data-source="compose" id="f-web-help">The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.</small>
+    <div class="field ${creating ? 'hidden' : ''}" data-source="compose" id="f-storage"></div>`;
 
   const definition = creating
     ? `<fieldset class="field source-choice">
@@ -631,13 +630,15 @@ let inspectTimer = null;
 function wireComposeInspection() {
   const compose = document.getElementById('f-compose');
   const service = document.getElementById('f-web-service');
+  const port = document.getElementById('f-web-port');
   if (!compose) return;
   compose.addEventListener('input', () => {
     clearTimeout(inspectTimer);
     inspectTimer = setTimeout(inspectCompose, 400);
   });
-  service.addEventListener('input', () => suggestPort(true));
-  service.addEventListener('change', () => suggestPort(true));
+  service.addEventListener('change', () => renderWebTarget(true));
+  port.addEventListener('change', () => renderPortInput());
+  renderInspection();
   if (compose.value.trim()) inspectCompose();
 }
 
@@ -670,57 +671,135 @@ async function inspectCompose() {
   }
 }
 
-/* Fills the lists behind the two fields, and the fields themselves when
-   they are empty: the Platform's own default, which is what would happen on
-   submit anyway, made visible before it does. */
+function inspectedServices() {
+  return inspected ? inspected.services : [];
+}
+
+function chosenService() {
+  const select = document.getElementById('f-web-service');
+  return inspectedServices().find(s => s.name === select.value) || null;
+}
+
+/* Everything the file implies for the form: the service to route to, the
+   port on it, and the storage the Platform will set up. */
 function renderInspection() {
-  const serviceInput = document.getElementById('f-web-service');
-  const serviceList = document.getElementById('f-web-service-options');
-  const help = document.getElementById('f-web-help');
-  if (!serviceInput || !serviceList) return;
+  renderWebTarget(false);
+  renderStorage();
+}
 
-  const services = inspected ? inspected.services : [];
-  serviceList.innerHTML = services.map(s => `<option value="${esc(s.name)}">${esc(s.image)}</option>`).join('');
+/* The web service is a choice among the file's services, preselected with
+   the Platform's own default. With one service there is nothing to choose;
+   the field still shows which one, so the port next to it has a subject. */
+function renderWebTarget(serviceChanged) {
+  const select = document.getElementById('f-web-service');
+  if (!select) return;
+  const services = inspectedServices();
+  const wanted = select.value || select.dataset.current || (inspected && inspected.web_service) || '';
 
-  if (inspected && !serviceInput.value.trim() && inspected.web_service) {
-    serviceInput.value = inspected.web_service;
+  if (services.length === 0) {
+    select.innerHTML = '<option value="">Paste a Compose file first</option>';
+    select.disabled = true;
+  } else {
+    select.innerHTML = services.map(s =>
+      `<option value="${esc(s.name)}">${esc(s.name)}${s.ports.length ? '' : ' (no ports)'}</option>`).join('');
+    select.disabled = false;
+    select.value = services.some(s => s.name === wanted) ? wanted : services[0].name;
   }
-  suggestPort(false);
 
-  if (help) {
-    const known = services.find(s => s.name === serviceInput.value.trim());
-    if (known && known.ports.length) {
-      help.textContent = known.name + ' listens on ' + known.ports.map(p => p.container).join(', ') +
-        ' inside its container. Pick the one the browser should reach; the hostname gets there through Traefik.';
-    } else if (known) {
-      help.textContent = known.name + ' declares no ports. Type the port it listens on inside its container.';
-    } else {
-      help.textContent = 'The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.';
-    }
+  renderPortChoice(serviceChanged);
+
+  const help = document.getElementById('f-web-help');
+  const known = chosenService();
+  if (!help) return;
+  if (known && known.ports.length > 1) {
+    help.textContent = known.name + ' listens on ' + known.ports.map(p => p.container).join(', ') +
+      ' inside its container. Pick the one the browser should reach; the hostname gets there through Traefik.';
+  } else if (known && known.ports.length === 1) {
+    help.textContent = known.name + ' listens on ' + known.ports[0].container +
+      ' inside its container; the hostname reaches it through Traefik.';
+  } else if (known) {
+    help.textContent = known.name + ' declares no ports. Type the port it listens on inside its container.';
+  } else {
+    help.textContent = 'The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.';
   }
 }
 
-/* The port list follows the service. A port typed by hand stays unless the
-   service just changed, in which case the old port belongs to the old
-   service and is replaced by the new one's first. */
-function suggestPort(serviceChanged) {
-  const serviceInput = document.getElementById('f-web-service');
-  const portInput = document.getElementById('f-web-port');
-  const portList = document.getElementById('f-web-port-options');
-  if (!serviceInput || !portInput || !portList) return;
+/* The port is a choice among what the service declares, with "Other" for a
+   port the file does not mention. A service with no ports gets the number
+   input directly: there is nothing to choose from. */
+function renderPortChoice(serviceChanged) {
+  const select = document.getElementById('f-web-port');
+  const custom = document.getElementById('f-web-port-custom');
+  if (!select || !custom) return;
+  const known = chosenService();
+  const ports = known ? [...new Set(known.ports.map(p => String(p.container)))] : [];
+  const current = serviceChanged ? '' : (custom.value.trim() || select.dataset.current || '');
 
-  const services = inspected ? inspected.services : [];
-  const known = services.find(s => s.name === serviceInput.value.trim());
-  const ports = known ? known.ports.map(p => p.container) : [];
-  portList.innerHTML = [...new Set(ports)].map(p => `<option value="${p}"></option>`).join('');
-
-  if (serviceChanged) {
-    // The old port was the old service's; it means nothing for this one.
-    portInput.value = ports.length ? ports[0] : '';
-  } else if (ports.length && !portInput.value.trim()) {
-    portInput.value = ports[0];
+  if (ports.length === 0) {
+    select.innerHTML = '';
+    select.classList.add('hidden');
+    custom.classList.remove('hidden');
+    if (serviceChanged) custom.value = '';
+    return;
   }
-  if (serviceChanged) renderInspection();
+
+  select.innerHTML = ports.map(p => `<option value="${p}">${p}</option>`).join('') +
+    '<option value="other">Other…</option>';
+  select.classList.remove('hidden');
+  if (ports.includes(current)) {
+    select.value = current;
+  } else if (current) {
+    select.value = 'other';
+    custom.value = current;
+  } else {
+    select.value = ports[0];
+  }
+  renderPortInput();
+}
+
+/* "Other" reveals the number input; a listed port hides it and takes its
+   value along, so what is read back is always one field. */
+function renderPortInput() {
+  const select = document.getElementById('f-web-port');
+  const custom = document.getElementById('f-web-port-custom');
+  if (!select || !custom || select.classList.contains('hidden')) return;
+  if (select.value === 'other') {
+    custom.classList.remove('hidden');
+    custom.focus();
+  } else {
+    custom.classList.add('hidden');
+    custom.value = select.value;
+  }
+}
+
+/* What each service keeps, and where the Platform puts it. A service with
+   no storage at all is worth a sentence: whatever it writes goes with the
+   container on the next redeploy. */
+function renderStorage() {
+  const el = document.getElementById('f-storage');
+  if (!el) return;
+  const services = inspectedServices();
+  if (services.length === 0) { el.innerHTML = ''; return; }
+
+  const rows = [];
+  for (const s of services) {
+    if (s.volumes.length === 0) {
+      rows.push(`<li><span class="mono">${esc(s.name)}</span> keeps nothing: what it writes is lost when its container is recreated.</li>`);
+      continue;
+    }
+    for (const v of s.volumes) {
+      let where;
+      if (v.kind === 'data') where = `the application's directory, <span class="mono">${esc(v.data_path)}</span>`;
+      else if (v.kind === 'named') where = `a named volume, <span class="mono">${esc(v.source)}</span>`;
+      else if (v.kind === 'host') where = `the Host path <span class="mono">${esc(v.source)}</span>, as written`;
+      else where = 'an anonymous volume, gone with the container';
+      rows.push(`<li><span class="mono">${esc(s.name)}</span>: <span class="mono">${esc(v.target)}</span> lives in ${where}.</li>`);
+    }
+  }
+  el.innerHTML = `
+    <p class="t-caps">Storage</p>
+    <ul class="storage-list">${rows.join('')}</ul>
+    <small class="field-hint">Created on deploy and kept across redeploys, restarts and removal.</small>`;
 }
 
 /* The two definitions share the form. Only the visible one is required, or
@@ -751,7 +830,9 @@ function readForm() {
   if (source === 'compose') {
     body.compose = document.getElementById('f-compose').value;
     body.web_service = document.getElementById('f-web-service').value.trim();
-    const port = document.getElementById('f-web-port').value.trim();
+    // The number input always carries the answer: a listed port copies
+    // itself into it, and "Other" is typed straight into it.
+    const port = document.getElementById('f-web-port-custom').value.trim();
     if (port) body.web_port = Number(port);
   } else {
     body.image = document.getElementById('f-image').value.trim();

@@ -91,3 +91,7 @@
 
 /* One row per service; the state column uses the same badge as the status. */
 .services { margin-block-start: var(--spacing-md); }
+
+/* The storage summary under the Compose editor: one line per mount. */
+.storage-list { margin: 0; padding-inline-start: var(--spacing-lg); color: var(--color-muted-foreground); font-size: var(--type-size-label); }
+.storage-list li { margin-block-start: var(--spacing-xs); }
