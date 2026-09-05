@@ -85,7 +85,7 @@
         <div class="empty hatch">
           <span class="empty-icon" aria-hidden="true"><svg class="icon icon-lg"><use href="#i-box"/></svg></span>
           <p class="t-h3 fg">No applications yet</p>
-          <p>Deploy your first application from a container image and it will be reachable on your LAN.</p>
+          <p>Deploy your first application from a container image or a Compose file and it will be reachable on your LAN.</p>
           <button id="empty-deploy" class="btn btn-primary btn-sm" type="button">
             <svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg>Deploy application
           </button>
@@ -139,7 +139,7 @@
           <svg class="icon icon-sm" aria-hidden="true"><use href="#i-x"/></svg>
         </button>
       </div>
-      <p id="deploy-description" class="muted t-label">Create an application from a container image.</p>
+      <p id="deploy-description" class="muted t-label">Create an application from a container image or a Compose file.</p>
     </div>
     <form id="deploy-form">
       <div class="dialog-body">
@@ -148,10 +148,35 @@
           <input class="input" type="text" id="deploy-name" placeholder="my-app" required aria-describedby="deploy-name-help">
           <small class="field-hint" id="deploy-name-help">Lowercase letters, numbers and hyphens; at most 63 characters.</small>
         </div>
-        <div class="field">
+        <fieldset class="field source-choice">
+          <legend>Definition</legend>
+          <label class="row"><input type="radio" name="deploy-source" value="image" checked> Container image</label>
+          <label class="row"><input type="radio" name="deploy-source" value="compose"> Compose file</label>
+        </fieldset>
+        <div class="field" data-source="image">
           <label for="deploy-image">Container image</label>
-          <input class="input mono" type="text" id="deploy-image" placeholder="nginx:alpine" required>
+          <input class="input mono" type="text" id="deploy-image" placeholder="nginx:alpine" required aria-describedby="deploy-image-help">
+          <small class="field-hint" id="deploy-image-help">One container serving HTTP on port 80.</small>
         </div>
+        <div class="field hidden" data-source="compose">
+          <label for="deploy-compose">Compose file</label>
+          <textarea class="textarea mono compose-editor" id="deploy-compose" rows="12" spellcheck="false"
+                    placeholder="services:&#10;  hermes:&#10;    image: nousresearch/hermes-agent:latest&#10;    command: gateway run&#10;    ports:&#10;      - &quot;9119:9119&quot;&#10;    volumes:&#10;      - ~/.hermes:/opt/data"
+                    aria-describedby="deploy-compose-help deploy-compose-error"></textarea>
+          <small class="field-hint" id="deploy-compose-help">The supported subset is documented in docs/compose-applications.md. <code>~</code> and <code>./</code> paths land in the application's data directory.</small>
+          <small class="field-error hidden" id="deploy-compose-error"></small>
+        </div>
+        <div class="field-row hidden" data-source="compose">
+          <div class="field">
+            <label for="deploy-web-service">Web service</label>
+            <input class="input mono" type="text" id="deploy-web-service" placeholder="first with ports" aria-describedby="deploy-web-help">
+          </div>
+          <div class="field">
+            <label for="deploy-web-port">Web port</label>
+            <input class="input mono" type="number" id="deploy-web-port" min="1" max="65535" placeholder="9119">
+          </div>
+        </div>
+        <small class="field-hint hidden" id="deploy-web-help" data-source="compose">The service and container port the hostname routes to.</small>
         <div class="field">
           <label for="deploy-hostname">Hostname</label>
           <input class="input mono" type="text" id="deploy-hostname" placeholder="my-app.home.lan"

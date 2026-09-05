@@ -70,3 +70,19 @@
   .detail-panel .split { height: auto; }
   .pane-logs .logview { min-height: 40vh; }
 }
+
+/* The deploy dialog switches between an image and a Compose file. A Compose
+   editor needs room and a monospace face; a fieldset of two radios needs to
+   read as one field. */
+.source-choice { border: 0; padding: 0; margin: 0; }
+.source-choice legend { padding: 0; margin-block-end: var(--spacing-xs); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
+.source-choice label { gap: var(--spacing-sm); margin-inline-end: var(--spacing-lg); cursor: pointer; }
+.compose-editor { min-height: 220px; font-family: var(--type-family-mono); white-space: pre; overflow: auto; tab-size: 2; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-md); }
+
+/* Lifecycle actions sit with the status badge: what it is, and what you can
+   do about it, in one glance. */
+.lifecycle { display: flex; align-items: center; gap: var(--spacing-sm); }
+
+/* One row per service; the state column uses the same badge as the status. */
+.services { margin-block-start: var(--spacing-md); }
