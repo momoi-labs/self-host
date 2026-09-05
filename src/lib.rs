@@ -281,10 +281,22 @@ struct InspectedPort {
 }
 
 #[derive(Serialize)]
+struct InspectedVolume {
+    source: String,
+    target: String,
+    /// `named`, `data`, `host` or `anonymous`; see docs/compose-applications.md.
+    kind: &'static str,
+    /// For `data`, the path under the Application's directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_path: Option<String>,
+}
+
+#[derive(Serialize)]
 struct InspectedService {
     name: String,
     image: String,
     ports: Vec<InspectedPort>,
+    volumes: Vec<InspectedVolume>,
 }
 
 /// What a Compose file declares, before anything is deployed: the services,
@@ -316,6 +328,21 @@ async fn inspect_compose(Json(body): Json<InspectComposeRequest>) -> Response {
                 .map(|p| InspectedPort {
                     host: p.host,
                     container: p.container,
+                })
+                .collect(),
+            volumes: s
+                .mounts
+                .iter()
+                .map(|m| InspectedVolume {
+                    source: m.source.clone(),
+                    target: m.target.clone(),
+                    kind: match m.kind {
+                        compose_app::MountKind::Named => "named",
+                        compose_app::MountKind::Data => "data",
+                        compose_app::MountKind::Host => "host",
+                        compose_app::MountKind::Anonymous => "anonymous",
+                    },
+                    data_path: m.data_path.clone(),
                 })
                 .collect(),
         })
@@ -1118,7 +1145,7 @@ mod tests {
             &app,
             "/compose/inspect",
             Some("test-key"),
-            json!({"compose": "services:\n  hermes:\n    image: x\n    ports:\n      - \"8642:8642\"\n      - \"9119:9119\"\n  db:\n    image: postgres\n"}),
+            json!({"compose": "services:\n  hermes:\n    image: x\n    ports:\n      - \"8642:8642\"\n      - \"9119:9119\"\n    volumes:\n      - ~/.hermes:/opt/data\n  db:\n    image: postgres\n    volumes:\n      - pgdata:/var/lib/postgresql\n"}),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1131,8 +1158,12 @@ mod tests {
                     {"name": "hermes", "image": "x", "ports": [
                         {"host": 8642, "container": 8642},
                         {"host": 9119, "container": 9119}
+                    ], "volumes": [
+                        {"source": "~/.hermes", "target": "/opt/data", "kind": "data", "data_path": "data/.hermes"}
                     ]},
-                    {"name": "db", "image": "postgres", "ports": []}
+                    {"name": "db", "image": "postgres", "ports": [], "volumes": [
+                        {"source": "pgdata", "target": "/var/lib/postgresql", "kind": "named"}
+                    ]}
                 ],
                 "web_service": "hermes",
                 "web_port": 8642
