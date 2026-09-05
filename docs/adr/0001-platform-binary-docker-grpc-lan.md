@@ -5,3 +5,8 @@ Primary environment is a LAN Host, without depending on external SaaS on the hap
 The Operator API protocol was initially gRPC; that is **superseded by ADR-0007** (HTTP JSON).
 
 **Status:** accepted
+
+The next MVP's Host and Bootstrap requirements are amended by
+[ADR-0013](0013-macos-bootstrap-with-launchd.md). Its CLI-only and single-container
+restrictions are superseded by
+[ADR-0014](0014-compose-applications-and-future-native-supervision.md).

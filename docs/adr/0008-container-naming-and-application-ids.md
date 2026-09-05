@@ -41,3 +41,8 @@ Docker cannot rewrite labels on a running container. Only the rename case is
 free.
 
 **Status:** accepted
+
+For Compose Applications, the one-container naming assumption is superseded by
+[ADR-0014](0014-compose-applications-and-future-native-supervision.md).
+Stable Application IDs remain in effect; Compose service ownership will be defined
+in that implementation.
