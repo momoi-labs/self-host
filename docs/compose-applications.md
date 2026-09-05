@@ -26,9 +26,11 @@ kept verbatim on the Application's row and is what the console edits.
 ## Routing
 
 The Hostname routes to one service and one container port, the web target.
-The console asks for both. Left empty, the web service is the first one that
-publishes a port and the web port is the container side of its first
-publication. The resolved pair is recorded, so the route never guesses
+The web port is the port the service listens on inside its container, not a
+port on the Host: Traefik forwards to it over `sf-apps`, and Consumers only
+ever see the Hostname on 443. The console asks for both. Left empty, the web
+service is the first one that publishes a port and the web port is the
+container side of its first publication. The resolved pair is recorded, so the route never guesses
 again; changing either rewrites the Traefik route without touching Docker.
 
 Traefik reaches the service by container name over `sf-apps`, with HTTPS on
@@ -104,8 +106,6 @@ services:
     image: nousresearch/hermes-agent:latest
     restart: unless-stopped
     command: gateway run
-    ports:
-      - "8642:8642"
     volumes:
       - ~/.hermes:/opt/data
     environment:
@@ -119,5 +119,8 @@ services:
           cpus: "2.0"
 ```
 
-Web service `hermes`, web port `9119`. See [hermes.md](hermes.md) for the
-complete workflow.
+Web service `hermes`, web port `9119`: the port the dashboard listens on
+inside the container. Consumers open `https://hermes.<suffix>`, resolved by
+CoreDNS and served by Traefik, which forwards to that port over `sf-apps`.
+No host port is published; the file has no `ports` at all. See
+[hermes.md](hermes.md) for the complete workflow.

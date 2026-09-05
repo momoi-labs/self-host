@@ -176,7 +176,7 @@
             <input class="input mono" type="number" id="deploy-web-port" min="1" max="65535" placeholder="9119">
           </div>
         </div>
-        <small class="field-hint hidden" id="deploy-web-help" data-source="compose">The service and container port the hostname routes to.</small>
+        <small class="field-hint hidden" id="deploy-web-help" data-source="compose">The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.</small>
         <div class="field">
           <label for="deploy-hostname">Hostname</label>
           <input class="input mono" type="text" id="deploy-hostname" placeholder="my-app.home.lan"
