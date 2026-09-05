@@ -393,6 +393,8 @@ function selectApp(id) {
 
   document.getElementById('remove-btn').addEventListener('click', () => removeApp(app));
   document.getElementById('app-form').addEventListener('submit', e => saveApp(e, app.id));
+  inspected = null;
+  wireComposeInspection();
   document.querySelectorAll('[data-lifecycle]').forEach(btn => {
     btn.addEventListener('click', () => lifecycle(app, btn.dataset.lifecycle));
   });
@@ -562,14 +564,18 @@ function formMarkup(app) {
     <div class="field-row ${creating ? 'hidden' : ''}" data-source="compose">
       <div class="field">
         <label for="f-web-service">Web service</label>
-        <input class="input mono" type="text" id="f-web-service" value="${esc(app?.web_service || '')}" placeholder="first with ports">
+        <input class="input mono" type="text" id="f-web-service" value="${esc(app?.web_service || '')}" placeholder="first with ports"
+               list="f-web-service-options" autocomplete="off">
+        <datalist id="f-web-service-options"></datalist>
       </div>
       <div class="field">
         <label for="f-web-port">Web port</label>
-        <input class="input mono" type="number" id="f-web-port" min="1" max="65535" value="${app?.web_port || ''}" placeholder="9119">
+        <input class="input mono" type="number" id="f-web-port" min="1" max="65535" value="${app?.web_port || ''}" placeholder="9119"
+               list="f-web-port-options" autocomplete="off">
+        <datalist id="f-web-port-options"></datalist>
       </div>
     </div>
-    <small class="field-hint ${creating ? 'hidden' : ''}" data-source="compose">The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.</small>`;
+    <small class="field-hint ${creating ? 'hidden' : ''}" data-source="compose" id="f-web-help">The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.</small>`;
 
   const definition = creating
     ? `<fieldset class="field source-choice">
@@ -614,6 +620,107 @@ function formMarkup(app) {
       ${creating ? '' : servicesMarkup(app)}
       <div class="form-actions">${actions}</div>
     </form>`;
+}
+
+/* What the pasted file declares, as the Platform reads it. Asked for as the
+   Operator types, so the web service and port come from what is in the file
+   rather than from memory — 9191 for 9119 is one keystroke, and a 502. */
+let inspected = null;
+let inspectTimer = null;
+
+function wireComposeInspection() {
+  const compose = document.getElementById('f-compose');
+  const service = document.getElementById('f-web-service');
+  if (!compose) return;
+  compose.addEventListener('input', () => {
+    clearTimeout(inspectTimer);
+    inspectTimer = setTimeout(inspectCompose, 400);
+  });
+  service.addEventListener('input', () => suggestPort(true));
+  service.addEventListener('change', () => suggestPort(true));
+  if (compose.value.trim()) inspectCompose();
+}
+
+async function inspectCompose() {
+  const compose = document.getElementById('f-compose');
+  if (!compose) return;
+  const text = compose.value;
+  if (!text.trim()) { inspected = null; renderInspection(); return; }
+  try {
+    const res = await fetch('/compose/inspect', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ compose: text }),
+    });
+    // The file may have changed while the request was out; a stale answer
+    // would describe a file that is no longer in the editor.
+    if (compose.value !== text) return;
+    if (!res.ok) {
+      inspected = null;
+      renderInspection();
+      const failure = await failureOf(res);
+      showFieldError('f-compose', { error: failure.caused_by[0] || failure.error, caused_by: [] }, false);
+      return;
+    }
+    clearFieldError('f-compose');
+    inspected = await res.json();
+    renderInspection();
+  } catch {
+    inspected = null;
+  }
+}
+
+/* Fills the lists behind the two fields, and the fields themselves when
+   they are empty: the Platform's own default, which is what would happen on
+   submit anyway, made visible before it does. */
+function renderInspection() {
+  const serviceInput = document.getElementById('f-web-service');
+  const serviceList = document.getElementById('f-web-service-options');
+  const help = document.getElementById('f-web-help');
+  if (!serviceInput || !serviceList) return;
+
+  const services = inspected ? inspected.services : [];
+  serviceList.innerHTML = services.map(s => `<option value="${esc(s.name)}">${esc(s.image)}</option>`).join('');
+
+  if (inspected && !serviceInput.value.trim() && inspected.web_service) {
+    serviceInput.value = inspected.web_service;
+  }
+  suggestPort(false);
+
+  if (help) {
+    const known = services.find(s => s.name === serviceInput.value.trim());
+    if (known && known.ports.length) {
+      help.textContent = known.name + ' listens on ' + known.ports.map(p => p.container).join(', ') +
+        ' inside its container. Pick the one the browser should reach; the hostname gets there through Traefik.';
+    } else if (known) {
+      help.textContent = known.name + ' declares no ports. Type the port it listens on inside its container.';
+    } else {
+      help.textContent = 'The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.';
+    }
+  }
+}
+
+/* The port list follows the service. A port typed by hand stays unless the
+   service just changed, in which case the old port belongs to the old
+   service and is replaced by the new one's first. */
+function suggestPort(serviceChanged) {
+  const serviceInput = document.getElementById('f-web-service');
+  const portInput = document.getElementById('f-web-port');
+  const portList = document.getElementById('f-web-port-options');
+  if (!serviceInput || !portInput || !portList) return;
+
+  const services = inspected ? inspected.services : [];
+  const known = services.find(s => s.name === serviceInput.value.trim());
+  const ports = known ? known.ports.map(p => p.container) : [];
+  portList.innerHTML = [...new Set(ports)].map(p => `<option value="${p}"></option>`).join('');
+
+  if (serviceChanged) {
+    // The old port was the old service's; it means nothing for this one.
+    portInput.value = ports.length ? ports[0] : '';
+  } else if (ports.length && !portInput.value.trim()) {
+    portInput.value = ports[0];
+  }
+  if (serviceChanged) renderInspection();
 }
 
 /* The two definitions share the form. Only the visible one is required, or
@@ -707,6 +814,8 @@ function showNewApp() {
   });
   document.getElementById('cancel-btn').addEventListener('click', showDashboard);
   document.getElementById('app-form').addEventListener('submit', deploy);
+  inspected = null;
+  wireComposeInspection();
   document.getElementById('f-name').focus();
 }
 
@@ -728,13 +837,13 @@ function clearFieldError(inputId) {
   error.classList.add('hidden');
 }
 
-function showFieldError(inputId, failure) {
+function showFieldError(inputId, failure, focus = true) {
   const input = document.getElementById(inputId);
   const error = document.getElementById(inputId + '-error');
   input.setAttribute('aria-invalid', 'true');
   error.textContent = asReport(failure).error;
   error.classList.remove('hidden');
-  input.focus();
+  if (focus) input.focus();
 }
 
 function routingErrorField(failure, aliases) {

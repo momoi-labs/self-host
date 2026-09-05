@@ -55,6 +55,7 @@ pub fn build_app<S: StateStore>(
         .route("/health", get(health))
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
+        .route("/compose/inspect", post(inspect_compose))
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
         .route("/apps/id/{id}/start", post(start_app::<S>))
@@ -266,6 +267,68 @@ async fn observed<S: StateStore>(
         services: services.into_iter().map(Into::into).collect(),
         ..ApplicationResponse::from(app)
     }
+}
+
+#[derive(Deserialize)]
+struct InspectComposeRequest {
+    compose: String,
+}
+
+#[derive(Serialize)]
+struct InspectedPort {
+    host: Option<u16>,
+    container: u16,
+}
+
+#[derive(Serialize)]
+struct InspectedService {
+    name: String,
+    image: String,
+    ports: Vec<InspectedPort>,
+}
+
+/// What a Compose file declares, before anything is deployed: the services,
+/// their images and the ports they publish, plus the web target the Platform
+/// would pick on its own. The console reads this as the Operator types, so
+/// the web service and port are chosen from a list instead of typed by hand.
+#[derive(Serialize)]
+struct InspectComposeResponse {
+    services: Vec<InspectedService>,
+    web_service: Option<String>,
+    web_port: Option<u16>,
+}
+
+async fn inspect_compose(Json(body): Json<InspectComposeRequest>) -> Response {
+    let definition = match compose_app::ComposeDefinition::parse(&body.compose) {
+        Ok(d) => d,
+        Err(e) => return deploy_error_response(DeployError::InvalidCompose(e)),
+    };
+    let target = definition.web_target(None, None).ok();
+    let services = definition
+        .services
+        .iter()
+        .map(|s| InspectedService {
+            name: s.name.clone(),
+            image: s.image.clone(),
+            ports: s
+                .ports
+                .iter()
+                .map(|p| InspectedPort {
+                    host: p.host,
+                    container: p.container,
+                })
+                .collect(),
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        Json(InspectComposeResponse {
+            services,
+            web_service: target.as_ref().map(|t| t.service.clone()),
+            web_port: target.map(|t| t.port),
+        }),
+    )
+        .into_response()
 }
 
 /// Saves an edit and redeploys. Addressed by id, not name, because the name is
@@ -1045,6 +1108,45 @@ mod tests {
             json!(format!("sf-app-{}-hermes", record.id))
         );
         assert_eq!(parsed["services"][0]["state"], json!("running"));
+    }
+
+    #[tokio::test]
+    async fn inspecting_a_compose_file_lists_its_services_and_ports() {
+        let (app, _) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/compose/inspect",
+            Some("test-key"),
+            json!({"compose": "services:\n  hermes:\n    image: x\n    ports:\n      - \"8642:8642\"\n      - \"9119:9119\"\n  db:\n    image: postgres\n"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed,
+            json!({
+                "services": [
+                    {"name": "hermes", "image": "x", "ports": [
+                        {"host": 8642, "container": 8642},
+                        {"host": 9119, "container": 9119}
+                    ]},
+                    {"name": "db", "image": "postgres", "ports": []}
+                ],
+                "web_service": "hermes",
+                "web_port": 8642
+            })
+        );
+
+        let response = post_json(
+            &app,
+            "/compose/inspect",
+            Some("test-key"),
+            json!({"compose": "services: ["}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
