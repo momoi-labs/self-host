@@ -38,6 +38,9 @@ async function init() {
   document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-cancel').addEventListener('click', closeDeployModal);
   document.getElementById('deploy-form').addEventListener('submit', deploy);
+  document.querySelectorAll('input[name="deploy-source"]').forEach(radio => {
+    radio.addEventListener('change', () => showDeploySource(radio.value));
+  });
   document.addEventListener('keydown', handleDialogKeydown);
 }
 
@@ -141,8 +144,12 @@ function render() {
    but only failed is an error. */
 function appSignature(app) {
   return [app.status, app.name, app.image, app.hostname,
-          hostnames(app).join(','), JSON.stringify(app.last_error || null)].join('|');
+          hostnames(app).join(','), JSON.stringify(app.last_error || null),
+          app.compose || '', app.web_service || '', app.web_port || '',
+          (app.services || []).map(s => s.service + ':' + s.state).join(',')].join('|');
 }
+
+function isCompose(app) { return app.source === 'compose'; }
 
 /* Every Hostname the application answers on: its Hostname, then its aliases. */
 function hostnames(app) {
@@ -152,6 +159,13 @@ function hostnames(app) {
 function statusTone(status) {
   if (status === 'running') return 'success';
   if (status === 'failed') return 'danger';
+  return '';
+}
+
+/* Docker's word for a container, in the Application's vocabulary. */
+function serviceTone(state) {
+  if (state === 'running') return 'success';
+  if (state === 'exited' || state === 'dead' || state === 'restarting' || state === 'missing') return 'danger';
   return '';
 }
 
@@ -343,17 +357,51 @@ function selectApp(id) {
   // The whole detail is one page: the identity is the page header, and the
   // split below it is only the two panes. Putting the header inside the
   // config pane made the title half a window wide and scroll with the form.
+  const compose = isCompose(app);
+  const canStop = app.status === 'running' || app.status === 'failed';
+  const canStart = app.status === 'stopped' || app.status === 'failed';
+
+  // A Compose Application is edited as its file; an image Application as its
+  // image. Both route somewhere, but only Compose has a choice of where.
+  const definitionFields = compose ? `
+            <div class="field">
+              <label for="edit-compose">Compose file</label>
+              <textarea class="textarea mono compose-editor" id="edit-compose" rows="14" spellcheck="false"
+                        aria-describedby="edit-compose-help edit-compose-error">${esc(app.compose || '')}</textarea>
+              <small class="field-hint" id="edit-compose-help">Saving brings the project up again; only services whose definition changed are recreated.</small>
+              <small class="field-error hidden" id="edit-compose-error"></small>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="edit-web-service">Web service</label>
+                <input class="input mono" type="text" id="edit-web-service" value="${esc(app.web_service || '')}">
+              </div>
+              <div class="field">
+                <label for="edit-web-port">Web port</label>
+                <input class="input mono" type="number" id="edit-web-port" min="1" max="65535" value="${app.web_port || ''}">
+              </div>
+            </div>` : `
+            <div class="field">
+              <label for="edit-image">Image</label>
+              <input class="input mono" type="text" id="edit-image" value="${esc(app.image)}" required>
+            </div>`;
+
   document.getElementById('detail').innerHTML = `
     <div class="between">
       <div class="page-header">
         <h1 class="t-h1">${esc(app.name)}</h1>
         <p class="muted t-label">${hostnames(app).map(h =>
-          `<a href="http://${esc(h)}" target="_blank" rel="noreferrer" class="mono">${esc(h)}</a>`
+          `<a href="https://${esc(h)}" target="_blank" rel="noreferrer" class="mono">${esc(h)}</a>`
         ).join(' · ')}</p>
       </div>
-      <span class="badge ${statusBadge(app.status)}">
-        <span class="dot" aria-hidden="true"></span>${esc(app.status)}
-      </span>
+      <div class="lifecycle">
+        <span class="badge ${statusBadge(app.status)}">
+          <span class="dot" aria-hidden="true"></span>${esc(app.status)}
+        </span>
+        <button type="button" class="btn btn-outline btn-sm" data-lifecycle="start" ${canStart ? '' : 'disabled'}>Start</button>
+        <button type="button" class="btn btn-outline btn-sm" data-lifecycle="stop" ${canStop ? '' : 'disabled'}>Stop</button>
+        <button type="button" class="btn btn-outline btn-sm" data-lifecycle="restart" ${app.status === 'running' ? '' : 'disabled'}>Restart</button>
+      </div>
     </div>
     ${app.last_error ? `<div class="alert alert-danger" role="alert">${alertMarkup(app.last_error, 'Retry')}</div>` : ''}
     <div id="edit-error" class="hidden"></div>
@@ -366,10 +414,7 @@ function selectApp(id) {
               <label for="edit-name">Name</label>
               <input class="input" type="text" id="edit-name" value="${esc(app.name)}" required>
             </div>
-            <div class="field">
-              <label for="edit-image">Image</label>
-              <input class="input mono" type="text" id="edit-image" value="${esc(app.image)}" required>
-            </div>
+            ${definitionFields}
             <div class="field">
               <label for="edit-hostname">Hostname</label>
               <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required
@@ -384,9 +429,7 @@ function selectApp(id) {
               <small class="field-hint" id="edit-aliases-help">Other hostnames this application also answers on, comma separated. Keep the old one here to change the Hostname without breaking it.</small>
               <small class="field-error hidden" id="edit-aliases-error"></small>
             </div>
-            <dl class="kv">
-              <dt>Container</dt><dd>sf-app-${esc(app.id)}</dd>
-            </dl>
+            ${servicesMarkup(app)}
             <div class="form-actions">
               <button id="remove-btn" type="button" class="btn btn-danger-ghost btn-sm">Remove application</button>
               <button type="submit" class="btn btn-primary btn-sm">Save and redeploy</button>
@@ -399,8 +442,11 @@ function selectApp(id) {
     </div>
   `;
 
-  document.getElementById('remove-btn').addEventListener('click', () => removeApp(app.name));
+  document.getElementById('remove-btn').addEventListener('click', () => removeApp(app));
   document.getElementById('edit-form').addEventListener('submit', e => saveApp(e, app.id));
+  document.querySelectorAll('[data-lifecycle]').forEach(btn => {
+    btn.addEventListener('click', () => lifecycle(app, btn.dataset.lifecycle));
+  });
   const retry = document.querySelector('[data-retry]');
   if (retry) retry.addEventListener('click', () => {
     document.getElementById('edit-form').requestSubmit();
@@ -411,11 +457,55 @@ function selectApp(id) {
   // keeps a redeploy honest — it replaces the container, and output from the
   // previous one must not keep scrolling past.
   document.getElementById('logs-panel').innerHTML = `
-    <p class="t-caps">Logs from sf-app-${esc(app.id)}</p>
+    <p class="t-caps">Logs from sf-app-${esc(app.id)}${compose ? '-*' : ''}</p>
     <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite"></div></div>
   `;
 
   startLogStream(app.id);
+}
+
+/* Every container of the Application and what Docker says about it. For a
+   one-container Application this is one row; it is still the row that says
+   "exited with code 1" when the deploy went fine and the process did not. */
+function servicesMarkup(app) {
+  const services = app.services || [];
+  if (services.length === 0) return '';
+  return `
+    <div class="services">
+      <p class="t-caps">Services</p>
+      <div class="table-wrap"><div class="table-scroll"><table class="table">
+        <thead><tr><th scope="col">Service</th><th scope="col">Container</th><th scope="col">State</th><th scope="col" class="num">Restarts</th></tr></thead>
+        <tbody>${services.map(s => `
+          <tr>
+            <td class="mono">${esc(s.service)}</td>
+            <td class="mono">${esc(s.container)}</td>
+            <td><span class="badge ${serviceTone(s.state) ? 'badge-' + serviceTone(s.state) : 'badge-neutral'}"><span class="dot" aria-hidden="true"></span>${esc(s.state)}${s.state === 'exited' && s.exit_code !== undefined ? ' (' + s.exit_code + ')' : ''}</span></td>
+            <td class="num">${s.restarts === undefined ? '<span class="muted">—</span>' : s.restarts}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div></div>
+    </div>`;
+}
+
+// ── Lifecycle ───────────────────────────────────────────────────
+async function lifecycle(app, verb) {
+  try {
+    const res = await fetch('/apps/id/' + encodeURIComponent(app.id) + '/' + verb, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      toast('danger', 'Could not ' + verb + ' ' + app.name, await failureOf(res));
+    } else {
+      const updated = await res.json();
+      toast(updated.status === 'failed' ? 'danger' : 'success',
+            app.name + ' is ' + updated.status,
+            updated.status === 'failed' ? updated.last_error : null);
+    }
+  } catch (err) {
+    toast('danger', 'Could not ' + verb + ' ' + app.name, err.message);
+  }
+  await loadApps();
 }
 
 // ── Log streaming (fetch + ReadableStream) ──────────────────────
@@ -499,6 +589,23 @@ function showDeployModal() {
   document.getElementById('deploy-error').classList.add('hidden');
   clearFieldError('deploy-hostname');
   clearFieldError('deploy-aliases');
+  clearFieldError('deploy-compose');
+  showDeploySource(deploySource());
+}
+
+function deploySource() {
+  return document.querySelector('input[name="deploy-source"]:checked').value;
+}
+
+/* The two definitions share one dialog. Only the visible one is required,
+   or the browser would refuse to submit over a field the operator cannot
+   see. */
+function showDeploySource(source) {
+  document.querySelectorAll('#deploy-modal [data-source]').forEach(el => {
+    el.classList.toggle('hidden', el.dataset.source !== source);
+  });
+  document.getElementById('deploy-image').required = source === 'image';
+  document.getElementById('deploy-compose').required = source === 'compose';
 }
 
 function closeDeployModal() {
@@ -512,7 +619,7 @@ function handleDialogKeydown(event) {
   if (modal.classList.contains('hidden')) return;
   if (event.key === 'Escape') { closeDeployModal(); return; }
   if (event.key !== 'Tab') return;
-  const controls = [...modal.querySelectorAll('button, input')].filter(el => !el.disabled);
+  const controls = [...modal.querySelectorAll('button, input, textarea')].filter(el => !el.disabled && el.offsetParent !== null);
   const first = controls[0];
   const last = controls[controls.length - 1];
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
@@ -561,10 +668,19 @@ async function saveApp(e, id) {
   const aliases = parseAliases(document.getElementById('edit-aliases').value);
   const body = {
     name: document.getElementById('edit-name').value.trim(),
-    image: document.getElementById('edit-image').value.trim(),
     hostname: document.getElementById('edit-hostname').value.trim(),
     aliases,
   };
+  const composeEl = document.getElementById('edit-compose');
+  if (composeEl) {
+    clearFieldError('edit-compose');
+    body.compose = composeEl.value;
+    body.web_service = document.getElementById('edit-web-service').value.trim();
+    const port = document.getElementById('edit-web-port').value.trim();
+    if (port) body.web_port = Number(port);
+  } else {
+    body.image = document.getElementById('edit-image').value.trim();
+  }
 
   let failure = null;
   try {
@@ -593,6 +709,10 @@ async function saveApp(e, id) {
     showFieldError(routingErrorField('edit', failure, aliases), failure);
     return;
   }
+  if (failure.error.startsWith('invalid Compose definition') && document.getElementById('edit-compose')) {
+    showFieldError('edit-compose', { error: failure.caused_by[0] || failure.error, caused_by: [] });
+    return;
+  }
 
   // The record already carries the reason when the deploy itself failed, and
   // selectApp rendered it. Only errors that never reached the database — a
@@ -605,16 +725,25 @@ async function saveApp(e, id) {
 async function deploy(e) {
   e.preventDefault();
   const name = document.getElementById('deploy-name').value.trim();
-  const image = document.getElementById('deploy-image').value.trim();
+  const source = deploySource();
+  const image = source === 'image' ? document.getElementById('deploy-image').value.trim() : '';
   const hostname = document.getElementById('deploy-hostname').value.trim();
   const aliases = parseAliases(document.getElementById('deploy-aliases').value);
   const errEl = document.getElementById('deploy-error');
   errEl.classList.add('hidden');
   clearFieldError('deploy-hostname');
   clearFieldError('deploy-aliases');
+  clearFieldError('deploy-compose');
 
   const body = { name, image, aliases };
   if (hostname) body.hostname = hostname;
+  if (source === 'compose') {
+    body.compose = document.getElementById('deploy-compose').value;
+    const service = document.getElementById('deploy-web-service').value.trim();
+    const port = document.getElementById('deploy-web-port').value.trim();
+    if (service) body.web_service = service;
+    if (port) body.web_port = Number(port);
+  }
 
   try {
     const res = await fetch('/apps', {
@@ -634,12 +763,19 @@ async function deploy(e) {
         showFieldError(routingErrorField('deploy', failure, aliases), failure);
         return;
       }
+      if (failure.error.startsWith('invalid Compose definition')) {
+        showFieldError('deploy-compose', { error: failure.caused_by[0] || failure.error, caused_by: [] });
+        return;
+      }
       showAlert(errEl, failure);
       return;
     }
 
     document.getElementById('deploy-name').value = '';
     document.getElementById('deploy-image').value = '';
+    document.getElementById('deploy-compose').value = '';
+    document.getElementById('deploy-web-service').value = '';
+    document.getElementById('deploy-web-port').value = '';
     document.getElementById('deploy-hostname').value = '';
     document.getElementById('deploy-aliases').value = '';
     closeDeployModal();
@@ -651,7 +787,8 @@ async function deploy(e) {
     if (!failure) {
       // Accepted, not finished: the pull runs on the platform and the poll
       // says how it went.
-      toast('success', 'Deploy started for ' + name, 'Pulling image ' + image + ' ...');
+      toast('success', 'Deploy started for ' + name,
+            source === 'compose' ? 'Bringing the Compose project up ...' : 'Pulling image ' + image + ' ...');
     }
     // A failure needs no toast: selectApp already rendered the reason as the
     // application's alert, and that one stays on screen.
@@ -661,8 +798,9 @@ async function deploy(e) {
 }
 
 // ── Remove ──────────────────────────────────────────────────────
-async function removeApp(name) {
-  if (!await confirmRemove(name)) return;
+async function removeApp(app) {
+  const name = app.name;
+  if (!await confirmRemove(app)) return;
   try {
     const res = await fetch('/apps/' + encodeURIComponent(name), {
       method: 'DELETE',
@@ -672,7 +810,7 @@ async function removeApp(name) {
       toast('danger', 'Could not remove ' + name, await failureOf(res));
       return;
     }
-    toast('success', 'Application removed', name + ' and its container are gone.');
+    toast('success', 'Application removed', name + ' and its containers are gone. Its data stays on the Host.');
   } catch (err) {
     toast('danger', 'Could not remove ' + name, err.message);
     return;
@@ -765,13 +903,14 @@ function toast(kind, title, body) {
 
 /* Replaces window.confirm, which cannot be styled and says the hostname out
    loud. Resolves true only if the destructive button is the one pressed. */
-function confirmRemove(name) {
+function confirmRemove(app) {
   return new Promise(resolve => {
     const modal = document.getElementById('confirm-modal');
     const accept = document.getElementById('confirm-accept');
     const cancel = document.getElementById('confirm-cancel');
     document.getElementById('confirm-body').textContent =
-      `"${name}" and its container will be removed. This cannot be undone.`;
+      `"${app.name}" and its ${isCompose(app) ? 'containers' : 'container'} will be removed. ` +
+      'Named volumes and the data directory are kept on the Host.';
 
     const close = (answer) => {
       modal.classList.add('hidden');
