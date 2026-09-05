@@ -894,9 +894,20 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         println!("No containers found.");
     }
 
+    // A Compose Application's named volumes are created under its project,
+    // so they are sf-app-<id>_<volume> and the self-host prefix alone leaves
+    // them behind. Repeated name filters are an OR.
     println!("Removing volumes...");
     let output = std::process::Command::new("docker")
-        .args(["volume", "ls", "-q", "--filter", "name=self-host"])
+        .args([
+            "volume",
+            "ls",
+            "-q",
+            "--filter",
+            "name=self-host",
+            "--filter",
+            "name=^sf-app-",
+        ])
         .output()?;
 
     let volume_names = String::from_utf8_lossy(&output.stdout);
