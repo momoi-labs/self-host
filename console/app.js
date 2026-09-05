@@ -21,6 +21,9 @@ let apps = [];
 let system = [];
 let selected = null;
 let selectedSystem = null;
+/* True while the "New application" form is on screen, so a poll does not
+   redraw over what is being typed. */
+let creating = false;
 let logAbort = null;
 let pendingPoll = null;
 let detailSignature = null;
@@ -30,18 +33,11 @@ async function init() {
   await loadApps();
   await loadSystem();
   setupSplitter();
-  document.getElementById('deploy-btn').addEventListener('click', showDeployModal);
-  document.getElementById('empty-deploy').addEventListener('click', showDeployModal);
+  document.getElementById('deploy-btn').addEventListener('click', showNewApp);
+  document.getElementById('empty-deploy').addEventListener('click', showNewApp);
   document.querySelector('[data-home]').addEventListener('click', showDashboard);
   document.querySelector('[data-platform]').addEventListener('click', showPlatform);
   document.getElementById('health-link').addEventListener('click', showPlatform);
-  document.getElementById('deploy-close').addEventListener('click', closeDeployModal);
-  document.getElementById('deploy-cancel').addEventListener('click', closeDeployModal);
-  document.getElementById('deploy-form').addEventListener('submit', deploy);
-  document.querySelectorAll('input[name="deploy-source"]').forEach(radio => {
-    radio.addEventListener('change', () => showDeploySource(radio.value));
-  });
-  document.addEventListener('keydown', handleDialogKeydown);
 }
 
 async function loadBootstrap() {
@@ -131,8 +127,9 @@ function render() {
       selected = null;
       showDashboard();
     }
-  } else if (selectedSystem) {
-    // The Platform detail is read-only and nothing polls it, so leave it alone.
+  } else if (selectedSystem || creating) {
+    // The Platform detail is read-only and the new-application form is
+    // being typed into; neither wants redrawing on a poll.
   } else if (!document.getElementById('platform').classList.contains('hidden')) {
     showPlatform();
   } else {
@@ -227,6 +224,7 @@ function showDashboard() {
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
   selectedSystem = null;
+  creating = false;
   detailSignature = null;
   setCrumb('Overview');
   document.querySelector('[data-home]').setAttribute('aria-current', 'page');
@@ -265,6 +263,7 @@ function showPlatform() {
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
   selectedSystem = null;
+  creating = false;
   detailSignature = null;
   setCrumb('Platform');
   document.querySelector('[data-platform]').setAttribute('aria-current', 'page');
@@ -286,6 +285,7 @@ function selectSystem(role) {
   if (!c) return;
   selected = null;
   selectedSystem = role;
+  creating = false;
   detailSignature = null;
 
   setCrumb('Platform');
@@ -340,6 +340,7 @@ function selectApp(id) {
   if (!app) return;
   selected = id;
   selectedSystem = null;
+  creating = false;
   detailSignature = appSignature(app);
 
   document.querySelectorAll('#sidebar [data-id]').forEach(el => {
@@ -361,31 +362,6 @@ function selectApp(id) {
   const canStop = app.status === 'running' || app.status === 'failed';
   const canStart = app.status === 'stopped' || app.status === 'failed';
 
-  // A Compose Application is edited as its file; an image Application as its
-  // image. Both route somewhere, but only Compose has a choice of where.
-  const definitionFields = compose ? `
-            <div class="field">
-              <label for="edit-compose">Compose file</label>
-              <textarea class="textarea mono compose-editor" id="edit-compose" rows="14" spellcheck="false"
-                        aria-describedby="edit-compose-help edit-compose-error">${esc(app.compose || '')}</textarea>
-              <small class="field-hint" id="edit-compose-help">Saving brings the project up again; only services whose definition changed are recreated.</small>
-              <small class="field-error hidden" id="edit-compose-error"></small>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label for="edit-web-service">Web service</label>
-                <input class="input mono" type="text" id="edit-web-service" value="${esc(app.web_service || '')}">
-              </div>
-              <div class="field">
-                <label for="edit-web-port">Web port</label>
-                <input class="input mono" type="number" id="edit-web-port" min="1" max="65535" value="${app.web_port || ''}">
-              </div>
-            </div>` : `
-            <div class="field">
-              <label for="edit-image">Image</label>
-              <input class="input mono" type="text" id="edit-image" value="${esc(app.image)}" required>
-            </div>`;
-
   document.getElementById('detail').innerHTML = `
     <div class="between">
       <div class="page-header">
@@ -404,37 +380,10 @@ function selectApp(id) {
       </div>
     </div>
     ${app.last_error ? `<div class="alert alert-danger" role="alert">${alertMarkup(app.last_error, 'Retry')}</div>` : ''}
-    <div id="edit-error" class="hidden"></div>
     <div class="card detail-panel">
       <div class="split">
         <div class="pane">
-          <form class="stack" id="edit-form">
-            <p class="t-caps">Configuration</p>
-            <div class="field">
-              <label for="edit-name">Name</label>
-              <input class="input" type="text" id="edit-name" value="${esc(app.name)}" required>
-            </div>
-            ${definitionFields}
-            <div class="field">
-              <label for="edit-hostname">Hostname</label>
-              <input class="input mono" type="text" id="edit-hostname" value="${esc(app.hostname)}" required
-                     aria-describedby="edit-hostname-help edit-hostname-error">
-              <small class="field-hint" id="edit-hostname-help">Takes effect immediately; the container keeps running.</small>
-              <small class="field-error hidden" id="edit-hostname-error"></small>
-            </div>
-            <div class="field">
-              <label for="edit-aliases">Aliases</label>
-              <input class="input mono" type="text" id="edit-aliases" value="${esc((app.aliases || []).join(', '))}"
-                     placeholder="old-name.${esc(dnsSuffix())}" aria-describedby="edit-aliases-help edit-aliases-error">
-              <small class="field-hint" id="edit-aliases-help">Other hostnames this application also answers on, comma separated. Keep the old one here to change the Hostname without breaking it.</small>
-              <small class="field-error hidden" id="edit-aliases-error"></small>
-            </div>
-            ${servicesMarkup(app)}
-            <div class="form-actions">
-              <button id="remove-btn" type="button" class="btn btn-danger-ghost btn-sm">Remove application</button>
-              <button type="submit" class="btn btn-primary btn-sm">Save and redeploy</button>
-            </div>
-          </form>
+          ${formMarkup(app)}
         </div>
         <div class="splitter" id="splitter" aria-hidden="true"></div>
         <div class="pane pane-logs" id="logs-panel"></div>
@@ -443,13 +392,13 @@ function selectApp(id) {
   `;
 
   document.getElementById('remove-btn').addEventListener('click', () => removeApp(app));
-  document.getElementById('edit-form').addEventListener('submit', e => saveApp(e, app.id));
+  document.getElementById('app-form').addEventListener('submit', e => saveApp(e, app.id));
   document.querySelectorAll('[data-lifecycle]').forEach(btn => {
     btn.addEventListener('click', () => lifecycle(app, btn.dataset.lifecycle));
   });
   const retry = document.querySelector('[data-retry]');
   if (retry) retry.addEventListener('click', () => {
-    document.getElementById('edit-form').requestSubmit();
+    document.getElementById('app-form').requestSubmit();
   });
 
   // Rendering the detail replaced the log pane, so the stream always restarts:
@@ -579,51 +528,186 @@ async function openLogStream(url) {
   }
 }
 
-// ── Deploy ──────────────────────────────────────────────────────
-function showDeployModal() {
-  document.querySelector('.app-shell').inert = true;
-  document.getElementById('deploy-modal').classList.remove('hidden');
-  document.getElementById('deploy-hostname').placeholder = 'my-app.' + dnsSuffix();
-  document.getElementById('deploy-aliases').placeholder = 'old-name.' + dnsSuffix();
-  document.getElementById('deploy-name').focus();
-  document.getElementById('deploy-error').classList.add('hidden');
-  clearFieldError('deploy-hostname');
-  clearFieldError('deploy-aliases');
-  clearFieldError('deploy-compose');
-  showDeploySource(deploySource());
+// ── The form: one for creating, one for editing ────────────────
+
+/* The same form serves "New application" and the detail page. Creating
+   offers the choice between an image and a Compose file; editing keeps the
+   definition the Application already has. Field ids are the same either
+   way, so the readers and the error placement do not care which it is. */
+function formMarkup(app) {
+  const creating = !app;
+  const source = creating ? 'image' : (isCompose(app) ? 'compose' : 'image');
+  const suffix = esc(dnsSuffix());
+
+  const imageField = `
+    <div class="field" data-source="image">
+      <label for="f-image">Container image</label>
+      <input class="input mono" type="text" id="f-image" value="${esc(app?.image || '')}" placeholder="nginx:alpine"
+             ${source === 'image' ? 'required' : ''} aria-describedby="f-image-help">
+      <small class="field-hint" id="f-image-help">One container serving HTTP on port 80.</small>
+    </div>`;
+
+  const composeFields = `
+    <div class="field ${creating ? 'hidden' : ''}" data-source="compose">
+      <label for="f-compose">Compose file</label>
+      <textarea class="textarea mono compose-editor" id="f-compose" rows="14" spellcheck="false"
+                placeholder="services:&#10;  web:&#10;    image: …"
+                ${source === 'compose' ? 'required' : ''}
+                aria-describedby="f-compose-help f-compose-error">${esc(app?.compose || '')}</textarea>
+      <small class="field-hint" id="f-compose-help">${creating
+        ? 'The supported subset is in docs/compose-applications.md. <code>~</code> and <code>./</code> paths land in the application\'s data directory.'
+        : 'Saving brings the project up again; only services whose definition changed are recreated.'}</small>
+      <small class="field-error hidden" id="f-compose-error"></small>
+    </div>
+    <div class="field-row ${creating ? 'hidden' : ''}" data-source="compose">
+      <div class="field">
+        <label for="f-web-service">Web service</label>
+        <input class="input mono" type="text" id="f-web-service" value="${esc(app?.web_service || '')}" placeholder="first with ports">
+      </div>
+      <div class="field">
+        <label for="f-web-port">Web port</label>
+        <input class="input mono" type="number" id="f-web-port" min="1" max="65535" value="${app?.web_port || ''}" placeholder="9119">
+      </div>
+    </div>
+    <small class="field-hint ${creating ? 'hidden' : ''}" data-source="compose">The service and the port it listens on inside its container. The hostname reaches it through Traefik; nothing is published on the Host.</small>`;
+
+  const definition = creating
+    ? `<fieldset class="field source-choice">
+         <legend>Definition</legend>
+         <label class="row"><input type="radio" name="f-source" value="image" checked> Container image</label>
+         <label class="row"><input type="radio" name="f-source" value="compose"> Compose file</label>
+       </fieldset>${imageField}${composeFields}`
+    : (source === 'compose' ? composeFields : imageField);
+
+  const actions = creating
+    ? `<button id="cancel-btn" type="button" class="btn btn-outline btn-sm">Cancel</button>
+       <button type="submit" class="btn btn-primary btn-sm">Deploy</button>`
+    : `<button id="remove-btn" type="button" class="btn btn-danger-ghost btn-sm">Remove application</button>
+       <button type="submit" class="btn btn-primary btn-sm">Save and redeploy</button>`;
+
+  return `
+    <form class="stack" id="app-form">
+      <p class="t-caps">Configuration</p>
+      <div class="field">
+        <label for="f-name">Name</label>
+        <input class="input" type="text" id="f-name" value="${esc(app?.name || '')}" placeholder="my-app" required aria-describedby="f-name-help">
+        <small class="field-hint" id="f-name-help">Lowercase letters, numbers and hyphens; at most 63 characters.</small>
+      </div>
+      ${definition}
+      <div class="field">
+        <label for="f-hostname">Hostname</label>
+        <input class="input mono" type="text" id="f-hostname" value="${esc(app?.hostname || '')}" placeholder="my-app.${suffix}"
+               ${creating ? '' : 'required'} aria-describedby="f-hostname-help f-hostname-error">
+        <small class="field-hint" id="f-hostname-help">${creating
+          ? 'Leave empty to use the application name and DNS suffix.'
+          : 'Takes effect immediately; the container keeps running.'}</small>
+        <small class="field-error hidden" id="f-hostname-error"></small>
+      </div>
+      <div class="field">
+        <label for="f-aliases">Aliases</label>
+        <input class="input mono" type="text" id="f-aliases" value="${esc((app?.aliases || []).join(', '))}"
+               placeholder="old-name.${suffix}" aria-describedby="f-aliases-help f-aliases-error">
+        <small class="field-hint" id="f-aliases-help">Other hostnames this application also answers on, comma separated.${creating ? '' : ' Keep the old one here to change the Hostname without breaking it.'}</small>
+        <small class="field-error hidden" id="f-aliases-error"></small>
+      </div>
+      <div id="form-error" class="hidden"></div>
+      ${creating ? '' : servicesMarkup(app)}
+      <div class="form-actions">${actions}</div>
+    </form>`;
 }
 
-function deploySource() {
-  return document.querySelector('input[name="deploy-source"]:checked').value;
-}
-
-/* The two definitions share one dialog. Only the visible one is required,
-   or the browser would refuse to submit over a field the operator cannot
-   see. */
-function showDeploySource(source) {
-  document.querySelectorAll('#deploy-modal [data-source]').forEach(el => {
+/* The two definitions share the form. Only the visible one is required, or
+   the browser would refuse to submit over a field the operator cannot see. */
+function showSource(source) {
+  document.querySelectorAll('#app-form [data-source]').forEach(el => {
     el.classList.toggle('hidden', el.dataset.source !== source);
   });
-  document.getElementById('deploy-image').required = source === 'image';
-  document.getElementById('deploy-compose').required = source === 'compose';
+  document.getElementById('f-image').required = source === 'image';
+  document.getElementById('f-compose').required = source === 'compose';
 }
 
-function closeDeployModal() {
-  document.getElementById('deploy-modal').classList.add('hidden');
-  document.querySelector('.app-shell').inert = false;
-  document.getElementById('deploy-btn').focus();
+function formSource() {
+  const radio = document.querySelector('input[name="f-source"]:checked');
+  if (radio) return radio.value;
+  return document.getElementById('f-compose') ? 'compose' : 'image';
 }
 
-function handleDialogKeydown(event) {
-  const modal = document.getElementById('deploy-modal');
-  if (modal.classList.contains('hidden')) return;
-  if (event.key === 'Escape') { closeDeployModal(); return; }
-  if (event.key !== 'Tab') return;
-  const controls = [...modal.querySelectorAll('button, input, textarea')].filter(el => !el.disabled && el.offsetParent !== null);
-  const first = controls[0];
-  const last = controls[controls.length - 1];
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-  if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+/* What the form says, as the API wants it. */
+function readForm() {
+  const source = formSource();
+  const body = {
+    name: document.getElementById('f-name').value.trim(),
+    aliases: parseAliases(document.getElementById('f-aliases').value),
+  };
+  const hostname = document.getElementById('f-hostname').value.trim();
+  if (hostname) body.hostname = hostname;
+  if (source === 'compose') {
+    body.compose = document.getElementById('f-compose').value;
+    body.web_service = document.getElementById('f-web-service').value.trim();
+    const port = document.getElementById('f-web-port').value.trim();
+    if (port) body.web_port = Number(port);
+  } else {
+    body.image = document.getElementById('f-image').value.trim();
+  }
+  return { source, body };
+}
+
+function clearFormErrors() {
+  document.getElementById('form-error').className = 'hidden';
+  for (const id of ['f-hostname', 'f-aliases', 'f-compose']) {
+    if (document.getElementById(id)) clearFieldError(id);
+  }
+}
+
+/* Puts a refusal on the field it is about, or under the form when it is
+   about nothing in particular. Returns false when nothing was shown. */
+function showFormFailure(failure, aliases) {
+  if (failure.error.startsWith('invalid Application Hostname:')) {
+    showFieldError(routingErrorField(failure, aliases), failure);
+    return true;
+  }
+  if (failure.error.startsWith('invalid Compose definition') && document.getElementById('f-compose')) {
+    showFieldError('f-compose', { error: failure.caused_by[0] || failure.error, caused_by: [] });
+    return true;
+  }
+  showAlert(document.getElementById('form-error'), failure);
+  return true;
+}
+
+// ── New application ─────────────────────────────────────────────
+function showNewApp() {
+  if (logAbort) { logAbort.abort(); logAbort = null; }
+  selected = null;
+  selectedSystem = null;
+  creating = true;
+  detailSignature = null;
+
+  setCrumb('New application');
+  document.querySelector('[data-home]').removeAttribute('aria-current');
+  document.querySelector('[data-platform]').removeAttribute('aria-current');
+  document.querySelectorAll('#sidebar [data-id]').forEach(el => el.removeAttribute('aria-current'));
+  document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('platform').classList.add('hidden');
+  document.getElementById('detail').classList.remove('hidden');
+
+  document.getElementById('detail').innerHTML = `
+    <div class="page-header">
+      <h1 class="t-h1">New application</h1>
+      <p class="muted t-label">From a container image or a Compose file. It will be reachable on ${esc(dnsSuffix())}.</p>
+    </div>
+    <div class="card form-page">
+      <div class="card-body">
+        ${formMarkup(null)}
+      </div>
+    </div>
+  `;
+
+  document.querySelectorAll('input[name="f-source"]').forEach(radio => {
+    radio.addEventListener('change', () => showSource(radio.value));
+  });
+  document.getElementById('cancel-btn').addEventListener('click', showDashboard);
+  document.getElementById('app-form').addEventListener('submit', deploy);
+  document.getElementById('f-name').focus();
 }
 
 /* A comma or a space both read as "and another one" to someone typing a list,
@@ -653,34 +737,19 @@ function showFieldError(inputId, failure) {
   input.focus();
 }
 
-function routingErrorField(prefix, failure, aliases) {
+function routingErrorField(failure, aliases) {
   const message = asReport(failure).error;
   const conflictingAlias = aliases.some(alias => message.includes("'" + alias + "'"));
-  return prefix + (conflictingAlias ? '-aliases' : '-hostname');
+  return conflictingAlias ? 'f-aliases' : 'f-hostname';
 }
 
 async function saveApp(e, id) {
   e.preventDefault();
-  document.getElementById('edit-error').className = 'hidden';
-  clearFieldError('edit-hostname');
-  clearFieldError('edit-aliases');
-
-  const aliases = parseAliases(document.getElementById('edit-aliases').value);
-  const body = {
-    name: document.getElementById('edit-name').value.trim(),
-    hostname: document.getElementById('edit-hostname').value.trim(),
-    aliases,
-  };
-  const composeEl = document.getElementById('edit-compose');
-  if (composeEl) {
-    clearFieldError('edit-compose');
-    body.compose = composeEl.value;
-    body.web_service = document.getElementById('edit-web-service').value.trim();
-    const port = document.getElementById('edit-web-port').value.trim();
-    if (port) body.web_port = Number(port);
-  } else {
-    body.image = document.getElementById('edit-image').value.trim();
-  }
+  clearFormErrors();
+  const { body } = readForm();
+  // Editing always sends the Hostname: an empty one is a mistake here, not
+  // a request for the default.
+  body.hostname = document.getElementById('f-hostname').value.trim();
 
   let failure = null;
   try {
@@ -705,45 +774,19 @@ async function saveApp(e, id) {
 
   if (!failure) return;
 
-  if (failure.error.startsWith('invalid Application Hostname:')) {
-    showFieldError(routingErrorField('edit', failure, aliases), failure);
-    return;
-  }
-  if (failure.error.startsWith('invalid Compose definition') && document.getElementById('edit-compose')) {
-    showFieldError('edit-compose', { error: failure.caused_by[0] || failure.error, caused_by: [] });
-    return;
-  }
-
   // The record already carries the reason when the deploy itself failed, and
   // selectApp rendered it. Only errors that never reached the database — a
-  // rejected name, a clash — need saying here.
+  // rejected name, a clash, a refused file — need saying here.
   const saved = apps.find(a => a.id === id);
-  if (saved && saved.last_error) return;
-  showAlert(document.getElementById('edit-error'), failure);
+  if (saved && saved.last_error && !failure.error.startsWith('invalid')) return;
+  showFormFailure(failure, body.aliases);
 }
 
 async function deploy(e) {
   e.preventDefault();
-  const name = document.getElementById('deploy-name').value.trim();
-  const source = deploySource();
-  const image = source === 'image' ? document.getElementById('deploy-image').value.trim() : '';
-  const hostname = document.getElementById('deploy-hostname').value.trim();
-  const aliases = parseAliases(document.getElementById('deploy-aliases').value);
-  const errEl = document.getElementById('deploy-error');
-  errEl.classList.add('hidden');
-  clearFieldError('deploy-hostname');
-  clearFieldError('deploy-aliases');
-  clearFieldError('deploy-compose');
-
-  const body = { name, image, aliases };
-  if (hostname) body.hostname = hostname;
-  if (source === 'compose') {
-    body.compose = document.getElementById('deploy-compose').value;
-    const service = document.getElementById('deploy-web-service').value.trim();
-    const port = document.getElementById('deploy-web-port').value.trim();
-    if (service) body.web_service = service;
-    if (port) body.web_port = Number(port);
-  }
+  clearFormErrors();
+  const { source, body } = readForm();
+  const name = body.name;
 
   try {
     const res = await fetch('/apps', {
@@ -756,44 +799,28 @@ async function deploy(e) {
     await loadApps();
     const created = apps.find(a => a.name === name);
 
-    // A rejected name never reached the database. Keep the dialog open with
+    // A refused name or file never reached the database. Keep the form with
     // what was typed, so the fix is one edit rather than a retype.
     if (failure && !created) {
-      if (failure.error.startsWith('invalid Application Hostname:')) {
-        showFieldError(routingErrorField('deploy', failure, aliases), failure);
-        return;
-      }
-      if (failure.error.startsWith('invalid Compose definition')) {
-        showFieldError('deploy-compose', { error: failure.caused_by[0] || failure.error, caused_by: [] });
-        return;
-      }
-      showAlert(errEl, failure);
+      showFormFailure(failure, body.aliases);
       return;
     }
-
-    document.getElementById('deploy-name').value = '';
-    document.getElementById('deploy-image').value = '';
-    document.getElementById('deploy-compose').value = '';
-    document.getElementById('deploy-web-service').value = '';
-    document.getElementById('deploy-web-port').value = '';
-    document.getElementById('deploy-hostname').value = '';
-    document.getElementById('deploy-aliases').value = '';
-    closeDeployModal();
 
     // The Application is on record even when the deploy failed, so open it
     // instead of reporting an error the operator cannot act on.
     if (created) selectApp(created.id);
+    else showDashboard();
 
     if (!failure) {
       // Accepted, not finished: the pull runs on the platform and the poll
       // says how it went.
       toast('success', 'Deploy started for ' + name,
-            source === 'compose' ? 'Bringing the Compose project up ...' : 'Pulling image ' + image + ' ...');
+            source === 'compose' ? 'Bringing the Compose project up ...' : 'Pulling image ' + body.image + ' ...');
     }
     // A failure needs no toast: selectApp already rendered the reason as the
     // application's alert, and that one stays on screen.
   } catch (err) {
-    showAlert(errEl, { error: 'Could not reach the platform', caused_by: [err.message] });
+    showAlert(document.getElementById('form-error'), { error: 'Could not reach the platform', caused_by: [err.message] });
   }
 }
 
