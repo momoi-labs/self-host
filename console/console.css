@@ -80,6 +80,11 @@
 .compose-editor { min-height: 220px; font-family: var(--type-family-mono); white-space: pre; overflow: auto; tab-size: 2; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-md); }
 
+/* Creating an Application is the edit form on a page of its own, without
+   the log pane: there is nothing to stream yet. A form wider than a
+   readable measure is only longer lines in the Compose editor. */
+.form-page { max-width: 720px; }
+
 /* Lifecycle actions sit with the status badge: what it is, and what you can
    do about it, in one glance. */
 .lifecycle { display: flex; align-items: center; gap: var(--spacing-sm); }
