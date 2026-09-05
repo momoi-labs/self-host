@@ -13,7 +13,6 @@ pub fn platform_config_dir() -> PathBuf {
 
 #[derive(Debug, Serialize)]
 struct ComposeFile {
-    version: String,
     services: indexmap::IndexMap<String, ComposeService>,
     #[serde(skip_serializing_if = "Option::is_none")]
     volumes: Option<indexmap::IndexMap<String, ComposeVolume>>,
@@ -142,7 +141,6 @@ fn render_compose(config: &ComposeConfig) -> Result<String, ComposeError> {
     };
 
     let compose = ComposeFile {
-        version: "3.8".to_string(),
         services,
         volumes: if has_volumes && !volumes.is_empty() {
             Some(volumes)
@@ -228,26 +226,28 @@ impl ComposeRunner {
     }
 }
 
+/// The port Docker could not bind, read from the line that says so:
+/// `Bind for 0.0.0.0:53 failed: port is already allocated`. Only that line
+/// is looked at; the stderr also carries timestamps and file names full of
+/// digits and colons, and the first number found is not the port.
 fn detect_port_conflict(stderr: &str) -> Option<u16> {
-    let lower = stderr.to_lowercase();
-
-    if !lower.contains("port is already allocated")
-        && !lower.contains("already in use")
-        && !lower.contains("bind for")
-        && !lower.contains("failed: port")
-    {
-        return None;
-    }
-
-    for part in stderr.split_whitespace() {
-        let port_str = part.split(':').next_back()?;
-        let Ok(port) = port_str
-            .trim_end_matches(|c: char| !c.is_ascii_digit())
-            .parse::<u16>()
-        else {
+    for line in stderr.lines() {
+        let lower = line.to_lowercase();
+        if !lower.contains("port is already allocated") && !lower.contains("address already in use")
+        {
             continue;
-        };
-        if port > 0 {
+        }
+        let address = line
+            .split_once("Bind for ")
+            .map(|(_, rest)| rest)
+            .unwrap_or(line);
+        let address = address.split(" failed").next().unwrap_or(address);
+        if let Some(port) = address.rsplit(':').next().and_then(|p| {
+            p.trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse::<u16>()
+                .ok()
+        }) && port > 0
+        {
             return Some(port);
         }
     }
@@ -304,6 +304,15 @@ mod tests {
             networks: networks.iter().map(|n| n.to_string()).collect(),
             extra_hosts: vec![],
         }
+    }
+
+    #[test]
+    fn a_port_conflict_is_read_from_the_bind_line_and_not_from_a_timestamp() {
+        let stderr = "time=\"2026-09-05T19:15:29-03:00\" level=warning msg=\"the attribute `version` is obsolete\"\n\
+                      Error response from daemon: driver failed programming external connectivity on endpoint sf-system-dns: \
+                      Bind for 0.0.0.0:53 failed: port is already allocated\n";
+        assert_eq!(detect_port_conflict(stderr), Some(53));
+        assert_eq!(detect_port_conflict("manifest unknown"), None);
     }
 
     #[test]
