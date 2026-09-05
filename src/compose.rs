@@ -226,10 +226,15 @@ impl ComposeRunner {
     }
 }
 
-/// The port Docker could not bind, read from the line that says so:
-/// `Bind for 0.0.0.0:53 failed: port is already allocated`. Only that line
-/// is looked at; the stderr also carries timestamps and file names full of
-/// digits and colons, and the first number found is not the port.
+/// The port Docker could not bind, read from the line that says so. Docker
+/// has two ways of saying it:
+///
+/// - `Bind for 0.0.0.0:53 failed: port is already allocated`
+/// - `failed to bind host port 0.0.0.0:53/tcp: address already in use`
+///
+/// Only that line is looked at; the stderr also carries timestamps and file
+/// names full of digits and colons, and the first number found is not the
+/// port.
 fn detect_port_conflict(stderr: &str) -> Option<u16> {
     for line in stderr.lines() {
         let lower = line.to_lowercase();
@@ -237,16 +242,21 @@ fn detect_port_conflict(stderr: &str) -> Option<u16> {
         {
             continue;
         }
-        let address = line
-            .split_once("Bind for ")
-            .map(|(_, rest)| rest)
+        let address = ["Bind for ", "host port "]
+            .iter()
+            .find_map(|marker| line.split_once(marker).map(|(_, rest)| rest))
             .unwrap_or(line);
-        let address = address.split(" failed").next().unwrap_or(address);
-        if let Some(port) = address.rsplit(':').next().and_then(|p| {
-            p.trim_end_matches(|c: char| !c.is_ascii_digit())
-                .parse::<u16>()
-                .ok()
-        }) && port > 0
+        // `0.0.0.0:53/tcp:` or `0.0.0.0:53 failed`: the address ends at the
+        // first space, and the port sits between the last colon and the
+        // protocol, if any.
+        let address = address.split(' ').next().unwrap_or(address);
+        let address = address.trim_end_matches(':');
+        let address = address.split('/').next().unwrap_or(address);
+        if let Some(port) = address
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            && port > 0
         {
             return Some(port);
         }
@@ -312,6 +322,14 @@ mod tests {
                       Error response from daemon: driver failed programming external connectivity on endpoint sf-system-dns: \
                       Bind for 0.0.0.0:53 failed: port is already allocated\n";
         assert_eq!(detect_port_conflict(stderr), Some(53));
+        assert_eq!(
+            detect_port_conflict(
+                "Error response from daemon: failed to set up container networking: \
+                 driver failed programming external connectivity on endpoint sf-system-dns (5dd7ee60): \
+                 failed to bind host port 0.0.0.0:53/tcp: address already in use"
+            ),
+            Some(53)
+        );
         assert_eq!(detect_port_conflict("manifest unknown"), None);
     }
 
