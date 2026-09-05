@@ -1,5 +1,10 @@
 # MVP scope
 
+Historical scope from the initial implementation. The current product direction
+and next delivery are defined in [Product vision](vision.md) and the
+[macOS Compose MVP plan](mvp-plan.md). This document is retained as historical
+context; its exclusions of a web console and Compose are no longer current.
+
 Grilling session decisions (scope confirmed).  
 Last updated: 2026-08-04.
 

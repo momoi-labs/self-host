@@ -5,3 +5,7 @@ On the Host, the Platform publishes LAN port **80** (Traefik, Consumer traffic) 
 The “API = gRPC” binding is **superseded by ADR-0007**; Operator API exposure on the LAN remains.
 
 **Status:** accepted
+
+The blanket exclusion of Application port publishing is superseded for the
+Compose MVP by [ADR-0014](0014-compose-applications-and-future-native-supervision.md).
+Its supported port mappings and LAN exposure must be documented during implementation.

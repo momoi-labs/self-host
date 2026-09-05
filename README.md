@@ -19,6 +19,8 @@ self-host serve
 
 Then visit `https://admin.<your-dns-suffix>` (default: `https://admin.home.lan`).
 
-See `docs/mvp-scope.md` for the confirmed MVP and [`CONTEXT.md`](./CONTEXT.md) for domain language.
+See the [product vision](docs/vision.md) and [next MVP plan](docs/mvp-plan.md)
+for the approved direction, and [CONTEXT.md](CONTEXT.md) for domain language.
+The plan describes upcoming work, not capabilities already available.
 
 **Docs, issues, and PRs are English-only.**

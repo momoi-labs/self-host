@@ -9,15 +9,15 @@ The control system installed on the host: the binary/daemon that bootstraps infr
 _Avoid_: PaaS (as a vague synonym), cluster, Kubernetes
 
 **Application**:
-A workload published for consumers on the LAN, run as a Docker container (from a ready image or a local build).
+A workload managed as a unit by the Platform and made available to Consumers on the LAN. An Application may consist of several services; its identity is independent of how those services run.
 _Avoid_: binary (reserved for the Platform), service (overloaded), site
 
 **Bootstrap**:
-Starting the Platform on the host from the binary (e.g. download + run), bringing up the infra required to operate.
+Preparing the Host to run the Platform and bringing up the Platform Infra required to operate.
 _Avoid_: install script as a domain concept, setup
 
 **Operator**:
-The person who publishes and manages Applications via the CLI (and the Platform HTTP API). The MVP has a single Operator.
+The person who configures the Platform and deploys and manages Applications. The MVP has a single Operator.
 _Avoid_: admin, user, developer (as product roles)
 
 **Consumer**:
@@ -25,11 +25,11 @@ Someone who accesses already-published Applications on the LAN (HTTP). They do n
 _Avoid_: end user, client, visitor
 
 **Host**:
-The LAN machine where the Platform runs and where Application (and infra) containers start.
+The LAN machine where the Platform, Platform Infra and Applications run.
 _Avoid_: node, server, VPS (VPS is not the primary MVP environment)
 
 **Deploy**:
-The Operator action that makes an Application available on the LAN from an existing Docker image or a local build (Dockerfile/context).
+The Operator action that makes an Application available on the LAN from its definition and configuration.
 _Avoid_: release, publish, ship (as official synonyms)
 
 **Application Hostname**:
