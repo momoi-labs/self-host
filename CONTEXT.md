@@ -44,6 +44,14 @@ _Avoid_: CNAME, redirect (an alias serves the Application, it does not forward)
 The configurable local zone suffix for the Platform under which Application Hostnames are derived. The MVP has a single DNS Suffix, set via `self-host init --dns` (default **`home.lan`**, intentionally not `.local` because of mDNS conflicts). Multiple suffixes are out of MVP scope.
 _Avoid_: domain, TLD, zone (as raw DNS jargon in the glossary), home.local (as default)
 
+**Compose Application**:
+An Application defined by a Docker Compose file the Operator supplies. The Platform runs a rendered project named after the Application, one container per service, and routes the Hostname to the Application's Web Target.
+_Avoid_: stack, docker-compose app, project (as the user-facing term; the project is what the Platform renders)
+
+**Web Target**:
+The Compose service and container port an Application's Hostname routes to. Resolved when the definition is accepted and recorded on the Application.
+_Avoid_: backend (Traefik's word), main service, entrypoint
+
 **Platform Infra**:
 Components the Platform starts for itself (e.g. HTTP traffic proxy, local DNS, state store) — not Operator Applications.
 _Avoid_: dependencies (ambiguous with app deps), sidecars

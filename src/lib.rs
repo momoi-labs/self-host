@@ -7,7 +7,7 @@ use axum::{
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, sse},
-    routing::{delete, get},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
@@ -19,6 +19,7 @@ use rand::Rng;
 pub mod apps;
 pub mod bootstrap;
 pub mod compose;
+pub mod compose_app;
 pub mod config;
 pub mod console;
 pub mod db;
@@ -56,6 +57,9 @@ pub fn build_app<S: StateStore>(
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
+        .route("/apps/id/{id}/start", post(start_app::<S>))
+        .route("/apps/id/{id}/stop", post(stop_app::<S>))
+        .route("/apps/id/{id}/restart", post(restart_app::<S>))
         .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
@@ -134,6 +138,15 @@ struct DeployApplicationRequest {
     image: String,
     #[serde(default)]
     path: String,
+    /// A Compose file, as the Operator wrote it (ADR-0014).
+    #[serde(default)]
+    compose: String,
+    /// The Compose service and container port the Hostname routes to. Left
+    /// out, the first service that publishes a port is the target.
+    #[serde(default)]
+    web_service: Option<String>,
+    #[serde(default)]
+    web_port: Option<u16>,
     #[serde(default)]
     hostname: Option<String>,
     /// Extra Hostnames the Application also answers on.
@@ -151,6 +164,36 @@ struct UpdateApplicationRequest {
     hostname: Option<String>,
     #[serde(default)]
     aliases: Option<Vec<String>>,
+    #[serde(default)]
+    compose: Option<String>,
+    #[serde(default)]
+    web_service: Option<String>,
+    #[serde(default)]
+    web_port: Option<u16>,
+}
+
+/// One container of an Application, as Docker sees it right now.
+#[derive(Serialize)]
+struct ServiceStateResponse {
+    service: String,
+    container: String,
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restarts: Option<u32>,
+}
+
+impl From<apps::ServiceState> for ServiceStateResponse {
+    fn from(s: apps::ServiceState) -> Self {
+        Self {
+            service: s.service,
+            container: s.container,
+            state: s.state,
+            exit_code: s.exit_code,
+            restarts: s.restarts,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -165,11 +208,22 @@ struct ApplicationResponse {
     /// Present when `status` is `failed`, so the console can say why.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<ErrorReport>,
-    /// How many times the container restarted, when there is a container to
-    /// ask about. The console has no metrics to show, but this much says
-    /// whether an Application is settled or flapping.
+    /// How many times the containers restarted, summed, when there is a
+    /// container to ask about. The console has no metrics to show, but this
+    /// much says whether an Application is settled or flapping.
     #[serde(skip_serializing_if = "Option::is_none")]
     restarts: Option<u32>,
+    /// The Compose definition, for a Compose Application.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compose: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_port: Option<u16>,
+    /// Every container of the Application and its state. Empty until Docker
+    /// has been asked.
+    #[serde(default)]
+    services: Vec<ServiceStateResponse>,
 }
 
 impl From<apps::ApplicationRecord> for ApplicationResponse {
@@ -184,7 +238,33 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             source: app.source,
             last_error: app.last_error,
             restarts: None,
+            compose: app.compose,
+            web_service: app.web_service,
+            web_port: app.web_port,
+            services: Vec::new(),
         }
+    }
+}
+
+/// The Application as the console sees it: the row, checked against what
+/// Docker is actually running. A runtime that cannot answer leaves the
+/// status as recorded and the services as `missing`.
+async fn observed<S: StateStore>(
+    state: &AppState<S>,
+    app: apps::ApplicationRecord,
+) -> ApplicationResponse {
+    let services = apps::service_states(state.docker.as_ref(), &app).await;
+    let (status, last_error) = apps::live_status(&app, &services);
+    let restarts = services
+        .iter()
+        .filter_map(|s| s.restarts)
+        .reduce(|a, b| a + b);
+    ApplicationResponse {
+        status,
+        last_error,
+        restarts,
+        services: services.into_iter().map(Into::into).collect(),
+        ..ApplicationResponse::from(app)
     }
 }
 
@@ -203,6 +283,9 @@ async fn update_app<S: StateStore>(
             image: body.image,
             hostname: body.hostname,
             aliases: body.aliases,
+            compose: body.compose,
+            web_service: body.web_service,
+            web_port: body.web_port,
         },
     )
     .await
@@ -262,7 +345,70 @@ async fn get_app<S: StateStore>(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     match apps::get_application(&state.store, &id).await {
-        Ok(app) => (StatusCode::OK, Json(ApplicationResponse::from(app))).into_response(),
+        Ok(app) => (StatusCode::OK, Json(observed(&state, app).await)).into_response(),
+        Err(e) => deploy_error_response(e),
+    }
+}
+
+/// Start, stop and restart act on what is already deployed, and answer
+/// with the Application as it stands afterwards.
+async fn start_app<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    lifecycle_response(
+        &state,
+        apps::start_application(
+            &state.store,
+            state.docker.as_ref(),
+            state.routes.as_ref(),
+            &id,
+        )
+        .await,
+    )
+    .await
+}
+
+async fn stop_app<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    lifecycle_response(
+        &state,
+        apps::stop_application(
+            &state.store,
+            state.docker.as_ref(),
+            state.routes.as_ref(),
+            &id,
+        )
+        .await,
+    )
+    .await
+}
+
+async fn restart_app<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    lifecycle_response(
+        &state,
+        apps::restart_application(
+            &state.store,
+            state.docker.as_ref(),
+            state.routes.as_ref(),
+            &id,
+        )
+        .await,
+    )
+    .await
+}
+
+async fn lifecycle_response<S: StateStore>(
+    state: &AppState<S>,
+    result: Result<apps::ApplicationRecord, DeployError>,
+) -> Response {
+    match result {
+        Ok(app) => (StatusCode::OK, Json(observed(state, app).await)).into_response(),
         Err(e) => deploy_error_response(e),
     }
 }
@@ -274,14 +420,26 @@ async fn deploy_app<S: StateStore>(
     let hostname = body.hostname.as_deref();
     let aliases = body.aliases.as_deref();
 
-    let prepared = match (&body.image[..], &body.path[..]) {
-        ("", "") => Err(apps::DeployError::MissingImage),
-        (image, "") => {
+    let prepared = match (&body.image[..], &body.path[..], &body.compose[..]) {
+        ("", "", "") => Err(apps::DeployError::MissingImage),
+        (image, "", "") => {
             apps::prepare_deploy_from_image(&state.store, &body.name, image, hostname, aliases)
                 .await
         }
-        ("", path) => {
+        ("", path, "") => {
             apps::prepare_deploy_from_path(&state.store, &body.name, path, hostname, aliases).await
+        }
+        ("", "", compose) => {
+            apps::prepare_deploy_from_compose(
+                &state.store,
+                &body.name,
+                compose,
+                body.web_service.as_deref(),
+                body.web_port,
+                hostname,
+                aliases,
+            )
+            .await
         }
         _ => Err(apps::DeployError::MissingImage),
     };
@@ -297,17 +455,7 @@ async fn list_apps<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
         Ok(apps) => {
             let mut body: Vec<ApplicationResponse> = Vec::with_capacity(apps.len());
             for app in apps {
-                // A runtime that cannot answer must not take the list down with
-                // it: the column just stays empty.
-                let restarts = state
-                    .docker
-                    .restart_count(&apps::container_name_for(&app.id))
-                    .await
-                    .unwrap_or(None);
-                body.push(ApplicationResponse {
-                    restarts,
-                    ..ApplicationResponse::from(app)
-                });
+                body.push(observed(&state, app).await);
             }
             (StatusCode::OK, Json(body)).into_response()
         }
@@ -533,8 +681,6 @@ async fn stream_logs_for<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     app: apps::ApplicationRecord,
 ) -> Response {
-    let container_name = apps::container_name_for(&app.id);
-
     if let Some(message) = nothing_to_stream(&state, &app).await {
         let stream = tokio_stream::once(Ok::<_, std::convert::Infallible>(
             sse::Event::default().event("notice").data(message),
@@ -542,7 +688,19 @@ async fn stream_logs_for<S: StateStore>(
         return sse::Sse::new(stream).into_response();
     }
 
-    match state.docker.stream_logs(&container_name).await {
+    let logs = if app.source == apps::SOURCE_COMPOSE {
+        match apps::project_for(&state.store, &app).await {
+            Ok(project) => state.docker.stream_compose_logs(&project).await,
+            Err(err) => return deploy_error_response(err),
+        }
+    } else {
+        state
+            .docker
+            .stream_logs(&apps::container_name_for(&app.id))
+            .await
+    };
+
+    match logs {
         Ok(rx) => {
             let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|line| {
                 Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(line))
@@ -562,31 +720,30 @@ async fn stream_logs_for<S: StateStore>(
 /// A sentence for when there is no container to stream from, rather than
 /// silence or Docker's own "no such container" error dressed up as the
 /// Application's output.
+///
+/// A container that exited still has its output, and that output is exactly
+/// what says why it exited — so only a container that is not there at all
+/// gets the sentence.
 async fn nothing_to_stream<S: StateStore>(
     state: &AppState<S>,
     app: &apps::ApplicationRecord,
 ) -> Option<String> {
-    if app.status == apps::STATUS_FAILED {
-        return Some("This application failed to deploy, so there are no logs to stream.".into());
-    }
     if app.status == apps::STATUS_PENDING {
         return Some(
             "This application is deploying; logs will appear once the container starts.".into(),
         );
     }
-    match state
-        .docker
-        .container_running(&apps::container_name_for(&app.id))
-        .await
-    {
-        // A row that says running but whose container is gone deserves the
-        // same sentence as one that never started.
-        Ok(false) => Some(
-            "This application's container is not running, so there are no logs to stream.".into(),
-        ),
-        // Docker is not answering; let the stream itself surface the reason.
-        _ => None,
+
+    let services = apps::service_states(state.docker.as_ref(), app).await;
+    let any_container = services.iter().any(|s| s.state != "missing");
+    if any_container {
+        return None;
     }
+
+    if app.status == apps::STATUS_FAILED {
+        return Some("This application failed to deploy, so there are no logs to stream.".into());
+    }
+    Some("This application has no container, so there are no logs to stream.".into())
 }
 
 fn logs_error_response(err: &apps::LogsError) -> Response {
@@ -676,7 +833,9 @@ fn deploy_error_response(err: DeployError) -> Response {
         DeployError::InvalidName(_)
         | DeployError::InvalidHostname(_)
         | DeployError::MissingImage
-        | DeployError::MissingPath => StatusCode::BAD_REQUEST,
+        | DeployError::MissingPath
+        | DeployError::MissingCompose
+        | DeployError::InvalidCompose(_) => StatusCode::BAD_REQUEST,
         DeployError::NotFound(_) => StatusCode::NOT_FOUND,
         DeployError::NotInitialized => StatusCode::PRECONDITION_FAILED,
         DeployError::Docker(_) | DeployError::Routing(_) | DeployError::Db(_) => {
@@ -849,6 +1008,158 @@ mod tests {
             Arc::new(routes::FakeRoutes::new()),
         );
         (app, store)
+    }
+
+    const HERMES: &str = "services:\n  hermes:\n    image: nousresearch/hermes-agent:latest\n    command: gateway run\n    ports:\n      - \"9119:9119\"\n    volumes:\n      - ~/.hermes:/opt/data\n";
+
+    #[tokio::test]
+    async fn deploying_from_compose_records_the_definition_and_its_web_target() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": HERMES, "web_port": 9119}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["source"], json!("compose"));
+        assert_eq!(parsed["image"], json!("nousresearch/hermes-agent:latest"));
+        assert_eq!(parsed["web_service"], json!("hermes"));
+        assert_eq!(parsed["web_port"], json!(9119));
+        assert_eq!(parsed["compose"], json!(HERMES));
+
+        let record = settle(&store, "hermes").await;
+        assert_eq!(record.status, apps::STATUS_RUNNING);
+
+        let response = send(&app, &format!("/apps/id/{}", record.id), Some("test-key")).await;
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["status"], json!("running"));
+        assert_eq!(parsed["services"][0]["service"], json!("hermes"));
+        assert_eq!(
+            parsed["services"][0]["container"],
+            json!(format!("sf-app-{}-hermes", record.id))
+        );
+        assert_eq!(parsed["services"][0]["state"], json!("running"));
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_compose_key_is_a_bad_request_that_names_it() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": "services:\n  h:\n    image: x\n    network_mode: host\n", "web_port": 80}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["error"], json!("invalid Compose definition"));
+        assert_eq!(
+            parsed["caused_by"],
+            json!(["service 'h': 'network_mode' is not supported"])
+        );
+        assert!(store.list_applications().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_start_and_restart_answer_with_the_application_as_it_stands() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+        post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": HERMES}),
+        )
+        .await;
+        let record = settle(&store, "hermes").await;
+
+        let response = post_json(
+            &app,
+            &format!("/apps/id/{}/stop", record.id),
+            Some("test-key"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["status"], json!("stopped"));
+        assert_eq!(parsed["services"][0]["state"], json!("exited"));
+
+        for verb in ["start", "restart"] {
+            let response = post_json(
+                &app,
+                &format!("/apps/id/{}/{verb}", record.id),
+                Some("test-key"),
+                json!({}),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let parsed: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(parsed["status"], json!("running"), "{verb}");
+        }
+
+        let response = post_json(&app, "/apps/id/nope/start", Some("test-key"), json!({})).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_service_that_exited_is_reported_as_failed_and_its_logs_still_stream() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            Arc::new(routes::FakeRoutes::new()),
+        );
+        post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": HERMES}),
+        )
+        .await;
+        let record = settle(&store, "hermes").await;
+
+        docker.exit_container(&format!("sf-app-{}-hermes", record.id), 137);
+
+        let response = send(&app, "/apps", Some("test-key")).await;
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed[0]["status"], json!("failed"));
+        assert_eq!(
+            parsed[0]["last_error"]["error"],
+            json!("the Application is not running")
+        );
+        assert_eq!(
+            parsed[0]["last_error"]["caused_by"][0],
+            json!("service 'hermes' exited with code 137 after 3 restarts")
+        );
+        assert_eq!(parsed[0]["services"][0]["exit_code"], json!(137));
+
+        // What the container printed before it died is the whole story.
+        let response = send(
+            &app,
+            &format!("/apps/id/{}/logs", record.id),
+            Some("test-key"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8_lossy(&body).to_string();
+        assert!(text.contains("hermes  | [fake] log line 1"), "{text}");
+        assert!(!text.contains("event: notice"));
     }
 
     #[tokio::test]
@@ -1380,7 +1691,14 @@ mod tests {
                 "image": "nginx:alpine",
                 "status": "running",
                 "source": "image",
-                "restarts": 0
+                "restarts": 0,
+                "services": [{
+                    "service": "app",
+                    "container": format!("sf-app-{}", id.as_str().unwrap()),
+                    "state": "running",
+                    "exit_code": 0,
+                    "restarts": 0
+                }]
             }])
         );
     }

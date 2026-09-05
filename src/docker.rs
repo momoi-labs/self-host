@@ -1,5 +1,7 @@
 use crate::compose::{ComposeConfig, ComposeError, ComposeRunner, ComposeServiceConfig};
+use crate::compose_app::ComposeProject;
 use async_trait::async_trait;
+use std::path::Path;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
@@ -180,6 +182,21 @@ impl ContainerConfig {
     }
 }
 
+/// What Docker says about one container, as far as the console needs to know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerState {
+    /// Docker's own word: `running`, `exited`, `restarting`, `created`, …
+    pub status: String,
+    pub exit_code: i64,
+    pub restarts: u32,
+}
+
+impl ContainerState {
+    pub fn is_running(&self) -> bool {
+        self.status == "running"
+    }
+}
+
 #[async_trait]
 pub trait DockerRuntime: Send + Sync {
     async fn ping(&self) -> Result<(), DockerError>;
@@ -197,6 +214,28 @@ pub trait DockerRuntime: Send + Sync {
     async fn stream_logs(
         &self,
         container_name: &str,
+    ) -> Result<mpsc::Receiver<String>, DockerError>;
+
+    /// The container's state, or `None` when there is no such container.
+    async fn container_state(&self, name: &str) -> Result<Option<ContainerState>, DockerError>;
+    async fn start_container(&self, name: &str) -> Result<(), DockerError>;
+    async fn stop_container(&self, name: &str) -> Result<(), DockerError>;
+    async fn restart_container(&self, name: &str) -> Result<(), DockerError>;
+
+    /// Writes the project and brings it up. Images are pulled as needed and
+    /// only the services whose definition changed are recreated.
+    async fn compose_up(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    async fn compose_stop(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    async fn compose_restart(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    /// Removes the containers and the project network. Volumes stay: they
+    /// are the Application's data, and removing an Application is not
+    /// permission to delete what it wrote.
+    async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    /// Every service's output, interleaved and prefixed by service name.
+    async fn stream_compose_logs(
+        &self,
+        project: &ComposeProject,
     ) -> Result<mpsc::Receiver<String>, DockerError>;
 }
 
@@ -246,6 +285,17 @@ impl ComposeDocker {
 
     pub fn compose_path(&self) -> std::path::PathBuf {
         self.runner.path().clone()
+    }
+
+    /// Brings the Platform Infra up from the file `init` wrote, if there is
+    /// one. Docker's restart policy normally does this on its own after a
+    /// reboot; this is for the cases it does not cover, such as an Infra
+    /// container that was removed by hand.
+    pub fn infra_up(&self) -> Result<(), DockerError> {
+        if !self.runner.path().exists() {
+            return Ok(());
+        }
+        self.runner.up().map_err(DockerError::from_compose_error)
     }
 }
 
@@ -499,6 +549,222 @@ impl DockerRuntime for ComposeDocker {
 
         Ok(rx)
     }
+
+    async fn container_state(&self, name: &str) -> Result<Option<ContainerState>, DockerError> {
+        let output = std::process::Command::new("docker")
+            .args([
+                "inspect",
+                "-f",
+                "{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}",
+                name,
+            ])
+            .output()
+            .map_err(|e| DockerError::spawn(format!("failed to inspect container '{name}'"), e))?;
+
+        // No such container is an answer, not an error.
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut parts = text.split_whitespace();
+        let status = parts.next().unwrap_or("unknown").to_string();
+        let exit_code = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let restarts = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        Ok(Some(ContainerState {
+            status,
+            exit_code,
+            restarts,
+        }))
+    }
+
+    async fn start_container(&self, name: &str) -> Result<(), DockerError> {
+        docker(
+            &["start", name],
+            format!("failed to start container '{name}'"),
+        )
+    }
+
+    async fn stop_container(&self, name: &str) -> Result<(), DockerError> {
+        docker(
+            &["stop", name],
+            format!("failed to stop container '{name}'"),
+        )
+    }
+
+    async fn restart_container(&self, name: &str) -> Result<(), DockerError> {
+        docker(
+            &["restart", name],
+            format!("failed to restart container '{name}'"),
+        )
+    }
+
+    async fn compose_up(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        write_project(project)?;
+        compose(
+            project,
+            &["up", "-d", "--remove-orphans"],
+            "failed to bring the Application up",
+        )
+    }
+
+    async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        compose(project, &["start"], "failed to start the Application")
+    }
+
+    async fn compose_stop(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        compose(project, &["stop"], "failed to stop the Application")
+    }
+
+    async fn compose_restart(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        compose(project, &["restart"], "failed to restart the Application")
+    }
+
+    async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        if !project_file(project).exists() {
+            return Ok(());
+        }
+        compose(
+            project,
+            &["down", "--remove-orphans"],
+            "failed to remove the Application",
+        )
+    }
+
+    async fn stream_compose_logs(
+        &self,
+        project: &ComposeProject,
+    ) -> Result<mpsc::Receiver<String>, DockerError> {
+        let file = project_file(project);
+        let mut args = compose_args(project, &file);
+        args.extend(
+            ["logs", "--follow", "--no-color", "--tail", "200"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        Ok(spawn_log_stream("docker", args))
+    }
+}
+
+/// Runs one `docker` command and reports a refusal in Docker's words.
+fn docker(args: &[&str], step: String) -> Result<(), DockerError> {
+    let output = std::process::Command::new("docker")
+        .args(args)
+        .output()
+        .map_err(|e| DockerError::spawn(step.clone(), e))?;
+    if !output.status.success() {
+        return Err(DockerError::refused(step, &output));
+    }
+    Ok(())
+}
+
+fn project_file(project: &ComposeProject) -> std::path::PathBuf {
+    project.dir.join("compose.yml")
+}
+
+fn compose_args(project: &ComposeProject, file: &Path) -> Vec<String> {
+    vec![
+        "compose".into(),
+        "--project-name".into(),
+        project.name.clone(),
+        "--project-directory".into(),
+        project.dir.display().to_string(),
+        "-f".into(),
+        file.display().to_string(),
+    ]
+}
+
+/// Writes the project file and creates every directory it bind-mounts, so
+/// the mounts are owned by the Platform's user and not by whoever Docker
+/// runs as.
+fn write_project(project: &ComposeProject) -> Result<(), DockerError> {
+    let io = |what: &str, e: std::io::Error| {
+        DockerError::Command(
+            format!("failed to write the Application project: {what}"),
+            Box::new(e),
+        )
+    };
+    std::fs::create_dir_all(&project.dir).map_err(|e| io("create project directory", e))?;
+    for dir in &project.bind_dirs {
+        std::fs::create_dir_all(dir).map_err(|e| io("create data directory", e))?;
+    }
+    std::fs::write(project_file(project), &project.yaml).map_err(|e| io("write compose.yml", e))
+}
+
+fn compose(project: &ComposeProject, verb: &[&str], step: &str) -> Result<(), DockerError> {
+    let file = project_file(project);
+    let mut args = compose_args(project, &file);
+    args.extend(verb.iter().map(|s| s.to_string()));
+
+    let output = std::process::Command::new("docker")
+        .args(&args)
+        .output()
+        .map_err(|e| DockerError::spawn(step, e))?;
+
+    if !output.status.success() {
+        return Err(DockerError::refused(step, &output));
+    }
+    Ok(())
+}
+
+/// Runs a command and hands its stdout and stderr back line by line, until
+/// the reader goes away.
+fn spawn_log_stream(program: &str, args: Vec<String>) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel::<String>(64);
+    let program = program.to_string();
+
+    tokio::task::spawn(async move {
+        let mut child = match tokio::process::Command::new(&program)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(format!("failed to start log stream: {e}")).await;
+                return;
+            }
+        };
+
+        use tokio::io::AsyncBufReadExt;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let mut stdout_lines = tokio::io::BufReader::new(stdout).lines();
+        let mut stderr_lines = tokio::io::BufReader::new(stderr).lines();
+        let mut stdout_open = true;
+        let mut stderr_open = true;
+
+        while stdout_open || stderr_open {
+            tokio::select! {
+                result = stdout_lines.next_line(), if stdout_open => {
+                    match result {
+                        Ok(Some(line)) => {
+                            if tx.send(line).await.is_err() {
+                                break; // receiver dropped (client disconnected)
+                            }
+                        }
+                        _ => stdout_open = false,
+                    }
+                }
+                result = stderr_lines.next_line(), if stderr_open => {
+                    match result {
+                        Ok(Some(line)) => {
+                            if tx.send(line).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ => stderr_open = false,
+                    }
+                }
+            }
+        }
+
+        let _ = child.kill().await;
+    });
+
+    rx
 }
 
 #[derive(Clone, Default)]
@@ -510,6 +776,15 @@ pub struct FakeDocker {
     /// When set, `pull_image` fails with this message — the everyday case of a
     /// typo in an image tag.
     pub pull_failure: Option<String>,
+    /// Compose projects brought up, latest definition per name.
+    pub projects: std::sync::Arc<std::sync::Mutex<Vec<ComposeProject>>>,
+    /// Containers the Operator stopped, by name.
+    pub stopped: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Containers that exist but are not running, with their exit code — a
+    /// service that fell over at startup.
+    pub exited: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
+    /// When set, `compose_up` fails with this message.
+    pub compose_failure: Option<String>,
 }
 
 impl FakeDocker {
@@ -520,7 +795,44 @@ impl FakeDocker {
             pulled: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             built: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pull_failure: None,
+            projects: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            stopped: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
+            exited: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
+            compose_failure: None,
         }
+    }
+
+    pub fn failing_compose(message: &str) -> Self {
+        FakeDocker {
+            compose_failure: Some(message.to_string()),
+            ..FakeDocker::new()
+        }
+    }
+
+    pub fn project(&self, name: &str) -> Option<ComposeProject> {
+        self.projects
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+    }
+
+    /// Makes a container look like it fell over, as a service with a bad
+    /// command does.
+    pub fn exit_container(&self, name: &str, code: i64) {
+        self.exited.lock().unwrap().insert(name.to_string(), code);
+    }
+
+    fn known_container(&self, name: &str) -> bool {
+        self.apps.lock().unwrap().iter().any(|a| a.name == name)
+            || self.infra.lock().unwrap().iter().any(|c| c.name == name)
+            || self
+                .projects
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.containers.iter().any(|(_, c)| c == name))
     }
 
     pub fn failing_pull(message: &str) -> Self {
@@ -639,6 +951,100 @@ impl DockerRuntime for FakeDocker {
         let _ = tx.try_send("[fake] log line 3".into());
         Ok(rx)
     }
+
+    async fn container_state(&self, name: &str) -> Result<Option<ContainerState>, DockerError> {
+        if !self.known_container(name) {
+            return Ok(None);
+        }
+        if let Some(code) = self.exited.lock().unwrap().get(name) {
+            return Ok(Some(ContainerState {
+                status: "exited".into(),
+                exit_code: *code,
+                restarts: 3,
+            }));
+        }
+        let stopped = self.stopped.lock().unwrap().contains(name);
+        Ok(Some(ContainerState {
+            status: if stopped {
+                "exited".into()
+            } else {
+                "running".into()
+            },
+            exit_code: 0,
+            restarts: 0,
+        }))
+    }
+
+    async fn start_container(&self, name: &str) -> Result<(), DockerError> {
+        self.stopped.lock().unwrap().remove(name);
+        Ok(())
+    }
+
+    async fn stop_container(&self, name: &str) -> Result<(), DockerError> {
+        self.stopped.lock().unwrap().insert(name.to_string());
+        Ok(())
+    }
+
+    async fn restart_container(&self, name: &str) -> Result<(), DockerError> {
+        self.stopped.lock().unwrap().remove(name);
+        Ok(())
+    }
+
+    async fn compose_up(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        if let Some(message) = &self.compose_failure {
+            return Err(DockerError::Command(
+                "failed to bring the Application up".into(),
+                Box::new(DockerRefusal::parse(message).expect("a compose failure says something")),
+            ));
+        }
+        let mut projects = self.projects.lock().unwrap();
+        projects.retain(|p| p.name != project.name);
+        projects.push(project.clone());
+        let mut stopped = self.stopped.lock().unwrap();
+        for (_, container) in &project.containers {
+            stopped.remove(container);
+        }
+        Ok(())
+    }
+
+    async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        let mut stopped = self.stopped.lock().unwrap();
+        for (_, container) in &project.containers {
+            stopped.remove(container);
+        }
+        Ok(())
+    }
+
+    async fn compose_stop(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        let mut stopped = self.stopped.lock().unwrap();
+        for (_, container) in &project.containers {
+            stopped.insert(container.clone());
+        }
+        Ok(())
+    }
+
+    async fn compose_restart(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        self.compose_start(project).await
+    }
+
+    async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        self.projects
+            .lock()
+            .unwrap()
+            .retain(|p| p.name != project.name);
+        Ok(())
+    }
+
+    async fn stream_compose_logs(
+        &self,
+        project: &ComposeProject,
+    ) -> Result<mpsc::Receiver<String>, DockerError> {
+        let (tx, rx) = mpsc::channel::<String>(8);
+        for (service, _) in &project.containers {
+            let _ = tx.try_send(format!("{service}  | [fake] log line 1"));
+        }
+        Ok(rx)
+    }
 }
 
 #[async_trait]
@@ -691,6 +1097,49 @@ where
         container_name: &str,
     ) -> Result<mpsc::Receiver<String>, DockerError> {
         (**self).stream_logs(container_name).await
+    }
+
+    async fn container_state(&self, name: &str) -> Result<Option<ContainerState>, DockerError> {
+        (**self).container_state(name).await
+    }
+
+    async fn start_container(&self, name: &str) -> Result<(), DockerError> {
+        (**self).start_container(name).await
+    }
+
+    async fn stop_container(&self, name: &str) -> Result<(), DockerError> {
+        (**self).stop_container(name).await
+    }
+
+    async fn restart_container(&self, name: &str) -> Result<(), DockerError> {
+        (**self).restart_container(name).await
+    }
+
+    async fn compose_up(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_up(project).await
+    }
+
+    async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_start(project).await
+    }
+
+    async fn compose_stop(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_stop(project).await
+    }
+
+    async fn compose_restart(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_restart(project).await
+    }
+
+    async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_down(project).await
+    }
+
+    async fn stream_compose_logs(
+        &self,
+        project: &ComposeProject,
+    ) -> Result<mpsc::Receiver<String>, DockerError> {
+        (**self).stream_compose_logs(project).await
     }
 }
 
