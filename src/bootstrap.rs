@@ -64,13 +64,23 @@ pub fn validate_dns_suffix(suffix: &str) -> Result<(), String> {
 pub async fn run_bootstrap(
     docker: &impl DockerRuntime,
     dns_suffix: &str,
+    host_ip: Option<&str>,
 ) -> Result<BootstrapResult, BootstrapError> {
     validate_dns_suffix(dns_suffix).map_err(BootstrapError::InvalidDnsSuffix)?;
 
     docker.ping().await?;
 
     let api_key = generate_api_key();
-    let host_ip = detect_host_ip()?;
+    // Detection picks the interface the default route leaves through, which
+    // is the LAN one. `--host-ip` is for the Host where that guess is wrong:
+    // a Mac on a VPN, or one with a second interface.
+    let host_ip = match host_ip {
+        Some(ip) => ip
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| BootstrapError::InvalidHostIp(ip.to_string()))?
+            .to_string(),
+        None => detect_host_ip()?,
+    };
 
     tls::generate_certificates(dns_suffix)?;
     info!("TLS certificates ready");
@@ -402,6 +412,7 @@ pub enum BootstrapError {
     Docker(DockerError),
     Db(DbError),
     InvalidDnsSuffix(String),
+    InvalidHostIp(String),
     AlreadyInitialized,
     ConfigWrite(String),
     ConfigRead(String),
@@ -439,6 +450,7 @@ impl std::fmt::Display for BootstrapError {
             BootstrapError::Docker(e) => write!(f, "{e}"),
             BootstrapError::Db(e) => write!(f, "{e}"),
             BootstrapError::InvalidDnsSuffix(msg) => write!(f, "invalid DNS suffix: {msg}"),
+            BootstrapError::InvalidHostIp(ip) => write!(f, "'{ip}' is not an IP address"),
             BootstrapError::AlreadyInitialized => {
                 write!(
                     f,

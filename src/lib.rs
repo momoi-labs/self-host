@@ -2025,19 +2025,33 @@ mod bootstrap_tests {
     #[tokio::test]
     async fn run_bootstrap_with_fake_docker_succeeds() {
         let docker = FakeDocker::new();
-        let result = bootstrap::run_bootstrap(&docker, bootstrap::DEFAULT_DNS_SUFFIX)
-            .await
-            .expect("bootstrap should succeed with fake docker");
+        // An explicit address, so the test does not depend on the machine
+        // having a LAN one to detect.
+        let result =
+            bootstrap::run_bootstrap(&docker, bootstrap::DEFAULT_DNS_SUFFIX, Some("192.168.1.10"))
+                .await
+                .expect("bootstrap should succeed with fake docker");
 
         assert_eq!(result.dns_suffix, bootstrap::DEFAULT_DNS_SUFFIX);
+        assert_eq!(result.host_ip, "192.168.1.10");
         assert!(result.api_key.len() >= 64); // 32 bytes = 64 hex chars
         assert!(result.api_listen_addr.contains(":3721"));
     }
 
     #[tokio::test]
+    async fn run_bootstrap_rejects_a_host_ip_that_is_not_one() {
+        let docker = FakeDocker::new();
+        let err = bootstrap::run_bootstrap(&docker, "test.lan", Some("the-mac"))
+            .await
+            .expect_err("should reject a name");
+
+        assert!(matches!(err, bootstrap::BootstrapError::InvalidHostIp(_)));
+    }
+
+    #[tokio::test]
     async fn run_bootstrap_rejects_invalid_dns_suffix() {
         let docker = FakeDocker::new();
-        let err = bootstrap::run_bootstrap(&docker, ".local")
+        let err = bootstrap::run_bootstrap(&docker, ".local", None)
             .await
             .expect_err("should reject .local");
 

@@ -25,6 +25,9 @@ enum Command {
         /// DNS suffix for Application Hostnames (default: home.lan)
         #[arg(long, default_value = bootstrap::DEFAULT_DNS_SUFFIX)]
         dns: String,
+        /// The LAN address Consumers reach this Host on (default: detected)
+        #[arg(long)]
+        host_ip: Option<String>,
     },
     /// Start the platform daemon
     Serve,
@@ -68,6 +71,17 @@ enum AppsCommand {
         /// Local build path (Dockerfile/context directory)
         #[arg(long)]
         path: Option<String>,
+        /// A Compose file to run as the Application
+        #[arg(long)]
+        compose_file: Option<String>,
+        /// The Compose service the Hostname routes to (default: the first
+        /// one that publishes a port)
+        #[arg(long)]
+        web_service: Option<String>,
+        /// The container port the Hostname routes to (default: the container
+        /// side of the web service's first published port)
+        #[arg(long)]
+        web_port: Option<u16>,
         /// Override the default Application Hostname
         #[arg(long)]
         hostname: Option<String>,
@@ -77,6 +91,21 @@ enum AppsCommand {
     },
     /// List Applications
     List,
+    /// Start a stopped Application
+    Start {
+        /// Application name
+        name: String,
+    },
+    /// Stop an Application; it stays stopped until started again
+    Stop {
+        /// Application name
+        name: String,
+    },
+    /// Restart an Application's containers
+    Restart {
+        /// Application name
+        name: String,
+    },
     /// Remove an Application and clean Docker resources
     Remove {
         /// Application name
@@ -153,8 +182,8 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Init { dns }) => {
-            if let Err(e) = run_init_command(&dns).await {
+        Some(Command::Init { dns, host_ip }) => {
+            if let Err(e) = run_init_command(&dns, host_ip.as_deref()).await {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
@@ -189,7 +218,7 @@ async fn main() {
     }
 }
 
-async fn run_init_command(dns_suffix: &str) -> anyhow::Result<()> {
+async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Result<()> {
     info!("bootstrapping with DNS suffix: {dns_suffix}");
 
     let docker = ComposeDocker::new()?;
@@ -214,7 +243,7 @@ async fn run_init_command(dns_suffix: &str) -> anyhow::Result<()> {
         return Err(bootstrap::BootstrapError::ExistingConfiguration.into());
     }
 
-    let result = bootstrap::run_bootstrap(&docker, dns_suffix).await?;
+    let result = bootstrap::run_bootstrap(&docker, dns_suffix, host_ip).await?;
 
     wait_for_postgres().await?;
 
@@ -512,19 +541,35 @@ async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
             name,
             image,
             path,
+            compose_file,
+            web_service,
+            web_port,
             hostname,
             aliases,
         } => {
             let image = image.unwrap_or_default();
             let path = path.unwrap_or_default();
+            let compose = match &compose_file {
+                Some(file) => std::fs::read_to_string(file)
+                    .map_err(|e| anyhow::anyhow!("failed to read {file}: {e}"))?,
+                None => String::new(),
+            };
 
-            if image.is_empty() && path.is_empty() {
+            if image.is_empty() && path.is_empty() && compose.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "Either --image or --path is required for deploy. Use --image <ref> or --path <dir>."
+                    "One of --image, --path or --compose-file is required for deploy."
                 ));
             }
 
-            let mut body = serde_json::json!({ "name": name, "image": image, "path": path });
+            let mut body = serde_json::json!({
+                "name": name, "image": image, "path": path, "compose": compose
+            });
+            if let Some(service) = &web_service {
+                body["web_service"] = serde_json::json!(service);
+            }
+            if let Some(port) = web_port {
+                body["web_port"] = serde_json::json!(port);
+            }
             if let Some(h) = &hostname {
                 body["hostname"] = serde_json::json!(h);
             }
@@ -601,6 +646,9 @@ async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
                 );
             }
         }
+        AppsCommand::Start { name } => run_lifecycle(&config, &client, &name, "start").await?,
+        AppsCommand::Stop { name } => run_lifecycle(&config, &client, &name, "stop").await?,
+        AppsCommand::Restart { name } => run_lifecycle(&config, &client, &name, "restart").await?,
         AppsCommand::Remove { name } => {
             let url = format!(
                 "{}/apps/{}",
@@ -626,6 +674,56 @@ async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Start, stop and restart are addressed by id on the API; the CLI speaks in
+/// names, so it looks the id up first.
+async fn run_lifecycle(
+    config: &CliConfig,
+    client: &reqwest::Client,
+    name: &str,
+    verb: &str,
+) -> anyhow::Result<()> {
+    let base = config.api_base_url.trim_end_matches('/');
+
+    let response = client
+        .get(format!("{base}/apps"))
+        .bearer_auth(&config.api_key)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(api_error("List failed", status, &body));
+    }
+    let apps: Vec<serde_json::Value> = serde_json::from_str(&body)?;
+    let id = apps
+        .iter()
+        .find(|a| a["name"].as_str() == Some(name))
+        .and_then(|a| a["id"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("Application '{name}' not found"))?;
+
+    let response = client
+        .post(format!("{base}/apps/id/{id}/{verb}"))
+        .bearer_auth(&config.api_key)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(api_error(&format!("{verb} failed"), status, &body));
+    }
+
+    let app: serde_json::Value = serde_json::from_str(&body)?;
+    println!("{name}: {}", app["status"].as_str().unwrap_or("?"));
+    for service in app["services"].as_array().unwrap_or(&vec![]) {
+        println!(
+            "  {:<20} {}",
+            service["service"].as_str().unwrap_or("?"),
+            service["state"].as_str().unwrap_or("?")
+        );
+    }
     Ok(())
 }
 
@@ -844,6 +942,54 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Polls Docker until it answers. The first minute after boot is the usual
+/// wait; a runtime that never comes is logged once a minute, forever.
+async fn wait_for_docker(docker: &ComposeDocker) {
+    let mut attempt: u32 = 0;
+    loop {
+        match docker.ping().await {
+            Ok(()) => {
+                if attempt > 0 {
+                    info!("Docker is available");
+                }
+                return;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt == 1 || attempt.is_multiple_of(30) {
+                    tracing::warn!("waiting for Docker: {e}");
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
+/// Polls the state store until it answers. Without one there is nothing to
+/// serve: every Application and the API key live in it.
+async fn wait_for_state_store() -> PgStateStore {
+    let mut attempt: u32 = 0;
+    loop {
+        match PgStateStore::connect(bootstrap::PG_DB_URL).await {
+            Ok(store) => {
+                if attempt > 0 {
+                    info!("PostgreSQL is available");
+                }
+                return store;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt == 1 || attempt.is_multiple_of(30) {
+                    tracing::warn!(
+                        "waiting for PostgreSQL (run 'self-host init' if this Host was never bootstrapped): {e}"
+                    );
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
 async fn wait_for_postgres() -> anyhow::Result<()> {
     let max_attempts = 30;
     for attempt in 1..=max_attempts {
@@ -891,30 +1037,35 @@ fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
     save_cli_config_object(cli_config_from_bootstrap(result))
 }
 
+/// The daemon is started by launchd at boot (ADR-0013), when the Docker
+/// runtime is still coming up and the Platform Infra with it. Nothing here
+/// gives up: each dependency is waited for, out loud, for as long as it
+/// takes. Exiting would only make launchd start us again with less context.
 async fn run_server() {
     let (api_key, listen_addr) = resolve_server_config().await;
 
-    let docker: Arc<dyn DockerRuntime> = match ComposeDocker::new() {
-        Ok(d) => Arc::new(d),
+    let compose_docker = match ComposeDocker::new() {
+        Ok(d) => d,
         Err(e) => {
             tracing::error!("Docker unavailable: {e}");
             std::process::exit(1);
         }
     };
 
-    let store = match PgStateStore::connect(bootstrap::PG_DB_URL).await {
-        Ok(s) => s,
-        Err(_) => {
-            tracing::warn!("PostgreSQL not available, running without persistent state");
-            let app = build_app_with_key(api_key);
-            let listener = tokio::net::TcpListener::bind(&listen_addr)
-                .await
-                .expect("failed to bind to listen address");
-            info!("listening on {listen_addr} (no DB)");
-            axum::serve(listener, app).await.expect("server error");
-            return;
-        }
-    };
+    wait_for_docker(&compose_docker).await;
+
+    // Docker's restart policy brings the Infra back after a reboot; this
+    // covers the rest, and is a no-op when everything is already up.
+    if let Err(e) = compose_docker.infra_up() {
+        tracing::warn!(
+            "failed to bring the Platform Infra up: {}",
+            ErrorReport::new(&e)
+        );
+    }
+
+    let docker: Arc<dyn DockerRuntime> = Arc::new(compose_docker);
+
+    let store = wait_for_state_store().await;
 
     // Ensure schema includes applications table for existing installs.
     if let Err(e) = store.initialize_schema().await {
@@ -949,69 +1100,6 @@ async fn run_server() {
     info!("listening on {listen_addr}");
 
     axum::serve(listener, app).await.expect("server error");
-}
-
-fn build_app_with_key(api_key: String) -> axum::Router {
-    use axum::{
-        Json, Router,
-        extract::Request,
-        http::StatusCode,
-        middleware::{self, Next},
-        response::{IntoResponse, Response},
-        routing::get,
-    };
-    use serde::Serialize;
-
-    #[derive(Clone)]
-    struct SimpleState {
-        api_key: String,
-    }
-
-    #[derive(Serialize)]
-    struct HealthResponse {
-        status: String,
-    }
-
-    async fn health() -> Json<HealthResponse> {
-        Json(HealthResponse {
-            status: "ok".into(),
-        })
-    }
-
-    async fn require_key(
-        state: axum::extract::State<SimpleState>,
-        req: Request,
-        next: Next,
-    ) -> Response {
-        let auth_header = req
-            .headers()
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-
-        let expected = state.api_key.as_bytes();
-        let found = auth_header.unwrap_or("").as_bytes();
-
-        let matches = expected.len() == found.len()
-            && expected
-                .iter()
-                .zip(found.iter())
-                .fold(0, |acc, (x, y)| acc | (x ^ y))
-                == 0;
-
-        if matches {
-            next.run(req).await
-        } else {
-            (StatusCode::UNAUTHORIZED, "invalid api key").into_response()
-        }
-    }
-
-    let state = SimpleState { api_key };
-
-    Router::new()
-        .route("/health", get(health))
-        .layer(middleware::from_fn_with_state(state.clone(), require_key))
-        .with_state(state)
 }
 
 async fn resolve_server_config() -> (String, String) {
