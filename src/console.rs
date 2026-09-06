@@ -31,6 +31,7 @@ async fn static_asset(axum::extract::Path(path): axum::extract::Path<String>) ->
     // Only allow known asset files (no directory traversal)
     let allowed = [
         "app.js",
+        "prism-yaml.js",
         "theme.js",
         "tokens.css",
         "ui.css",
@@ -115,6 +116,7 @@ mod tests {
             ("ui.css", "text/css"),
             ("console.css", "text/css"),
             ("theme.js", "text/javascript"),
+            ("prism-yaml.js", "text/javascript"),
         ] {
             let response = console_router()
                 .oneshot(

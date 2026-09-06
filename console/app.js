@@ -700,11 +700,35 @@ function formMarkup(app) {
 let inspected = null;
 let inspectTimer = null;
 
+function highlightCompose(textarea) {
+  if (!window.Prism?.languages.yaml) return;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'yaml-editor';
+  const highlight = document.createElement('div');
+  highlight.className = 'yaml-highlight';
+  highlight.setAttribute('aria-hidden', 'true');
+  textarea.before(wrapper);
+  wrapper.append(highlight, textarea);
+  textarea.wrap = 'off';
+  const syncScroll = () => {
+    highlight.scrollTop = textarea.scrollTop;
+    highlight.scrollLeft = textarea.scrollLeft;
+  };
+  const paint = () => {
+    highlight.innerHTML = Prism.highlight(textarea.value + '\n', Prism.languages.yaml, 'yaml');
+    syncScroll();
+  };
+  textarea.addEventListener('input', paint);
+  textarea.addEventListener('scroll', syncScroll);
+  paint();
+}
+
 function wireComposeInspection() {
   const compose = document.getElementById('f-compose');
   const service = document.getElementById('f-web-service');
   const port = document.getElementById('f-web-port');
   if (!compose) return;
+  highlightCompose(compose);
   compose.addEventListener('input', () => {
     clearTimeout(inspectTimer);
     inspectTimer = setTimeout(inspectCompose, 400);
