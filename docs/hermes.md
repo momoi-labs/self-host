@@ -14,9 +14,13 @@ Facts about the image below were observed on September 5, 2026 with
 - `gateway run` starts without a prior `setup`. The image writes its
   configuration, sessions and credentials under `/opt/data` on first start.
 - With `HERMES_DASHBOARD=1` the web dashboard listens on port 9119. Bound to
-  a non-loopback address, as it is in a container, it requires
-  authentication: `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` and
-  `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` are the simplest provider.
+  a non-loopback address, as it is in a container, it refuses to start
+  without an auth provider and says so: `Refusing to bind dashboard to
+  0.0.0.0`. `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` and
+  `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` are the simplest provider, and the
+  two variables are enough on their own: the image needs no `config.yaml`
+  and no hashed password. Despite the name, what the Consumer meets is a
+  login page, not an HTTP basic-auth prompt.
 - A provider key in the environment, such as `OPENROUTER_API_KEY`, is read
   into Hermes's credential pool at startup. The interactive `setup` wizard
   is not required for the browser workflow.
