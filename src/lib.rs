@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::Request,
-    http::StatusCode,
+    body::Body,
+    extract::{Request, State},
+    http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, sse},
     routing::{delete, get},
@@ -69,7 +70,27 @@ pub fn build_app<S: StateStore>(
         ))
         .with_state(state);
 
-    console::console_router().merge(api_routes)
+    console::console_router()
+        .merge(public_ca_router(tls::ca_cert_path()))
+        .merge(api_routes)
+}
+
+fn public_ca_router(path: std::path::PathBuf) -> Router {
+    Router::new()
+        .route("/ca.pem", get(public_ca_certificate))
+        .with_state(path)
+}
+
+async fn public_ca_certificate(State(path): State<std::path::PathBuf>) -> Response {
+    match std::fs::read(path) {
+        Ok(ca) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/x-pem-file")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(ca))
+            .unwrap(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 #[derive(Serialize)]
@@ -725,6 +746,34 @@ mod tests {
             .oneshot(req.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn public_ca_can_be_downloaded_without_an_api_key() {
+        let path =
+            std::env::temp_dir().join(format!("self-host-public-ca-{}.pem", std::process::id()));
+        std::fs::write(&path, b"public ca").unwrap();
+
+        let response = public_ca_router(path.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/ca.pem")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/x-pem-file"
+        );
+        assert_eq!(
+            to_bytes(response.into_body(), 1024).await.unwrap(),
+            "public ca"
+        );
     }
 
     async fn post_json(app: &Router, uri: &str, api_key: Option<&str>, body: Value) -> Response {
@@ -1658,11 +1707,11 @@ mod bootstrap_tests {
     #[tokio::test]
     async fn run_bootstrap_with_fake_docker_succeeds() {
         let docker = FakeDocker::new();
-        let result = bootstrap::run_bootstrap(&docker, "test.lan")
+        let result = bootstrap::run_bootstrap(&docker, bootstrap::DEFAULT_DNS_SUFFIX)
             .await
             .expect("bootstrap should succeed with fake docker");
 
-        assert_eq!(result.dns_suffix, "test.lan");
+        assert_eq!(result.dns_suffix, bootstrap::DEFAULT_DNS_SUFFIX);
         assert!(result.api_key.len() >= 64); // 32 bytes = 64 hex chars
         assert!(result.api_listen_addr.contains(":3721"));
     }

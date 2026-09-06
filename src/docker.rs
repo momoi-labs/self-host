@@ -144,6 +144,7 @@ pub struct ContainerConfig {
     pub cmd: Vec<String>,
     pub labels: Vec<(String, String)>,
     pub networks: Vec<String>,
+    pub extra_hosts: Vec<String>,
 }
 
 /// Two bridges, so an Application cannot open a socket on Platform Infra.
@@ -174,6 +175,7 @@ impl ContainerConfig {
             cmd: self.cmd.clone(),
             labels: self.labels.clone(),
             networks: self.networks.clone(),
+            extra_hosts: self.extra_hosts.clone(),
         }
     }
 }
@@ -556,6 +558,7 @@ impl FakeDocker {
                 cmd: vec![],
                 labels: vec![],
                 networks: vec![],
+                extra_hosts: vec![],
             });
         }
     }
@@ -708,6 +711,7 @@ mod tests {
             cmd: vec![],
             labels: vec![],
             networks: vec![],
+            extra_hosts: vec![],
         };
 
         let svc = config.to_compose_service();

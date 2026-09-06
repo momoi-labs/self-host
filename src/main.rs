@@ -44,6 +44,15 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Install a Platform CA in this machine's trust store
+    TrustCa {
+        /// Remote Hostname or HTTPS base URL to download the public CA from
+        #[arg(long)]
+        from: Option<String>,
+        /// Expected SHA-256 fingerprint, obtained from the Host by a trusted channel
+        #[arg(long, requires = "from")]
+        fingerprint: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -168,6 +177,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Command::TrustCa { from, fingerprint }) => {
+            if let Err(e) = run_trust_ca_command(from.as_deref(), fingerprint.as_deref()).await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
         Some(Command::Serve) | None => {
             run_server().await;
         }
@@ -178,6 +193,26 @@ async fn run_init_command(dns_suffix: &str) -> anyhow::Result<()> {
     info!("bootstrapping with DNS suffix: {dns_suffix}");
 
     let docker = ComposeDocker::new()?;
+
+    docker.ping().await?;
+    let db_name = self_host::apps::system_container_name("db");
+    if docker.container_running(&db_name).await? {
+        wait_for_postgres().await?;
+        let store = PgStateStore::connect(bootstrap::PG_DB_URL).await?;
+        if bootstrap::preflight_initialized(&store, dns_suffix).await? {
+            let api_key = store
+                .get_api_key()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("initialized Platform has no API key"))?;
+            save_cli_config_values(dns_suffix, &api_key)?;
+            println!("Platform is already initialized with DNS Suffix '{dns_suffix}'.");
+            println!("Existing DNS, TLS and routing configuration is consistent.");
+            println!("CLI config points to https://admin.{dns_suffix}.");
+            return Ok(());
+        }
+    } else if bootstrap::platform_configuration_exists() {
+        return Err(bootstrap::BootstrapError::ExistingConfiguration.into());
+    }
 
     let result = bootstrap::run_bootstrap(&docker, dns_suffix).await?;
 
@@ -199,6 +234,235 @@ async fn run_init_command(dns_suffix: &str) -> anyhow::Result<()> {
 
     bootstrap::print_bootstrap_instructions(&result);
 
+    Ok(())
+}
+
+fn run_checked(command: &mut std::process::Command, description: &str) -> anyhow::Result<()> {
+    let status = command.status()?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("{description} failed with {status}"));
+    }
+    Ok(())
+}
+
+fn remote_ca_url(source: &str) -> anyhow::Result<String> {
+    let base = if source.contains("://") {
+        source.to_string()
+    } else {
+        format!("https://{source}")
+    };
+    let url = reqwest::Url::parse(&base)?;
+    if url.scheme() != "https" {
+        return Err(anyhow::anyhow!(
+            "the remote CA must be downloaded over HTTPS"
+        ));
+    }
+    Ok(url.join("/ca.pem")?.to_string())
+}
+
+fn normalized_fingerprint(value: &str) -> Option<String> {
+    let mut normalized = String::new();
+    for character in value.chars() {
+        if character.is_ascii_hexdigit() {
+            normalized.push(character.to_ascii_uppercase());
+        } else if character == ':' || character == '-' || character.is_ascii_whitespace() {
+            continue;
+        } else {
+            return None;
+        }
+    }
+    Some(normalized)
+}
+
+fn fingerprints_match(expected: &str, actual: &str) -> bool {
+    match (
+        normalized_fingerprint(expected),
+        normalized_fingerprint(actual),
+    ) {
+        (Some(expected), Some(actual)) => expected == actual,
+        _ => false,
+    }
+}
+
+struct TemporaryCa(std::path::PathBuf);
+
+impl Drop for TemporaryCa {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn write_temporary_ca(ca: &[u8]) -> anyhow::Result<TemporaryCa> {
+    use std::io::Write;
+
+    let path = std::env::temp_dir().join(format!(
+        "self-host-ca-{}-{}.pem",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    file.write_all(ca)?;
+    Ok(TemporaryCa(path))
+}
+
+async fn download_remote_ca(source: &str, expected_fingerprint: &str) -> anyhow::Result<Vec<u8>> {
+    use futures_util::StreamExt;
+
+    let normalized = normalized_fingerprint(expected_fingerprint)
+        .filter(|fingerprint| fingerprint.len() == 64)
+        .ok_or_else(|| {
+            anyhow::anyhow!("expected fingerprint must contain 64 hexadecimal digits")
+        })?;
+    let url = remote_ca_url(source)?;
+    let client = reqwest::Client::builder()
+        // The fingerprint is the trust anchor for this first download.
+        .danger_accept_invalid_certs(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client.get(&url).send().await?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "failed to download {url}: HTTP {}",
+            response.status()
+        ));
+    }
+
+    const MAX_CA_SIZE: usize = 1024 * 1024;
+    let mut ca = Vec::new();
+    let mut body = response.bytes_stream();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk?;
+        if ca.len() + chunk.len() > MAX_CA_SIZE {
+            return Err(anyhow::anyhow!("downloaded CA exceeds 1 MiB"));
+        }
+        ca.extend_from_slice(&chunk);
+    }
+
+    self_host::tls::validate_public_ca(&ca)?;
+    let actual = self_host::tls::ca_sha256_fingerprint_from_pem(&ca)?;
+    if !fingerprints_match(&normalized, &actual) {
+        return Err(anyhow::anyhow!(
+            "CA fingerprint mismatch: expected {expected_fingerprint}, received {actual}"
+        ));
+    }
+    Ok(ca)
+}
+
+fn install_ca(ca_path: &std::path::Path) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    run_checked(
+        std::process::Command::new("sudo")
+            .args([
+                "security",
+                "add-trusted-cert",
+                "-d",
+                "-r",
+                "trustRoot",
+                "-k",
+            ])
+            .arg("/Library/Keychains/System.keychain")
+            .arg(ca_path),
+        "installing the CA in the System Keychain",
+    )?;
+
+    #[cfg(target_os = "linux")]
+    {
+        if std::path::Path::new("/etc/arch-release").exists() {
+            run_checked(
+                std::process::Command::new("sudo")
+                    .arg("trust")
+                    .arg("anchor")
+                    .arg("--store")
+                    .arg(ca_path),
+                "installing the CA with p11-kit",
+            )?;
+        } else {
+            let destination = "/usr/local/share/ca-certificates/self-host-ca.crt";
+            run_checked(
+                std::process::Command::new("sudo")
+                    .arg("cp")
+                    .arg(ca_path)
+                    .arg(destination),
+                "copying the CA into the system trust store",
+            )?;
+            run_checked(
+                std::process::Command::new("sudo").arg("update-ca-certificates"),
+                "updating the system trust store",
+            )?;
+        }
+
+        if std::process::Command::new("certutil")
+            .arg("-H")
+            .output()
+            .is_ok()
+        {
+            let nss_db = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("cannot locate the home directory"))?
+                .join(".pki/nssdb");
+            std::fs::create_dir_all(&nss_db)?;
+            let database = format!("sql:{}", nss_db.display());
+            if !nss_db.join("cert9.db").exists() {
+                run_checked(
+                    std::process::Command::new("certutil")
+                        .args(["-N", "--empty-password", "-d"])
+                        .arg(&database),
+                    "creating the browser certificate database",
+                )?;
+            }
+            run_checked(
+                std::process::Command::new("certutil")
+                    .args(["-A", "-n", "Self-Host LAN CA", "-t", "C,,", "-i"])
+                    .arg(ca_path)
+                    .arg("-d")
+                    .arg(&database),
+                "installing the CA for Chromium-based browsers",
+            )?;
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Err(anyhow::anyhow!(
+        "automatic Host trust is supported only on Linux and macOS"
+    ));
+
+    #[cfg(target_os = "linux")]
+    println!("Fully restart open browsers before testing HTTPS.");
+    Ok(())
+}
+
+async fn run_trust_ca_command(
+    from: Option<&str>,
+    expected_fingerprint: Option<&str>,
+) -> anyhow::Result<()> {
+    if let Some(source) = from {
+        let expected = expected_fingerprint.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--fingerprint is required with --from; obtain it from the Host by a trusted channel"
+            )
+        })?;
+        let ca = download_remote_ca(source, expected).await?;
+        let fingerprint = self_host::tls::ca_sha256_fingerprint_from_pem(&ca)?;
+        let temporary = write_temporary_ca(&ca)?;
+        install_ca(&temporary.0)?;
+        println!("Trusted CA downloaded from {source}");
+        println!("SHA-256: {fingerprint}");
+        return Ok(());
+    }
+
+    let ca_path = self_host::tls::ca_cert_path();
+    if !ca_path.exists() {
+        return Err(anyhow::anyhow!(
+            "CA certificate not found; run 'self-host init' or use 'self-host trust-ca --from <host> --fingerprint <sha256>'"
+        ));
+    }
+    install_ca(&ca_path)?;
+    println!("Trusted CA: {}", ca_path.display());
+    println!("SHA-256: {}", self_host::tls::ca_sha256_fingerprint()?);
     Ok(())
 }
 
@@ -507,15 +771,23 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     }
 
     println!("Stopping and removing containers...");
-    let output = std::process::Command::new("docker")
-        .args(["ps", "-aq", "--filter", "name=self-host"])
-        .output()?;
-
-    let container_ids = String::from_utf8_lossy(&output.stdout);
-    if !container_ids.trim().is_empty() {
+    let mut container_ids = Vec::new();
+    for name in ["self-host", "sf-"] {
+        let output = std::process::Command::new("docker")
+            .args(["ps", "-aq", "--filter", &format!("name={name}")])
+            .output()?;
+        container_ids.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .map(str::to_string),
+        );
+    }
+    container_ids.sort();
+    container_ids.dedup();
+    if !container_ids.is_empty() {
         let mut remove_cmd = std::process::Command::new("docker");
         remove_cmd.arg("rm").arg("-f");
-        for id in container_ids.split_whitespace() {
+        for id in container_ids {
             remove_cmd.arg(id);
         }
         remove_cmd.output()?;
@@ -542,11 +814,22 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         println!("No volumes found.");
     }
 
-    println!("Removing network...");
-    let _ = std::process::Command::new("docker")
-        .args(["network", "rm", "self-host"])
-        .output();
-    println!("Network removed.");
+    println!("Removing networks...");
+    let output = std::process::Command::new("docker")
+        .args(["network", "ls", "-q", "--filter", "name=sf-"])
+        .output()?;
+    let mut network_ids: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    network_ids.push("self-host".into());
+    let mut remove_cmd = std::process::Command::new("docker");
+    remove_cmd.arg("network").arg("rm");
+    for id in network_ids {
+        remove_cmd.arg(id);
+    }
+    let _ = remove_cmd.output();
+    println!("Networks removed.");
 
     let config_dir = self_host::compose::platform_config_dir();
     if config_dir.exists() {
@@ -581,17 +864,31 @@ async fn wait_for_postgres() -> anyhow::Result<()> {
     Err(anyhow::anyhow!("PostgreSQL did not become ready in time"))
 }
 
-fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
-    let config = CliConfig {
-        api_base_url: format!("http://{}", result.api_listen_addr),
-        api_key: result.api_key.clone(),
-    };
+fn cli_config_from_bootstrap(result: &BootstrapResult) -> CliConfig {
+    cli_config(&result.dns_suffix, &result.api_key)
+}
 
+fn cli_config(dns_suffix: &str, api_key: &str) -> CliConfig {
+    CliConfig {
+        api_base_url: format!("https://admin.{dns_suffix}"),
+        api_key: api_key.to_string(),
+    }
+}
+
+fn save_cli_config_values(dns_suffix: &str, api_key: &str) -> anyhow::Result<()> {
+    save_cli_config_object(cli_config(dns_suffix, api_key))
+}
+
+fn save_cli_config_object(config: CliConfig) -> anyhow::Result<()> {
     config.save()?;
 
     info!("CLI config saved to {}", CliConfig::config_path().display());
 
     Ok(())
+}
+
+fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
+    save_cli_config_object(cli_config_from_bootstrap(result))
 }
 
 async fn run_server() {
@@ -766,5 +1063,41 @@ mod tests {
 
         assert_eq!(err.to_string(), "List failed (502 Bad Gateway)");
         assert_eq!(err.source().unwrap().to_string(), "gateway down");
+    }
+
+    #[test]
+    fn remote_ca_requires_the_expected_fingerprint() {
+        let actual = "AA:BB:CC";
+
+        assert!(fingerprints_match("aa bb cc", actual));
+        assert!(!fingerprints_match("AA:BB:CD", actual));
+    }
+
+    #[test]
+    fn remote_ca_url_accepts_a_hostname_or_base_url() {
+        assert_eq!(
+            remote_ca_url("admin.home.lan").unwrap(),
+            "https://admin.home.lan/ca.pem"
+        );
+        assert_eq!(
+            remote_ca_url("https://admin.home.lan/").unwrap(),
+            "https://admin.home.lan/ca.pem"
+        );
+        assert!(remote_ca_url("http://admin.home.lan").is_err());
+    }
+
+    #[test]
+    fn bootstrap_cli_config_uses_the_public_https_endpoint() {
+        let result = BootstrapResult {
+            dns_suffix: "home.lan".into(),
+            api_key: "secret".into(),
+            api_listen_addr: "0.0.0.0:3721".into(),
+            host_ip: "192.168.1.10".into(),
+        };
+
+        let config = cli_config_from_bootstrap(&result);
+
+        assert_eq!(config.api_base_url, "https://admin.home.lan");
+        assert_eq!(config.api_key, "secret");
     }
 }

@@ -5,7 +5,8 @@ use crate::docker::{APP_NETWORK, ContainerConfig, DockerError, DockerRuntime, SY
 use crate::tls;
 use rand::Rng;
 use std::io::Write;
-use tracing::{info, warn};
+use std::net::UdpSocket;
+use tracing::info;
 
 /// Also the image the schema tests run against, so a migration is never
 /// proven on a Postgres the Platform does not actually ship.
@@ -69,25 +70,16 @@ pub async fn run_bootstrap(
     docker.ping().await?;
 
     let api_key = generate_api_key();
-    let host_ip = detect_host_ip();
+    let host_ip = detect_host_ip()?;
 
-    match tls::generate_certificates(dns_suffix) {
-        Ok(()) => info!("TLS certificates generated"),
-        Err(e) => {
-            warn!("Failed to generate TLS certificates: {e}");
-            warn!("HTTPS will not be available.");
-        }
-    }
+    tls::generate_certificates(dns_suffix)?;
+    info!("TLS certificates ready");
 
-    match tls::write_traefik_config() {
-        Ok(()) => info!("Traefik configuration written"),
-        Err(e) => warn!("Failed to write Traefik config: {e}"),
-    }
+    tls::write_traefik_config()?;
+    info!("Traefik configuration written");
 
-    match tls::write_admin_route(dns_suffix) {
-        Ok(()) => info!("admin route configured"),
-        Err(e) => warn!("Failed to write admin route: {e}"),
-    }
+    tls::write_admin_route(dns_suffix)?;
+    info!("admin route configured");
 
     start_infra_containers(docker, dns_suffix, &host_ip).await?;
 
@@ -101,6 +93,56 @@ pub async fn run_bootstrap(
         api_listen_addr,
         host_ip,
     })
+}
+
+/// Checks the authoritative state and all generated projections before
+/// Bootstrap is allowed to write anything.
+pub async fn preflight_initialized(
+    store: &impl StateStore,
+    requested_dns_suffix: &str,
+) -> Result<bool, BootstrapError> {
+    let Some(configured_dns_suffix) = store.get_state("dns_suffix").await? else {
+        return Ok(false);
+    };
+
+    if configured_dns_suffix != requested_dns_suffix {
+        return Err(BootstrapError::DnsSuffixMismatch {
+            requested: requested_dns_suffix.to_string(),
+            configured: configured_dns_suffix,
+        });
+    }
+
+    validate_configuration(requested_dns_suffix)?;
+    Ok(true)
+}
+
+pub fn platform_configuration_exists() -> bool {
+    compose::platform_config_dir()
+        .join("docker-compose.yml")
+        .exists()
+        || coredns_config_path().exists()
+        || tls::certs_dir().exists()
+}
+
+fn validate_configuration(dns_suffix: &str) -> Result<(), BootstrapError> {
+    tls::validate_certificates(dns_suffix)?;
+
+    let corefile = std::fs::read_to_string(coredns_config_path())
+        .map_err(|e| BootstrapError::ConfigRead(format!("Corefile: {e}")))?;
+    if !corefile.starts_with(&format!("{dns_suffix} {{")) {
+        return Err(BootstrapError::ConfigurationMismatch(format!(
+            "CoreDNS does not serve '{dns_suffix}'"
+        )));
+    }
+
+    let admin_route = std::fs::read_to_string(tls::traefik_dynamic_dir().join("admin.yml"))
+        .map_err(|e| BootstrapError::ConfigRead(format!("admin route: {e}")))?;
+    if !admin_route.contains(&format!("Host(`admin.{dns_suffix}`)")) {
+        return Err(BootstrapError::ConfigurationMismatch(format!(
+            "the console route does not use '{dns_suffix}'"
+        )));
+    }
+    Ok(())
 }
 
 pub async fn persist_bootstrap_state(
@@ -131,7 +173,7 @@ async fn start_infra_containers(
     let coredns_config = generate_coredns_config(dns_suffix, host_ip);
     write_coredns_config(&coredns_config)?;
 
-    for container in infra_containers() {
+    for container in infra_containers(host_ip) {
         info!("configuring {} container", container.name);
         docker.ensure_container_running(container).await?;
     }
@@ -145,7 +187,7 @@ async fn start_infra_containers(
 
 /// The Platform Infra containers, as configuration. Applications reach Traefik
 /// and nothing else: only the proxy is on both networks.
-fn infra_containers() -> Vec<ContainerConfig> {
+fn infra_containers(host_ip: &str) -> Vec<ContainerConfig> {
     vec![
         ContainerConfig {
             image: PG_IMAGE.to_string(),
@@ -161,11 +203,15 @@ fn infra_containers() -> Vec<ContainerConfig> {
             cmd: vec![],
             labels: vec![],
             networks: vec![SYSTEM_NETWORK.to_string()],
+            extra_hosts: vec![],
         },
         ContainerConfig {
             image: COREDNS_IMAGE.to_string(),
             name: apps::system_container_name(COREDNS_ROLE),
-            ports: vec!["53:53/tcp".into(), "53:53/udp".into()],
+            ports: vec![
+                format!("{host_ip}:53:53/tcp"),
+                format!("{host_ip}:53:53/udp"),
+            ],
             env: vec![],
             volumes: vec![format!(
                 "{}:/etc/coredns/Corefile:ro",
@@ -175,6 +221,7 @@ fn infra_containers() -> Vec<ContainerConfig> {
             cmd: vec!["-conf".into(), "/etc/coredns/Corefile".into()],
             labels: vec![],
             networks: vec![SYSTEM_NETWORK.to_string()],
+            extra_hosts: vec![],
         },
         ContainerConfig {
             image: TRAEFIK_IMAGE.to_string(),
@@ -183,7 +230,8 @@ fn infra_containers() -> Vec<ContainerConfig> {
             env: vec![],
             volumes: vec![
                 "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
-                format!("{}:/certs:ro", tls::certs_dir().display()),
+                format!("{}:/certs/cert.pem:ro", tls::cert_path().display()),
+                format!("{}:/certs/key.pem:ro", tls::key_path().display()),
                 format!(
                     "{}:/etc/traefik/traefik.yml:ro",
                     tls::traefik_config_path().display()
@@ -197,6 +245,7 @@ fn infra_containers() -> Vec<ContainerConfig> {
             cmd: tls::traefik_args(),
             labels: vec![],
             networks: vec![SYSTEM_NETWORK.to_string(), APP_NETWORK.to_string()],
+            extra_hosts: vec!["host.docker.internal:host-gateway".into()],
         },
     ]
 }
@@ -207,8 +256,22 @@ fn generate_api_key() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn detect_host_ip() -> String {
-    "127.0.0.1".to_string()
+fn detect_host_ip() -> Result<String, BootstrapError> {
+    let socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?;
+    socket
+        .connect("1.1.1.1:80")
+        .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?;
+    let address = socket
+        .local_addr()
+        .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?
+        .ip();
+    if address.is_loopback() || address.is_unspecified() {
+        return Err(BootstrapError::HostIpDetection(
+            "no LAN address was found; connect the Host to the LAN and retry".into(),
+        ));
+    }
+    Ok(address.to_string())
 }
 
 fn generate_coredns_config(dns_suffix: &str, host_ip: &str) -> String {
@@ -218,15 +281,18 @@ fn generate_coredns_config(dns_suffix: &str, host_ip: &str) -> String {
     template IN A {{
         match .*\.{}\.$
         answer "{{{{ .Name }}}} 60 IN A {}"
-        fallthrough
+    }}
+    template ANY ANY {{
+        match .*\.{}\.$
+        rcode NOERROR
     }}
     forward . 8.8.8.8 8.8.4.4
 }}"#,
-        dns_suffix, escaped_suffix, host_ip
+        dns_suffix, escaped_suffix, host_ip, escaped_suffix
     )
 }
 
-fn coredns_config_path() -> std::path::PathBuf {
+pub fn coredns_config_path() -> std::path::PathBuf {
     compose::platform_config_dir().join("Corefile")
 }
 
@@ -245,46 +311,12 @@ fn write_coredns_config(config: &str) -> Result<(), BootstrapError> {
     Ok(())
 }
 
-fn configure_macos_resolver(dns_suffix: &str, host_ip: &str) -> Result<(), String> {
-    let resolver_dir = std::path::Path::new("/etc/resolver");
-    if !resolver_dir.exists() {
-        return Err("/etc/resolver directory does not exist".into());
-    }
-
-    let resolver_file = resolver_dir.join(dns_suffix);
-    let content = format!("nameserver {host_ip}\n");
-
-    std::fs::write(&resolver_file, content)
-        .map_err(|e| format!("failed to write resolver file: {e}"))?;
-
-    Ok(())
-}
-
 pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!();
     println!("=== Bootstrap complete ===");
     println!();
     println!("DNS Suffix: {}", result.dns_suffix);
     println!();
-
-    // Configure macOS resolver for the DNS suffix
-    if cfg!(target_os = "macos") {
-        match configure_macos_resolver(&result.dns_suffix, &result.host_ip) {
-            Ok(()) => {
-                println!("macOS resolver configured for .{}", result.dns_suffix);
-            }
-            Err(e) => {
-                println!("Could not configure macOS resolver: {e}");
-                println!("Run manually:");
-                println!("  sudo mkdir -p /etc/resolver");
-                println!(
-                    "  echo 'nameserver {}' | sudo tee /etc/resolver/{}",
-                    result.host_ip, result.dns_suffix
-                );
-            }
-        }
-        println!();
-    }
 
     println!("--- Consumer DNS Setup ---");
     println!("Point your LAN devices (or router) to use this Host as DNS server:");
@@ -302,9 +334,18 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
         println!("--- HTTPS Setup ---");
         println!("To trust HTTPS certificates on other devices, install the CA certificate:");
         println!("  CA certificate: {}", ca_path.display());
+        if let Ok(fingerprint) = tls::ca_sha256_fingerprint() {
+            println!("  SHA-256 fingerprint: {fingerprint}");
+            println!();
+            println!("  Set up another Linux/macOS machine:");
+            println!(
+                "  curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash && self-host trust-ca --from admin.{} --fingerprint '{}'",
+                result.dns_suffix, fingerprint
+            );
+        }
         println!();
         println!(
-            "  macOS:   security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}",
+            "  macOS:   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}",
             ca_path.display()
         );
         println!(
@@ -312,11 +353,39 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
             ca_path.display()
         );
         println!(
-            "  Linux:   sudo cp {} /usr/local/share/ca-certificates/self-host-ca.crt && sudo update-ca-certificates",
+            "  Debian/Ubuntu: sudo cp {} /usr/local/share/ca-certificates/self-host-ca.crt && sudo update-ca-certificates",
             ca_path.display()
         );
+        println!(
+            "  Arch/p11-kit: sudo trust anchor --store {}",
+            ca_path.display()
+        );
+        println!("  This Host: self-host trust-ca");
+        println!("  Transfer only ca.pem to Consumers. Never transfer a private key.");
         println!();
     }
+
+    println!("--- Host DNS Setup ---");
+    if cfg!(target_os = "linux") {
+        println!(
+            "  sudo ip link show self-host-dns >/dev/null 2>&1 || sudo ip link add self-host-dns type dummy; sudo ip link set self-host-dns up; sudo resolvectl dns self-host-dns {}; sudo resolvectl domain self-host-dns '~{}'; resolvectl query admin.{}",
+            result.host_ip, result.dns_suffix, result.dns_suffix
+        );
+        println!("  If UFW is active, allow Traefik's two networks to reach the Operator API:");
+        println!(
+            "  sudo ufw allow from \"$(docker network inspect {SYSTEM_NETWORK} --format '{{{{(index .IPAM.Config 0).Subnet}}}}')\" to any port {OPERATOR_API_PORT} proto tcp"
+        );
+        println!(
+            "  sudo ufw allow from \"$(docker network inspect {} --format '{{{{(index .IPAM.Config 0).Subnet}}}}')\" to any port {OPERATOR_API_PORT} proto tcp",
+            crate::docker::APP_NETWORK
+        );
+    } else if cfg!(target_os = "macos") {
+        println!(
+            "  sudo mkdir -p /etc/resolver && echo 'nameserver {}' | sudo tee /etc/resolver/{} && dscacheutil -q host -a name admin.{}",
+            result.host_ip, result.dns_suffix, result.dns_suffix
+        );
+    }
+    println!();
 
     println!("--- Operator API ---");
     println!("API listen address: http://{}", result.api_listen_addr);
@@ -335,6 +404,15 @@ pub enum BootstrapError {
     InvalidDnsSuffix(String),
     AlreadyInitialized,
     ConfigWrite(String),
+    ConfigRead(String),
+    Tls(tls::TlsError),
+    DnsSuffixMismatch {
+        requested: String,
+        configured: String,
+    },
+    ConfigurationMismatch(String),
+    ExistingConfiguration,
+    HostIpDetection(String),
 }
 
 impl From<DockerError> for BootstrapError {
@@ -346,6 +424,12 @@ impl From<DockerError> for BootstrapError {
 impl From<DbError> for BootstrapError {
     fn from(e: DbError) -> Self {
         BootstrapError::Db(e)
+    }
+}
+
+impl From<tls::TlsError> for BootstrapError {
+    fn from(e: tls::TlsError) -> Self {
+        BootstrapError::Tls(e)
     }
 }
 
@@ -362,6 +446,26 @@ impl std::fmt::Display for BootstrapError {
                 )
             }
             BootstrapError::ConfigWrite(msg) => write!(f, "failed to write CoreDNS config: {msg}"),
+            BootstrapError::ConfigRead(msg) => write!(f, "failed to read Platform config: {msg}"),
+            BootstrapError::Tls(_) => write!(f, "failed to prepare HTTPS"),
+            BootstrapError::DnsSuffixMismatch {
+                requested,
+                configured,
+            } => write!(
+                f,
+                "Platform already uses DNS Suffix '{configured}', not '{requested}'; retry with '--dns {configured}' or run 'self-host reset'"
+            ),
+            BootstrapError::ConfigurationMismatch(msg) => write!(
+                f,
+                "Platform configuration does not match persisted state: {msg}; run 'self-host reset' to rebuild it"
+            ),
+            BootstrapError::ExistingConfiguration => write!(
+                f,
+                "Platform configuration exists but its state store is unavailable; start the existing Platform or run 'self-host reset'"
+            ),
+            BootstrapError::HostIpDetection(msg) => {
+                write!(f, "failed to detect the Host LAN address: {msg}")
+            }
         }
     }
 }
@@ -371,6 +475,7 @@ impl std::error::Error for BootstrapError {
         match self {
             BootstrapError::Docker(e) => Some(e),
             BootstrapError::Db(e) => Some(e),
+            BootstrapError::Tls(e) => Some(e),
             _ => None,
         }
     }
@@ -383,7 +488,7 @@ mod tests {
 
     #[test]
     fn every_infra_container_is_named_as_platform_infra() {
-        for container in infra_containers() {
+        for container in infra_containers("192.168.1.10") {
             assert!(
                 container.name.starts_with(SYSTEM_PREFIX),
                 "{} does not say it belongs to the Platform",
@@ -394,8 +499,10 @@ mod tests {
 
     #[test]
     fn system_containers_names_every_infra_container() {
-        let infra: std::collections::HashSet<String> =
-            infra_containers().into_iter().map(|c| c.name).collect();
+        let infra: std::collections::HashSet<String> = infra_containers("192.168.1.10")
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
 
         for (role, _) in SYSTEM_CONTAINERS {
             assert!(
@@ -407,7 +514,7 @@ mod tests {
 
     #[test]
     fn only_the_proxy_reaches_across_to_the_applications() {
-        for container in infra_containers() {
+        for container in infra_containers("192.168.1.10") {
             let on_app_network = container.networks.iter().any(|n| n == APP_NETWORK);
 
             // An Application shares a bridge with the proxy that serves it and
@@ -426,6 +533,45 @@ mod tests {
     }
 
     #[test]
+    fn proxy_can_reach_the_operator_api_on_linux() {
+        let proxy = infra_containers("192.168.1.10")
+            .into_iter()
+            .find(|container| container.name == apps::system_container_name(TRAEFIK_ROLE))
+            .unwrap();
+
+        assert_eq!(proxy.extra_hosts, ["host.docker.internal:host-gateway"]);
+        assert!(
+            proxy
+                .volumes
+                .iter()
+                .all(|volume| !volume.contains("ca-key"))
+        );
+    }
+
+    #[test]
+    fn dns_only_binds_the_host_lan_address() {
+        let dns = infra_containers("192.168.1.10")
+            .into_iter()
+            .find(|container| container.name == apps::system_container_name(COREDNS_ROLE))
+            .unwrap();
+
+        assert_eq!(
+            dns.ports,
+            ["192.168.1.10:53:53/tcp", "192.168.1.10:53:53/udp"]
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_rejects_a_different_dns_suffix_before_writes() {
+        let store = crate::db::FakeStateStore::new();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+
+        let error = preflight_initialized(&store, "test.lan").await.unwrap_err();
+
+        assert!(matches!(error, BootstrapError::DnsSuffixMismatch { .. }));
+    }
+
+    #[test]
     fn generate_coredns_config_creates_valid_template() {
         let config = generate_coredns_config("home.lan", "192.168.1.100");
 
@@ -433,6 +579,8 @@ mod tests {
         assert!(config.contains("template IN A {"));
         assert!(config.contains("match .*\\.home\\.lan\\.$"));
         assert!(config.contains("answer \"{{ .Name }} 60 IN A 192.168.1.100\""));
+        assert!(config.contains("template ANY ANY"));
+        assert!(config.contains("rcode NOERROR"));
         assert!(config.contains("forward . 8.8.8.8 8.8.4.4"));
     }
 
