@@ -40,6 +40,8 @@ struct ComposeService {
     labels: Option<indexmap::IndexMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     networks: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_hosts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -66,6 +68,7 @@ pub struct ComposeServiceConfig {
     pub cmd: Vec<String>,
     pub labels: Vec<(String, String)>,
     pub networks: Vec<String>,
+    pub extra_hosts: Vec<String>,
 }
 
 fn render_compose(config: &ComposeConfig) -> Result<String, ComposeError> {
@@ -107,6 +110,9 @@ fn render_compose(config: &ComposeConfig) -> Result<String, ComposeError> {
         }
         if !svc.networks.is_empty() {
             service.networks = Some(svc.networks.clone());
+        }
+        if !svc.extra_hosts.is_empty() {
+            service.extra_hosts = Some(svc.extra_hosts.clone());
         }
 
         services.insert(svc.name.clone(), service);
@@ -296,6 +302,7 @@ mod tests {
             cmd: vec![],
             labels: vec![],
             networks: networks.iter().map(|n| n.to_string()).collect(),
+            extra_hosts: vec![],
         }
     }
 
@@ -311,5 +318,19 @@ mod tests {
         // <project>-sf-system-db-1, and `docker ps` would stop matching the
         // name the Platform uses everywhere else.
         assert!(yaml.contains("container_name: sf-system-db"), "{yaml}");
+    }
+
+    #[test]
+    fn renders_the_linux_host_gateway_mapping() {
+        let mut proxy = service("sf-system-proxy", &["sf-system"]);
+        proxy.extra_hosts = vec!["host.docker.internal:host-gateway".into()];
+
+        let yaml = render_compose(&ComposeConfig {
+            services: vec![proxy],
+            networks: vec!["sf-system".into()],
+        })
+        .unwrap();
+
+        assert!(yaml.contains("host.docker.internal:host-gateway"), "{yaml}");
     }
 }
