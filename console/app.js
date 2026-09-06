@@ -27,6 +27,7 @@ let creating = false;
 let logAbort = null;
 let pendingPoll = null;
 let detailSignature = null;
+let historyReady = false;
 
 async function init() {
   await loadBootstrap();
@@ -36,8 +37,42 @@ async function init() {
   document.getElementById('deploy-btn').addEventListener('click', showNewApp);
   document.getElementById('empty-deploy').addEventListener('click', showNewApp);
   document.querySelector('[data-home]').addEventListener('click', showDashboard);
-  document.querySelector('[data-platform]').addEventListener('click', showPlatform);
+  document.getElementById('service-search').addEventListener('input', renderDashboard);
+  document.getElementById('show-platform').addEventListener('change', renderDashboard);
+  document.getElementById('clear-filters').addEventListener('click', () => {
+    document.getElementById('service-search').value = '';
+    document.getElementById('show-platform').checked = false;
+    renderDashboard();
+    document.getElementById('service-search').focus();
+  });
   document.getElementById('health-link').addEventListener('click', showPlatform);
+  historyReady = true;
+  restoreView();
+  window.addEventListener('popstate', restoreView);
+}
+
+function rememberView(view, id = null) {
+  if (!historyReady) return;
+  const state = { view, id };
+  if (!history.state) {
+    history.replaceState(state, '');
+  } else if (history.state.view !== view || history.state.id !== id) {
+    history.pushState(state, '');
+  }
+}
+
+function restoreView() {
+  const state = history.state;
+  if (state?.view === 'app' && apps.some(a => a.id === state.id)) {
+    selectApp(state.id);
+  } else if (state?.view === 'system' && system.some(c => c.role === state.id)) {
+    selectSystem(state.id);
+  } else if (state?.view === 'new') {
+    showNewApp();
+  } else {
+    history.replaceState({ view: 'overview', id: null }, '');
+    showDashboard();
+  }
 }
 
 async function loadBootstrap() {
@@ -70,9 +105,10 @@ async function loadApps() {
 async function loadSystem() {
   try {
     const res = await fetch('/system', { headers: authHeaders() });
-    if (!res.ok) { system = []; return; }
+    if (!res.ok) { system = []; renderDashboard(); return; }
     system = await res.json();
   } catch { system = []; }
+  renderDashboard();
 }
 
 /* A deploy is accepted before Docker starts pulling, so the row arrives as
@@ -172,8 +208,6 @@ function redraw() {
   } else if (selectedSystem || creating) {
     // The Platform detail is read-only and the new-application form is
     // being typed into; neither wants redrawing on a poll.
-  } else if (!document.getElementById('platform').classList.contains('hidden')) {
-    showPlatform();
   } else {
     showDashboard();
   }
@@ -217,12 +251,16 @@ function statusBadge(status) {
 }
 
 function renderDashboard() {
-  const empty = apps.length === 0;
+  const showPlatform = document.getElementById('show-platform').checked;
+  const query = document.getElementById('service-search').value.trim().toLowerCase();
+  const services = [...apps, ...(showPlatform ? system : [])];
+  const visible = services.filter(a => a.name.toLowerCase().includes(query));
+  const empty = services.length === 0 && !query;
   document.getElementById('dashboard-empty').classList.toggle('hidden', !empty);
   document.getElementById('dashboard-content').classList.toggle('hidden', empty);
 
   const suffix = document.getElementById('dns-suffix').textContent;
-  document.getElementById('dashboard-subtitle').textContent = empty
+  document.getElementById('dashboard-subtitle').textContent = apps.length === 0
     ? 'Nothing deployed on ' + suffix + ' yet.'
     : apps.length + (apps.length === 1 ? ' application on ' : ' applications on ') + suffix;
 
@@ -238,22 +276,23 @@ function renderDashboard() {
   `;
 
   const rows = document.getElementById('app-rows');
-  rows.innerHTML = apps.map(a => `
-    <tr data-id="${esc(a.id)}" tabindex="0" role="button" aria-label="Open ${esc(a.name)}">
-      <td>${esc(a.name)}</td>
-      <td class="mono">${esc(a.hostname)}${(a.aliases || []).length ? `<span class="t-metadata muted"> +${(a.aliases || []).length}</span>` : ''}</td>
+  rows.innerHTML = visible.map(a => `
+    <tr ${a.role ? `data-role="${esc(a.role)}"` : `data-id="${esc(a.id)}"`} tabindex="0" role="button" aria-label="Open ${esc(a.name)}">
+      <td>${esc(a.name)}${a.role ? ' <span class="badge badge-neutral">Platform</span>' : ''}</td>
+      <td class="mono">${a.role ? '<span class="muted">—</span>' : esc(a.hostname)}${(a.aliases || []).length ? `<span class="t-metadata muted"> +${(a.aliases || []).length}</span>` : ''}</td>
       <td class="mono">${esc(a.image)}</td>
       <td><span class="badge ${statusBadge(a.status)}"><span class="dot" aria-hidden="true"></span>${esc(a.status)}</span></td>
-      <td class="num">${a.restarts === undefined ? '<span class="muted">—</span>' : a.restarts}</td>
+      <td class="num">${a.restarts === null || a.restarts === undefined ? '<span class="muted">—</span>' : a.restarts}</td>
     </tr>
-  `).join('');
+  `).join('') || '<tr><td colspan="5" class="muted">No services match your filters.</td></tr>';
 
   document.getElementById('app-count').textContent =
-    apps.length + (apps.length === 1 ? ' application' : ' applications');
-  rows.querySelectorAll('tr[data-id]').forEach(tr => {
-    tr.addEventListener('click', () => selectApp(tr.dataset.id));
+    visible.length + ' of ' + services.length + (showPlatform ? ' services' : ' applications');
+  rows.querySelectorAll('tr[data-id], tr[data-role]').forEach(tr => {
+    const open = () => tr.dataset.role ? selectSystem(tr.dataset.role) : selectApp(tr.dataset.id);
+    tr.addEventListener('click', open);
     tr.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectApp(tr.dataset.id); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
     });
   });
 }
@@ -263,6 +302,7 @@ function setCrumb(label) {
 }
 
 function showDashboard() {
+  rememberView('overview');
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
   selectedSystem = null;
@@ -270,53 +310,18 @@ function showDashboard() {
   detailSignature = null;
   setCrumb('Overview');
   document.querySelector('[data-home]').setAttribute('aria-current', 'page');
-  document.querySelector('[data-platform]').removeAttribute('aria-current');
   document.getElementById('dashboard').classList.remove('hidden');
-  document.getElementById('platform').classList.add('hidden');
   document.getElementById('detail').classList.add('hidden');
   document.querySelectorAll('#sidebar [data-id]').forEach(el => {
     el.removeAttribute('aria-current');
-  });
-}
-
-function renderPlatform() {
-  const rows = document.getElementById('system-rows');
-  if (!rows) return;
-  rows.innerHTML = system.map(c => `
-    <tr data-role="${esc(c.role)}" tabindex="0" role="button" aria-label="Open ${esc(c.role)}">
-      <td class="mono">${esc(c.role)}</td>
-      <td class="mono">${esc(c.name)}</td>
-      <td class="mono">${esc(c.image)}</td>
-      <td><span class="badge ${statusBadge(c.status)}"><span class="dot" aria-hidden="true"></span>${esc(c.status)}</span></td>
-      <td class="num">${c.restarts === null || c.restarts === undefined ? '<span class="muted">—</span>' : c.restarts}</td>
-    </tr>
-  `).join('');
-  document.getElementById('system-count').textContent =
-    system.length + (system.length === 1 ? ' Platform Infra component' : ' Platform Infra components');
-  rows.querySelectorAll('tr[data-role]').forEach(tr => {
-    tr.addEventListener('click', () => selectSystem(tr.dataset.role));
-    tr.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectSystem(tr.dataset.role); }
-    });
   });
 }
 
 function showPlatform() {
-  if (logAbort) { logAbort.abort(); logAbort = null; }
-  selected = null;
-  selectedSystem = null;
-  creating = false;
-  detailSignature = null;
-  setCrumb('Platform');
-  document.querySelector('[data-platform]').setAttribute('aria-current', 'page');
-  document.querySelector('[data-home]').removeAttribute('aria-current');
-  document.getElementById('platform').classList.remove('hidden');
-  document.getElementById('dashboard').classList.add('hidden');
-  document.getElementById('detail').classList.add('hidden');
-  document.querySelectorAll('#sidebar [data-id]').forEach(el => {
-    el.removeAttribute('aria-current');
-  });
-  renderPlatform();
+  document.getElementById('show-platform').checked = true;
+  document.getElementById('service-search').value = '';
+  renderDashboard();
+  showDashboard();
 }
 
 /* The Platform Infra detail is the read-only twin of the Application detail:
@@ -325,16 +330,15 @@ function showPlatform() {
 function selectSystem(role) {
   const c = system.find(x => x.role === role);
   if (!c) return;
+  rememberView('system', role);
   selected = null;
   selectedSystem = role;
   creating = false;
   detailSignature = null;
 
   setCrumb('Platform');
-  document.querySelector('[data-platform]').setAttribute('aria-current', 'page');
   document.querySelector('[data-home]').removeAttribute('aria-current');
   document.getElementById('dashboard').classList.add('hidden');
-  document.getElementById('platform').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
   document.querySelectorAll('#sidebar [data-id]').forEach(el => {
     el.removeAttribute('aria-current');
@@ -380,6 +384,7 @@ function selectSystem(role) {
 function selectApp(id) {
   const app = apps.find(a => a.id === id);
   if (!app) return;
+  rememberView('app', id);
   selected = id;
   selectedSystem = null;
   creating = false;
@@ -392,15 +397,12 @@ function selectApp(id) {
 
   setCrumb(app.name);
   document.querySelector('[data-home]').removeAttribute('aria-current');
-  document.querySelector('[data-platform]').removeAttribute('aria-current');
   document.getElementById('dashboard').classList.add('hidden');
-  document.getElementById('platform').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 
   // The whole detail is one page: the identity is the page header, and the
   // split below it is only the two panes. Putting the header inside the
   // config pane made the title half a window wide and scroll with the form.
-  const compose = isCompose(app);
   const canStop = app.status === 'running' || app.status === 'failed';
   const canStart = app.status === 'stopped' || app.status === 'failed';
 
@@ -450,11 +452,14 @@ function selectApp(id) {
   // keeps a redeploy honest — it replaces the container, and output from the
   // previous one must not keep scrolling past.
   document.getElementById('logs-panel').innerHTML = `
-    <p class="t-caps">Logs from sf-app-${esc(app.id)}${compose ? '-*' : ''}</p>
+    <div class="field">
+      <label for="log-container">Logs from container</label>
+      <select class="select mono" id="log-container" disabled><option>Loading…</option></select>
+    </div>
     <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite" tabindex="0" aria-label="Logs"></div></div>
   `;
 
-  startLogStream(app.id);
+  loadAppLogs(app.id);
 }
 
 /* Every container of the Application and what Docker says about it. For a
@@ -502,8 +507,34 @@ async function lifecycle(app, verb) {
 }
 
 // ── Log streaming (fetch + ReadableStream) ──────────────────────
-async function startLogStream(id) {
-  await openLogStream('/apps/id/' + encodeURIComponent(id) + '/logs');
+async function loadAppLogs(id) {
+  if (logAbort) { logAbort.abort(); logAbort = null; }
+  const selector = document.getElementById('log-container');
+  const content = document.getElementById('logs-content');
+  try {
+    const res = await fetch('/apps/id/' + encodeURIComponent(id) + '/containers', { headers: authHeaders() });
+    if (!res.ok) throw new Error('Could not load containers.');
+    const containers = await res.json();
+    if (document.getElementById('log-container') !== selector) return;
+    selector.innerHTML = containers.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    selector.disabled = containers.length < 2;
+    const open = () => {
+      openLogStream('/apps/id/' + encodeURIComponent(id) + '/logs?container=' + encodeURIComponent(selector.value));
+    };
+    selector.addEventListener('change', open);
+    if (containers.length) open();
+    else content.textContent = 'No containers available.';
+    if (containers.length === 1) {
+      const heading = document.createElement('p');
+      heading.className = 't-caps';
+      heading.textContent = 'Logs from ' + containers[0];
+      selector.parentElement.replaceWith(heading);
+    }
+  } catch {
+    if (document.getElementById('log-container') !== selector) return;
+    selector.innerHTML = '<option>Unavailable</option>';
+    content.textContent = 'Could not load containers. Reopen the application to retry.';
+  }
 }
 
 async function startSystemLogStream(role) {
@@ -906,6 +937,7 @@ function showFormFailure(failure, aliases) {
 
 // ── New application ─────────────────────────────────────────────
 function showNewApp() {
+  rememberView('new');
   if (logAbort) { logAbort.abort(); logAbort = null; }
   selected = null;
   selectedSystem = null;
@@ -914,10 +946,8 @@ function showNewApp() {
 
   setCrumb('New application');
   document.querySelector('[data-home]').removeAttribute('aria-current');
-  document.querySelector('[data-platform]').removeAttribute('aria-current');
   document.querySelectorAll('#sidebar [data-id]').forEach(el => el.removeAttribute('aria-current'));
   document.getElementById('dashboard').classList.add('hidden');
-  document.getElementById('platform').classList.add('hidden');
   document.getElementById('detail').classList.remove('hidden');
 
   document.getElementById('detail').innerHTML = `

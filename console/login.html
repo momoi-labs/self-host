@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>homelab — login</title>
+  <title>self-host — login</title>
   <link rel="stylesheet" href="/console/tokens.css">
   <link rel="stylesheet" href="/console/ui.css">
   <link rel="stylesheet" href="/console/console.css">
@@ -18,9 +18,9 @@
   <section class="auth-panel stack" aria-labelledby="login-title">
     <div class="between">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">H</span>
+        <span class="brand-mark" aria-hidden="true">S</span>
         <div>
-          <h1 class="t-h2" id="login-title">homelab</h1>
+          <h1 class="t-h2" id="login-title">self-host</h1>
           <p class="muted t-label">Unlock the operator console</p>
         </div>
       </div>
@@ -52,7 +52,7 @@
       const response = await fetch('/health', { headers: { Authorization: 'Bearer ' + key } });
       if (!response.ok) throw new Error('That API key was not accepted. Check it and try again.');
       sessionStorage.setItem('api_key', key);
-      window.location.href = '/console/';
+      window.location.replace('/console/');
     } catch (cause) {
       document.getElementById('error-body').textContent =
         cause.message || 'Could not reach the host. Check the connection and try again.';

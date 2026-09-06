@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>homelab console</title>
+  <title>self-host console</title>
   <link rel="stylesheet" href="/console/tokens.css">
   <link rel="stylesheet" href="/console/ui.css">
   <link rel="stylesheet" href="/console/console.css">
@@ -26,9 +26,9 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">H</span>
+        <span class="brand-mark" aria-hidden="true">S</span>
         <div class="grow truncate">
-          <div class="t-label">homelab</div>
+          <div class="t-label">self-host</div>
           <div class="t-metadata muted mono" id="dns-suffix">…</div>
         </div>
       </div>
@@ -41,9 +41,6 @@
       <div class="nav-group">
         <button type="button" class="nav-item" data-home>
           <svg class="icon icon-sm" aria-hidden="true"><use href="#i-chart"/></svg>Overview
-        </button>
-        <button type="button" class="nav-item" data-platform>
-          <svg class="icon icon-sm" aria-hidden="true"><use href="#i-box"/></svg>Platform
         </button>
       </div>
       <nav class="nav-group" id="sidebar" aria-label="Applications">
@@ -81,6 +78,12 @@
         <p class="muted t-label" id="dashboard-subtitle"></p>
       </div>
 
+      <div class="dashboard-filters">
+        <input class="input" type="search" id="service-search" aria-label="Search by name" placeholder="Search by name…">
+        <label class="check"><input type="checkbox" id="show-platform">Show platform services</label>
+        <button type="button" class="btn btn-ghost btn-sm" id="clear-filters">Clear filters</button>
+      </div>
+
       <div id="dashboard-empty" class="card hidden">
         <div class="empty hatch">
           <span class="empty-icon" aria-hidden="true"><svg class="icon icon-lg"><use href="#i-box"/></svg></span>
@@ -98,31 +101,13 @@
           <div class="table-scroll">
             <table class="table">
               <thead>
-                <tr><th scope="col">Application</th><th scope="col">Hostname</th><th scope="col">Image</th><th scope="col">Status</th><th scope="col" class="num">Restarts</th></tr>
+                <tr><th scope="col">Name</th><th scope="col">Hostname</th><th scope="col">Image</th><th scope="col">Status</th><th scope="col" class="num">Restarts</th></tr>
               </thead>
               <tbody id="app-rows"></tbody>
             </table>
           </div>
           <p class="table-footer" id="app-count"></p>
         </div>
-      </div>
-    </section>
-
-    <section id="platform" class="page hidden" aria-labelledby="platform-title">
-      <div class="page-header">
-        <h1 class="t-h1" id="platform-title">Platform</h1>
-        <p class="muted t-label">Platform Infra the Platform runs for itself, not Applications.</p>
-      </div>
-      <div class="table-wrap">
-        <div class="table-scroll">
-          <table class="table">
-            <thead>
-              <tr><th scope="col">Role</th><th scope="col">Container</th><th scope="col">Image</th><th scope="col">Status</th><th scope="col" class="num">Restarts</th></tr>
-            </thead>
-            <tbody id="system-rows"></tbody>
-          </table>
-        </div>
-        <p class="table-footer" id="system-count"></p>
       </div>
     </section>
 
