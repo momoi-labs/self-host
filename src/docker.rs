@@ -203,6 +203,9 @@ pub trait DockerRuntime: Send + Sync {
     async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError>;
     async fn commit(&self) -> Result<(), DockerError>;
     async fn container_running(&self, name: &str) -> Result<bool, DockerError>;
+    /// Sorted names owned by the Application, or its legacy name when no labels match.
+    /// Always returns at least one name; a name does not imply a running container.
+    async fn application_containers(&self, id: &str) -> Result<Vec<String>, DockerError>;
     /// How many times the runtime restarted the container. `None` when there
     /// is no container to ask about.
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError>;
@@ -347,6 +350,36 @@ impl DockerRuntime for ComposeDocker {
         // A container that is not there at all makes `inspect` exit non-zero,
         // which is an answer, not an error.
         Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
+    }
+
+    async fn application_containers(&self, id: &str) -> Result<Vec<String>, DockerError> {
+        let output = std::process::Command::new("docker")
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("label=sf.app.id={id}"),
+                "--format",
+                "{{.Names}}",
+            ])
+            .output()
+            .map_err(|e| DockerError::spawn("failed to list Application containers", e))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(
+                "failed to list Application containers",
+                &output,
+            ));
+        }
+        let mut names: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        // Older Applications predate identity labels.
+        if names.is_empty() {
+            names.push(crate::apps::container_name_for(id));
+        }
+        Ok(names)
     }
 
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
@@ -519,6 +552,7 @@ impl DockerRuntime for ComposeDocker {
 
             loop {
                 tokio::select! {
+                    _ = tx.closed() => break,
                     result = stdout_lines.next_line() => {
                         match result {
                             Ok(Some(line)) => {
@@ -738,6 +772,7 @@ fn spawn_log_stream(program: &str, args: Vec<String>) -> mpsc::Receiver<String> 
 
         while stdout_open || stderr_open {
             tokio::select! {
+                _ = tx.closed() => break,
                 result = stdout_lines.next_line(), if stdout_open => {
                     match result {
                         Ok(Some(line)) => {
@@ -896,6 +931,29 @@ impl DockerRuntime for FakeDocker {
             || self.infra.lock().unwrap().iter().any(|c| c.name == name))
     }
 
+    async fn application_containers(&self, id: &str) -> Result<Vec<String>, DockerError> {
+        let mut names: Vec<String> = self
+            .apps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|app| {
+                app.labels
+                    .iter()
+                    .any(|(key, value)| key == "sf.app.id" && value == id)
+            })
+            .map(|app| app.name.clone())
+            .collect();
+        if let Some(project) = self.project(&crate::apps::container_name_for(id)) {
+            names.extend(project.containers.iter().map(|(_, name)| name.clone()));
+        }
+        names.sort();
+        if names.is_empty() {
+            names.push(crate::apps::container_name_for(id));
+        }
+        Ok(names)
+    }
+
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
         let running = self.apps.lock().unwrap().iter().any(|a| a.name == name)
             || self.infra.lock().unwrap().iter().any(|c| c.name == name);
@@ -943,10 +1001,10 @@ impl DockerRuntime for FakeDocker {
 
     async fn stream_logs(
         &self,
-        _container_name: &str,
+        container_name: &str,
     ) -> Result<mpsc::Receiver<String>, DockerError> {
         let (tx, rx) = mpsc::channel::<String>(8);
-        let _ = tx.try_send("[fake] log line 1".into());
+        let _ = tx.try_send(format!("[fake] log line 1 from {container_name}"));
         let _ = tx.try_send("[fake] log line 2".into());
         let _ = tx.try_send("[fake] log line 3".into());
         Ok(rx)
@@ -1066,6 +1124,10 @@ where
 
     async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
         (**self).container_running(name).await
+    }
+
+    async fn application_containers(&self, id: &str) -> Result<Vec<String>, DockerError> {
+        (**self).application_containers(id).await
     }
 
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {

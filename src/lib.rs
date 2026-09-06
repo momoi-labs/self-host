@@ -65,6 +65,7 @@ pub fn build_app<S: StateStore>(
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
         .route("/apps/id/{id}/logs", get(stream_logs_by_id::<S>))
+        .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
         .route("/system", get(list_system::<S>))
@@ -742,23 +743,44 @@ fn env_error_response(err: apps::EnvError) -> Response {
     error_response(status, &err)
 }
 
+async fn list_app_containers<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match state.store.get_application(&id).await {
+        Ok(Some(_)) => match state.docker.application_containers(&id).await {
+            Ok(names) => Json(names).into_response(),
+            Err(err) => logs_error_response(&apps::LogsError::Docker(err)),
+        },
+        Ok(None) => logs_error_response(&apps::LogsError::NotFound(id)),
+        Err(err) => logs_error_response(&apps::LogsError::Db(err)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct LogQuery {
+    container: Option<String>,
+}
+
 /// The CLI still addresses logs by name; the console addresses them by id.
 async fn stream_logs<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<LogQuery>,
 ) -> Response {
     let Ok(Some(app)) = state.store.find_application_by_name(&name).await else {
         return logs_error_response(&apps::LogsError::NotFound(name));
     };
-    stream_logs_for(state, app).await
+    stream_logs_for(state, app, query.container).await
 }
 
 async fn stream_logs_by_id<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<LogQuery>,
 ) -> Response {
     match state.store.get_application(&id).await {
-        Ok(Some(app)) => stream_logs_for(state, app).await,
+        Ok(Some(app)) => stream_logs_for(state, app, query.container).await,
         Ok(None) => logs_error_response(&apps::LogsError::NotFound(id)),
         Err(err) => logs_error_response(&apps::LogsError::Db(err)),
     }
@@ -770,24 +792,38 @@ async fn stream_logs_by_id<S: StateStore>(
 async fn stream_logs_for<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     app: apps::ApplicationRecord,
+    container: Option<String>,
 ) -> Response {
-    if let Some(message) = nothing_to_stream(&state, &app).await {
+    let containers = match state.docker.application_containers(&app.id).await {
+        Ok(names) => names,
+        Err(err) => return logs_error_response(&apps::LogsError::Docker(err)),
+    };
+    let requested_container = container.is_some();
+    let container_name = container.unwrap_or_else(|| containers[0].clone());
+    if !containers.contains(&container_name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorReport::plain(
+                "container does not belong to this Application",
+            )),
+        )
+            .into_response();
+    }
+
+    if let Some(message) = nothing_to_stream(&state, &app, &container_name).await {
         let stream = tokio_stream::once(Ok::<_, std::convert::Infallible>(
             sse::Event::default().event("notice").data(message),
         ));
         return sse::Sse::new(stream).into_response();
     }
 
-    let logs = if app.source == apps::SOURCE_COMPOSE {
+    let logs = if app.source == apps::SOURCE_COMPOSE && !requested_container {
         match apps::project_for(&state.store, &app).await {
             Ok(project) => state.docker.stream_compose_logs(&project).await,
             Err(err) => return deploy_error_response(err),
         }
     } else {
-        state
-            .docker
-            .stream_logs(&apps::container_name_for(&app.id))
-            .await
+        state.docker.stream_logs(&container_name).await
     };
 
     match logs {
@@ -817,16 +853,14 @@ async fn stream_logs_for<S: StateStore>(
 async fn nothing_to_stream<S: StateStore>(
     state: &AppState<S>,
     app: &apps::ApplicationRecord,
+    container_name: &str,
 ) -> Option<String> {
     if app.status == apps::STATUS_PENDING {
         return Some(
             "This application is deploying; logs will appear once the container starts.".into(),
         );
     }
-
-    let services = apps::service_states(state.docker.as_ref(), app).await;
-    let any_container = services.iter().any(|s| s.state != "missing");
-    if any_container {
+    if !matches!(state.docker.container_state(container_name).await, Ok(None)) {
         return None;
     }
 
@@ -1401,6 +1435,80 @@ mod tests {
         assert!(text.contains("[fake] log line 1"));
         assert!(text.contains("[fake] log line 3"));
         assert!(!text.contains("event: notice"));
+    }
+
+    #[tokio::test]
+    async fn logs_by_id_finds_a_compose_service_by_application_identity() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        let record = apps::ApplicationRecord {
+            id: "compose-app".into(),
+            name: "hermes".into(),
+            hostname: "hermes.home.lan".into(),
+            aliases: vec![],
+            image: "hermes:latest".into(),
+            status: apps::STATUS_RUNNING.into(),
+            source: "image".into(),
+            last_error: None,
+            compose: None,
+            web_service: None,
+            web_port: None,
+        };
+        store.insert_application(&record).await.unwrap();
+        let docker = FakeDocker::new();
+        docker
+            .apps
+            .lock()
+            .unwrap()
+            .push(crate::docker::ApplicationContainer {
+                name: "sf-app-compose-app-hermes".into(),
+                image: record.image.clone(),
+                labels: apps::identity_labels(&record.id, &record.name),
+                network: crate::docker::APP_NETWORK.into(),
+                ports: vec![],
+                env: vec![],
+            });
+        {
+            let mut containers = docker.apps.lock().unwrap();
+            let mut worker = containers[0].clone();
+            worker.name = "sf-app-compose-app-worker".into();
+            containers.push(worker);
+            let mut other = containers[0].clone();
+            other.name = "sf-app-other-hermes".into();
+            other.labels = apps::identity_labels("other", "other");
+            containers.push(other);
+        }
+        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
+        let response = send(&app, "/apps/id/compose-app/containers", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Vec<String>>(&body).unwrap(),
+            ["sf-app-compose-app-hermes", "sf-app-compose-app-worker"]
+        );
+        let response = send(
+            &app,
+            "/apps/id/compose-app/logs?container=sf-app-compose-app-worker",
+            Some("test-key"),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("from sf-app-compose-app-worker"));
+        for container in ["sf-app-other-hermes", "sf-system-db"] {
+            let response = send(
+                &app,
+                &format!("/apps/id/compose-app/logs?container={container}"),
+                Some("test-key"),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let response = send(&app, "/apps/id/compose-app/logs", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("[fake] log line 1"), "{text}");
+        assert!(!text.contains("not running"), "{text}");
     }
 
     #[tokio::test]
