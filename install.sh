@@ -147,13 +147,15 @@ bootstrap_macos() {
 
 	configure_resolver
 
+	trust_ca
+
 	install_platform_daemon "$operator" "$home"
 
 	echo
 	echo "=== Done ==="
 	echo
 	echo "The Platform is supervised by launchd and starts at boot without a login."
-	echo "  Console:   https://admin.${DNS_SUFFIX}"
+	echo "  Console:   https://admin.${DNS_SUFFIX} (this Host already trusts the CA)"
 	echo "  Logs:      $home/Library/Logs/self-host/"
 	echo "  Status:    sudo launchctl print system/${PLATFORM_LABEL}"
 	echo
@@ -342,6 +344,15 @@ host_ip() {
 		ipconfig getifaddr "$iface" 2>/dev/null && return
 	fi
 	echo "127.0.0.1"
+}
+
+# The Platform serves the console and every Application over HTTPS, signed by
+# the CA that `init` created. Trusting it here is what makes the Host's own
+# browser open https://admin.<suffix> without a warning; Consumers trust it
+# with `self-host trust-ca --from ... --fingerprint ...`.
+trust_ca() {
+	echo "trusting the Platform CA on this Host (requires sudo)..."
+	"$INSTALL_DIR/$BINARY" trust-ca
 }
 
 # The Platform itself, supervised by launchd as the Operator's user so that

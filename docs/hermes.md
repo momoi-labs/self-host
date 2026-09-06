@@ -72,9 +72,15 @@ Open `https://hermes.<suffix>` from any machine whose DNS points at the
 Host. The browser asks for the dashboard username and password, then shows
 the chat. The second Consumer does the same from their own browser.
 
-The Platform's certificate is signed by its own CA. Trust
-`~/.config/self-host/certs/ca.pem` on each Consumer machine, or accept the
-browser warning once.
+The Platform's certificate is signed by its own CA. Each Consumer trusts it
+once, using the fingerprint `self-host init` printed on the Host:
+
+```sh
+self-host trust-ca --from admin.<suffix> --fingerprint <sha256>
+```
+
+Accepting the browser warning instead works for a look, but not for a
+Consumer who will use the chat every day.
 
 ## Where the data is
 

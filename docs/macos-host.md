@@ -58,7 +58,11 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
 5. Runs `self-host init`, which brings up the Platform Infra and detects the
    LAN address. `SELF_HOST_IP` overrides the detection.
 6. Writes `/etc/resolver/<suffix>` so the Mac resolves its own Hostnames.
-7. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
+7. Runs `self-host trust-ca`, so the Host's own browser opens
+   `https://admin.<suffix>` without a warning. Each Consumer trusts the same
+   CA once with `self-host trust-ca --from admin.<suffix> --fingerprint <sha256>`,
+   using the fingerprint `self-host init` printed.
+8. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
    `self-host serve`, as the Operator's user, at boot, kept alive. The daemon
    waits for Docker, brings the Infra up if it is not, waits for PostgreSQL,
    then serves. It never gives up on a dependency; it logs once a minute
