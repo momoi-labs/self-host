@@ -7,7 +7,7 @@
 .auth-shell { display: grid; min-height: 100vh; place-items: center; padding: var(--spacing-xl); }
 .auth-panel { width: 100%; max-width: 400px; }
 
-/* The health indicator doubles as the way to the Platform screen. */
+/* The health indicator doubles as the way to show platform services. */
 .health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); background: transparent; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
 .health-link:hover { text-decoration: underline; }
 
@@ -33,17 +33,23 @@
    also hold something full-bleed. The log pane is one element tall, so it
    fills rather than scrolls twice. */
 .split > .pane { padding: var(--spacing-lg); }
-.split > .pane.pane-logs { display: grid; grid-template-rows: auto 1fr; gap: var(--spacing-sm); overflow: hidden; }
-.pane-logs .logview { min-height: 0; }
+.split > .pane.pane-logs { display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 0; overflow: hidden; }
+.pane-logs > :first-child { padding: var(--spacing-lg); }
+.pane-logs .logview { min-height: 0; border: 0; border-radius: 0; padding: 0; --corner-mark: 0; }
+.pane-logs .log-scroll { padding: var(--spacing-lg); }
 
 /* The application detail. The form pane opens at a readable measure instead
    of at half the window: half of a wide screen is more form than the fields
    need, and the log pane is the one that actually wants the extra room. The
-   panes bleed to the card's edge, so the card has to clip them. */
-.detail-panel { overflow: hidden; }
-.detail-panel .split { height: min(60vh, 560px); }
-.detail-panel .split > .pane:first-child { flex: 0 0 clamp(320px, 42%, 560px); }
-.detail-panel .split > .pane-logs { flex: 1; }
+   split clips the panes while the outer card keeps its corner marks visible. */
+.app-shell > main { display: flex; flex-direction: column; min-width: 0; }
+.topbar { flex-shrink: 0; }
+#detail:has(.detail-panel) { flex: 1; grid-template-rows: auto 1fr; align-content: stretch; }
+.detail-panel { display: grid; }
+.detail-panel .split { overflow: hidden; border-radius: inherit; }
+.detail-panel .split > .pane:first-child { flex: 0 0 clamp(320px, 42%, 560px); overflow: visible; }
+/* The form sets the height when it outgrows the screen; log output must not. */
+.detail-panel .split > .pane-logs { flex: 1; contain: size; min-height: 320px; }
 .form-actions { display: flex; justify-content: flex-end; gap: var(--spacing-sm); }
 
 /* Per-platform DNS instructions: a stack of disclosures, not a stack of
@@ -64,11 +70,8 @@
   .split { display: block; }
   .split > .pane { overflow: visible; }
   .splitter { display: none; }
-  /* Stacked, the panes size themselves. Holding the split to one screen
-     height here would divide that height between them and leave the log pane
-     a few lines tall. */
-  .detail-panel .split { height: auto; }
-  .pane-logs .logview { min-height: 40vh; }
+  /* Stacked, the form grows naturally and logs keep their own scroll area. */
+  .detail-panel .split > .pane-logs { contain: none; height: 60vh; }
 }
 
 /* The deploy dialog switches between an image and a Compose file. A Compose
@@ -90,8 +93,12 @@
 .lifecycle { display: flex; align-items: center; gap: var(--spacing-sm); }
 
 /* One row per service; the state column uses the same badge as the status. */
-.services { margin-block-start: var(--spacing-md); }
+.services { display: grid; gap: var(--spacing-md); margin-block-start: var(--spacing-md); }
 
 /* The storage summary under the Compose editor: one line per mount. */
 .storage-list { margin: 0; padding-inline-start: var(--spacing-lg); color: var(--color-muted-foreground); font-size: var(--type-size-label); }
 .storage-list li { margin-block-start: var(--spacing-xs); }
+
+.dashboard-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spacing-lg); margin-block-end: var(--spacing-lg); }
+.dashboard-filters .input { flex: 1 1 240px; min-width: 0; }
+.dashboard-filters .check { flex-shrink: 0; }
