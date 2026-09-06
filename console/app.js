@@ -97,7 +97,49 @@ function announceSettled(before) {
 }
 
 // ── Render ──────────────────────────────────────────────────────
+/* Rebuilding a list throws away the element the keyboard is standing on, and
+   focus falls back to the top of the document. While an Application is
+   deploying the list is rebuilt every two seconds, which is exactly when the
+   Operator is trying to reach it: without this, tabbing to an Application and
+   pressing Enter is a race against the poll.
+
+   Focus is remembered by what the element points at, not by the node, and
+   restored onto whatever new node means the same thing. */
+function preservingFocus(redraw) {
+  const active = document.activeElement;
+  const scope = active && active.closest
+    ? active.closest('#sidebar, #app-rows, #system-rows, #detail')
+    : null;
+  const mark = scope && {
+    scope: scope.id,
+    id: active.id || null,
+    appId: active.dataset.id || null,
+    role: active.dataset.role || null,
+    start: active.selectionStart ?? null,
+    end: active.selectionEnd ?? null,
+  };
+
+  redraw();
+
+  if (!mark) return;
+  const root = document.getElementById(mark.scope);
+  if (!root) return;
+  const back = mark.appId ? root.querySelector(`[data-id="${CSS.escape(mark.appId)}"]`)
+    : mark.role ? root.querySelector(`[data-role="${CSS.escape(mark.role)}"]`)
+    : mark.id ? document.getElementById(mark.id) : null;
+  if (!back || back === document.activeElement) return;
+  back.focus();
+  // A redrawn text field would otherwise put the caret back at the start.
+  if (mark.start !== null && back.setSelectionRange) {
+    try { back.setSelectionRange(mark.start, mark.end); } catch {}
+  }
+}
+
 function render() {
+  preservingFocus(redraw);
+}
+
+function redraw() {
   const list = document.getElementById('sidebar');
   const label = '<p class="t-caps">Applications</p>';
   if (apps.length === 0) {
@@ -197,7 +239,7 @@ function renderDashboard() {
 
   const rows = document.getElementById('app-rows');
   rows.innerHTML = apps.map(a => `
-    <tr data-id="${esc(a.id)}" tabindex="0">
+    <tr data-id="${esc(a.id)}" tabindex="0" role="button" aria-label="Open ${esc(a.name)}">
       <td>${esc(a.name)}</td>
       <td class="mono">${esc(a.hostname)}${(a.aliases || []).length ? `<span class="t-metadata muted"> +${(a.aliases || []).length}</span>` : ''}</td>
       <td class="mono">${esc(a.image)}</td>
@@ -241,7 +283,7 @@ function renderPlatform() {
   const rows = document.getElementById('system-rows');
   if (!rows) return;
   rows.innerHTML = system.map(c => `
-    <tr data-role="${esc(c.role)}" tabindex="0">
+    <tr data-role="${esc(c.role)}" tabindex="0" role="button" aria-label="Open ${esc(c.role)}">
       <td class="mono">${esc(c.role)}</td>
       <td class="mono">${esc(c.name)}</td>
       <td class="mono">${esc(c.image)}</td>
@@ -329,7 +371,7 @@ function selectSystem(role) {
 
   document.getElementById('logs-panel').innerHTML = `
     <p class="t-caps">Logs from ${esc(c.name)}</p>
-    <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite"></div></div>
+    <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite" tabindex="0" aria-label="Logs"></div></div>
   `;
 
   startSystemLogStream(role);
@@ -409,7 +451,7 @@ function selectApp(id) {
   // previous one must not keep scrolling past.
   document.getElementById('logs-panel').innerHTML = `
     <p class="t-caps">Logs from sf-app-${esc(app.id)}${compose ? '-*' : ''}</p>
-    <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite"></div></div>
+    <div class="logview"><div class="log-scroll" id="logs-content" role="log" aria-live="polite" tabindex="0" aria-label="Logs"></div></div>
   `;
 
   startLogStream(app.id);
@@ -1129,18 +1171,32 @@ function confirmRemove(app) {
       `"${app.name}" and its ${isCompose(app) ? 'containers' : 'container'} will be removed. ` +
       'Named volumes and the data directory are kept on the Host.';
 
+    // Where the keyboard was standing when the dialog opened, so answering
+    // it puts the Operator back there instead of at the top of the page.
+    const opener = document.activeElement;
+
     const close = (answer) => {
       modal.classList.add('hidden');
       accept.removeEventListener('click', onAccept);
       cancel.removeEventListener('click', onCancel);
       modal.removeEventListener('click', onBackdrop);
       document.removeEventListener('keydown', onKey);
+      if (opener && opener.isConnected) opener.focus();
       resolve(answer);
     };
     const onAccept = () => close(true);
     const onCancel = () => close(false);
     const onBackdrop = (e) => { if (e.target === modal) close(false); };
-    const onKey = (e) => { if (e.key === 'Escape') close(false); };
+
+    /* Tab stays between the two answers. The page behind the overlay is
+       still focusable, and a keyboard user who tabs into it is typing at
+       something they cannot see. */
+    const onKey = (e) => {
+      if (e.key === 'Escape') { close(false); return; }
+      if (e.key !== 'Tab') return;
+      e.preventDefault();
+      (document.activeElement === accept ? cancel : accept).focus();
+    };
 
     accept.addEventListener('click', onAccept);
     cancel.addEventListener('click', onCancel);
