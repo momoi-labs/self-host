@@ -1,7 +1,9 @@
-/* Console-local layer, on top of the vendored kiso ui.css.
-   Everything here is either a screen kiso has a pattern for but no block, or
-   a rule kiso deliberately leaves to the product. Anything a second Momoi
-   product would also want belongs upstream in the blueprint, not here. */
+/* Console-local layer, on top of kiso. The design system arrives as a package
+   now — @momoi-labs/kiso-react/styles.css pulls in kiso's tokens.css and
+   ui.css — so everything here is either a screen kiso has a pattern for but no
+   block, or a rule kiso deliberately leaves to the product. Anything a second
+   Momoi product would also want belongs upstream in the blueprint, not here. */
+@import "@momoi-labs/kiso-react/styles.css";
 
 /* Login. kiso specifies the login pattern but ships no block for it. */
 .auth-shell { display: grid; min-height: 100vh; place-items: center; padding: var(--spacing-xl); }
@@ -42,14 +44,31 @@
    of at half the window: half of a wide screen is more form than the fields
    need, and the log pane is the one that actually wants the extra room. The
    split clips the panes while the outer card keeps its corner marks visible. */
-.app-shell > main { display: flex; flex-direction: column; min-width: 0; }
+/* min-height: 0 on both, or the automatic minimum size of a flex and grid item
+   is its content — which is how a long log escapes every cap above it. */
+.app-shell > main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar { flex-shrink: 0; }
-#detail:has(.detail-panel) { flex: 1; grid-template-rows: auto 1fr; align-content: stretch; }
+/* The detail is the one screen that fills the window instead of growing it.
+   kiso's .app-shell asks for min-height: 100vh, which leaves every height in
+   the chain content-driven — so a long log would stretch the split, the panel
+   and the page with it. A definite height here, and minmax(0, …) rather than a
+   bare 1fr (which keeps a content-based minimum), is what lets each pane
+   scroll on its own. */
+@media (min-width: 1024px) {
+  .app-shell:has(.detail-panel) { height: 100vh; }
+}
+#detail:has(.detail-panel) { flex: 1; min-height: 0; grid-template-rows: auto minmax(0, 1fr); align-content: stretch; }
 .detail-panel { display: grid; }
 .detail-panel .split { overflow: hidden; border-radius: inherit; }
-.detail-panel .split > .pane:first-child { flex: 0 0 clamp(320px, 42%, 560px); overflow: visible; }
-/* The form sets the height when it outgrows the screen; log output must not. */
-.detail-panel .split > .pane-logs { flex: 1; contain: size; min-height: 320px; }
+/* kiso's Splitter owns flex-basis (it writes a percentage), so the readable
+   measure this pane used to get from clamp() is a floor and a ceiling now.
+   The form scrolls inside its pane rather than growing the page: the log pane
+   beside it has its own scroller, and two panes that scroll the document
+   between them cannot both stay on screen. */
+.detail-panel .split > .pane:first-child { min-width: 320px; max-width: 720px; overflow: auto; }
+/* Neither pane sets the height any more: the row above caps it, and each pane
+   scrolls its own content. */
+.detail-panel .split > .pane-logs { flex: 1; min-height: 320px; }
 .form-actions { display: flex; justify-content: flex-end; gap: var(--spacing-sm); }
 
 /* Per-platform DNS instructions: a stack of disclosures, not a stack of

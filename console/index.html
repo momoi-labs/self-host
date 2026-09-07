@@ -4,133 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>self-host console</title>
-  <link rel="stylesheet" href="/console/tokens.css">
-  <link rel="stylesheet" href="/console/ui.css">
-  <link rel="stylesheet" href="/console/console.css">
-  <script src="/console/theme.js"></script>
+  <script>
+    /* Runs before the body parses, so the stored theme is on :root for the
+       first paint and there is no flash of the wrong theme. */
+    try {
+      var stored = localStorage.getItem("kiso-theme");
+      if (stored === "light" || stored === "dark") document.documentElement.dataset.theme = stored;
+    } catch (cause) {}
+  </script>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
-  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
-  <symbol id="i-alert" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 5v3.5M8 11h.01"/></symbol>
-  <symbol id="i-box" viewBox="0 0 16 16"><path d="M2.5 5L8 2l5.5 3v6L8 14l-5.5-3z"/><path d="M2.5 5L8 8l5.5-3M8 8v6"/></symbol>
-  <symbol id="i-chart" viewBox="0 0 16 16"><path d="M2 13.5h12"/><path d="M4 11V7M8 11V3M12 11V9"/></symbol>
-  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.5l3.5 3.5L13 5"/></symbol>
-  <symbol id="i-key" viewBox="0 0 16 16"><circle cx="5" cy="11" r="2.75"/><path d="M7 9l6-6M11 5l1.5 1.5M9.5 6.5L11 8"/></symbol>
-  <symbol id="i-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M1.8 8h12.4M8 1.75c3.2 3.4 3.2 9.1 0 12.5-3.2-3.4-3.2-9.1 0-12.5z"/></symbol>
-  <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3.25" y="7" width="9.5" height="6.5" rx="1.25"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></symbol>
-</defs></svg>
-
-<div class="app-shell">
-  <aside class="sidebar">
-    <div class="sidebar-header">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">S</span>
-        <div class="grow truncate">
-          <div class="t-label">self-host</div>
-          <div class="t-metadata muted mono" id="dns-suffix">…</div>
-        </div>
-      </div>
-      <button id="deploy-btn" class="btn btn-primary btn-sm btn-block" type="button">
-        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg>Deploy application
-      </button>
-    </div>
-
-    <div class="sidebar-body">
-      <div class="nav-group">
-        <button type="button" class="nav-item" data-home>
-          <svg class="icon icon-sm" aria-hidden="true"><use href="#i-chart"/></svg>Overview
-        </button>
-      </div>
-      <nav class="nav-group" id="sidebar" aria-label="Applications">
-        <p class="t-caps">Applications</p>
-      </nav>
-    </div>
-
-    <div class="sidebar-footer">
-      <a class="nav-item" href="/console/setup.html">
-        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-globe"/></svg>DNS setup
-      </a>
-      <a class="nav-item" href="/console/api-keys.html">
-        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-key"/></svg>API keys
-      </a>
-      <div data-theme-toggle></div>
-      <hr class="separator">
-      <button type="button" class="nav-item" onclick="logout()">
-        <svg class="icon icon-sm" aria-hidden="true"><use href="#i-lock"/></svg>Lock
-      </button>
-    </div>
-  </aside>
-
-  <main>
-    <header class="topbar">
-      <nav class="breadcrumb" aria-label="Breadcrumb">
-        <a href="/console/">Console</a><span class="sep" aria-hidden="true">/</span><span aria-current="page">Overview</span>
-      </nav>
-      <span class="grow"></span>
-      <span class="row t-label"><button type="button" class="health-link" id="health-link" title="Platform Infra"><span class="dot success" id="health-dot"></span><span class="muted" id="health-text">Checking health…</span></button></span>
-    </header>
-
-    <section id="dashboard" class="page" aria-labelledby="dashboard-title">
-      <div class="page-header">
-        <h1 class="t-h1" id="dashboard-title">Overview</h1>
-        <p class="muted t-label" id="dashboard-subtitle"></p>
-      </div>
-
-      <div class="dashboard-filters">
-        <input class="input" type="search" id="service-search" aria-label="Search by name" placeholder="Search by name…">
-        <label class="check"><input type="checkbox" id="show-platform">Show platform services</label>
-        <button type="button" class="btn btn-ghost btn-sm" id="clear-filters">Clear filters</button>
-      </div>
-
-      <div id="dashboard-empty" class="card hidden">
-        <div class="empty hatch">
-          <span class="empty-icon" aria-hidden="true"><svg class="icon icon-lg"><use href="#i-box"/></svg></span>
-          <p class="t-h3 fg">No applications yet</p>
-          <p>Deploy your first application from a container image or a Compose file and it will be reachable on your LAN.</p>
-          <button id="empty-deploy" class="btn btn-primary btn-sm" type="button">
-            <svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg>Deploy application
-          </button>
-        </div>
-      </div>
-
-      <div id="dashboard-content" class="stack">
-        <div class="stat-grid" id="stat-grid"></div>
-        <div class="table-wrap">
-          <div class="table-scroll">
-            <table class="table">
-              <thead>
-                <tr><th scope="col">Name</th><th scope="col">Hostname</th><th scope="col">Image</th><th scope="col">Status</th><th scope="col" class="num">Restarts</th></tr>
-              </thead>
-              <tbody id="app-rows"></tbody>
-            </table>
-          </div>
-          <p class="table-footer" id="app-count"></p>
-        </div>
-      </div>
-    </section>
-
-    <section id="detail" class="page hidden" aria-live="polite"></section>
-  </main>
-</div>
-
-<div id="confirm-modal" class="overlay hidden">
-  <section class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
-    <div class="dialog-header">
-      <h2 class="t-h3" id="confirm-title">Remove application</h2>
-    </div>
-    <div class="dialog-body"><p id="confirm-body" class="muted t-label"></p></div>
-    <div class="dialog-footer">
-      <button id="confirm-cancel" type="button" class="btn btn-outline btn-sm">Cancel</button>
-      <button id="confirm-accept" type="button" class="btn btn-danger btn-sm">Remove</button>
-    </div>
-  </section>
-</div>
-
-<div class="toast-region" data-toasts role="status" aria-live="polite"></div>
-
-<script src="/console/prism-yaml.js" data-manual></script>
-<script src="/console/app.js"></script>
+<div id="root"></div>
+<script src="/prism-yaml.js" data-manual></script>
+<script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

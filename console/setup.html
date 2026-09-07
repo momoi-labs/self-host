@@ -4,69 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DNS setup — self-host</title>
-  <link rel="stylesheet" href="/console/tokens.css">
-  <link rel="stylesheet" href="/console/ui.css">
-  <link rel="stylesheet" href="/console/console.css">
-  <script src="/console/theme.js"></script>
+  <script>
+    /* Runs before the body parses, so the stored theme is on :root for the
+       first paint and there is no flash of the wrong theme. */
+    try {
+      var stored = localStorage.getItem("kiso-theme");
+      if (stored === "light" || stored === "dark") document.documentElement.dataset.theme = stored;
+    } catch (cause) {}
+  </script>
 </head>
 <body>
-<main class="page">
-  <div class="between">
-    <div class="page-header">
-      <h1 class="t-h1">DNS setup</h1>
-      <p class="muted t-label">Configure your network to reach applications by hostname.</p>
-    </div>
-    <div class="row">
-      <div data-theme-toggle></div>
-      <a class="btn btn-outline btn-sm" href="/console/">Back to console</a>
-    </div>
-  </div>
+<div id="root"></div>
 
-  <section class="card" aria-labelledby="host-heading">
-    <div class="card-header"><h2 class="t-caps" id="host-heading">Your host</h2></div>
-    <div class="card-body">
-      <dl class="kv">
-        <dt>Host IP</dt><dd id="host-ip">…</dd>
-        <dt>DNS suffix</dt><dd id="dns-suffix">…</dd>
-      </dl>
-    </div>
-  </section>
-
-  <section class="stack-sm" aria-labelledby="instructions-heading">
-    <h2 class="t-h3" id="instructions-heading">Instructions</h2>
-    <p class="muted t-label">Point your device's DNS resolver to the Host IP so that <code id="suffix-example">*.home.lan</code> resolves locally.</p>
-    <div>
-      <details class="disclosure"><summary>macOS</summary><ol><li>Open System Settings → Network.</li><li>Open the active connection and select DNS.</li><li>Add the Host IP as a DNS server, then apply the change.</li></ol></details>
-      <details class="disclosure"><summary>Linux</summary><p class="muted t-label">With systemd-resolved:</p><pre><code>sudo resolvectl dns INTERFACE HOST_IP
-sudo resolvectl domain INTERFACE ~SUFFIX</code></pre><p class="t-metadata muted">Replace INTERFACE, HOST_IP and SUFFIX with the values for your host.</p></details>
-      <details class="disclosure"><summary>Windows</summary><ol><li>Open Network Connections and the active adapter's properties.</li><li>Open Internet Protocol Version 4 (TCP/IPv4).</li><li>Use the Host IP as the preferred DNS server and save.</li></ol></details>
-      <details class="disclosure"><summary>iOS and Android</summary><p class="muted t-label">Edit the active Wi-Fi network, choose manual or static DNS, and use the Host IP as the first DNS server.</p></details>
-    </div>
-  </section>
-
-  <section class="card" aria-labelledby="example-heading">
-    <div class="card-header"><h2 class="t-h3" id="example-heading">Try it</h2></div>
-    <div class="card-body">
-      <p class="muted t-label">After setup, open an application by hostname:</p>
-      <pre><code id="example-url">http://blog.home.lan</code></pre>
-    </div>
-  </section>
-</main>
-<script>
-  (async function init() {
-    const apiKey = sessionStorage.getItem('api_key') || '';
-    if (!apiKey) { window.location.href = '/console'; return; }
-    document.getElementById('host-ip').textContent = window.location.hostname;
-    try {
-      const response = await fetch('/bootstrap/status', { headers: { Authorization: 'Bearer ' + apiKey } });
-      if (!response.ok) return;
-      const data = await response.json();
-      const suffix = data.dns_suffix || 'home.lan';
-      document.getElementById('dns-suffix').textContent = suffix;
-      document.getElementById('suffix-example').textContent = '*.' + suffix;
-      document.getElementById('example-url').textContent = 'http://blog.' + suffix;
-    } catch {}
-  })();
-</script>
+<script type="module" src="/src/setup.tsx"></script>
 </body>
 </html>
