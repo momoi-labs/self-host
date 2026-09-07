@@ -1087,6 +1087,25 @@ fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
 /// gives up: each dependency is waited for, out loud, for as long as it
 /// takes. Exiting would only make launchd start us again with less context.
 async fn run_server() {
+    let result = async {
+        let config = self_host::dns::Config::load()?;
+        let mut dns = self_host::dns::start(&config).await?;
+        tokio::select! {
+            result = dns.block_until_done() => {
+                result?;
+                anyhow::bail!("DNS server stopped unexpectedly");
+            }
+            () = run_api_server() => Ok::<(), anyhow::Error>(()),
+        }
+    }
+    .await;
+    if let Err(error) = result {
+        tracing::error!("Platform stopped: {error:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn run_api_server() {
     let (api_key, listen_addr) = resolve_server_config().await;
 
     let compose_docker = match ComposeDocker::new() {

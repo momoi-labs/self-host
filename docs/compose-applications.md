@@ -121,6 +121,6 @@ services:
 
 Web service `hermes`, web port `9119`: the port the dashboard listens on
 inside the container. Consumers open `https://hermes.<suffix>`, resolved by
-CoreDNS and served by Traefik, which forwards to that port over `sf-apps`.
+the Platform DNS and served by Traefik, which forwards to that port over `sf-apps`.
 No host port is published; the file has no `ports` at all. See
 [hermes.md](hermes.md) for the complete workflow.

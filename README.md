@@ -1,6 +1,6 @@
 # self-host
 
-Publish Applications on your own LAN. One binary on the Host runs CoreDNS,
+Publish Applications on your own LAN. One binary on the Host serves DNS and manages
 Traefik and a private CA, so every Application you deploy answers at its own
 name, `https://<name>.home.lan`, with HTTPS the machines in the house trust.
 There is no control plane anywhere else.
@@ -29,9 +29,21 @@ On Linux, or with `SELF_HOST_BINARY_ONLY=1`:
 
 ```bash
 self-host init
+self-host serve # keep running; use another terminal for the next command
 self-host setup-dns # Linux with systemd-resolved
-self-host serve
 ```
+
+DNS starts with `serve`, before Docker or PostgreSQL is available. It listens
+on the saved Host IP, port 53, over UDP and TCP. Names under the DNS Suffix
+resolve locally; other names go to Cloudflare (`1.1.1.1`, `1.0.0.1`). The
+configuration is in `~/.config/self-host/dns.json`; restart `serve` after
+changing it. Keep the Host IP fixed.
+
+The Linux installer grants the binary `CAP_NET_BIND_SERVICE`. For a binary
+built from source, run `sudo setcap cap_net_bind_service=+ep /path/to/self-host`
+after each rebuild. If you supervise the Platform with a systemd system unit
+running as the Operator, add `AmbientCapabilities=CAP_NET_BIND_SERVICE` under
+`[Service]` instead. The installer still does not configure Linux supervision.
 
 On Linux with systemd-resolved, `self-host setup-dns` reads the saved Host IP
 and DNS Suffix and requests administrator privileges to install
@@ -41,7 +53,8 @@ restarts. It does not depend on the binary or worktree path. Run the command
 again to repair the configuration. `serve` warns if Host DNS does not resolve.
 Other Linux resolvers still require manual configuration.
 
-To remove the Host DNS configuration before resetting or uninstalling:
+Stop the Platform daemon before resetting or uninstalling. Remove the Host
+DNS configuration with:
 
 ```bash
 sudo systemctl disable --now self-host-dns.service
