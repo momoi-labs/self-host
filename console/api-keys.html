@@ -4,97 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>API keys — self-host</title>
-  <link rel="stylesheet" href="/console/tokens.css">
-  <link rel="stylesheet" href="/console/ui.css">
-  <link rel="stylesheet" href="/console/console.css">
-  <script src="/console/theme.js"></script>
+  <script>
+    /* Runs before the body parses, so the stored theme is on :root for the
+       first paint and there is no flash of the wrong theme. */
+    try {
+      var stored = localStorage.getItem("kiso-theme");
+      if (stored === "light" || stored === "dark") document.documentElement.dataset.theme = stored;
+    } catch (cause) {}
+  </script>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <symbol id="i-alert" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 5v3.5M8 11h.01"/></symbol>
-  <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 7.5V11M8 5h.01"/></symbol>
-</defs></svg>
+<div id="root"></div>
 
-<main class="page">
-  <div class="between">
-    <div class="page-header">
-      <h1 class="t-h1">API keys</h1>
-      <p class="muted t-label">Manage access for other operators.</p>
-    </div>
-    <div class="row">
-      <div data-theme-toggle></div>
-      <a class="btn btn-outline btn-sm" href="/console/">Back to console</a>
-    </div>
-  </div>
-
-  <section class="card" aria-labelledby="create-heading">
-    <div class="card-header"><h2 class="t-h3" id="create-heading">Create a key</h2></div>
-    <div class="card-body">
-      <form id="create-form" class="row">
-        <div class="field grow"><label for="key-label">Label</label><input class="input" id="key-label" placeholder="Laptop" required></div>
-        <button class="btn btn-primary btn-sm" type="submit">Create key</button>
-      </form>
-      <div id="create-error" class="alert alert-danger hidden" role="alert">
-        <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
-        <p class="alert-body" id="create-error-body"></p>
-      </div>
-      <div id="new-key-box" class="alert alert-info hidden" role="status">
-        <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
-        <div>
-          <p class="alert-title">Copy this key now. It will not be shown again.</p>
-          <p class="alert-body mono" id="new-key-value"></p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="table-wrap" aria-labelledby="keys-heading">
-    <h2 id="keys-heading" class="hidden">Existing API keys</h2>
-    <div class="table-scroll">
-      <table class="table">
-        <thead><tr><th scope="col">ID</th><th scope="col">Label</th><th scope="col">Created</th><th scope="col" class="col-tight">Action</th></tr></thead>
-        <tbody id="keys-body"><tr><td colspan="4" class="muted">No API keys yet.</td></tr></tbody>
-      </table>
-    </div>
-  </section>
-</main>
-<script>
-  function apiKey() { return sessionStorage.getItem('api_key') || ''; }
-  function authHeaders() { return { Authorization: 'Bearer ' + apiKey(), 'Content-Type': 'application/json' }; }
-  function esc(value) { return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
-  async function loadKeys() {
-    if (!apiKey()) { window.location.href = '/console'; return; }
-    try {
-      const response = await fetch('/api-keys', { headers: authHeaders() });
-      if (!response.ok) return;
-      const keys = await response.json();
-      document.getElementById('keys-body').innerHTML = keys.length ? keys.map(key => `<tr><td class="mono">${esc(key.id)}</td><td>${esc(key.label)}</td><td>${esc(key.created_at)}</td><td class="col-tight"><button type="button" class="btn btn-danger-ghost btn-sm" data-revoke="${esc(key.id)}">Revoke</button></td></tr>`).join('') : '<tr><td colspan="4" class="muted">No API keys yet.</td></tr>';
-    } catch {}
-  }
-  document.getElementById('keys-body').addEventListener('click', async (event) => {
-    const id = event.target.dataset.revoke;
-    if (!id || !confirm(`Revoke key ${id}?`)) return;
-    await fetch('/api-keys/' + encodeURIComponent(id), { method: 'DELETE', headers: authHeaders() });
-    loadKeys();
-  });
-  document.getElementById('create-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const error = document.getElementById('create-error');
-    error.classList.add('hidden');
-    try {
-      const response = await fetch('/api-keys', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ label: document.getElementById('key-label').value.trim() }) });
-      if (!response.ok) throw new Error('Could not create the key. Try again.');
-      const data = await response.json();
-      document.getElementById('key-label').value = '';
-      document.getElementById('new-key-value').textContent = data.key;
-      document.getElementById('new-key-box').classList.remove('hidden');
-      loadKeys();
-    } catch (cause) {
-      document.getElementById('create-error-body').textContent = cause.message;
-      error.classList.remove('hidden');
-    }
-  });
-  loadKeys();
-</script>
+<script type="module" src="/src/api-keys.tsx"></script>
 </body>
 </html>

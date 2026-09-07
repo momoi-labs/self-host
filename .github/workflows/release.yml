@@ -19,6 +19,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The console ships inside the binary. It is the same static output
+      # whatever the Rust target is, so it is built once, before cargo.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - run: npm ci && npm run build
+        working-directory: console
+
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
@@ -54,6 +65,17 @@ jobs:
           - aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+
+      # The console ships inside the binary. It is the same static output
+      # whatever the Rust target is, so it is built once, before cargo.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - run: npm ci && npm run build
+        working-directory: console
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:

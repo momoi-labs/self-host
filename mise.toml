@@ -1,2 +1,4 @@
 [tools]
 rust = "1.97"
+# The console is a React app built with Vite (ADR-0016).
+node = "24"

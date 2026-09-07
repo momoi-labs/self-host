@@ -24,3 +24,10 @@ target
 # Added by cargo
 
 /target
+
+# The console is built by `npm run build` in console/, as a step before cargo.
+# The directory itself is tracked because rust_embed needs it to exist to
+# compile; what the build puts in it does not belong in the repository.
+console/node_modules
+console/dist/*
+!console/dist/.gitkeep

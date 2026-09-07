@@ -14,15 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The console ships inside the binary, so it is built before cargo is.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: console
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo fmt --check
       - run: cargo test --no-fail-fast
       - run: cargo clippy -- -D warnings
 
-  # The console vendors its CSS instead of building it. Nothing else would
-  # notice a hand-edit of a generated file.
-  vendored-css:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: ./scripts/check-vendored-css.sh

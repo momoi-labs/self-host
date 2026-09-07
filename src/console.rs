@@ -8,9 +8,13 @@ use axum::{
 use rust_embed::RustEmbed;
 
 /// Embedded console assets (production).
-/// In debug builds, files are served from disk instead.
+///
+/// The console is a built artifact now: `console/` holds the sources and
+/// `npm run build` renders them into `console/dist/`, which is what ships
+/// inside the binary. In debug builds the same directory is read from disk,
+/// so `vite build --watch` beside `cargo run` still reloads.
 #[derive(RustEmbed)]
-#[folder = "console/"]
+#[folder = "console/dist/"]
 struct ConsoleAssets;
 
 /// Serves the login page at `/console`.
@@ -28,18 +32,11 @@ async fn static_asset(axum::extract::Path(path): axum::extract::Path<String>) ->
     // Strip leading slash if present
     let path = path.trim_start_matches('/');
 
-    // Only allow known asset files (no directory traversal)
-    let allowed = [
-        "app.js",
-        "prism-yaml.js",
-        "theme.js",
-        "tokens.css",
-        "ui.css",
-        "console.css",
-        "setup.html",
-        "api-keys.html",
-    ];
-    if !allowed.contains(&path) {
+    // The build names its own files, hashes and all, so an allowlist of names
+    // cannot be kept by hand any more. What is embedded is the allowlist: a
+    // path the build did not produce is not served, which also settles
+    // traversal — `..` is not a file the build emits.
+    if !ConsoleAssets::iter().any(|asset| asset == path) {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
@@ -54,7 +51,7 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
     // In debug builds, read from disk for hot-reload.
     #[cfg(debug_assertions)]
     {
-        let file_path = std::path::Path::new("console").join(path);
+        let file_path = std::path::Path::new("console/dist").join(path);
         if let Ok(content) = std::fs::read(&file_path) {
             return Response::builder()
                 .status(StatusCode::OK)
@@ -72,7 +69,17 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
         Some(file) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, content_type)
-            .header(header::CACHE_CONTROL, "no-cache")
+            // Everything under assets/ carries a content hash in its name, so
+            // a stale copy is impossible; the HTML pointing at it must not be
+            // cached, or a deploy would keep serving the old bundle.
+            .header(
+                header::CACHE_CONTROL,
+                if path.starts_with("assets/") {
+                    "public, max-age=31536000, immutable"
+                } else {
+                    "no-cache"
+                },
+            )
             .body(Body::from(file.data))
             .unwrap(),
         None => Response::builder()
@@ -110,14 +117,32 @@ mod tests {
     use super::console_router;
 
     #[tokio::test]
-    async fn serves_console_assets() {
-        for (asset, content_type) in [
-            ("tokens.css", "text/css"),
-            ("ui.css", "text/css"),
-            ("console.css", "text/css"),
-            ("theme.js", "text/javascript"),
-            ("prism-yaml.js", "text/javascript"),
-        ] {
+    async fn serves_the_login_and_console_pages() {
+        for path in ["/console", "/console/"] {
+            let response = console_router()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+        }
+    }
+
+    /// The build names the bundles, so the test asks the build what they are
+    /// rather than repeating a list that would rot at the next `npm run build`.
+    #[tokio::test]
+    async fn serves_every_built_asset() {
+        let assets: Vec<String> = <super::ConsoleAssets as rust_embed::RustEmbed>::iter()
+            .map(|asset| asset.to_string())
+            .collect();
+
+        assert!(
+            assets.iter().any(|asset| asset.ends_with(".js")),
+            "the console bundle is missing: run `npm run build` in console/"
+        );
+
+        for asset in assets {
             let response = console_router()
                 .oneshot(
                     Request::builder()
@@ -128,8 +153,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+            assert_eq!(response.status(), StatusCode::OK, "{asset}");
         }
     }
 
