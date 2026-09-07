@@ -1,18 +1,27 @@
 # self-host
 
-Super easy home lab PaaS: publish apps on your LAN Host without an external control-plane SaaS.
+Publish Applications on your own LAN. One binary on the Host runs CoreDNS,
+Traefik and a private CA, so a container named `blog` answers at
+`https://blog.home.lan` with HTTPS the machines in the house trust. There is no
+control plane anywhere else.
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.1
 ```
+
+Name the version. This README describes the `v0.2.0-beta.1` pre-release; the
+plain `latest` the installer resolves on its own is still `v0.1.0` from August,
+which predates Compose Applications, the console and the macOS daemons.
 
 Supported platforms: macOS (Intel / Apple Silicon) and Linux (amd64 / arm64).
 
 On macOS the installer also prepares a Docker runtime and installs the
 Platform as a launchd LaunchDaemon, so it starts at boot without a login.
-See [docs/macos-host.md](docs/macos-host.md) for prerequisites.
+That part is the reason the release is a beta: nobody has yet watched a real
+Mac come back from a reboot on its own. [docs/macos-host.md](docs/macos-host.md)
+lists the prerequisites and holds the record to fill in.
 
 ## Quick start
 
@@ -69,7 +78,7 @@ On another machine, first configure its DNS, then install the public CA directly
 from the Host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.1
 self-host trust-ca --from admin.home.lan --fingerprint <sha256-from-host>
 ```
 
