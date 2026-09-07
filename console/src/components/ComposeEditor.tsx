@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ComponentProps } from "react";
 import { Textarea } from "@momoi-labs/kiso-react";
 
 declare global {
@@ -20,15 +20,15 @@ export function ComposeEditor({
   value,
   onChange,
   required,
-  describedBy,
-  invalid,
+  "aria-describedby": describedBy,
+  "aria-invalid": invalid,
 }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
-  describedBy?: string;
-  invalid?: boolean;
+  "aria-describedby"?: string;
+  "aria-invalid"?: ComponentProps<typeof Textarea>["aria-invalid"];
 }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const highlight = useRef<HTMLDivElement>(null);
@@ -65,7 +65,7 @@ export function ComposeEditor({
         placeholder={"services:\n  web:\n    image: …"}
         required={required}
         aria-describedby={describedBy}
-        aria-invalid={invalid || undefined}
+        aria-invalid={invalid}
         value={value}
         onChange={(event) => {
           onChange(event.target.value);

@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App.js";
-import { Toasts } from "./components/Toasts.js";
+import { Toasts } from "@momoi-labs/kiso-react";
 import { api, logout, requireKey } from "./lib/api.js";
 import "./console.css";
 

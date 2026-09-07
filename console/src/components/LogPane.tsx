@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  FormField,
   Select,
   SelectContent,
   SelectItem,
@@ -8,7 +9,6 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { getJson } from "../lib/api.js";
-import { Field } from "./Field.js";
 import { Logs } from "./Logs.js";
 
 /**
@@ -56,20 +56,20 @@ export function AppLogPane({ id }: { id: string }) {
   return (
     <>
       {containers && containers.length > 1 ? (
-        <Field id="log-container" label="Logs from container">
-          <Select value={chosen} onValueChange={setChosen}>
-            <SelectTrigger id="log-container" className="mono">
+        <Select value={chosen} onValueChange={setChosen}>
+          <FormField id="log-container" label="Logs from container">
+            <SelectTrigger className="mono">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
-              {containers.map((name) => (
-                <SelectItem key={name} value={name}>
-                  {name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
+          </FormField>
+          <SelectContent>
+            {containers.map((name) => (
+              <SelectItem key={name} value={name}>
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       ) : (
         <p className="t-caps">{chosen ? `Logs from ${chosen}` : "Logs"}</p>
       )}
