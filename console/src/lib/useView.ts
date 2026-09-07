@@ -8,11 +8,24 @@ export type View =
 
 const overview: View = { view: "overview", id: null };
 
+/**
+ * A view named in the URL fragment. The settings pages are documents of their
+ * own, so the only way their sidebar can point at an Application is a link —
+ * `/console/#app-<id>` — and that link has to open on it.
+ */
+function fromHash(): View | null {
+  const hash = location.hash;
+  if (hash === "#new") return { view: "new", id: null };
+  if (hash.startsWith("#app-")) return { view: "app", id: hash.slice(5) };
+  if (hash.startsWith("#system-")) return { view: "system", id: hash.slice(8) };
+  return null;
+}
+
 function fromHistory(): View {
   const state = history.state as View | null;
   if (state?.view === "app" || state?.view === "system") return state;
   if (state?.view === "new") return { view: "new", id: null };
-  return overview;
+  return fromHash() ?? overview;
 }
 
 /**
@@ -24,10 +37,15 @@ export function useView(): [View, (next: View) => void] {
   const [current, setCurrent] = useState<View>(fromHistory);
 
   useEffect(() => {
-    if (!history.state) history.replaceState(overview, "");
+    // A first load carries no state. Seed it with the view that is actually on
+    // screen — a link into `#app-<id>` opens on that Application, and Back has
+    // to return to it rather than to the Overview it never showed.
+    if (!history.state) history.replaceState(current, "");
     const onPop = () => setCurrent(fromHistory());
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
+    // Seeding is a first-load concern; `current` afterwards is `go`'s business.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const go = useCallback((next: View) => {

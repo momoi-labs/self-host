@@ -1,7 +1,6 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Button,
   Card,
   CardContent,
   CardHeader,
@@ -11,11 +10,11 @@ import {
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
-  ThemeSelector,
 } from "@momoi-labs/kiso-react";
 
+import { Shell } from "./components/Shell.js";
 import { getJson, requireKey } from "./lib/api.js";
-import { useTheme } from "./lib/theme.js";
+import { usePlatform } from "./lib/usePlatform.js";
 import "./console.css";
 
 /* Only one of these is ever relevant to the reader, so they stack as
@@ -47,7 +46,6 @@ function Steps({ platform }: { platform: keyof typeof steps }) {
 }
 
 function Setup() {
-  const [theme, setTheme] = useTheme();
   const [suffix, setSuffix] = useState("home.lan");
 
   useEffect(() => {
@@ -59,21 +57,13 @@ function Setup() {
   }, []);
 
   return (
-    <main className="page">
-      <div className="between">
-        <PageHeader>
+    <section className="page">
+      <PageHeader>
           <PageHeaderTitle>DNS setup</PageHeaderTitle>
           <PageHeaderDescription>
             Configure your network to reach applications by hostname.
           </PageHeaderDescription>
-        </PageHeader>
-        <div className="row">
-          <ThemeSelector theme={theme} onChange={setTheme} />
-          <Button size="sm" asChild>
-            <a href="/console/">Back to console</a>
-          </Button>
-        </div>
-      </div>
+      </PageHeader>
 
       <Card aria-labelledby="host-heading">
         <CardHeader>
@@ -137,12 +127,31 @@ function Setup() {
           </pre>
         </CardContent>
       </Card>
-    </main>
+    </section>
+  );
+}
+
+function SettingsShell({ crumb, children }: { crumb: string; children: React.ReactNode }) {
+  const { apps, dnsSuffix, healthy } = usePlatform();
+  return (
+    <Shell
+      crumb={crumb}
+      dnsSuffix={dnsSuffix}
+      apps={apps}
+      healthy={healthy}
+      overview={{ href: "/console/", active: false }}
+      deploy={{ href: "/console/#new", active: false }}
+      application={(app) => ({ href: `/console/#app-${app.id}`, active: false })}
+    >
+      {children}
+    </Shell>
   );
 }
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Setup />
+    <SettingsShell crumb="DNS setup">
+      <Setup />
+    </SettingsShell>
   </StrictMode>,
 );
