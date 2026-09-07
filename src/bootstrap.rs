@@ -377,10 +377,8 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
 
     println!("--- Host DNS Setup ---");
     if cfg!(target_os = "linux") {
-        println!(
-            "  sudo ip link show self-host-dns >/dev/null 2>&1 || sudo ip link add self-host-dns type dummy; sudo ip link set self-host-dns up; sudo resolvectl dns self-host-dns {}; sudo resolvectl domain self-host-dns '~{}'; resolvectl query admin.{}",
-            result.host_ip, result.dns_suffix, result.dns_suffix
-        );
+        println!("  self-host setup-dns");
+        println!("  Configures persistent Host DNS on Linux with systemd-resolved.");
         println!("  If UFW is active, allow Traefik's two networks to reach the Operator API:");
         println!(
             "  sudo ufw allow from \"$(docker network inspect {SYSTEM_NETWORK} --format '{{{{(index .IPAM.Config 0).Subnet}}}}')\" to any port {OPERATOR_API_PORT} proto tcp"

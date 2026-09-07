@@ -25,6 +25,7 @@ pub mod console;
 pub mod db;
 pub mod docker;
 pub mod error;
+pub mod host_dns;
 pub mod routes;
 pub mod tls;
 
@@ -113,6 +114,7 @@ async fn health() -> Json<HealthResponse> {
 #[derive(Serialize)]
 struct BootstrapStatusResponse {
     initialized: bool,
+    host_ip: Option<String>,
     dns_suffix: Option<String>,
 }
 
@@ -127,8 +129,15 @@ async fn bootstrap_status<S: StateStore>(
         None
     };
 
+    let host_ip = if initialized {
+        state.store.get_state("host_ip").await.ok().flatten()
+    } else {
+        None
+    };
+
     Json(BootstrapStatusResponse {
         initialized,
+        host_ip,
         dns_suffix,
     })
 }
@@ -1723,6 +1732,7 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["initialized"], json!(false));
         assert_eq!(parsed["dns_suffix"], json!(null));
+        assert_eq!(parsed.get("host_ip"), Some(&Value::Null));
     }
 
     #[tokio::test]
@@ -1741,6 +1751,7 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["initialized"], json!(true));
         assert_eq!(parsed["dns_suffix"], json!("home.lan"));
+        assert_eq!(parsed.get("host_ip"), Some(&Value::Null));
     }
 
     #[tokio::test]
@@ -1779,6 +1790,7 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["initialized"], json!(true));
         assert_eq!(parsed["dns_suffix"], json!("myhost.lan"));
+        assert_eq!(parsed["host_ip"], json!("192.168.1.100"));
     }
 
     #[tokio::test]

@@ -78,6 +78,9 @@
 .disclosure summary { cursor: pointer; font-weight: var(--type-weight-medium); }
 .disclosure[open] summary { margin-block-end: var(--spacing-md); }
 .disclosure ol, .disclosure ul { margin: 0; padding-inline-start: var(--spacing-lg); color: var(--color-muted-foreground); }
+.dns-instructions { display: grid; gap: var(--spacing-lg); min-width: 0; }
+.dns-instructions > section + section { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
+.dns-instructions p { max-width: 65ch; }
 
 /* ui.css hides the sidebar outright below 1024px. That is fine for a block
    with four static links, but here the sidebar is the only way to reach the

@@ -29,6 +29,8 @@ enum Command {
         #[arg(long)]
         host_ip: Option<String>,
     },
+    /// Configure persistent Host DNS on Linux with systemd-resolved
+    SetupDns,
     /// Start the platform daemon
     Serve,
     /// Manage Applications
@@ -212,9 +214,39 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Command::SetupDns) => {
+            if let Err(e) = run_setup_dns_command().await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
         Some(Command::Serve) | None => {
             run_server().await;
         }
+    }
+}
+
+async fn run_setup_dns_command() -> anyhow::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    anyhow::bail!("setup-dns currently supports Linux with systemd-resolved only");
+
+    #[cfg(target_os = "linux")]
+    {
+        let store = PgStateStore::connect(bootstrap::PG_DB_URL).await?;
+        let suffix = store
+            .get_state("dns_suffix")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("DNS Suffix is missing; run 'self-host init' first"))?;
+        let host_ip = store
+            .get_state("host_ip")
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Host IP is missing; run 'self-host init' first"))?;
+        self_host::host_dns::install(&suffix, &host_ip)?;
+        self_host::host_dns::check(&suffix, &host_ip).await
+            .map_err(|e| anyhow::anyhow!("DNS settings were saved, but verification failed: {e}. Check that the Platform DNS is running, then retry 'self-host setup-dns'."))?;
+        println!("Host DNS configured: *.{suffix} resolves through {host_ip}.");
+        println!("The configuration persists across reboots and worktree changes.");
+        Ok(())
     }
 }
 
@@ -237,6 +269,8 @@ async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Re
             println!("Platform is already initialized with DNS Suffix '{dns_suffix}'.");
             println!("Existing DNS, TLS and routing configuration is consistent.");
             println!("CLI config points to https://admin.{dns_suffix}.");
+            #[cfg(target_os = "linux")]
+            println!("Run 'self-host setup-dns' to configure or repair persistent Host DNS.");
             return Ok(());
         }
     } else if bootstrap::platform_configuration_exists() {
@@ -1100,6 +1134,12 @@ async fn run_server() {
     // Log the admin dashboard URL if we know the DNS suffix.
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
         info!("admin dashboard: https://admin.{dns_suffix}");
+        #[cfg(target_os = "linux")]
+        if let Ok(Some(host_ip)) = store.get_state("host_ip").await
+            && let Err(error) = self_host::host_dns::check(&dns_suffix, &host_ip).await
+        {
+            tracing::warn!("Host DNS is not ready: {error}. Run 'self-host setup-dns'.");
+        }
     }
 
     let app = build_app(store, docker, routes);
