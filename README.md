@@ -8,10 +8,10 @@ There is no control plane anywhere else.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.1
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.2
 ```
 
-Name the version. This README describes the `v0.2.0-beta.1` pre-release; the
+Name the version. This README describes the `v0.2.0-beta.2` pre-release; the
 plain `latest` the installer resolves on its own is still `v0.1.0` from August,
 which predates Compose Applications, the console and the macOS daemons.
 
@@ -91,7 +91,7 @@ On another machine, first configure its DNS, then install the public CA directly
 from the Host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.1
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.2
 self-host trust-ca --from admin.home.lan --fingerprint <sha256-from-host>
 ```
 
