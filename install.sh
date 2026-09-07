@@ -30,6 +30,14 @@ PLATFORM_LABEL="dev.momoi.self-host"
 COLIMA_LABEL="dev.momoi.self-host.colima"
 DAEMON_DIR="/Library/LaunchDaemons"
 
+# Whether `trust-ca` succeeded; the closing summary tells the Operator what
+# this Host's own browser will do.
+CA_TRUSTED=""
+
+# Where the downloaded archive is unpacked. The EXIT trap that removes it
+# fires after install_binary has returned, so this cannot be a local.
+tmpdir=""
+
 main() {
 	local version="${1:-latest}"
 
@@ -53,7 +61,7 @@ main() {
 
 install_binary() {
 	local version="$1"
-	local os arch target archive url tmpdir
+	local os arch target archive url
 
 	os=$(detect_os)
 	arch=$(detect_arch)
@@ -89,6 +97,9 @@ install_binary() {
 
 	if [ ! -w "$INSTALL_DIR" ]; then
 		echo "installing to ${INSTALL_DIR} (requires sudo)..."
+		# A Mac with Homebrew in /opt/homebrew has no /usr/local/bin at all,
+		# and `install` does not create the directory it writes into.
+		sudo install -d -m 755 "$INSTALL_DIR"
 		sudo install -m 755 "$tmpdir/$BINARY" "$INSTALL_DIR/$BINARY"
 	else
 		install -m 755 "$tmpdir/$BINARY" "$INSTALL_DIR/$BINARY"
@@ -165,7 +176,11 @@ bootstrap_macos() {
 	echo "=== Done ==="
 	echo
 	echo "The Platform is supervised by launchd and starts at boot without a login."
-	echo "  Console:   https://admin.${DNS_SUFFIX} (this Host already trusts the CA)"
+	if [ -n "$CA_TRUSTED" ]; then
+		echo "  Console:   https://admin.${DNS_SUFFIX} (this Host already trusts the CA)"
+	else
+		echo "  Console:   https://admin.${DNS_SUFFIX} (untrusted CA here; see the warning above)"
+	fi
 	echo "  Logs:      $home/Library/Logs/self-host/"
 	echo "  Status:    sudo launchctl print system/${PLATFORM_LABEL}"
 	echo
@@ -272,9 +287,15 @@ EOF
 }
 
 # Colima reads ~/.colima/_templates/default.yaml when it creates a profile.
+# Without an explicit mount the VM shares nothing of the Mac, and Docker
+# creates every bind mount as an empty directory inside the VM: Traefik reads
+# its configuration file as a directory and crash-loops, and so does any
+# Compose Application with a bind mount. An existing profile keeps its own
+# file, so the mount is added there too.
 write_colima_template() {
-	local home="$1" template
+	local home="$1" template profile
 	template="$home/.colima/_templates/default.yaml"
+	profile="$home/.colima/default/colima.yaml"
 
 	mkdir -p "$(dirname "$template")"
 	cat >"$template" <<EOF
@@ -285,7 +306,29 @@ runtime: docker
 vmType: vz
 mountType: virtiofs
 autoActivate: true
+mounts:
+  - location: ${home}
+    writable: true
 EOF
+
+	if [ -f "$profile" ] && ! grep -q "location: ${home}\$" "$profile"; then
+		if grep -qE '^[[:space:]]*-[[:space:]]*location:' "$profile"; then
+			# Mounts the Operator chose. Where their list ends is a guess, so
+			# say what is missing instead of rewriting it.
+			echo "the Colima profile mounts something else; add" >&2
+			echo "  - location: ${home}" >&2
+			echo "    writable: true" >&2
+			echo "to the mounts in $profile, or bind mounts will be empty." >&2
+		else
+			echo "adding ${home} to the existing Colima profile ($profile)..."
+			sed -i '' -E '/^mounts:[[:space:]]*(null|\[\])?[[:space:]]*$/d' "$profile"
+			cat >>"$profile" <<EOF
+mounts:
+  - location: ${home}
+    writable: true
+EOF
+		fi
+	fi
 }
 
 wait_for_docker() {
@@ -349,9 +392,20 @@ host_ip() {
 # the CA that `init` created. Trusting it here is what makes the Host's own
 # browser open https://admin.<suffix> without a warning; Consumers trust it
 # with `self-host trust-ca --from ... --fingerprint ...`.
+#
+# The System Keychain refuses this where no one can authorize it, over SSH for
+# one. That is a browser warning on this Host, not a reason to leave the Mac
+# without the daemon the installer exists to set up, so the install carries on.
 trust_ca() {
 	echo "trusting the Platform CA on this Host (requires sudo)..."
-	"$INSTALL_DIR/$BINARY" trust-ca
+	if "$INSTALL_DIR/$BINARY" trust-ca; then
+		CA_TRUSTED=1
+		return
+	fi
+	echo "could not trust the CA on this Host; continuing." >&2
+	echo "Browsers here warn until you run '${BINARY} trust-ca' again from a" >&2
+	echo "session that can authorize the System Keychain, such as Terminal on" >&2
+	echo "the Mac itself. Consumers are unaffected." >&2
 }
 
 # The Platform itself, supervised by launchd as the Operator's user so that
