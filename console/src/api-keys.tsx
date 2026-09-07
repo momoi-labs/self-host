@@ -19,17 +19,16 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  ThemeSelector,
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "./components/Icon.js";
+import { Shell } from "./components/Shell.js";
 import { api, getJson, requireKey } from "./lib/api.js";
-import { useTheme } from "./lib/theme.js";
+import { usePlatform } from "./lib/usePlatform.js";
 import type { ApiKey } from "./lib/types.js";
 import "./console.css";
 
 function ApiKeys() {
-  const [theme, setTheme] = useTheme();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [label, setLabel] = useState("");
   const [created, setCreated] = useState<string | null>(null);
@@ -69,19 +68,11 @@ function ApiKeys() {
   }
 
   return (
-    <main className="page">
-      <div className="between">
-        <PageHeader>
+    <section className="page">
+      <PageHeader>
           <PageHeaderTitle>API keys</PageHeaderTitle>
           <PageHeaderDescription>Manage access for other operators.</PageHeaderDescription>
-        </PageHeader>
-        <div className="row">
-          <ThemeSelector theme={theme} onChange={setTheme} />
-          <Button size="sm" asChild>
-            <a href="/console/">Back to console</a>
-          </Button>
-        </div>
-      </div>
+      </PageHeader>
 
       <Card aria-labelledby="create-heading">
         <CardHeader>
@@ -170,12 +161,31 @@ function ApiKeys() {
           </Table>
         </div>
       </section>
-    </main>
+    </section>
+  );
+}
+
+function SettingsShell({ crumb, children }: { crumb: string; children: React.ReactNode }) {
+  const { apps, dnsSuffix, healthy } = usePlatform();
+  return (
+    <Shell
+      crumb={crumb}
+      dnsSuffix={dnsSuffix}
+      apps={apps}
+      healthy={healthy}
+      overview={{ href: "/console/", active: false }}
+      deploy={{ href: "/console/#new", active: false }}
+      application={(app) => ({ href: `/console/#app-${app.id}`, active: false })}
+    >
+      {children}
+    </Shell>
   );
 }
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ApiKeys />
+    <SettingsShell crumb="API keys">
+      <ApiKeys />
+    </SettingsShell>
   </StrictMode>,
 );
