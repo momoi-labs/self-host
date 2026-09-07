@@ -20,7 +20,24 @@ On Linux, or with `SELF_HOST_BINARY_ONLY=1`:
 
 ```bash
 self-host init
+self-host setup-dns # Linux with systemd-resolved
 self-host serve
+```
+
+On Linux with systemd-resolved, `self-host setup-dns` reads the saved Host IP
+and DNS Suffix and requests administrator privileges to install
+`self-host-dns.service`. It routes only the Platform's DNS Suffix to the Host.
+The service restores that configuration at boot and when systemd-resolved
+restarts. It does not depend on the binary or worktree path. Run the command
+again to repair the configuration. `serve` warns if Host DNS does not resolve.
+Other Linux resolvers still require manual configuration.
+
+To remove the Host DNS configuration before resetting or uninstalling:
+
+```bash
+sudo systemctl disable --now self-host-dns.service
+sudo rm /etc/systemd/system/self-host-dns.service
+sudo systemctl daemon-reload
 ```
 
 Then visit `https://admin.<your-dns-suffix>` (default: `https://admin.home.lan`).
