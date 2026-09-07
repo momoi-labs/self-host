@@ -89,6 +89,7 @@ install_binary() {
 
 	if [ ! -w "$INSTALL_DIR" ]; then
 		echo "installing to ${INSTALL_DIR} (requires sudo)..."
+		sudo install -d -m 755 "$INSTALL_DIR"
 		sudo install -m 755 "$tmpdir/$BINARY" "$INSTALL_DIR/$BINARY"
 	else
 		install -m 755 "$tmpdir/$BINARY" "$INSTALL_DIR/$BINARY"
