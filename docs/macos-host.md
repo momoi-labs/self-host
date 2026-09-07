@@ -100,11 +100,14 @@ the Mac. They are listed in the order to check them.
 2. **Native UDP and TCP 53 reachable from the LAN.** From another machine,
    run `dig @<host-ip> hermes.home.lan` and repeat with `+tcp`. Check an
    external name too, such as `dig @<host-ip> example.com`. Repeat with the
-   Docker runtime stopped; DNS must still answer. Check for another process
-   holding the Host's port 53 if the Platform cannot bind it.
+   Docker runtime stopped; DNS must still answer. The Platform listens on
+   every interface here, not on the LAN address alone: as the Operator, macOS
+   allows port 53 on the unspecified address and refuses it on a named one
+   (ADR-0017). So nothing else on the Mac may hold 53 — `lsof -nP -iTCP:53
+   -iUDP:53` names whoever does if the Platform cannot bind it.
 3. **Ports 80 and 443 reachable from the LAN**, not only from the Mac.
-   macOS lets a non-root process bind ports below 1024 since 10.14, so the
-   Operator's user is enough.
+   Traefik publishes them through the Docker runtime, so the Operator's user
+   is enough.
 4. **Bind-mount ownership.** The Hermes container `chown`s `/opt/data`. On a
    virtiofs mount that may be refused. If Hermes logs a permission error,
    set `PUID` and `PGID` in its environment to the Operator's `id -u` and

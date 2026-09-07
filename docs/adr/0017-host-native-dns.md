@@ -22,11 +22,29 @@ state store. The Host needs a fixed LAN address; if that address has not
 appeared at boot, DNS waits for it. Port conflicts or missing bind permissions
 stop startup with an error so the supervisor can report and restart the daemon.
 
+Port 53 is privileged, and the two Hosts grant it differently, so they do not
+listen on the same address.
+
 On Linux, the installer grants `CAP_NET_BIND_SERVICE` to the binary. An
 Operator-managed systemd system unit can instead set
 `AmbientCapabilities=CAP_NET_BIND_SERVICE` under `[Service]`. Binding only the
-LAN address leaves systemd-resolved's loopback listener available. macOS keeps
-the LaunchDaemon selected in ADR-0013.
+LAN address leaves systemd-resolved's loopback listener available.
+
+macOS has no capabilities, and the LaunchDaemon of ADR-0013 runs as the
+Operator so the Platform finds the same Docker context, configuration
+directory and Compose projects the Operator sees. A non-root process there
+cannot bind a named address below port 1024 — but it can bind the unspecified
+one, because `in_pcbbind` applies the check only when the address is set. The
+Mac therefore listens on every interface. The Platform stays out of root and
+the files it writes keep belonging to the Operator, which is the point of
+ADR-0013; running as root and dropping privileges after the bind, or handing
+launchd the sockets, would each buy a named address at the price of code that
+exists for one Host. The cost is that nothing else on the Mac can take port
+53, loopback included, and that a reply to a query may leave from an address
+other than the one queried if the Host is multi-homed.
+
+Records come from the Host IP in `dns.json` on both, whatever the listener is
+bound to.
 
 Only PostgreSQL and Traefik remain Infra containers. Existing installations
 must be reset before using this version; no CoreDNS migration is provided.
@@ -37,4 +55,7 @@ must be reset before using this version; no CoreDNS migration is provided.
 **Amends:** DNS port ownership in [ADR-0006](0006-lan-ports-http-dns-grpc.md) and
 the Infra container list in [ADR-0011](0011-infra-containers-are-recreated-not-renamed.md).
 **Context:** [issue #59](https://github.com/momoi-labs/self-host/issues/59) and
-[ADR-0013](0013-macos-bootstrap-with-launchd.md).
+[ADR-0013](0013-macos-bootstrap-with-launchd.md). The macOS listen address was
+settled by [issue #64](https://github.com/momoi-labs/self-host/issues/64),
+after the first version of this decision assumed only Linux needed a privilege
+story.
