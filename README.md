@@ -1,9 +1,9 @@
 # self-host
 
 Publish Applications on your own LAN. One binary on the Host runs CoreDNS,
-Traefik and a private CA, so a container named `blog` answers at
-`https://blog.home.lan` with HTTPS the machines in the house trust. There is no
-control plane anywhere else.
+Traefik and a private CA, so every Application you deploy answers at its own
+name, `https://<name>.home.lan`, with HTTPS the machines in the house trust.
+There is no control plane anywhere else.
 
 ## Install
 
