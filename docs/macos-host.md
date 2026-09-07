@@ -48,10 +48,13 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    they do not meet the requirement. Otherwise, or with
    `SELF_HOST_RUNTIME=colima`, it installs Colima, the Docker CLI and the
    Compose plugin with Homebrew.
-3. Writes a Colima template with `vmType: vz`, `mountType: virtiofs` and the
-   Operator's home directory as a writable mount. Without that mount the VM
-   shares nothing of the Mac and every bind mount — Traefik's configuration,
-   an Application's data directory — is an empty directory inside the VM.
+3. Writes a Colima template with `vmType: vz`, `mountType: virtiofs`, the
+   Operator's home directory as a writable mount, and `network.dns` set to
+   Cloudflare. Without that mount the VM shares nothing of the Mac and every
+   bind mount — Traefik's configuration, an Application's data directory — is
+   an empty directory inside the VM. Without the resolvers, Colima leaves
+   Lima's host resolver on, and `limactl` holds TCP port 53 of the Mac, which
+   is where the Platform serves DNS. An existing profile is patched in place.
    DNS runs natively on the Host and needs no VM port forwarding.
 4. Installs `/Library/LaunchDaemons/dev.momoi.self-host.colima.plist`: a
    LaunchDaemon that runs `colima start --foreground` as the Operator's user

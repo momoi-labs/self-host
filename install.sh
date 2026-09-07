@@ -26,6 +26,10 @@ RUNTIME="${SELF_HOST_RUNTIME:-}"
 COLIMA_CPU="${SELF_HOST_COLIMA_CPU:-4}"
 COLIMA_MEMORY="${SELF_HOST_COLIMA_MEMORY:-6}"
 
+# Resolvers for the Colima VM. Any non-empty list frees port 53 on the Mac;
+# these match the upstreams the Platform forwards to (ADR-0017).
+COLIMA_DNS="1.1.1.1, 1.0.0.1"
+
 PLATFORM_LABEL="dev.momoi.self-host"
 COLIMA_LABEL="dev.momoi.self-host.colima"
 DAEMON_DIR="/Library/LaunchDaemons"
@@ -287,11 +291,19 @@ EOF
 }
 
 # Colima reads ~/.colima/_templates/default.yaml when it creates a profile.
+#
 # Without an explicit mount the VM shares nothing of the Mac, and Docker
 # creates every bind mount as an empty directory inside the VM: Traefik reads
 # its configuration file as a directory and crash-loops, and so does any
-# Compose Application with a bind mount. An existing profile keeps its own
-# file, so the mount is added there too.
+# Compose Application with a bind mount.
+#
+# Naming DNS resolvers turns Lima's host resolver off — colima sets
+# `hostResolver.enabled` to `len(network.dns) == 0` — and with it the listener
+# `limactl` keeps on TCP port 53 of the Mac, which is the port the Platform
+# serves on (ADR-0017). The VM loses the `host.docker.internal` mapping that
+# resolver injected; Traefik gets that from `extra_hosts` instead.
+#
+# An existing profile keeps its own file, so both land there too.
 write_colima_template() {
 	local home="$1" template profile
 	template="$home/.colima/_templates/default.yaml"
@@ -306,10 +318,16 @@ runtime: docker
 vmType: vz
 mountType: virtiofs
 autoActivate: true
+network:
+  dns: [${COLIMA_DNS}]
 mounts:
   - location: ${home}
     writable: true
 EOF
+
+	if [ -f "$profile" ]; then
+		patch_colima_profile_dns "$profile"
+	fi
 
 	if [ -f "$profile" ] && ! grep -q "location: ${home}\$" "$profile"; then
 		if grep -qE '^[[:space:]]*-[[:space:]]*location:' "$profile"; then
@@ -328,6 +346,22 @@ mounts:
     writable: true
 EOF
 		fi
+	fi
+}
+
+# A profile Colima already created keeps its own `network.dns`. Empty is the
+# default, and it is what makes Lima hold the port; a list the Operator chose
+# already frees it and is left alone.
+patch_colima_profile_dns() {
+	local profile="$1"
+
+	if grep -qE '^[[:space:]]{2}dns:[[:space:]]*(null|\[\])?[[:space:]]*$' "$profile"; then
+		echo "pointing the Colima profile at ${COLIMA_DNS} so it releases port 53..."
+		sed -i '' -E "s@^([[:space:]]{2})dns:[[:space:]]*(null|\[\])?[[:space:]]*\$@\1dns: [${COLIMA_DNS}]@" "$profile"
+	elif ! grep -qE '^[[:space:]]{2}dns:' "$profile"; then
+		echo "could not find 'network.dns' in ${profile}." >&2
+		echo "Set it to a resolver list, 'dns: [${COLIMA_DNS}]' for one, or Lima" >&2
+		echo "keeps TCP port 53 and the Platform cannot serve DNS on it." >&2
 	fi
 }
 
