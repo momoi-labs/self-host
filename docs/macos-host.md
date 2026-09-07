@@ -41,13 +41,17 @@ the corresponding items in [mvp-plan.md](mvp-plan.md) stay open.
 curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash
 ```
 
-1. Installs the `self-host` binary to `/usr/local/bin`.
+1. Installs the `self-host` binary to `/usr/local/bin`, creating that
+   directory where the Mac does not have one.
 2. Chooses a runtime. If `docker info` already works, it keeps what is there
    and says so: Docker Desktop and OrbStack start with a login session, so
    they do not meet the requirement. Otherwise, or with
    `SELF_HOST_RUNTIME=colima`, it installs Colima, the Docker CLI and the
    Compose plugin with Homebrew.
-3. Writes a Colima template with `vmType: vz` and `mountType: virtiofs`.
+3. Writes a Colima template with `vmType: vz`, `mountType: virtiofs` and the
+   Operator's home directory as a writable mount. Without that mount the VM
+   shares nothing of the Mac and every bind mount — Traefik's configuration,
+   an Application's data directory — is an empty directory inside the VM.
    DNS runs natively on the Host and needs no VM port forwarding.
 4. Installs `/Library/LaunchDaemons/dev.momoi.self-host.colima.plist`: a
    LaunchDaemon that runs `colima start --foreground` as the Operator's user
@@ -58,9 +62,12 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    LAN address. `SELF_HOST_IP` overrides the detection.
 6. Writes `/etc/resolver/<suffix>` so the Mac resolves its own Hostnames.
 7. Runs `self-host trust-ca`, so the Host's own browser opens
-   `https://admin.<suffix>` without a warning. Each Consumer trusts the same
-   CA once with `self-host trust-ca --from admin.<suffix> --fingerprint <sha256>`,
-   using the fingerprint `self-host init` printed.
+   `https://admin.<suffix>` without a warning. The System Keychain refuses
+   this over SSH, where nobody can authorize it; the installer then warns and
+   carries on, and the command can be run again from Terminal on the Mac.
+   Each Consumer trusts the same CA once with `self-host trust-ca --from
+   admin.<suffix> --fingerprint <sha256>`, using the fingerprint
+   `self-host init` printed.
 8. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
    `self-host serve`, as the Operator's user, at boot, kept alive. The daemon
    starts DNS from `dns.json`, then waits for Docker, brings the Infra up
