@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import {
-  AppShell,
-  AppShellMain,
+  ApplicationShell,
   BrandMark,
   Breadcrumb,
   BreadcrumbItem,
@@ -11,17 +10,7 @@ import {
   BreadcrumbSeparator,
   Button,
   Dot,
-  Header,
-  Navigation,
-  NavigationGroup,
-  NavigationItem,
-  NavigationLink,
-  NavigationList,
   Separator,
-  Sidebar,
-  SidebarBody,
-  SidebarFooter,
-  SidebarHeader,
   TerminalIcon,
   ThemeSelector,
 } from "@momoi-labs/kiso-react";
@@ -73,74 +62,45 @@ export function Shell({
   };
 
   return (
-    <AppShell>
-      <Sidebar>
-        <SidebarHeader>
-          <div className="brand">
-            <BrandMark>
-              <TerminalIcon />
-            </BrandMark>
-            <div className="grow truncate">
-              <div className="t-label">self-host</div>
-              <div className="t-metadata muted mono">{dnsSuffix}</div>
-            </div>
+    <ApplicationShell
+      brand={
+        <div className="brand">
+          <BrandMark>
+            <TerminalIcon />
+          </BrandMark>
+          <div className="grow truncate">
+            <div className="t-label">self-host</div>
+            <div className="t-metadata muted mono">{dnsSuffix}</div>
           </div>
-          <Button variant="primary" size="sm" className="btn-block" asChild>
-            <a href={deploy.href} onClick={follow(deploy)}>
-              <Icon name="plus" />
-              Deploy application
-            </a>
-          </Button>
-        </SidebarHeader>
-
-        <SidebarBody>
-          <Navigation>
-            <NavigationGroup>
-              <NavigationList>
-                <NavigationItem>
-                  <NavigationLink
-                    href={overview.href}
-                    active={overview.active}
-                    onClick={follow(overview)}
-                  >
-                    <Icon name="chart" />
-                    Overview
-                  </NavigationLink>
-                </NavigationItem>
-              </NavigationList>
-            </NavigationGroup>
-
-            <NavigationGroup label="Applications">
-              {apps.length === 0 ? (
-                <p className="nav-item muted">None yet</p>
-              ) : (
-                <NavigationList>
-                  {apps.map((candidate) => {
-                    const destination = application(candidate);
-                    const tone = statusTone(candidate.status);
-                    return (
-                      <NavigationItem key={candidate.id}>
-                        <NavigationLink
-                          href={destination.href}
-                          active={destination.active}
-                          onClick={follow(destination)}
-                        >
-                          <Dot
-                            variant={tone}
-                            className={tone === "neutral" ? "subtle" : undefined}
-                          />
-                          <span className="grow truncate">{candidate.name}</span>
-                        </NavigationLink>
-                      </NavigationItem>
-                    );
-                  })}
-                </NavigationList>
-              )}
-            </NavigationGroup>
-          </Navigation>
-        </SidebarBody>
-
-        <SidebarFooter>
+        </div>
+      }
+      primaryAction={
+        <Button variant="primary" size="sm" className="btn-block" asChild>
+          <a href={deploy.href} onClick={follow(deploy)}>
+            <Icon name="plus" />
+            Deploy application
+          </a>
+        </Button>
+      }
+      navigation={[
+        {
+          destinations: [{ ...overview, label: "Overview", leading: <Icon name="chart" /> }],
+        },
+        {
+          label: "Applications",
+          empty: <p className="nav-item muted">None yet</p>,
+          destinations: apps.map((candidate) => {
+            const tone = statusTone(candidate.status);
+            return {
+              ...application(candidate),
+              label: candidate.name,
+              leading: <Dot variant={tone} className={tone === "neutral" ? "subtle" : undefined} />,
+            };
+          }),
+        },
+      ]}
+      footer={
+        <>
           <a
             className="nav-item"
             href="/console/setup.html"
@@ -163,11 +123,10 @@ export function Shell({
             <Icon name="lock" />
             Lock
           </button>
-        </SidebarFooter>
-      </Sidebar>
-
-      <AppShellMain>
-        <Header>
+        </>
+      }
+      header={
+        <>
           <Breadcrumb>
             <BreadcrumbList>
               <BreadcrumbItem>
@@ -193,10 +152,10 @@ export function Shell({
               <span className="muted">{healthy ? "Healthy" : "Checking health…"}</span>
             </button>
           </span>
-        </Header>
-
-        {children}
-      </AppShellMain>
-    </AppShell>
+        </>
+      }
+    >
+      {children}
+    </ApplicationShell>
   );
 }

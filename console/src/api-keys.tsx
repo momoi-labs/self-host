@@ -19,6 +19,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Toasts,
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "./components/Icon.js";
@@ -184,8 +185,10 @@ function SettingsShell({ crumb, children }: { crumb: string; children: React.Rea
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <SettingsShell crumb="API keys">
-      <ApiKeys />
-    </SettingsShell>
+    <Toasts>
+      <SettingsShell crumb="API keys">
+        <ApiKeys />
+      </SettingsShell>
+    </Toasts>
   </StrictMode>,
 );

@@ -15,7 +15,6 @@ import { isCompose, parseAliases } from "../lib/status.js";
 import type { App, ComposeService, Inspection, Report } from "../lib/types.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
-import { Field, describedBy } from "./Field.js";
 import { Services } from "./Services.js";
 
 export type Submission = {
@@ -195,7 +194,7 @@ export function AppForm({
 
   const composeFields = (
     <>
-      <Field
+      <FormField
         id="f-compose"
         label="Compose file"
         error={errors.compose}
@@ -210,34 +209,34 @@ export function AppForm({
           value={compose}
           onChange={setCompose}
           required={source === "compose"}
-          invalid={Boolean(errors.compose)}
-          describedBy={describedBy("f-compose", true, Boolean(errors.compose))}
         />
-      </Field>
+      </FormField>
 
       <div className="field-row">
-        <Field id="f-web-service" label="Web service">
-          <Select value={webService} onValueChange={chooseService} disabled={!services.length}>
-            <SelectTrigger id="f-web-service" className="mono">
+        <Select value={webService} onValueChange={chooseService} disabled={!services.length}>
+          <FormField id="f-web-service" label="Web service">
+            <SelectTrigger className="mono">
               <SelectValue placeholder="Paste a Compose file first" />
             </SelectTrigger>
-            <SelectContent>
-              {services.map((service) => (
-                <SelectItem key={service.name} value={service.name}>
-                  {service.name}
-                  {service.ports.length ? "" : " (no ports)"}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
+          </FormField>
+          <SelectContent>
+            {services.map((service) => (
+              <SelectItem key={service.name} value={service.name}>
+                {service.name}
+                {service.ports.length ? "" : " (no ports)"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-        <Field id="f-web-port" label="Web port">
+        <div className="field">
           {ports.length ? (
             <Select value={other ? "other" : port} onValueChange={choosePort}>
-              <SelectTrigger id="f-web-port" className="mono">
-                <SelectValue />
-              </SelectTrigger>
+              <FormField id="f-web-port" label="Web port">
+                <SelectTrigger className="mono">
+                  <SelectValue />
+                </SelectTrigger>
+              </FormField>
               <SelectContent>
                 {ports.map((value) => (
                   <SelectItem key={value} value={value}>
@@ -249,18 +248,19 @@ export function AppForm({
             </Select>
           ) : null}
           {!ports.length || other ? (
-            <Input
+            <FormField
+              id="f-web-port-manual"
+              label={ports.length ? "Custom web port" : "Web port"}
               className="mono"
               type="number"
               min={1}
               max={65535}
               placeholder="9119"
-              aria-label="Web port"
               value={port}
               onChange={(event) => setPort(event.target.value)}
             />
           ) : null}
-        </Field>
+        </div>
       </div>
 
       <small className="field-hint" id="f-web-help">
@@ -322,7 +322,7 @@ export function AppForm({
 
       {source === "image" ? imageField : composeFields}
 
-      <Field
+      <FormField
         id="f-hostname"
         label="Hostname"
         error={errors.hostname}
@@ -340,12 +340,10 @@ export function AppForm({
           onChange={(event) => setHostname(event.target.value)}
           placeholder={`my-app.${dnsSuffix}`}
           required={!creating}
-          aria-invalid={Boolean(errors.hostname) || undefined}
-          aria-describedby={describedBy("f-hostname", true, Boolean(errors.hostname))}
         />
-      </Field>
+      </FormField>
 
-      <Field
+      <FormField
         id="f-aliases"
         label="Aliases"
         error={errors.aliases}
@@ -360,10 +358,8 @@ export function AppForm({
           value={aliases}
           onChange={(event) => setAliases(event.target.value)}
           placeholder={`old-name.${dnsSuffix}`}
-          aria-invalid={Boolean(errors.aliases) || undefined}
-          aria-describedby={describedBy("f-aliases", true, Boolean(errors.aliases))}
         />
-      </Field>
+      </FormField>
 
       {failure ? <Failure failure={failure} /> : null}
 

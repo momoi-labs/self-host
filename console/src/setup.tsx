@@ -10,6 +10,7 @@ import {
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
+  Toasts,
 } from "@momoi-labs/kiso-react";
 
 import { Shell } from "./components/Shell.js";
@@ -184,8 +185,10 @@ function SettingsShell({ crumb, children }: { crumb: string; children: React.Rea
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <SettingsShell crumb="DNS setup">
-      <Setup />
-    </SettingsShell>
+    <Toasts>
+      <SettingsShell crumb="DNS setup">
+        <Setup />
+      </SettingsShell>
+    </Toasts>
   </StrictMode>,
 );
