@@ -220,8 +220,33 @@ async fn bind(
     Ok((server, address))
 }
 
+/// Where DNS listens, which is not the same question on both Hosts.
+///
+/// Linux binds the LAN address alone and leaves systemd-resolved's loopback
+/// listener free; `CAP_NET_BIND_SERVICE` covers the privilege. macOS has no
+/// capabilities and its LaunchDaemon runs as the Operator (ADR-0013), so a
+/// named address below port 1024 is refused to anyone but root — `in_pcbbind`
+/// applies that check only when the address is not the unspecified one. The
+/// Mac therefore answers on every interface. Records still come from the
+/// Host IP either way.
+fn listen_address(host_ip: IpAddr) -> SocketAddr {
+    #[cfg(target_os = "macos")]
+    let ip = match host_ip {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+    };
+    #[cfg(not(target_os = "macos"))]
+    let ip = host_ip;
+    SocketAddr::new(ip, 53)
+}
+
+#[cfg(target_os = "macos")]
+const BIND_HINT: &str = "Find what already holds port 53 with 'lsof -nP -iTCP:53 -iUDP:53'";
+#[cfg(not(target_os = "macos"))]
+const BIND_HINT: &str = "Check port 53 conflicts; grant CAP_NET_BIND_SERVICE to the Platform";
+
 pub async fn start(config: &Config) -> anyhow::Result<Server<Catalog>> {
-    let address = SocketAddr::new(config.host_ip, 53);
+    let address = listen_address(config.host_ip);
     loop {
         match bind(config, address, cloudflare()).await {
             Ok((server, _)) => {
@@ -238,7 +263,7 @@ pub async fn start(config: &Config) -> anyhow::Result<Server<Catalog>> {
             }
             Err(error) => {
                 return Err(anyhow!(
-                    "cannot start DNS on {address}: {error:#}. Check port 53 conflicts; on Linux grant CAP_NET_BIND_SERVICE to the Platform"
+                    "cannot start DNS on {address}: {error:#}. {BIND_HINT}"
                 ));
             }
         }
@@ -550,6 +575,26 @@ mod tests {
         // The UDP socket bound before the TCP conflict was released.
         let _udp = UdpSocket::bind(address).await.unwrap();
         drop(tcp);
+    }
+
+    /// macOS refuses port 53 on a named address to the Operator the
+    /// LaunchDaemon runs as, and allows it on the unspecified one. The
+    /// address family has to survive the swap so an IPv6 Host still gets an
+    /// IPv6 listener.
+    #[test]
+    fn the_listen_address_follows_the_hosts_privileged_bind_rules() {
+        let v4 = listen_address("192.0.2.10".parse().unwrap());
+        let v6 = listen_address("2001:db8::10".parse().unwrap());
+
+        assert_eq!((v4.port(), v6.port()), (53, 53));
+        assert!(v4.is_ipv4() && v6.is_ipv6());
+
+        if cfg!(target_os = "macos") {
+            assert!(v4.ip().is_unspecified() && v6.ip().is_unspecified());
+        } else {
+            assert_eq!(v4.ip(), "192.0.2.10".parse::<IpAddr>().unwrap());
+            assert_eq!(v6.ip(), "2001:db8::10".parse::<IpAddr>().unwrap());
+        }
     }
 
     #[test]

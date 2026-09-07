@@ -33,8 +33,10 @@ self-host serve # keep running; use another terminal for the next command
 self-host setup-dns # Linux with systemd-resolved
 ```
 
-DNS starts with `serve`, before Docker or PostgreSQL is available. It listens
-on the saved Host IP, port 53, over UDP and TCP. Names under the DNS Suffix
+DNS starts with `serve`, before Docker or PostgreSQL is available. It answers
+port 53 over UDP and TCP — on Linux at the saved Host IP, on macOS at every
+interface, because that is the only privileged bind the Operator gets there
+([ADR-0017](docs/adr/0017-host-native-dns.md)). Names under the DNS Suffix
 resolve locally; other names go to Cloudflare (`1.1.1.1`, `1.0.0.1`). The
 configuration is in `~/.config/self-host/dns.json`; restart `serve` after
 changing it. Keep the Host IP fixed.
