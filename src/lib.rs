@@ -23,6 +23,7 @@ pub mod compose_app;
 pub mod config;
 pub mod console;
 pub mod db;
+pub mod dns;
 pub mod docker;
 pub mod error;
 pub mod host_dns;
@@ -1566,7 +1567,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_lists_the_three_infra_containers_by_role() {
+    async fn system_lists_the_two_infra_containers_by_role() {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         let app = build_app(
@@ -1582,22 +1583,19 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&body).unwrap();
 
         let entries = parsed.as_array().unwrap();
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 2);
 
         let roles: Vec<&str> = entries
             .iter()
             .map(|e| e["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, vec!["db", "dns", "proxy"]);
+        assert_eq!(roles, vec!["db", "proxy"]);
 
         let names: Vec<&str> = entries
             .iter()
             .map(|e| e["name"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            names,
-            vec!["sf-system-db", "sf-system-dns", "sf-system-proxy"]
-        );
+        assert_eq!(names, vec!["sf-system-db", "sf-system-proxy"]);
 
         for entry in entries {
             assert!(!entry["image"].as_str().unwrap().is_empty());
@@ -2287,6 +2285,9 @@ mod bootstrap_tests {
 
         assert_eq!(result.dns_suffix, bootstrap::DEFAULT_DNS_SUFFIX);
         assert_eq!(result.host_ip, "192.168.1.10");
+        let dns = crate::dns::Config::load().expect("Bootstrap saves DNS configuration");
+        assert_eq!(dns.dns_suffix, result.dns_suffix);
+        assert_eq!(dns.host_ip.to_string(), result.host_ip);
         assert!(result.api_key.len() >= 64); // 32 bytes = 64 hex chars
         assert!(result.api_listen_addr.contains(":3721"));
     }

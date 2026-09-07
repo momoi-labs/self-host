@@ -94,6 +94,16 @@ install_binary() {
 		install -m 755 "$tmpdir/$BINARY" "$INSTALL_DIR/$BINARY"
 	fi
 
+	if [ "$os" = "linux" ]; then
+		if ! command -v setcap >/dev/null 2>&1; then
+			echo "install libcap (libcap2-bin on Debian/Ubuntu), then run:" >&2
+			echo "  sudo setcap cap_net_bind_service=+ep ${INSTALL_DIR}/${BINARY}" >&2
+			exit 1
+		fi
+		# DNS now binds port 53 in this process, as the Operator.
+		sudo setcap cap_net_bind_service=+ep "$INSTALL_DIR/$BINARY"
+	fi
+
 	echo "${BINARY} ${version} installed to ${INSTALL_DIR}/${BINARY}"
 }
 
@@ -193,8 +203,7 @@ require_brew() {
 
 # Colima runs the Docker daemon in a Lima VM. A LaunchDaemon that runs as
 # the Operator (UserName) starts it at boot, before any login, and launchd
-# restarts it if it exits. The gRPC port forwarder is what carries UDP 53
-# from CoreDNS in the VM to the LAN; the default ssh forwarder is TCP only.
+# restarts it if it exits. DNS runs on the Host and needs no VM forwarding.
 prepare_colima() {
 	local operator="$1" home="$2" brew_prefix
 
@@ -263,12 +272,9 @@ EOF
 }
 
 # Colima reads ~/.colima/_templates/default.yaml when it creates a profile.
-# An existing profile keeps its own file, so the keys that matter are
-# patched there too.
 write_colima_template() {
-	local home="$1" template profile
+	local home="$1" template
 	template="$home/.colima/_templates/default.yaml"
-	profile="$home/.colima/default/colima.yaml"
 
 	mkdir -p "$(dirname "$template")"
 	cat >"$template" <<EOF
@@ -278,15 +284,8 @@ disk: 100
 runtime: docker
 vmType: vz
 mountType: virtiofs
-portForwarder: grpc
 autoActivate: true
 EOF
-
-	if [ -f "$profile" ]; then
-		echo "patching the existing Colima profile ($profile)..."
-		sed -i '' -E 's/^portForwarder:.*/portForwarder: grpc/' "$profile"
-		grep -q '^portForwarder:' "$profile" || echo 'portForwarder: grpc' >>"$profile"
-	fi
 }
 
 wait_for_docker() {
@@ -323,7 +322,7 @@ init_platform() {
 }
 
 # /etc/resolver/<suffix> makes this Mac resolve its own Hostnames through
-# CoreDNS. Other machines point at the Host IP as their DNS server instead.
+# the Platform DNS. Other machines point at the Host IP as their DNS server instead.
 configure_resolver() {
 	local ip
 	ip="$(host_ip)"
@@ -357,7 +356,7 @@ trust_ca() {
 
 # The Platform itself, supervised by launchd as the Operator's user so that
 # it finds the same Docker context, config directory and Compose projects
-# the Operator sees. It waits for Docker and PostgreSQL on its own.
+# the Operator sees. DNS starts before it waits for Docker and PostgreSQL.
 install_platform_daemon() {
 	local operator="$1" home="$2" path
 	path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"

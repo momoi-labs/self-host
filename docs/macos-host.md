@@ -20,7 +20,7 @@ the corresponding items in [mvp-plan.md](mvp-plan.md) stay open.
   runs as that user and asks for `sudo` where it writes to `/Library` and
   `/etc`.
 - A fixed LAN address for the Mac, by DHCP reservation on the router or a
-  manual address. CoreDNS answers every Hostname with it, and the other
+  manual address. The Platform answers every Hostname with it, and the other
   machines point at it as their DNS server.
 - **FileVault off**, or the disk otherwise unlocked at boot. With FileVault
   on, the Mac stops at the pre-boot unlock screen and nothing below starts
@@ -47,9 +47,8 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    they do not meet the requirement. Otherwise, or with
    `SELF_HOST_RUNTIME=colima`, it installs Colima, the Docker CLI and the
    Compose plugin with Homebrew.
-3. Writes a Colima template with `vmType: vz`, `mountType: virtiofs` and
-   `portForwarder: grpc`. The gRPC forwarder is what carries UDP; the default
-   ssh forwarder is TCP only, and DNS on port 53 is UDP.
+3. Writes a Colima template with `vmType: vz` and `mountType: virtiofs`.
+   DNS runs natively on the Host and needs no VM port forwarding.
 4. Installs `/Library/LaunchDaemons/dev.momoi.self-host.colima.plist`: a
    LaunchDaemon that runs `colima start --foreground` as the Operator's user
    (`UserName`), at boot (`RunAtLoad`), kept alive by launchd. A LaunchDaemon
@@ -64,9 +63,9 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    using the fingerprint `self-host init` printed.
 8. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
    `self-host serve`, as the Operator's user, at boot, kept alive. The daemon
-   waits for Docker, brings the Infra up if it is not, waits for PostgreSQL,
-   then serves. It never gives up on a dependency; it logs once a minute
-   until the dependency is there.
+   starts DNS from `dns.json`, then waits for Docker, brings the Infra up
+   if it is not, waits for PostgreSQL, then serves the API. It logs once a
+   minute while waiting for Docker or PostgreSQL.
 
 Logs land in `~/Library/Logs/self-host/`. `sudo launchctl print
 system/dev.momoi.self-host` shows the daemon's state.
@@ -77,6 +76,7 @@ system/dev.momoi.self-host` shows the daemon's state.
 | --- | --- |
 | Colima VM and Docker daemon | `dev.momoi.self-host.colima` LaunchDaemon |
 | Platform Infra containers | Docker's `unless-stopped` restart policy, and `self-host serve` as a fallback |
+| DNS | The Platform daemon, before Docker or PostgreSQL is available |
 | The Platform | `dev.momoi.self-host` LaunchDaemon |
 | Application containers | Docker's `unless-stopped` restart policy; the Platform sets it on every Compose service that has none |
 | Application routes | `self-host serve` republishes every running Application's route on start |
@@ -90,10 +90,11 @@ the Mac. They are listed in the order to check them.
 1. **Colima under a LaunchDaemon, before login.** Lima's `vz` driver uses
    Virtualization.framework from a process with no window server. If the VM
    does not start, `colima.log` says why; the fallback is `vmType: qemu`.
-2. **UDP 53 forwarded to the LAN.** From another machine:
-   `dig @<host-ip> hermes.home.lan`. If it times out while TCP 443 works,
-   the gRPC forwarder is not in effect: check `portForwarder` in
-   `~/.colima/default/colima.yaml`.
+2. **Native UDP and TCP 53 reachable from the LAN.** From another machine,
+   run `dig @<host-ip> hermes.home.lan` and repeat with `+tcp`. Check an
+   external name too, such as `dig @<host-ip> example.com`. Repeat with the
+   Docker runtime stopped; DNS must still answer. Check for another process
+   holding the Host's port 53 if the Platform cannot bind it.
 3. **Ports 80 and 443 reachable from the LAN**, not only from the Mac.
    macOS lets a non-root process bind ports below 1024 since 10.14, so the
    Operator's user is enough.
@@ -115,7 +116,7 @@ Fill in on the Host. Until every row has a date, the issue is open.
 | Reboot, no login | Reboot; from another machine open `https://admin.<suffix>` before logging in | |
 | Startup from shutdown | Power off, power on; same check | |
 | Hermes returns | Open `https://hermes.<suffix>` after the reboot, log in, send a message | |
-| LAN DNS | `dig @<host-ip> hermes.<suffix>` from the Linux workstation | |
+| LAN DNS without Docker | Local and external queries over UDP and TCP while Docker is stopped | |
 | Two Consumers | Chat from two browsers on two machines | |
 | Data survives recreation | Edit the Compose file, save, confirm the previous conversation is still there | |
 | Stopped stays stopped | Stop an Application, reboot, confirm it is still stopped and its Hostname does not answer | |
