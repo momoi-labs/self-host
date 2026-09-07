@@ -3,9 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+# A tag push releases that tag. A manual run releases `snapshot`, one moving
+# pre-release used to exercise install.sh without minting a version.
+env:
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && 'snapshot' || github.ref_name }}
 
 jobs:
   linux:
@@ -48,12 +54,12 @@ jobs:
 
       - run: |
           cd target/${{ matrix.target }}/release
-          tar czf self-host_${{ github.ref_name }}_${{ matrix.target }}.tar.gz self-host
+          tar czf self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz self-host
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/self-host_${{ github.ref_name }}_${{ matrix.target }}.tar.gz
+          path: target/${{ matrix.target }}/release/self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz
 
   darwin:
     runs-on: macos-latest
@@ -89,12 +95,12 @@ jobs:
 
       - run: |
           cd target/${{ matrix.target }}/release
-          tar czf self-host_${{ github.ref_name }}_${{ matrix.target }}.tar.gz self-host
+          tar czf self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz self-host
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/self-host_${{ github.ref_name }}_${{ matrix.target }}.tar.gz
+          path: target/${{ matrix.target }}/release/self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz
 
   publish:
     needs: [linux, darwin]
@@ -108,12 +114,22 @@ jobs:
 
       - run: cd dist && sha256sum *.tar.gz > checksums.txt
 
+      # There is only ever one snapshot. Removing the previous release and
+      # its tag is what lets the tag land on the commit that was just built.
+      - if: env.VERSION == 'snapshot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release delete snapshot --cleanup-tag --yes || true
+
       # A tag with a pre-release suffix, `v0.2.0-beta.1`, publishes as a
       # pre-release, so it never becomes the `latest` the installer resolves
-      # on its own. It is installed by naming the version.
+      # on its own. It is installed by naming the version, and the snapshot
+      # is a pre-release for the same reason.
       - uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ env.VERSION }}
+          prerelease: ${{ env.VERSION == 'snapshot' || contains(env.VERSION, '-') }}
           files: |
             dist/*.tar.gz
             dist/checksums.txt
