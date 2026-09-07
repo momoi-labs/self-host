@@ -202,7 +202,10 @@ fn infra_containers(host_ip: &str) -> Vec<ContainerConfig> {
         ContainerConfig {
             image: PG_IMAGE.to_string(),
             name: apps::system_container_name(PG_ROLE),
-            ports: vec!["15432:5432".into()],
+            // Loopback only. The state store holds every Operator secret
+            // behind credentials fixed at `selfhost:selfhost` (ADR-0012), and
+            // the only client is the Platform binary on the Host.
+            ports: vec!["127.0.0.1:15432:5432".into()],
             env: vec![
                 "POSTGRES_USER=selfhost".into(),
                 "POSTGRES_PASSWORD=selfhost".into(),
@@ -539,6 +542,21 @@ mod tests {
                     container.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_state_store_is_not_published_to_the_lan() {
+        let pg = infra_containers("192.168.1.10")
+            .into_iter()
+            .find(|container| container.name == apps::system_container_name(PG_ROLE))
+            .unwrap();
+
+        for port in &pg.ports {
+            assert!(
+                port.starts_with("127.0.0.1:"),
+                "the state store is published on {port}, reachable from the LAN"
+            );
         }
     }
 
