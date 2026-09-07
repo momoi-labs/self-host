@@ -108,8 +108,12 @@ jobs:
 
       - run: cd dist && sha256sum *.tar.gz > checksums.txt
 
+      # A tag with a pre-release suffix, `v0.2.0-beta.1`, publishes as a
+      # pre-release, so it never becomes the `latest` the installer resolves
+      # on its own. It is installed by naming the version.
       - uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
             dist/checksums.txt
