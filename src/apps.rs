@@ -601,7 +601,44 @@ pub async fn finish_deploy(
     record_outcome(store, record, result).await
 }
 
-/// Brings Docker and Traefik back in line with the database at boot.
+/// Gives an Application deployed before the Platform served HTTP itself a Host
+/// port for its Web Target, and recreates its workload so Docker publishes it.
+///
+/// A container cannot start publishing a port it was created without, so this
+/// is a recreate — of the workload only. Volumes, the Application's data and
+/// everything on record survive it, which is the whole difference between
+/// this and asking the Operator to deploy again.
+async fn give_web_target_port(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    app: &mut ApplicationRecord,
+) -> Result<u16, DeployError> {
+    let port = allocate_web_target_port(store).await?;
+    // On a copy until it works: a port on the record that nothing answers on
+    // would route every Consumer at a closed socket, which is worse than the
+    // 503 they get from a record with no port at all.
+    let mut published = app.clone();
+    published.web_target_port = Some(port);
+
+    if published.source == SOURCE_COMPOSE {
+        docker
+            .compose_up(&project_for(store, &published).await?)
+            .await?;
+    } else {
+        // Already gone is the state the recreate wanted.
+        let _ = docker
+            .remove_container(&container_name_for(&published.id))
+            .await;
+        start_container(store, docker, &published).await?;
+    }
+
+    store.insert_application(&published).await?;
+    *app = published;
+    Ok(port)
+}
+
+/// Brings Docker and the route table back in line with what is on record at
+/// boot.
 ///
 /// A row left `pending` by a process that died mid-deploy is indistinguishable
 /// from one still being pulled, so settle them: whatever Docker is actually
@@ -645,6 +682,21 @@ pub async fn reconcile(
             }
 
             store.insert_application(&app).await?;
+        }
+
+        if app.status == STATUS_RUNNING && app.web_target_port.is_none() && executor_available {
+            match give_web_target_port(store, docker, &mut app).await {
+                Ok(port) => tracing::info!(
+                    "Application {} answers on Host port {port} now; its workload was recreated \
+                     to publish it",
+                    app.name
+                ),
+                Err(e) => tracing::warn!(
+                    "Application {} has no reachable Web Target yet, so it answers 503: {}",
+                    app.name,
+                    ErrorReport::new(&e)
+                ),
+            }
         }
 
         if app.status == STATUS_RUNNING {
@@ -1452,6 +1504,74 @@ mod tests {
         assert_eq!(settled.status, STATUS_RUNNING);
         assert_eq!(settled.last_error, None);
         assert!(routes.get(&settled.id).is_some());
+    }
+
+    /// An Application deployed before the Platform served HTTP itself has no
+    /// Host port, so nothing outside Docker can reach it. Startup is where it
+    /// gets one, at the cost of recreating the workload once.
+    #[tokio::test]
+    async fn reconcile_gives_an_older_application_a_reachable_web_target() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+
+        // As the store would have it after an upgrade: running, on record,
+        // and answering nowhere the Host can reach.
+        let mut app = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        app.web_target_port = None;
+        store.insert_application(&app).await.unwrap();
+        docker.apps.lock().unwrap().clear();
+
+        reconcile(&store, &docker, &routes).await.unwrap();
+
+        let migrated = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        let port = migrated.web_target_port.expect("a Host port");
+        assert_eq!(migrated.status, STATUS_RUNNING);
+        let containers = docker.apps.lock().unwrap();
+        assert_eq!(containers.len(), 1, "the workload was recreated once");
+        assert_eq!(containers[0].ports, [format!("127.0.0.1:{port}:80")]);
+    }
+
+    /// The port is recorded only once something answers on it. A record
+    /// pointing at a closed socket routes Consumers into a dead end, where a
+    /// record with no port at all is an honest 503.
+    #[tokio::test]
+    async fn a_failed_recreate_leaves_the_application_without_a_port() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+        let mut app = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        app.web_target_port = None;
+        store.insert_application(&app).await.unwrap();
+
+        let broken = FakeDocker::failing_run("no space left on device");
+        reconcile(&store, &broken, &routes).await.unwrap();
+
+        let untouched = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(untouched.web_target_port, None);
+        assert_eq!(untouched.status, STATUS_RUNNING);
     }
 
     /// A Host whose Docker is gone observes nothing. Reporting every
