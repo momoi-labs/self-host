@@ -243,6 +243,14 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!("  https://admin.{}", result.dns_suffix);
     println!();
 
+    let setup_host = if result.host_ip.contains(':') {
+        format!("[{}]", result.host_ip)
+    } else {
+        result.host_ip.clone()
+    };
+    println!("Device setup instructions: http://{setup_host}/setup");
+    println!();
+
     let ca_path = tls::ca_cert_path();
     if ca_path.exists() {
         println!("--- HTTPS Setup ---");
@@ -295,7 +303,9 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!("API listen address: http://{}", result.api_listen_addr);
     println!("API key: {}", result.api_key);
     println!();
-    println!("Consumer traffic enters on port 443 (HTTPS) and 80 (redirects to HTTPS).");
+    println!(
+        "Consumer traffic enters on port 443 (HTTPS) and 80 (device setup and HTTPS redirects)."
+    );
     println!("Operator API is on port {OPERATOR_API_PORT}.");
     println!();
     println!("Start the daemon with: self-host serve");

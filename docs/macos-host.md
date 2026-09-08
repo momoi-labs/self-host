@@ -108,6 +108,20 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
 Logs land in `~/Library/Logs/self-host/`. `sudo launchctl print
 system/dev.momoi.self-host` shows the daemon's state.
 
+## Configure another device
+
+Open `http://<host-ip>/setup` on the device you want to connect. This public
+page stays on HTTP and needs neither working LAN DNS nor a trusted CA.
+It shows commands for macOS and Linux to configure DNS, install only the CLI
+if needed, and trust the CA. It also offers the public CA for manual download.
+Copy buttons work on plain HTTP, with text selection as a fallback.
+
+Confirm the displayed fingerprint with the Operator through the Host's terminal
+or SSH before running the trust command. On macOS, run that command in the
+device's graphical Terminal session and approve the system prompt. Then open
+the HTTPS console using the link on the page. There is no automatic redirect
+to setup or from setup to the console.
+
 ## How the pieces come back after a reboot
 
 | Layer | Brought back by |

@@ -9,6 +9,11 @@
 .auth-shell { display: grid; min-height: 100vh; place-items: center; padding: var(--spacing-xl); }
 .auth-panel { width: 100%; max-width: 400px; }
 
+/* Public device setup, reached by IP before DNS or CA trust is configured. */
+.device-setup { width: 100%; max-width: 840px; margin-inline: auto; padding: var(--spacing-xl); }
+.device-setup .card-content { min-width: 0; }
+.setup-command { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* The health indicator doubles as the way to show platform services. */
 .health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); background: transparent; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
 .health-link:hover { text-decoration: underline; }
