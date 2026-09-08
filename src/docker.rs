@@ -835,6 +835,9 @@ pub struct FakeDocker {
     pub exited: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
     /// When set, `compose_up` fails with this message.
     pub compose_failure: Option<String>,
+    /// When set, `run_application` fails with this message — a Host that
+    /// cannot start the container it was asked for.
+    pub run_failure: Option<String>,
 }
 
 impl FakeDocker {
@@ -850,12 +853,20 @@ impl FakeDocker {
             stopped: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
             exited: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
             compose_failure: None,
+            run_failure: None,
         }
     }
 
     pub fn failing_compose(message: &str) -> Self {
         FakeDocker {
             compose_failure: Some(message.to_string()),
+            ..FakeDocker::new()
+        }
+    }
+
+    pub fn failing_run(message: &str) -> Self {
+        FakeDocker {
+            run_failure: Some(message.to_string()),
             ..FakeDocker::new()
         }
     }
@@ -1003,6 +1014,9 @@ impl DockerRuntime for FakeDocker {
     }
 
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
+        if let Some(message) = &self.run_failure {
+            return Err(DockerError::Unavailable(message.clone()));
+        }
         // Mirror the production contract: an Application publishes its Web
         // Target for the proxy on the Host and nothing on the LAN.
         if let Some(port) = config
