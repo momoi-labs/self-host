@@ -52,26 +52,31 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    Operator's home directory as a writable mount, and `network.dns` set to
    Cloudflare. Without that mount the VM shares nothing of the Mac and every
    bind mount — an Application's data directory, a Compose project — is an
-   empty directory inside the VM. Without the resolvers, Colima leaves
-   Lima's host resolver on, and `limactl` holds TCP port 53 of the Mac, which
-   is where the Platform serves DNS. An existing profile is patched in place.
+   empty directory inside the VM. An existing profile is patched in place.
    DNS runs natively on the Host and needs no VM port forwarding.
-4. Installs `/Library/LaunchDaemons/dev.momoi.self-host.colima.plist`: a
+4. Writes `~/.colima/_lima/_config/override.yaml` so Lima ignores guest port
+   53. The Colima guest runs `dnsmasq`, and Lima republishes a guest listener
+   on the same port of the Mac — `limactl` ends up holding `TCP *:53` with no
+   container publishing anything, and the Platform cannot serve DNS. Colima
+   has no setting for this and turning its host resolver off does not help;
+   the Lima override is where it belongs. An override the Operator wrote by
+   hand is left alone, with a message saying what it needs.
+5. Installs `/Library/LaunchDaemons/dev.momoi.self-host.colima.plist`: a
    LaunchDaemon that runs `colima start --foreground` as the Operator's user
    (`UserName`), at boot (`RunAtLoad`), kept alive by launchd. A LaunchDaemon
    runs before any login; running it as the Operator keeps the Docker
    context, the socket and the mounted home directory the Operator sees.
-5. Runs `self-host init`, which brings up the Platform Infra and detects the
+6. Runs `self-host init`, which brings up the Platform Infra and detects the
    LAN address. `SELF_HOST_IP` overrides the detection.
-6. Writes `/etc/resolver/<suffix>` so the Mac resolves its own Hostnames.
-7. Runs `self-host trust-ca`, so the Host's own browser opens
+7. Writes `/etc/resolver/<suffix>` so the Mac resolves its own Hostnames.
+8. Runs `self-host trust-ca`, so the Host's own browser opens
    `https://admin.<suffix>` without a warning. The System Keychain refuses
    this over SSH, where nobody can authorize it; the installer then warns and
    carries on, and the command can be run again from Terminal on the Mac.
    Each Consumer trusts the same CA once with `self-host trust-ca --from
    admin.<suffix> --fingerprint <sha256>`, using the fingerprint
    `self-host init` printed.
-8. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
+9. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
    `self-host serve`, as the Operator's user, at boot, kept alive. The daemon
    starts DNS from `dns.json`, opens its state directory and serves the API,
    none of which needs Docker. Bringing the Platform Infra up runs alongside;
