@@ -51,8 +51,8 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
 3. Writes a Colima template with `vmType: vz`, `mountType: virtiofs`, the
    Operator's home directory as a writable mount, and `network.dns` set to
    Cloudflare. Without that mount the VM shares nothing of the Mac and every
-   bind mount — Traefik's configuration, an Application's data directory — is
-   an empty directory inside the VM. Without the resolvers, Colima leaves
+   bind mount — an Application's data directory, a Compose project — is an
+   empty directory inside the VM. Without the resolvers, Colima leaves
    Lima's host resolver on, and `limactl` holds TCP port 53 of the Mac, which
    is where the Platform serves DNS. An existing profile is patched in place.
    DNS runs natively on the Host and needs no VM port forwarding.
@@ -133,15 +133,19 @@ the Mac. They are listed in the order to check them.
    allows port 53 on the unspecified address and refuses it on a named one
    (ADR-0017). So nothing else on the Mac may hold 53 — `lsof -nP -iTCP:53
    -iUDP:53` names whoever does if the Platform cannot bind it.
-3. **Ports 80 and 443 reachable from the LAN**, not only from the Mac.
-   Traefik publishes them through the Docker runtime, so the Operator's user
-   is enough.
+3. **Ports 80 and 443 reachable from the LAN**, not only from the Mac. The
+   Platform binds them itself, on the unspecified address for the same reason
+   it binds 53 there: as the Operator, macOS allows a privileged port on the
+   unspecified address and refuses it on a named one (ADR-0019). Nothing else
+   on the Mac may hold them; `lsof -nP -iTCP:80 -iTCP:443` names whoever
+   does.
 4. **Bind-mount ownership.** The Hermes container `chown`s `/opt/data`. On a
    virtiofs mount that may be refused. If Hermes logs a permission error,
    set `PUID` and `PGID` in its environment to the Operator's `id -u` and
    `id -g`.
-5. **`host.docker.internal` from Traefik.** The console route goes to
-   `host.docker.internal:3721`. Colima maps it to `host.lima.internal`.
+5. **Nothing in the VM reaches back.** The console is served from the
+   Platform's own process, and an Application is reached at a Host port it
+   publishes on loopback, so no container needs a route to the Mac.
 
 ## Acceptance record
 

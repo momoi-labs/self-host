@@ -13,8 +13,6 @@ Everything the Operator configured lives in one directory on the Host:
 ├── dns.json               # what DNS serves, derived from state
 ├── config.json            # this machine's CLI credentials
 ├── certs/                 # the Platform CA and its certificates
-├── traefik.yml, traefik-dynamic/   # generated routing
-├── docker-compose.yml     # generated Platform Infra
 └── apps/<application-id>/ # generated Compose projects and Application data
 ```
 
@@ -94,6 +92,32 @@ self-host init
 Application IDs and the CA do not survive this. Consumers have to trust the new
 CA, and containers are recreated under new names. Docker named volumes are
 removed by `reset` — copy anything you need out of them first.
+
+## Upgrading from a Platform that ran Traefik
+
+Platforms up to 0.2.0-beta.2 served HTTP and HTTPS from a `sf-system-proxy`
+container. This version serves them itself, and takes the ports on start:
+the container is removed, and so are the Compose file that would hand them
+back on the next `docker compose up` and the Traefik configuration next to it.
+Nothing there is state — all of it was generated from records the Platform
+still has.
+
+Applications deployed before the upgrade have no Host port for the Platform to
+reach them on, and a running container cannot be given one. Each is recreated
+once, on the first start after upgrading, and answers again when it comes back:
+
+```
+Application hermes answers on Host port 51268 now; its workload was recreated
+to publish it
+```
+
+Volumes, bind-mounted data, Hostnames, aliases and Application IDs all survive
+that — it is a recreate of the workload, not a redeploy. A Host whose Docker
+cannot be reached migrates nothing, says so, and answers those Applications
+with a 503 until Docker is back and the daemon restarts.
+
+The `sf-system` bridge is left behind with no members. `docker network rm
+sf-system` clears it.
 
 ## Failure and recovery
 

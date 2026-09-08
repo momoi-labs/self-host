@@ -32,5 +32,13 @@ Changing a network name recreates every container attached to it. That is free
 today for the same reason ADR-0011 gives — nothing is published — and would not
 be later.
 
-**Status:** accepted
+**Status:** superseded
+
+**Superseded by:** [ADR-0019](0019-embedded-http-proxy.md), which leaves one
+network. Nothing of the Platform's runs in a container to need `sf-system`:
+the proxy is on the Host and reaches an Application through a loopback port,
+so no component crosses into `sf-apps` at all. What this decision protected is
+stronger for it — an Application shares a bridge with other Applications and
+with nothing of the Platform's. An `sf-system` bridge left behind by an older
+install has no members; `docker network rm sf-system` clears it.
 **Amends:** the single `self-host` network implied by ADR-0003

@@ -116,7 +116,7 @@ which is rendered into the project on top of the file.
 - **`failed` with "service 'hermes' exited with code N"**: the container
   started and died. Read the logs pane; the last lines are Hermes's own
   reason. A missing dashboard password is the usual one.
-- **The browser shows a Traefik 404 or 502**: the route is up but the
+- **The browser shows a 404 or 502**: the route is up but the
   service is not listening on 9119 yet. Wait for
   `HERMES_DASHBOARD_READY` in the logs. If it never appears, check that
   `HERMES_DASHBOARD=1` is set and the web port is 9119, not 8642.

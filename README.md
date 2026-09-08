@@ -1,9 +1,10 @@
 # self-host
 
-Publish Applications on your own LAN. One binary on the Host serves DNS and manages
-Traefik and a private CA, so every Application you deploy answers at its own
-name, `https://<name>.home.lan`, with HTTPS the machines in the house trust.
-There is no control plane anywhere else.
+Publish Applications on your own LAN. One binary on the Host serves DNS, HTTP
+and HTTPS, and owns a private CA, so every Application you deploy answers at
+its own name, `https://<name>.home.lan`, with HTTPS the machines in the house
+trust. Docker runs the Applications and nothing else. There is no control
+plane anywhere else.
 
 ## Install
 
@@ -115,9 +116,6 @@ Never copy `ca-key.pem` or `key.pem` to another device.
 The Host and Consumers must resolve the DNS Suffix through the Platform DNS.
 `self-host init` prints the exact Host command and the DNS address to configure
 on the router or each Consumer.
-
-On a Linux Host with UFW enabled, Bootstrap also prints scoped rules that let
-Traefik reach the Operator API from its two Docker networks.
 
 See the [product vision](docs/vision.md) and [next MVP plan](docs/mvp-plan.md)
 for the approved direction, and [CONTEXT.md](CONTEXT.md) for domain language.

@@ -50,10 +50,10 @@ _Avoid_: stack, docker-compose app, project (as the user-facing term; the projec
 
 **Web Target**:
 The Compose service and container port an Application's Hostname routes to. Resolved when the definition is accepted and recorded on the Application.
-_Avoid_: backend (Traefik's word), main service, entrypoint
+_Avoid_: backend, main service, entrypoint
 
 **Platform Infra**:
-Components the Platform starts for itself (e.g. the HTTP traffic proxy) — not Operator Applications. DNS and the state store are not Infra: the Platform serves DNS itself (ADR-0017) and keeps its state in files it owns (ADR-0018).
+Components the Platform once started for itself, as containers, rather than Operator Applications. There are none left: the Platform keeps its state in files it owns (ADR-0018) and serves DNS (ADR-0017) and HTTP (ADR-0019) from its own process. Docker runs Applications.
 _Avoid_: dependencies (ambiguous with app deps), sidecars
 
 **Platform State**:
