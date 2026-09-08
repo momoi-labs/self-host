@@ -296,91 +296,6 @@ pub fn validate_public_ca(ca: &[u8]) -> Result<(), TlsError> {
     })
 }
 
-pub fn traefik_config_path() -> PathBuf {
-    compose::platform_config_dir().join("traefik.yml")
-}
-
-pub fn traefik_dynamic_dir() -> std::path::PathBuf {
-    compose::platform_config_dir().join("traefik-dynamic")
-}
-
-pub fn write_traefik_config() -> Result<(), TlsError> {
-    let config = r#"entryPoints:
-  web:
-    address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-  websecure:
-    address: ":443"
-
-providers:
-  docker:
-    exposedByDefault: false
-  file:
-    directory: /etc/traefik/dynamic
-    watch: true
-"#;
-
-    let path = traefik_config_path();
-    std::fs::write(&path, config)
-        .map_err(|e| TlsError::ConfigWrite(format!("write traefik config: {e}")))?;
-
-    let dynamic_dir = traefik_dynamic_dir();
-    std::fs::create_dir_all(&dynamic_dir)
-        .map_err(|e| TlsError::ConfigWrite(format!("create dynamic dir: {e}")))?;
-
-    let tls_config = r#"tls:
-  certificates:
-    - certFile: /certs/cert.pem
-      keyFile: /certs/key.pem
-"#;
-    std::fs::write(dynamic_dir.join("tls.yml"), tls_config)
-        .map_err(|e| TlsError::ConfigWrite(format!("write tls.yml: {e}")))?;
-
-    Ok(())
-}
-
-pub fn write_admin_route(dns_suffix: &str) -> Result<(), TlsError> {
-    let dynamic_dir = traefik_dynamic_dir();
-    std::fs::create_dir_all(&dynamic_dir)
-        .map_err(|e| TlsError::ConfigWrite(format!("create dynamic dir: {e}")))?;
-
-    let admin_config = format!(
-        r#"http:
-  routers:
-    admin:
-      rule: "Host(`admin.{dns_suffix}`)"
-      entryPoints:
-        - websecure
-      tls: {{}}
-      service: admin-api
-  services:
-    admin-api:
-      loadBalancer:
-        servers:
-          - url: "http://host.docker.internal:{OPERATOR_API_PORT}"
-"#,
-        dns_suffix = dns_suffix,
-        OPERATOR_API_PORT = crate::bootstrap::OPERATOR_API_PORT,
-    );
-
-    std::fs::write(dynamic_dir.join("admin.yml"), admin_config)
-        .map_err(|e| TlsError::ConfigWrite(format!("write admin.yml: {e}")))?;
-
-    Ok(())
-}
-
-pub fn traefik_args() -> Vec<String> {
-    vec![
-        "--providers.docker=true".into(),
-        "--providers.docker.exposedbydefault=false".into(),
-        "--configfile=/etc/traefik/traefik.yml".into(),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,11 +399,5 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(fingerprint.len(), 95);
         assert!(error.to_string().contains("not a CA"));
-    }
-
-    #[test]
-    fn traefik_args_include_configfile() {
-        let args = traefik_args();
-        assert!(args.iter().any(|a| a.contains("configfile")));
     }
 }

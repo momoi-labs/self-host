@@ -14,8 +14,8 @@
 //! counted, and startup collects it.
 //!
 //! `state/` is authoritative and nothing else is. Rendered Compose projects,
-//! Traefik routing and Docker's own view of the world are all rebuildable, and
-//! live outside it.
+//! the route table and Docker's own view of the world are all rebuildable,
+//! and live outside it.
 
 use std::collections::BTreeMap;
 use std::fs::File;

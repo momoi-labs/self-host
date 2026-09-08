@@ -1,6 +1,7 @@
 use std::env;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use self_host::bootstrap::{self, BootstrapResult, OPERATOR_API_PORT};
 use self_host::build_app;
@@ -271,8 +272,8 @@ async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Re
         // Bootstrap completes on a Host with no Docker, leaving the Platform
         // configured but unable to run anything. Running init again is how the
         // Operator repairs that once Docker is there.
-        match bootstrap::start_platform_infra(&docker).await {
-            Ok(()) => println!("Platform Infra is up."),
+        match bootstrap::prepare_execution(&docker).await {
+            Ok(()) => println!("Docker is ready to run Applications."),
             Err(e) => {
                 println!();
                 println!("Application execution is still unavailable:");
@@ -1108,21 +1109,11 @@ async fn run_api_server() {
 
     let docker: Arc<dyn DockerRuntime> = Arc::new(compose_docker);
 
-    // Docker's restart policy brings the Infra back after a reboot; this
-    // covers the rest, and is a no-op when everything is already up. A Docker
-    // that is missing, or still starting, must not hold up the listener: it
-    // only costs Application execution and HTTPS, so it runs alongside.
-    tokio::spawn(bring_infra_up());
-
-    // Both proxies are told about every route while both are serving: the
-    // files Traefik watches, and the table the embedded proxy reads
+    // Where every Application answers, as the proxy in this process reads it
     // (ADR-0019).
     let table = self_host::proxy::RouteTable::new();
     let routes: Arc<dyn self_host::routes::RouteStore> =
-        Arc::new(self_host::routes::AllRoutes::new(vec![
-            Box::new(self_host::routes::FileRoutes::new()),
-            Box::new(self_host::routes::ProxyRoutes::new(table.clone())),
-        ]));
+        Arc::new(self_host::routes::ProxyRoutes::new(table.clone()));
 
     // A record left `pending` by a restart is nobody's deploy any more; settle
     // it against what Docker is actually running before serving.
@@ -1141,10 +1132,25 @@ async fn run_api_server() {
         }
     }
 
-    let app = build_app(store.clone(), docker, routes);
+    let app = build_app(store.clone(), docker.clone(), routes);
+
+    // Consumer traffic is the Platform's own listener now, so an upgrade has
+    // to take the ports back from the container that used to hold them
+    // before anything tries to bind.
+    release_ports_from_legacy_proxy(docker.as_ref()).await;
 
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
-        tokio::spawn(serve_embedded_proxy(dns_suffix, app.clone(), table));
+        let proxy = serve_proxy(dns_suffix, app.clone(), table);
+        tokio::spawn(async move {
+            if let Err(error) = proxy.await {
+                // Without this listener there is no console, no API over
+                // HTTPS and no Application reachable by Hostname. Exiting
+                // hands the supervisor a Platform it can restart, which is
+                // more use than one that is up and serving nobody.
+                tracing::error!("Platform stopped: {error:#}");
+                std::process::exit(1);
+            }
+        });
     }
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
@@ -1156,32 +1162,42 @@ async fn run_api_server() {
     axum::serve(listener, app).await.expect("server error");
 }
 
-/// Serves the embedded proxy beside Traefik, on ports of its own (ADR-0019).
+/// Serves Consumer traffic on 80 and 443 (ADR-0019).
 ///
-/// It answers with the same certificates, the same admin Hostname and the same
-/// routes the Platform just published, so it can be checked against the proxy
-/// still carrying the Host's traffic before it takes over 80 and 443. Nothing
-/// depends on it yet: failing to start costs this listener and nothing else,
-/// which is why it is a warning and not the end of the daemon.
-async fn serve_embedded_proxy(
+/// Both are privileged ports, and the two Hosts grant them the same way they
+/// grant port 53 to DNS: `CAP_NET_BIND_SERVICE` on Linux, and on macOS the
+/// unspecified address, which a non-root process may bind below 1024 where a
+/// named one it may not. Binding the unspecified address on both keeps one
+/// listener instead of one per Host.
+async fn serve_proxy(
     dns_suffix: String,
     admin_router: axum::Router,
     table: self_host::proxy::RouteTable,
-) {
+) -> anyhow::Result<()> {
     let config = self_host::proxy::ProxyConfig {
         cert_path: self_host::tls::cert_path(),
         key_path: self_host::tls::key_path(),
         bind_ip: std::net::IpAddr::from([0, 0, 0, 0]),
-        https_port: env_port("SELF_HOST_PROXY_HTTPS_PORT", 8443),
-        http_port: env_port("SELF_HOST_PROXY_HTTP_PORT", 8080),
+        https_port: env_port("SELF_HOST_PROXY_HTTPS_PORT", 443),
+        http_port: env_port("SELF_HOST_PROXY_HTTP_PORT", 80),
         admin_hostname: format!("admin.{dns_suffix}"),
     };
-    let (https, http) = (config.https_port, config.http_port);
+    let ports = format!("{} and {}", config.https_port, config.http_port);
 
-    info!("embedded proxy preview: https on {https}, http on {http}");
-    if let Err(error) = self_host::proxy::serve(config, admin_router, table).await {
-        tracing::warn!("the embedded proxy is not serving: {error:#}");
-    }
+    self_host::proxy::serve(config, admin_router, table)
+        .await
+        .with_context(|| format!("cannot serve Consumer traffic on {ports}. {}", bind_hint()))
+}
+
+#[cfg(target_os = "macos")]
+fn bind_hint() -> &'static str {
+    "Find what already holds them with 'lsof -nP -iTCP:80 -iTCP:443'"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bind_hint() -> &'static str {
+    "Check for a conflict, and grant CAP_NET_BIND_SERVICE to the Platform \
+     ('sudo setcap cap_net_bind_service=+ep' on the binary) if it is missing"
 }
 
 fn env_port(name: &str, default: u16) -> u16 {
@@ -1191,25 +1207,43 @@ fn env_port(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
-/// Brings the Platform Infra up off the serving path. `docker compose up`
-/// blocks, and on a Host where Docker is starting or absent it can block for a
-/// long time or fail outright; neither is a reason to delay the console.
-async fn bring_infra_up() {
-    let result = tokio::task::spawn_blocking(|| {
-        let docker = ComposeDocker::new()?;
-        docker.infra_up()
-    })
-    .await;
-
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!(
-            "failed to bring the Platform Infra up; Applications and HTTPS are unavailable \
-             until Docker is reachable: {}",
+/// Takes 80 and 443 back from the proxy container older installations run.
+///
+/// Only the container goes: it holds no Application data, and everything it
+/// was configured with — certificates, Hostnames, aliases — is on record and
+/// already serving from this process. A Host whose Docker cannot be reached
+/// has no such container running either, so there is nothing to release and
+/// nothing to wait for.
+async fn release_ports_from_legacy_proxy(docker: &dyn DockerRuntime) {
+    let name = self_host::apps::system_container_name(bootstrap::LEGACY_PROXY_CONTAINER_ROLE);
+    if !docker.container_running(&name).await.unwrap_or(false) {
+        return;
+    }
+    info!("removing the '{name}' container, which holds ports 80 and 443");
+    match docker.remove_container(&name).await {
+        Ok(()) => {
+            info!("ports 80 and 443 released; this Platform serves them itself now");
+            discard_generated_proxy_files();
+        }
+        Err(e) => tracing::warn!(
+            "could not remove '{name}': {}. Remove it by hand, then restart the Platform",
             ErrorReport::new(&e)
         ),
-        Err(e) => tracing::warn!("failed to bring the Platform Infra up: {e}"),
     }
+}
+
+/// Throws away what an older Platform generated for the proxy it ran.
+///
+/// The Compose file is the one that matters: it still lists the container
+/// just removed, and a `docker compose up` in that directory would hand the
+/// ports straight back. The rest is configuration for a program this Host no
+/// longer runs. None of it is Application data, and none of it is state — all
+/// of it was generated from the records the Platform still has.
+fn discard_generated_proxy_files() {
+    let config = self_host::compose::platform_config_dir();
+    let _ = std::fs::remove_file(config.join("docker-compose.yml"));
+    let _ = std::fs::remove_file(config.join("traefik.yml"));
+    let _ = std::fs::remove_dir_all(config.join("traefik-dynamic"));
 }
 
 async fn resolve_server_config() -> (String, String) {

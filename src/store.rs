@@ -15,8 +15,8 @@ use crate::error::ErrorReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationRecord {
-    /// Stable identity. The container and the Traefik router are named from
-    /// this, never from `name`, so renaming an Application touches only a row.
+    /// Stable identity. The container and the route are keyed on this, never
+    /// on `name`, so renaming an Application touches only a record.
     pub id: String,
     pub name: String,
     pub hostname: String,

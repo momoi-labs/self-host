@@ -150,9 +150,10 @@ pub struct ContainerConfig {
     pub extra_hosts: Vec<String>,
 }
 
-/// Two bridges, so an Application cannot open a socket on Platform Infra.
-/// Traefik sits on both: it is the only component that must reach across.
-pub const SYSTEM_NETWORK: &str = "sf-system";
+/// The bridge Applications share. The Platform is not on it: it reaches an
+/// Application through the Host port its Web Target publishes (ADR-0019),
+/// which is also why an Application can no longer open a socket on anything
+/// of the Platform's.
 pub const APP_NETWORK: &str = "sf-apps";
 
 /// Application container: routed by Hostname, and publishing its Web Target
@@ -290,17 +291,6 @@ impl ComposeDocker {
 
     pub fn compose_path(&self) -> std::path::PathBuf {
         self.runner.path().clone()
-    }
-
-    /// Brings the Platform Infra up from the file `init` wrote, if there is
-    /// one. Docker's restart policy normally does this on its own after a
-    /// reboot; this is for the cases it does not cover, such as an Infra
-    /// container that was removed by hand.
-    pub fn infra_up(&self) -> Result<(), DockerError> {
-        if !self.runner.path().exists() {
-            return Ok(());
-        }
-        self.runner.up().map_err(DockerError::from_compose_error)
     }
 }
 

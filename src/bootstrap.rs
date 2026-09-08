@@ -1,6 +1,5 @@
-use crate::apps;
 use crate::compose;
-use crate::docker::{APP_NETWORK, ContainerConfig, DockerError, DockerRuntime, SYSTEM_NETWORK};
+use crate::docker::{APP_NETWORK, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
 use crate::store::{StateStore, StoreError};
 use crate::tls;
@@ -8,16 +7,16 @@ use rand::Rng;
 use std::net::UdpSocket;
 use tracing::info;
 
-const TRAEFIK_IMAGE: &str = "traefik:v3";
-const TRAEFIK_ROLE: &str = "proxy";
+/// The Platform Infra the Platform starts for itself, as `(role, image)`
+/// pairs. There is none left: state is files the Platform owns (ADR-0018),
+/// DNS is served from the binary (ADR-0017) and so is HTTP (ADR-0019). Docker
+/// runs Applications, and nothing of the Platform's own.
+pub const SYSTEM_CONTAINERS: &[(&str, &str)] = &[];
 
-/// The Platform Infra the Platform starts for itself, as `(role, image)` pairs
-/// in display order. The role is what names the component
-/// (`system_container_name`); the image is the product that fills it today.
-///
-/// Platform state is not in here: it lives in files the Platform owns
-/// (ADR-0018), so the console and the API do not need Docker to answer.
-pub const SYSTEM_CONTAINERS: &[(&str, &str)] = &[(TRAEFIK_ROLE, TRAEFIK_IMAGE)];
+/// The container an older Platform ran Traefik in. Nothing starts it any
+/// more; it is only recognised so an upgrade can take ports 80 and 443 back
+/// from it.
+pub const LEGACY_PROXY_CONTAINER_ROLE: &str = "proxy";
 
 pub const DEFAULT_DNS_SUFFIX: &str = "home.lan";
 pub const OPERATOR_API_PORT: u16 = 3721;
@@ -85,19 +84,13 @@ pub async fn run_bootstrap(
     tls::generate_certificates(dns_suffix)?;
     info!("TLS certificates ready");
 
-    tls::write_traefik_config()?;
-    info!("Traefik configuration written");
-
-    tls::write_admin_route(dns_suffix)?;
-    info!("admin route configured");
-
     dns_config
         .save()
         .map_err(|e| BootstrapError::ConfigWrite(e.to_string()))?;
 
-    // Docker runs Applications and, until the proxy moves into the binary, the
-    // HTTPS frontend. It is not what the Platform stores its state in, so a
-    // Host without it still gets a configured Platform and a working console.
+    // Docker runs Applications and nothing else now. It is not where the
+    // Platform keeps its state, nor how it serves DNS or HTTPS, so a Host
+    // without it still gets a configured Platform and a working console.
     let execution_unavailable = match start_infra_containers(docker).await {
         Ok(()) => None,
         Err(BootstrapError::Docker(e)) => {
@@ -160,13 +153,8 @@ fn validate_configuration(dns_suffix: &str) -> Result<(), BootstrapError> {
         )));
     }
 
-    let admin_route = std::fs::read_to_string(tls::traefik_dynamic_dir().join("admin.yml"))
-        .map_err(|e| BootstrapError::ConfigRead(format!("admin route: {e}")))?;
-    if !admin_route.contains(&format!("Host(`admin.{dns_suffix}`)")) {
-        return Err(BootstrapError::ConfigurationMismatch(format!(
-            "the console route does not use '{dns_suffix}'"
-        )));
-    }
+    // The console's route is not a file any more: the Platform answers
+    // `admin.<suffix>` from the same process that serves this check.
     Ok(())
 }
 
@@ -187,57 +175,19 @@ pub async fn persist_bootstrap_state(
     Ok(())
 }
 
-/// Brings the Platform Infra up, or says why it cannot. Bootstrap completes
-/// without it, so this is also how a Host that had no Docker at `init` time is
-/// repaired once it does.
-pub async fn start_platform_infra(docker: &impl DockerRuntime) -> Result<(), BootstrapError> {
+/// Readies Docker to run Applications, or says why it cannot. Bootstrap
+/// completes without it, so this is also how a Host that had no Docker at
+/// `init` time is repaired once it does.
+pub async fn prepare_execution(docker: &impl DockerRuntime) -> Result<(), BootstrapError> {
     start_infra_containers(docker).await
 }
 
 async fn start_infra_containers(docker: &impl DockerRuntime) -> Result<(), BootstrapError> {
     docker.ping().await?;
-    docker.ensure_network(SYSTEM_NETWORK).await?;
+    // The one network the Platform still needs: the bridge Applications share
+    // so a Compose project can talk to itself.
     docker.ensure_network(APP_NETWORK).await?;
-
-    for container in infra_containers() {
-        info!("configuring {} container", container.name);
-        docker.ensure_container_running(container).await?;
-    }
-
-    info!("applying docker compose configuration");
-    docker.commit().await?;
-
-    info!("infra containers started successfully");
     Ok(())
-}
-
-/// The Platform Infra containers, as configuration. Applications reach Traefik
-/// and nothing else: only the proxy is on both networks.
-fn infra_containers() -> Vec<ContainerConfig> {
-    vec![ContainerConfig {
-        image: TRAEFIK_IMAGE.to_string(),
-        name: apps::system_container_name(TRAEFIK_ROLE),
-        ports: vec!["80:80".into(), "443:443".into()],
-        env: vec![],
-        volumes: vec![
-            "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
-            format!("{}:/certs/cert.pem:ro", tls::cert_path().display()),
-            format!("{}:/certs/key.pem:ro", tls::key_path().display()),
-            format!(
-                "{}:/etc/traefik/traefik.yml:ro",
-                tls::traefik_config_path().display()
-            ),
-            format!(
-                "{}:/etc/traefik/dynamic:ro",
-                tls::traefik_dynamic_dir().display()
-            ),
-        ],
-        restart_policy: "unless-stopped".into(),
-        cmd: tls::traefik_args(),
-        labels: vec![],
-        networks: vec![SYSTEM_NETWORK.to_string(), APP_NETWORK.to_string()],
-        extra_hosts: vec!["host.docker.internal:host-gateway".into()],
-    }]
 }
 
 fn generate_api_key() -> String {
@@ -333,14 +283,6 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     if cfg!(target_os = "linux") {
         println!("  self-host setup-dns");
         println!("  Configures persistent Host DNS on Linux with systemd-resolved.");
-        println!("  If UFW is active, allow Traefik's two networks to reach the Operator API:");
-        println!(
-            "  sudo ufw allow from \"$(docker network inspect {SYSTEM_NETWORK} --format '{{{{(index .IPAM.Config 0).Subnet}}}}')\" to any port {OPERATOR_API_PORT} proto tcp"
-        );
-        println!(
-            "  sudo ufw allow from \"$(docker network inspect {} --format '{{{{(index .IPAM.Config 0).Subnet}}}}')\" to any port {OPERATOR_API_PORT} proto tcp",
-            crate::docker::APP_NETWORK
-        );
     } else if cfg!(target_os = "macos") {
         println!(
             "  sudo mkdir -p /etc/resolver && echo 'nameserver {}' | sudo tee /etc/resolver/{} && dscacheutil -q host -a name admin.{}",
@@ -448,80 +390,14 @@ impl std::error::Error for BootstrapError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apps::SYSTEM_PREFIX;
 
+    /// The Platform used to run its state store and its proxy in containers,
+    /// so a Host without Docker had no console, no configuration and no way
+    /// in. Both are served from this process now, and nothing is left for
+    /// Docker to hold on the Platform's behalf.
     #[test]
-    fn every_infra_container_is_named_as_platform_infra() {
-        for container in infra_containers() {
-            assert!(
-                container.name.starts_with(SYSTEM_PREFIX),
-                "{} does not say it belongs to the Platform",
-                container.name
-            );
-        }
-    }
-
-    #[test]
-    fn system_containers_names_every_infra_container() {
-        let infra: std::collections::HashSet<String> =
-            infra_containers().into_iter().map(|c| c.name).collect();
-
-        assert_eq!(infra.len(), SYSTEM_CONTAINERS.len());
-        for (role, _) in SYSTEM_CONTAINERS {
-            assert!(
-                infra.contains(&apps::system_container_name(role)),
-                "role '{role}' is listed in SYSTEM_CONTAINERS but has no infra container"
-            );
-        }
-    }
-
-    #[test]
-    fn only_the_proxy_reaches_across_to_the_applications() {
-        for container in infra_containers() {
-            let on_app_network = container.networks.iter().any(|n| n == APP_NETWORK);
-
-            // An Application shares a bridge with the proxy that serves it
-            // and with nothing else.
-            if container.name == apps::system_container_name(TRAEFIK_ROLE) {
-                assert!(on_app_network, "the proxy cannot reach Applications");
-            } else {
-                assert!(
-                    !on_app_network,
-                    "{} is exposed to Applications",
-                    container.name
-                );
-            }
-        }
-    }
-
-    /// The Platform used to keep its state in a container, so a Host without
-    /// Docker had no console, no configuration and no credentials either.
-    #[test]
-    fn no_platform_infra_container_holds_the_platform_state() {
-        let legacy = apps::system_container_name(LEGACY_STATE_CONTAINER_ROLE);
-
-        for container in infra_containers() {
-            assert_ne!(
-                container.name, legacy,
-                "the Platform state is back inside a container"
-            );
-        }
-    }
-
-    #[test]
-    fn proxy_can_reach_the_operator_api_on_linux() {
-        let proxy = infra_containers()
-            .into_iter()
-            .find(|container| container.name == apps::system_container_name(TRAEFIK_ROLE))
-            .unwrap();
-
-        assert_eq!(proxy.extra_hosts, ["host.docker.internal:host-gateway"]);
-        assert!(
-            proxy
-                .volumes
-                .iter()
-                .all(|volume| !volume.contains("ca-key"))
-        );
+    fn the_platform_runs_no_infra_container_of_its_own() {
+        assert!(SYSTEM_CONTAINERS.is_empty());
     }
 
     #[tokio::test]
