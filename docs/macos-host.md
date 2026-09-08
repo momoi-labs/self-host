@@ -6,10 +6,15 @@ reboot without anyone logging in (ADR-0013).
 
 ## Status of validation
 
-Unattended startup has **not yet been validated on the real Mac**. The
-design below is what the installer sets up and what needs proving. The
-acceptance record at the end is to be filled in on the Host; until it is,
-the corresponding items in [mvp-plan.md](mvp-plan.md) stay open.
+**Unattended startup was observed on the real Mac on 2026-09-08.** The Host
+returned from a reboot with nobody logged in, served DNS, the console and a
+running Application, and every risk listed below was settled. What is still
+open is the rest of the acceptance record — a cold start from a full
+shutdown, two Consumers, and what survives a container being recreated.
+
+Getting there took three Host conditions this document did not state, two of
+them not obvious. They are in the prerequisites now, and in
+[issue #79](https://github.com/momoi-labs/self-host/issues/79).
 
 ## Prerequisites
 
@@ -131,14 +136,16 @@ as well.
 Run it while the Docker runtime is up. Without Docker the containers and
 volumes cannot be removed, and the script says so instead of pretending.
 
-## Known risks to validate first
+## Known risks, and what happened
 
-These are the things the design assumes and nobody has yet seen work on
-the Mac. They are listed in the order to check them.
+These were the things the design assumed and nobody had seen work on the Mac.
+All five were exercised on 2026-09-08; each carries what was measured.
 
 1. **Colima under a LaunchDaemon, before login.** Lima's `vz` driver uses
    Virtualization.framework from a process with no window server. If the VM
    does not start, `colima.log` says why; the fallback is `vmType: qemu`.
+   **Settled.** The VM came up from the LaunchDaemon after a reboot with
+   nobody logged in, twice, with no fallback needed.
 2. **Native UDP and TCP 53 reachable from the LAN.** From another machine,
    run `dig @<host-ip> hermes.home.lan` and repeat with `+tcp`. Check an
    external name too, such as `dig @<host-ip> example.com`. Repeat with the
@@ -147,33 +154,61 @@ the Mac. They are listed in the order to check them.
    allows port 53 on the unspecified address and refuses it on a named one
    (ADR-0017). So nothing else on the Mac may hold 53 — `lsof -nP -iTCP:53
    -iUDP:53` names whoever does if the Platform cannot bind it.
+   **Settled.** Answered from another machine over both transports, local
+   and forwarded names, 0 failures in 100 queries each, and again with the
+   Docker runtime stopped. Two things had to be fixed first: the privileged
+   bind ([#64](https://github.com/momoi-labs/self-host/issues/64)) and Lima
+   republishing the guest's resolver on the same port (#58).
 3. **Ports 80 and 443 reachable from the LAN**, not only from the Mac. The
    Platform binds them itself, on the unspecified address for the same reason
    it binds 53 there: as the Operator, macOS allows a privileged port on the
    unspecified address and refuses it on a named one (ADR-0019). Nothing else
    on the Mac may hold them; `lsof -nP -iTCP:80 -iTCP:443` names whoever
-   does.
+   does. **Settled.** Both answered from another machine, with the
+   certificate verified, for the console and for an Application Hostname.
 4. **Bind-mount ownership.** The Hermes container `chown`s `/opt/data`. On a
    virtiofs mount that may be refused. If Hermes logs a permission error,
    set `PUID` and `PGID` in its environment to the Operator's `id -u` and
-   `id -g`.
+   `id -g`. **Settled, and it was not refused.** The container took ownership
+   of the virtiofs mount — `drwx------ hermes hermes` — with no permission
+   error in its log. `PUID` and `PGID` were not needed.
 5. **Nothing in the VM reaches back.** The console is served from the
    Platform's own process, and an Application is reached at a Host port it
    publishes on loopback, so no container needs a route to the Mac.
+   **Settled.** Hermes was reached at `9119/tcp -> 127.0.0.1:40819`, and that
+   port survived a reboot unchanged.
 
 ## Acceptance record
 
-Fill in on the Host. Until every row has a date, the issue is open.
+Filled in on the Host. Rows without a date are still open.
+
+Host: MacBook Pro Mac16,7 (M4 Pro), the `snapshot` release built from
+`881c180`, DNS Suffix `momoi.internal`, wired on `en7` as the default route,
+FileVault off.
 
 | Check | How | Result |
 | --- | --- | --- |
-| macOS version | `sw_vers` | |
-| Runtime version | `colima version`, `docker version` | |
-| Reboot, no login | Reboot; from another machine open `https://admin.<suffix>` before logging in | |
-| Startup from shutdown | Power off, power on; same check | |
-| Hermes returns | Open `https://hermes.<suffix>` after the reboot, log in, send a message | |
-| LAN DNS without Docker | Local and external queries over UDP and TCP while Docker is stopped | |
-| Two Consumers | Chat from two browsers on two machines | |
-| Data survives recreation | Edit the Compose file, save, confirm the previous conversation is still there | |
-| Stopped stays stopped | Stop an Application, reboot, confirm it is still stopped and its Hostname does not answer | |
-| Failure is visible | Set a bad `command`, save, confirm `failed` with the exit code and the logs | |
+| macOS version | `sw_vers` | 26.5.2 (25F84) — 2026-09-08 |
+| Runtime version | `colima version`, `docker version` | colima 0.10.3, limactl 2.2.0, Docker 29.5.2, Compose 5.5.1 — 2026-09-08 |
+| Reboot, no login | Reboot; from another machine open `https://admin.<suffix>` before logging in | **Passed, twice** — 2026-09-08. `/dev/console` owned by `root`, `self-host serve` running within a minute of boot, console answering 307 from another machine with the certificate verified |
+| Startup from shutdown | Power off, power on; same check | Open. Note that a laptop has no `autorestart` capability, so this needs someone to press the button; the battery covers a power cut |
+| Hermes returns | Open `https://hermes.<suffix>` after the reboot, log in, send a message | **Returns** — 2026-09-08. The container came back on its own and `https://hermes.<suffix>` answered 302 to its login page with the certificate verified. Sending a message is not proven: the provider key in the environment was being rejected for credit |
+| LAN DNS without Docker | Local and external queries over UDP and TCP while Docker is stopped | **Passed** — 2026-09-08, with the Colima VM stopped. 0 failures in 100 queries each for local and forwarded names; p50 4.4 ms local, 15.2 ms forwarded |
+| Two Consumers | Chat from two browsers on two machines | Open |
+| Data survives recreation | Edit the Compose file, save, confirm the previous conversation is still there | Open |
+| Stopped stays stopped | Stop an Application, reboot, confirm it is still stopped and its Hostname does not answer | Open |
+| Failure is visible | Set a bad `command`, save, confirm `failed` with the exit code and the logs | Open |
+
+### What the record does not say
+
+Two things were learned on the Host that no row asks about.
+
+The Mac became multi-homed the moment a wired adapter was added, and UDP DNS
+on the second address stopped working: the wildcard socket answers from the
+address the route picks, not the one that was asked. Measured and scoped in
+[#61](https://github.com/momoi-labs/self-host/issues/61).
+
+`self-host trust-ca` fails on every install, because the System Keychain
+refuses the authorization to a session with no user interface. The installer
+warns and carries on, which is right, but a headless Host never trusts its own
+CA without someone at the machine. [#78](https://github.com/momoi-labs/self-host/issues/78).
