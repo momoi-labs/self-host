@@ -45,7 +45,7 @@ when the Host has not trusted its CA. The SSH test below reproduced an
 `apps list` TLS failure with an empty client trust store and a successful
 request when given the local CA. `logs` was inspected but not exercised.
 
-## Recommended direction
+## Resolution
 
 Keep Host CA trust optional during installation. Explain that retrying over
 SSH does not provide the missing authorization. For an unmanaged Mac, direct
@@ -54,14 +54,13 @@ session and approve the system prompt. Phrase this as graphical authorization,
 not an unconditional requirement for physical access. Managed installations
 can distribute the CA through MDM, as Apple recommends.
 
-For headless Host operation, add the existing local Platform CA from
-`tls::ca_cert_path()` to the CLI clients used by `apps` and `logs`. That would
-let these commands validate the Platform's certificate without changing
-system trust. Preserve certificate and hostname verification. Validate this
-change against a local TLS server and the affected Mac before claiming it
-fixes the operational failure. Browsers would still need OS trust.
+For headless Host operation, the CLI now adds the existing local Platform CA
+from `tls::ca_cert_path()` to the clients used by `apps` and `logs`. These
+commands validate the Platform's certificate without changing system trust.
+Certificate and hostname verification remain enabled. If the local CA is
+absent, the CLI uses system trust. Browsers still need OS trust.
 
-A verified workaround for the current CLI is a command-scoped CA file.
+A verified workaround for older CLI builds is a command-scoped CA file.
 The dependency `rustls-native-certs` 0.8.4 checks `SSL_CERT_FILE` before loading
 the platform store. This replaces the roots for that invocation while keeping
 TLS validation enabled. The SSH validation below confirms this behavior.
@@ -151,3 +150,18 @@ the saved report confirmed these results. The temporary directory was absent,
 and verification of the existing Platform CA still succeeded. This establishes
 a failed LaunchDaemon fallback on build 25F84; it does not establish behavior
 on every macOS version.
+
+## Implementation validation
+
+The CLI integration tests run the compiled binary against a local HTTPS
+server in an isolated home directory. Both `apps list` and `logs hermes`
+succeed with a local CA and an empty native trust store. They reject an
+unknown CA and a certificate for the wrong hostname, and continue to use
+native trust when the local CA is absent. Before the implementation,
+`cli_trusts_the_local_ca_without_system_trust` failed with `UnknownIssuer`.
+
+The updated Linux binary was also tested against the Mac's running API.
+With native trust empty and the local CA absent, `apps list` failed with
+`UnknownIssuer`. Adding the public CA to the isolated home directory made
+the same binary list Hermes as `running`, without pointing `SSL_CERT_FILE`
+at that CA. This did not replace the binary installed on the Mac.

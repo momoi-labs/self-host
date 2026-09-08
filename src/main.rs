@@ -573,6 +573,26 @@ async fn wait_for_deploy(
     }
 }
 
+fn platform_api_client() -> anyhow::Result<reqwest::Client> {
+    use anyhow::Context;
+
+    let ca_path = self_host::tls::ca_cert_path();
+    let mut builder = reqwest::Client::builder();
+    match std::fs::read(&ca_path) {
+        Ok(pem) => {
+            let ca = reqwest::Certificate::from_pem(&pem)
+                .with_context(|| format!("cannot parse Platform CA at {}", ca_path.display()))?;
+            builder = builder.add_root_certificate(ca);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot read Platform CA at {}", ca_path.display()));
+        }
+    }
+    builder.build().context("building the Platform API client")
+}
+
 async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
     let config = CliConfig::load()?.ok_or_else(|| {
         std::io::Error::new(
@@ -581,7 +601,7 @@ async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
         )
     })?;
 
-    let client = reqwest::Client::new();
+    let client = platform_api_client()?;
 
     match command {
         AppsCommand::Add {
@@ -868,7 +888,7 @@ async fn run_logs_command(app_name: &str) -> anyhow::Result<()> {
         app_name
     );
 
-    let response = reqwest::Client::new()
+    let response = platform_api_client()?
         .get(&url)
         .bearer_auth(&config.api_key)
         .send()
