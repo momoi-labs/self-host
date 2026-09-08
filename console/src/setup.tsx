@@ -16,6 +16,7 @@ import {
 import { Shell } from "./components/Shell.js";
 import { getJson, requireKey } from "./lib/api.js";
 import { usePlatform } from "./lib/usePlatform.js";
+import { DeviceSetup } from "./device-setup.js";
 import "./console.css";
 
 /* Only one of these is ever relevant to the reader, so they stack as
@@ -185,10 +186,14 @@ function SettingsShell({ crumb, children }: { crumb: string; children: React.Rea
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Toasts>
-      <SettingsShell crumb="DNS setup">
-        <Setup />
-      </SettingsShell>
-    </Toasts>
+    {window.location.protocol === "http:" && window.location.pathname === "/setup" ? (
+      <DeviceSetup />
+    ) : (
+      <Toasts>
+        <SettingsShell crumb="DNS setup">
+          <Setup />
+        </SettingsShell>
+      </Toasts>
+    )}
   </StrictMode>,
 );

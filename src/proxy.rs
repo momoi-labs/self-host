@@ -138,6 +138,7 @@ pub struct Bound {
     http_listener: TcpListener,
     acceptor: TlsAcceptor,
     ctx: Arc<Context>,
+    http_setup_router: Router,
 }
 
 pub async fn bind(
@@ -158,7 +159,12 @@ pub async fn bind(
         .context("bind HTTPS proxy listener")?;
     let http_listener = TcpListener::bind(SocketAddr::new(config.bind_ip, config.http_port))
         .await
-        .context("bind HTTP redirect listener")?;
+        .context("bind HTTP listener")?;
+
+    let http_setup_router = crate::console::http_setup_router(
+        config.admin_hostname.clone(),
+        config.cert_path.with_file_name("ca.pem"),
+    );
 
     Ok(Bound {
         https_addr: https_listener.local_addr()?,
@@ -166,6 +172,7 @@ pub async fn bind(
         https_listener,
         http_listener,
         acceptor,
+        http_setup_router,
         ctx: Arc::new(Context {
             admin_hostname: config.admin_hostname,
             admin_router,
@@ -179,7 +186,7 @@ impl Bound {
     /// Serves both listeners forever.
     pub async fn run(self) -> anyhow::Result<()> {
         tracing::info!(https = %self.https_addr, http = %self.http_addr, "proxy listening");
-        tokio::spawn(serve_http_redirects(self.http_listener));
+        tokio::spawn(serve_http(self.http_listener, self.http_setup_router));
         serve_https(self.https_listener, self.acceptor, self.ctx).await
     }
 }
@@ -234,28 +241,56 @@ async fn serve_https(
     }
 }
 
-async fn serve_http_redirects(listener: TcpListener) {
+async fn serve_http(listener: TcpListener, setup_router: Router) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(error) => {
-                tracing::warn!("redirect listener accept failed: {error}");
+                tracing::warn!("HTTP listener accept failed: {error}");
                 continue;
             }
         };
+        let setup_router = setup_router.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
-            let service = hyper::service::service_fn(|req: Request<Incoming>| async move {
-                Ok::<_, Infallible>(redirect_to_https(&req))
+            let service = hyper::service::service_fn(move |req: Request<Incoming>| {
+                let setup_router = setup_router.clone();
+                async move {
+                    let path = req.uri().path();
+                    let is_setup = path == "/setup"
+                        || path.starts_with("/setup/")
+                        || path.starts_with("/console/assets/");
+                    let response = if is_setup && requested_by_ip(&req) {
+                        serve_router(&setup_router, req).await
+                    } else {
+                        redirect_to_https(&req)
+                    };
+                    Ok::<_, Infallible>(response)
+                }
             });
             if let Err(error) = hyper::server::conn::http1::Builder::new()
                 .serve_connection(io, service)
                 .await
             {
-                tracing::debug!(%peer, "redirect connection error: {error}");
+                tracing::debug!(%peer, "HTTP connection error: {error}");
             }
         });
     }
+}
+
+fn requested_by_ip(req: &Request<Incoming>) -> bool {
+    req.headers()
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .and_then(|host| host.parse::<hyper::http::uri::Authority>().ok())
+        .is_some_and(|authority| {
+            authority
+                .host()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<IpAddr>()
+                .is_ok()
+        })
 }
 
 fn redirect_to_https(req: &Request<Incoming>) -> Response<ProxyBody> {
@@ -293,7 +328,7 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
     };
 
     if host == ctx.admin_hostname {
-        return serve_admin(&ctx.admin_router, req).await;
+        return serve_router(&ctx.admin_router, req).await;
     }
 
     match ctx.table.target_for(&host) {
@@ -303,7 +338,7 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
     }
 }
 
-async fn serve_admin(router: &Router, req: Request<Incoming>) -> Response<ProxyBody> {
+async fn serve_router(router: &Router, req: Request<Incoming>) -> Response<ProxyBody> {
     let req = req.map(AxumBody::new);
     let response = router
         .clone()
@@ -747,6 +782,7 @@ mod integration {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let cert_der = generate_test_cert(&dir);
+        std::fs::copy(dir.join("cert.pem"), dir.join("ca.pem")).unwrap();
 
         let bound = bind(
             ProxyConfig {
@@ -910,6 +946,101 @@ mod integration {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, payload);
+    }
+
+    #[tokio::test]
+    async fn setup_is_public_over_http_by_ip_without_exposing_the_console() {
+        let admin = Router::new().route("/apps", axum::routing::get(|| async { "private" }));
+        let (https_addr, http_addr, cert) = spawn_proxy(admin, RouteTable::new()).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .unwrap();
+        let base = format!("http://{http_addr}");
+        let response = client.get(format!("{base}/setup")).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::LOCATION).is_none());
+        let page = response.text().await.unwrap();
+        assert!(page.contains("<div id=\"root\"></div>"));
+
+        // Every script and stylesheet needed for setup must also load over HTTP.
+        for attribute in ["src=\"", "href=\""] {
+            for path in page
+                .split(attribute)
+                .skip(1)
+                .map(|part| part.split('"').next().unwrap())
+            {
+                if path.starts_with("/console/assets/") {
+                    let response = client.get(format!("{base}{path}")).send().await.unwrap();
+                    assert_eq!(response.status(), StatusCode::OK, "{path}");
+                }
+            }
+        }
+
+        let response = client
+            .get(format!("{base}/setup/info"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let info: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(info["admin_hostname"], "admin.home.lan");
+        assert_eq!(info["dns_suffix"], "home.lan");
+        assert_eq!(info.as_object().unwrap().len(), 3);
+        let ca = client
+            .get(format!("{base}/setup/ca.pem"))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(
+            info["fingerprint"],
+            crate::tls::ca_sha256_fingerprint_from_pem(&ca).unwrap()
+        );
+
+        for path in ["/", "/console", "/apps"] {
+            let response = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY, "{path}");
+            assert!(
+                !response.headers()[header::LOCATION]
+                    .to_str()
+                    .unwrap()
+                    .contains("/setup")
+            );
+        }
+        for path in [
+            "/setup/private",
+            "/setup/ca-key.pem",
+            "/setup/../setup/key.pem",
+        ] {
+            let response = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        let response = client.post(format!("{base}/setup")).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        // Application hostnames retain their existing HTTP redirect behavior.
+        let response = client
+            .get(format!("{base}/setup"))
+            .header(header::HOST, "blog.home.lan")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+
+        let (status, _, _) = request(
+            https_addr,
+            client_config(cert),
+            "admin.home.lan",
+            "/setup",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

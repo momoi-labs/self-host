@@ -9,8 +9,14 @@ The proxy is built on `hyper` and `tokio-rustls`, both already pulled in
 transitively through `axum` and `reqwest`. `rustls::ServerConfig` loads the
 same `cert.pem`/`key.pem` pair `tls.rs` already generates and validates;
 nothing about certificate generation, the local CA, or the trust workflow
-changes. An HTTP listener on 80 does nothing but redirect to `https://`, as
-Traefik's did. Reverse-proxying to an Application uses `hyper`'s client
+changes. The HTTP listener on 80 redirects to `https://`, with one exception
+added for device setup: requests by IP to `/setup` serve public instructions
+before DNS and certificate trust are configured. Its metadata, public CA and
+built assets are also available over HTTP. The page has no login or automatic
+redirect. Administrative API routes remain outside this HTTP router, and
+Application Hostnames retain their redirects. A Consumer must confirm the CA
+fingerprint with the Operator through a trusted channel before installing it.
+Reverse-proxying to an Application uses `hyper`'s client
 directly rather than a crate built for it: the request/response types, chunked
 bodies, and `Upgrade` handling for WebSockets are `hyper`'s, not
 hand-rolled. ALPN offers HTTP/2 and HTTP/1.1, as Traefik did, and an

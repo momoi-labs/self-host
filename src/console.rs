@@ -106,6 +106,45 @@ async fn root_redirect() -> Response<Body> {
         .unwrap()
 }
 
+/// Public instructions for a device that has not configured DNS or CA trust.
+/// Only the proxy's plain HTTP listener mounts this router.
+pub fn http_setup_router(admin_hostname: String, ca_path: std::path::PathBuf) -> Router {
+    Router::new()
+        .route(
+            "/setup",
+            get(|| async { serve_asset("setup.html", "text/html") }),
+        )
+        .route("/setup/info", get(http_setup_info))
+        .route("/console/assets/{*path}", get(http_setup_asset))
+        .with_state((admin_hostname, ca_path.clone()))
+        .nest("/setup", crate::public_ca_router(ca_path))
+}
+
+async fn http_setup_asset(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> Response<Body> {
+    static_asset(axum::extract::Path(format!("assets/{path}"))).await
+}
+
+async fn http_setup_info(
+    axum::extract::State((admin_hostname, ca_path)): axum::extract::State<(
+        String,
+        std::path::PathBuf,
+    )>,
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    let ca = std::fs::read(ca_path).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let fingerprint = crate::tls::ca_sha256_fingerprint_from_pem(&ca)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json(serde_json::json!({
+            "dns_suffix": admin_hostname.strip_prefix("admin.").unwrap_or(&admin_hostname),
+            "admin_hostname": admin_hostname,
+            "fingerprint": fingerprint,
+        })),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -115,6 +154,33 @@ mod tests {
     use tower::ServiceExt;
 
     use super::console_router;
+
+    #[tokio::test]
+    async fn setup_metadata_is_unavailable_without_a_valid_ca() {
+        let path = std::env::temp_dir().join(format!(
+            "self-host-setup-ca-{}-{}.pem",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let router = super::http_setup_router("admin.home.lan".into(), path.clone());
+        for invalid_ca in [false, true] {
+            if invalid_ca {
+                std::fs::write(&path, "not a certificate").unwrap();
+            }
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/setup/info")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[tokio::test]
     async fn serves_the_login_and_console_pages() {
