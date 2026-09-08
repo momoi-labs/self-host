@@ -1,6 +1,7 @@
 use crate::compose_app::{self, ComposeDefinition, ComposeDefinitionError, ComposeProject};
 use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
+use crate::ports;
 use crate::routes::{RouteError, RouteStore};
 use crate::store::{StateStore, StoreError};
 
@@ -61,6 +62,8 @@ pub enum DeployError {
     InvalidCompose(ComposeDefinitionError),
     Docker(DockerError),
     Routing(RouteError),
+    /// No Host port left for the Application's Web Target to answer on.
+    NoWebTargetPort(crate::ports::NoPortAvailable),
     Store(StoreError),
 }
 
@@ -84,6 +87,9 @@ impl std::fmt::Display for DeployError {
             DeployError::InvalidCompose(_) => write!(f, "invalid Compose definition"),
             DeployError::Docker(_) => write!(f, "failed to deploy the Application"),
             DeployError::Routing(_) => write!(f, "failed to publish the Application on the LAN"),
+            DeployError::NoWebTargetPort(_) => {
+                write!(f, "failed to publish the Application on the LAN")
+            }
             DeployError::Store(_) => write!(f, "failed to record the Application"),
         }
     }
@@ -95,6 +101,7 @@ impl std::error::Error for DeployError {
             DeployError::InvalidCompose(e) => Some(e),
             DeployError::Docker(e) => Some(e),
             DeployError::Routing(e) => Some(e),
+            DeployError::NoWebTargetPort(e) => Some(e),
             DeployError::Store(e) => Some(e),
             _ => None,
         }
@@ -265,7 +272,7 @@ async fn start_container(
             image: record.image.clone(),
             labels: identity_labels(&record.id, &record.name),
             network: APP_NETWORK.to_string(),
-            ports: vec![],
+            ports: web_target_publication(record),
             env,
         })
         .await?;
@@ -301,6 +308,11 @@ async fn pending_record(
         (None, None) => vec![],
     };
 
+    let web_target_port = match existing.as_ref().and_then(|app| app.web_target_port) {
+        Some(port) => port,
+        None => allocate_web_target_port(store).await?,
+    };
+
     let record = ApplicationRecord {
         id: existing
             .as_ref()
@@ -316,11 +328,41 @@ async fn pending_record(
         compose: definition.as_ref().map(|d| d.compose.clone()),
         web_service: definition.as_ref().and_then(|d| d.web_service.clone()),
         web_port: definition.as_ref().and_then(|d| d.web_port),
+        web_target_port: Some(web_target_port),
     };
 
     validate_routing(store, &record).await?;
 
     Ok(record)
+}
+
+/// A Host port for this Application's Web Target, avoiding every port
+/// already handed out. A redeploy keeps the port it was given: nothing
+/// outside the Platform depends on the number, but an Operator reading
+/// `docker ps` should not find it different every time.
+async fn allocate_web_target_port(store: &impl StateStore) -> Result<u16, DeployError> {
+    let taken = store
+        .list_applications()
+        .await?
+        .iter()
+        .filter_map(|app| app.web_target_port)
+        .collect();
+    ports::allocate(&taken).map_err(DeployError::NoWebTargetPort)
+}
+
+/// Where the Web Target answers on the Host, as Docker publishes it. Empty
+/// until the Application has a port, which is every Application deployed
+/// before the proxy moved into the binary.
+fn web_target_publication(record: &ApplicationRecord) -> Vec<String> {
+    record
+        .web_target_port
+        .map(|host_port| {
+            vec![ports::publication(
+                host_port,
+                record.web_port.unwrap_or(APP_CONTAINER_PORT),
+            )]
+        })
+        .unwrap_or_default()
 }
 
 /// What a Compose deploy carries besides a name: the file, the image behind
@@ -496,11 +538,19 @@ pub async fn project_for(
         .ok_or(DeployError::MissingCompose)?;
     let definition = ComposeDefinition::parse(compose)?;
     let env = store.get_all_env(&record.id).await?;
+    let published = match record.web_target_port {
+        Some(host_port) => Some(compose_app::PublishedTarget {
+            target: definition.web_target(record.web_service.as_deref(), record.web_port)?,
+            host_port,
+        }),
+        None => None,
+    };
     Ok(definition.render(
         &project_name_for(&record.id),
         &project_dir_for(&record.id),
         &identity_labels(&record.id, &record.name),
         &env,
+        published.as_ref(),
     ))
 }
 

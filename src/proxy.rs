@@ -76,7 +76,7 @@ impl RouteTable {
 
     /// `None`: no Application answers on this Hostname. `Some(None)`: an
     /// Application does, but has no reachable target right now.
-    fn resolve(&self, host: &str) -> Option<Option<SocketAddr>> {
+    pub fn target_for(&self, host: &str) -> Option<Option<SocketAddr>> {
         self.inner
             .read()
             .unwrap()
@@ -294,7 +294,7 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
         return serve_admin(&ctx.admin_router, req).await;
     }
 
-    match ctx.table.resolve(&host) {
+    match ctx.table.target_for(&host) {
         None => not_found(),
         Some(None) => service_unavailable(),
         Some(Some(target)) => proxy_to(&ctx.client, req, &host, target, peer_ip).await,
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn unknown_hostname_resolves_to_nothing() {
         let table = RouteTable::new();
-        assert_eq!(table.resolve("blog.home.lan"), None);
+        assert_eq!(table.target_for("blog.home.lan"), None);
     }
 
     #[test]
@@ -496,16 +496,16 @@ mod tests {
             &["blog.home.lan".into(), "writing.home.lan".into()],
             Some(target),
         );
-        assert_eq!(table.resolve("blog.home.lan"), Some(Some(target)));
-        assert_eq!(table.resolve("writing.home.lan"), Some(Some(target)));
-        assert_eq!(table.resolve("BLOG.HOME.LAN"), Some(Some(target)));
+        assert_eq!(table.target_for("blog.home.lan"), Some(Some(target)));
+        assert_eq!(table.target_for("writing.home.lan"), Some(Some(target)));
+        assert_eq!(table.target_for("BLOG.HOME.LAN"), Some(Some(target)));
     }
 
     #[test]
     fn a_target_of_none_is_a_known_but_unavailable_application() {
         let table = RouteTable::new();
         table.publish("abc", &["blog.home.lan".into()], None);
-        assert_eq!(table.resolve("blog.home.lan"), Some(None));
+        assert_eq!(table.target_for("blog.home.lan"), Some(None));
     }
 
     #[test]
@@ -518,8 +518,8 @@ mod tests {
             Some(target),
         );
         table.publish("abc", &["blog.home.lan".into()], Some(target));
-        assert_eq!(table.resolve("blog.home.lan"), Some(Some(target)));
-        assert_eq!(table.resolve("old.home.lan"), None);
+        assert_eq!(table.target_for("blog.home.lan"), Some(Some(target)));
+        assert_eq!(table.target_for("old.home.lan"), None);
     }
 
     #[test]
@@ -531,8 +531,8 @@ mod tests {
             Some(addr(8080)),
         );
         table.withdraw("abc");
-        assert_eq!(table.resolve("blog.home.lan"), None);
-        assert_eq!(table.resolve("writing.home.lan"), None);
+        assert_eq!(table.target_for("blog.home.lan"), None);
+        assert_eq!(table.target_for("writing.home.lan"), None);
         // Withdrawing what is already gone is not an error.
         table.withdraw("abc");
     }
@@ -543,8 +543,8 @@ mod tests {
         table.publish("a", &["a.home.lan".into()], Some(addr(1)));
         table.publish("b", &["b.home.lan".into()], Some(addr(2)));
         table.withdraw("a");
-        assert_eq!(table.resolve("a.home.lan"), None);
-        assert_eq!(table.resolve("b.home.lan"), Some(Some(addr(2))));
+        assert_eq!(table.target_for("a.home.lan"), None);
+        assert_eq!(table.target_for("b.home.lan"), Some(Some(addr(2))));
     }
 }
 

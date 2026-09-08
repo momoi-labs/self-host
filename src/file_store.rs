@@ -88,6 +88,8 @@ struct ApplicationFile {
     #[serde(default)]
     web_port: Option<u16>,
     #[serde(default)]
+    web_target_port: Option<u16>,
+    #[serde(default)]
     env: BTreeMap<String, String>,
 }
 
@@ -215,6 +217,7 @@ impl From<&AppEntry> for ApplicationRecord {
             compose: entry.compose.clone(),
             web_service: f.web_service.clone(),
             web_port: f.web_port,
+            web_target_port: f.web_target_port,
         }
     }
 }
@@ -234,6 +237,7 @@ fn entry_from(app: &ApplicationRecord) -> AppEntry {
             compose_file: app.compose.as_deref().map(compose_file_name),
             web_service: app.web_service.clone(),
             web_port: app.web_port,
+            web_target_port: app.web_target_port,
             env: BTreeMap::new(),
         },
         compose: app.compose.clone(),
@@ -745,6 +749,7 @@ mod tests {
             compose: None,
             web_service: None,
             web_port: None,
+            web_target_port: None,
         }
     }
 
@@ -762,6 +767,9 @@ mod tests {
         app.compose = Some("services:\n  web:\n    image: nginx\n".into());
         app.web_service = Some("web".into());
         app.web_port = Some(8080);
+        // The proxy reads the Web Target's Host port back from here after a
+        // restart, rather than asking Docker where the container ended up.
+        app.web_target_port = Some(20001);
         app.status = STATUS_STOPPED.into();
         store.insert_application(&app).await.unwrap();
         store.set_env(&app.id, "TOKEN", "value").await.unwrap();
