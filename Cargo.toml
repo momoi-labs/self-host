@@ -12,8 +12,8 @@ dirs = "6"
 futures-util = "0.3"
 hickory-server = { version = "0.26", default-features = false, features = ["resolver"] }
 http-body-util = "0.1"
-hyper = { version = "1", features = ["server", "client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server-auto", "http1", "http2"] }
 indexmap = { version = "2", features = ["serde"] }
 libc = "0.2"
 mime_guess = "2"
