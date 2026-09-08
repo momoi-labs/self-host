@@ -92,6 +92,29 @@ system/dev.momoi.self-host` shows the daemon's state.
 | Application routes | `self-host serve` republishes every running Application's route on start |
 | Stopped Applications | Stay stopped: `unless-stopped` does not restart a stopped container, and the Platform withdraws the route |
 
+## Starting over
+
+Validation is a loop, and a half-installed Host is what makes the next run
+hard to read. `uninstall.sh` puts the Mac back where the installer found it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/uninstall.sh | bash
+```
+
+It removes both LaunchDaemons, every Platform and Application container,
+volume and network, `~/.config/self-host`, the CA in the System Keychain,
+`/etc/resolver/<suffix>`, the binary and the logs. It asks first, and
+`SELF_HOST_FORCE=1` skips that.
+
+The Colima VM stays, because rebuilding it costs minutes and holds nothing of
+the Platform. `SELF_HOST_DELETE_VM=1` removes it too, for a run that has to
+prove the VM comes up from nothing. Homebrew and its packages are never
+touched, and a Consumer that trusted the CA still trusts it — remove it there
+as well.
+
+Run it while the Docker runtime is up. Without Docker the containers and
+volumes cannot be removed, and the script says so instead of pretending.
+
 ## Known risks to validate first
 
 These are the things the design assumes and nobody has yet seen work on
