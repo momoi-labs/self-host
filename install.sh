@@ -19,6 +19,8 @@ set -euo pipefail
 
 REPO="momoi-labs/self-host"
 BINARY="self-host"
+# The Colima LaunchDaemon runs this instead of colima; see install_colima_watchdog.
+WATCHDOG="self-host-colima"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 DNS_SUFFIX="${SELF_HOST_DNS:-home.lan}"
 HOST_IP="${SELF_HOST_IP:-}"
@@ -239,6 +241,7 @@ prepare_colima() {
 
 	write_colima_template "$home"
 	write_lima_override "$home"
+	install_colima_watchdog
 
 	# A Colima started by hand belongs to a login session. Hand it to launchd.
 	if colima status >/dev/null 2>&1; then
@@ -258,9 +261,7 @@ prepare_colima() {
 	<string>${COLIMA_LABEL}</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>${brew_prefix}/bin/colima</string>
-		<string>start</string>
-		<string>--foreground</string>
+		<string>${INSTALL_DIR}/${WATCHDOG}</string>
 	</array>
 	<key>UserName</key>
 	<string>${operator}</string>
@@ -278,6 +279,8 @@ prepare_colima() {
 		<string>${home}</string>
 		<key>PATH</key>
 		<string>${brew_prefix}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>COLIMA</key>
+		<string>${brew_prefix}/bin/colima</string>
 	</dict>
 	<key>StandardOutPath</key>
 	<string>${home}/Library/Logs/self-host/colima.log</string>
@@ -360,6 +363,79 @@ EOF
 # file, and port-forward rules are matched in that order, so a rule that
 # ignores guest port 53 wins. Only that port: Applications are still reached
 # through forwarded ports like anything else.
+# launchd's KeepAlive restarts a job when its process exits, and
+# `colima start --foreground` does not exit when the VM stops. A `colima stop`,
+# or a VM that dies on its own, leaves a live process supervising nothing while
+# launchd sees a healthy job — the Host keeps DNS, the console and the API,
+# which need no Docker, and silently loses every Application until someone
+# notices.
+#
+# launchd stays the supervisor. What it lacks is a probe: nothing asks the VM
+# whether it is up. This watchdog asks, and exits when the answer is no, which
+# is the signal KeepAlive already knows how to act on.
+install_colima_watchdog() {
+	local script
+	script="$(mktemp)"
+
+	cat >"$script" <<'WATCHDOG'
+#!/bin/sh
+# Written by the self-host installer. A watchdog, not a supervisor: launchd
+# restarts the job, this only decides when it should. `colima start
+# --foreground` outlives the VM it started, so asking the VM whether it is up
+# is what gives KeepAlive something to act on.
+set -u
+
+COLIMA="${COLIMA:-colima}"
+READY_TIMEOUT="${SELF_HOST_COLIMA_READY_TIMEOUT:-300}"
+POLL="${SELF_HOST_COLIMA_POLL:-15}"
+
+"$COLIMA" start --foreground &
+child=$!
+
+# launchd stops the job with SIGTERM. Take the VM down with it, or the next
+# start finds a VM running and this wrapper supervising nothing.
+trap 'kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; exit 0' HUP INT TERM
+
+waited=0
+until "$COLIMA" status >/dev/null 2>&1; do
+	if ! kill -0 "$child" 2>/dev/null; then
+		wait "$child"
+		exit $?
+	fi
+	if [ "$waited" -ge "$READY_TIMEOUT" ]; then
+		echo "the Colima VM did not come up in ${READY_TIMEOUT}s" >&2
+		kill "$child" 2>/dev/null
+		exit 1
+	fi
+	sleep 5
+	waited=$((waited + 5))
+done
+
+echo "the Colima VM is up; watching it every ${POLL}s"
+
+while "$COLIMA" status >/dev/null 2>&1; do
+	if ! kill -0 "$child" 2>/dev/null; then
+		wait "$child"
+		exit $?
+	fi
+	sleep "$POLL"
+done
+
+echo "the Colima VM is gone; exiting so launchd starts it again" >&2
+kill "$child" 2>/dev/null
+wait "$child" 2>/dev/null
+exit 1
+WATCHDOG
+
+	echo "installing ${INSTALL_DIR}/${WATCHDOG}..."
+	if [ -w "$INSTALL_DIR" ]; then
+		install -m 755 "$script" "$INSTALL_DIR/$WATCHDOG"
+	else
+		sudo install -m 755 "$script" "$INSTALL_DIR/$WATCHDOG"
+	fi
+	rm -f "$script"
+}
+
 write_lima_override() {
 	local home="$1" override
 	override="$home/.colima/_lima/_config/override.yaml"

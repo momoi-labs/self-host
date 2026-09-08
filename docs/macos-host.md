@@ -62,10 +62,19 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    the Lima override is where it belongs. An override the Operator wrote by
    hand is left alone, with a message saying what it needs.
 5. Installs `/Library/LaunchDaemons/dev.momoi.self-host.colima.plist`: a
-   LaunchDaemon that runs `colima start --foreground` as the Operator's user
+   LaunchDaemon that runs the Colima watchdog as the Operator's user
    (`UserName`), at boot (`RunAtLoad`), kept alive by launchd. A LaunchDaemon
    runs before any login; running it as the Operator keeps the Docker
    context, the socket and the mounted home directory the Operator sees.
+
+   launchd stays the supervisor; what it lacks is a probe. `colima start
+   --foreground` does not exit when the VM stops, so a `colima stop` leaves a
+   live process supervising nothing while launchd sees a healthy job — the
+   Host keeps DNS and the console, which need no Docker, and silently loses
+   every Application. `self-host-colima`, installed beside the binary, starts
+   the VM and then asks `colima status` whether it is still there. It exits
+   when the answer is no, which is the signal `KeepAlive` acts on, and takes
+   the VM down with it when launchd stops the job.
 6. Runs `self-host init`, which brings up the Platform Infra and detects the
    LAN address. `SELF_HOST_IP` overrides the detection.
 7. Writes `/etc/resolver/<suffix>` so the Mac resolves its own Hostnames.
