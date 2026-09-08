@@ -27,6 +27,7 @@ pub mod docker;
 pub mod error;
 pub mod file_store;
 pub mod host_dns;
+pub mod proxy;
 pub mod routes;
 pub mod store;
 pub mod tls;
