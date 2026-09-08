@@ -2,7 +2,7 @@ use crate::compose_app::{self, ComposeDefinition, ComposeDefinitionError, Compos
 use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
 use crate::ports;
-use crate::routes::{RouteError, RouteStore};
+use crate::routes::RouteStore;
 use crate::store::{StateStore, StoreError};
 
 pub const APP_CONTAINER_PORT: u16 = 80;
@@ -47,7 +47,6 @@ pub const SOURCE_COMPOSE: &str = "compose";
 /// proxy is left: DNS moved into the binary (ADR-0017) and the state store
 /// into files (ADR-0018), so "coredns" and "postgres" are names an Operator
 /// may now give an Application of their own.
-const PROTECTED_NAMES: &[&str] = &["traefik"];
 
 #[derive(Debug)]
 pub enum DeployError {
@@ -61,7 +60,6 @@ pub enum DeployError {
     MissingCompose,
     InvalidCompose(ComposeDefinitionError),
     Docker(DockerError),
-    Routing(RouteError),
     /// No Host port left for the Application's Web Target to answer on.
     NoWebTargetPort(crate::ports::NoPortAvailable),
     Store(StoreError),
@@ -86,7 +84,6 @@ impl std::fmt::Display for DeployError {
             DeployError::MissingCompose => write!(f, "a Compose definition is required"),
             DeployError::InvalidCompose(_) => write!(f, "invalid Compose definition"),
             DeployError::Docker(_) => write!(f, "failed to deploy the Application"),
-            DeployError::Routing(_) => write!(f, "failed to publish the Application on the LAN"),
             DeployError::NoWebTargetPort(_) => {
                 write!(f, "failed to publish the Application on the LAN")
             }
@@ -100,7 +97,6 @@ impl std::error::Error for DeployError {
         match self {
             DeployError::InvalidCompose(e) => Some(e),
             DeployError::Docker(e) => Some(e),
-            DeployError::Routing(e) => Some(e),
             DeployError::NoWebTargetPort(e) => Some(e),
             DeployError::Store(e) => Some(e),
             _ => None,
@@ -111,12 +107,6 @@ impl std::error::Error for DeployError {
 impl From<DockerError> for DeployError {
     fn from(e: DockerError) -> Self {
         DeployError::Docker(e)
-    }
-}
-
-impl From<RouteError> for DeployError {
-    fn from(e: RouteError) -> Self {
-        DeployError::Routing(e)
     }
 }
 
@@ -161,7 +151,8 @@ pub fn default_hostname(name: &str, dns_suffix: &str) -> String {
     format!("{name}.{dns_suffix}")
 }
 
-/// A Hostname ends up inside a Traefik `Host(`…`)` rule, so anything that is
+/// A Hostname is matched against the `Host` header of every request, so
+/// anything that is
 /// not a DNS name is refused here rather than written into the router file.
 pub fn validate_hostname(hostname: &str) -> Result<(), DeployError> {
     if hostname.is_empty() {
@@ -216,7 +207,7 @@ async fn validate_routing(
 }
 
 /// What the container says about itself. Routing is not in here: it lives in
-/// a Traefik file-provider route (ADR-0009), so that changing where an
+/// the Platform's route table (ADR-0019), so that changing where an
 /// Application answers never has to recreate a container.
 pub fn identity_labels(id: &str, name: &str) -> Vec<(String, String)> {
     vec![
@@ -394,8 +385,8 @@ impl PendingDeploy {
 #[derive(Debug)]
 enum DeployWork {
     /// Nothing for Docker to do: a rename, or a change of Hostname or
-    /// aliases. The container is keyed by id and the router is a file, so
-    /// only the route has to be rewritten.
+    /// aliases. The container is keyed by id and the route is a table entry,
+    /// so only the route has to be rewritten.
     Settled,
     Pull,
     Build {
@@ -449,7 +440,7 @@ pub async fn prepare_deploy_from_image(
 
 /// Checks a Compose definition and resolves where its Hostname points. The
 /// resolved target is what gets recorded, so the route never has to guess
-/// again: what the console shows is what Traefik uses.
+/// again: what the console shows is what the proxy uses.
 fn check_compose(
     compose: &str,
     web_service: Option<&str>,
@@ -565,7 +556,7 @@ pub async fn finish_deploy(
 
     // Nothing for Docker, but the route may be exactly what changed.
     if matches!(work, DeployWork::Settled) {
-        routes.publish(&record)?;
+        routes.publish(&record);
         return Ok(record);
     }
 
@@ -585,15 +576,15 @@ pub async fn finish_deploy(
             DeployWork::ComposeUp => {
                 let project = project_for(store, &record).await?;
                 docker.compose_up(&project).await?;
-                routes.publish(&record)?;
+                routes.publish(&record);
                 return Ok(());
             }
             DeployWork::Settled => unreachable!(),
         }
         start_container(store, docker, &record).await?;
-        // Published after the container is up, so Traefik never routes at a
-        // backend that is not there yet.
-        routes.publish(&record)?;
+        // Published after the container is up, so the proxy never routes at
+        // a backend that is not there yet.
+        routes.publish(&record);
         Ok(())
     }
     .await;
@@ -645,10 +636,9 @@ async fn give_web_target_port(
 /// running is `running`, and the rest are `failed` — on record, with a reason,
 /// and one click from being deployed again.
 ///
-/// Every Application that ends up running then has its route rewritten. The
-/// dynamic directory is a projection of the database (ADR-0009), so losing it
-/// costs a restart rather than a redeploy, and an install upgrading from
-/// label-based routing gets its route files without touching a container.
+/// Every Application that ends up running then has its route published. The
+/// table is built from what is on record and lives only in memory, so this is
+/// also the only thing that puts it there after a restart.
 pub async fn reconcile(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
@@ -700,11 +690,11 @@ pub async fn reconcile(
         }
 
         if app.status == STATUS_RUNNING {
-            routes.publish(&app)?;
+            routes.publish(&app);
         } else {
-            // A stopped or failed Application must not keep a route: Traefik
-            // would answer its Hostname with a gateway error.
-            routes.withdraw(&app.id)?;
+            // A stopped or failed Application must not keep a route: its
+            // Hostname would answer with a gateway error.
+            routes.withdraw(&app.id);
         }
     }
 
@@ -759,8 +749,8 @@ pub struct ApplicationUpdate {
 /// Saves the change and redeploys.
 ///
 /// A rename is only a row update, and so is a change of Hostname or aliases:
-/// the container is keyed by id and the router is a file Traefik watches. Only
-/// a new image recreates the container.
+/// the container is keyed by id and the route is an entry in a table. Only a
+/// new image recreates the container.
 pub async fn update_application(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
@@ -938,9 +928,7 @@ pub fn system_container_name(role: &str) -> String {
 pub enum RemoveError {
     NotInitialized,
     NotFound(String),
-    ProtectedName(String),
     Docker(DockerError),
-    Routing(RouteError),
     Store(StoreError),
 }
 
@@ -951,16 +939,7 @@ impl std::fmt::Display for RemoveError {
                 write!(f, "platform is not initialized; run 'self-host init' first")
             }
             RemoveError::NotFound(name) => write!(f, "Application '{name}' not found"),
-            RemoveError::ProtectedName(name) => {
-                write!(
-                    f,
-                    "'{name}' is Platform Infra and cannot be removed as an Application"
-                )
-            }
             RemoveError::Docker(_) => write!(f, "failed to remove the Application container"),
-            RemoveError::Routing(_) => {
-                write!(f, "failed to withdraw the Application from the LAN")
-            }
             RemoveError::Store(_) => write!(f, "failed to delete the Application record"),
         }
     }
@@ -970,7 +949,6 @@ impl std::error::Error for RemoveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             RemoveError::Docker(e) => Some(e),
-            RemoveError::Routing(e) => Some(e),
             RemoveError::Store(e) => Some(e),
             _ => None,
         }
@@ -980,12 +958,6 @@ impl std::error::Error for RemoveError {
 impl From<DockerError> for RemoveError {
     fn from(e: DockerError) -> Self {
         RemoveError::Docker(e)
-    }
-}
-
-impl From<RouteError> for RemoveError {
-    fn from(e: RouteError) -> Self {
-        RemoveError::Routing(e)
     }
 }
 
@@ -1004,10 +976,6 @@ pub async fn remove_application(
     routes: &(impl RouteStore + ?Sized),
     name: &str,
 ) -> Result<(), RemoveError> {
-    if PROTECTED_NAMES.contains(&name) {
-        return Err(RemoveError::ProtectedName(name.to_string()));
-    }
-
     if !store.is_initialized().await? {
         return Err(RemoveError::NotInitialized);
     }
@@ -1027,7 +995,7 @@ pub async fn remove_application(
 
     // The route goes first: a Hostname still answering for an Application that
     // is on its way out is worse than one that stops a moment early.
-    routes.withdraw(&app.id)?;
+    routes.withdraw(&app.id);
 
     store.delete_application(&app.id).await?;
 
@@ -1057,7 +1025,7 @@ pub async fn stop_application(
 ) -> Result<ApplicationRecord, DeployError> {
     let mut app = get_application(store, id).await?;
 
-    routes.withdraw(&app.id)?;
+    routes.withdraw(&app.id);
     if app.source == SOURCE_COMPOSE {
         docker
             .compose_stop(&project_for(store, &app).await?)
@@ -1090,7 +1058,7 @@ pub async fn start_application(
         } else {
             docker.start_container(&container_name_for(&app.id)).await?;
         }
-        routes.publish(&app)?;
+        routes.publish(&app);
         Ok(())
     }
     .await;
@@ -1114,7 +1082,7 @@ pub async fn restart_application(
                 .restart_container(&container_name_for(&app.id))
                 .await?;
         }
-        routes.publish(&app)?;
+        routes.publish(&app);
         Ok(())
     }
     .await;
@@ -1428,6 +1396,7 @@ mod tests {
     use crate::docker::FakeDocker;
     use crate::routes::FakeRoutes;
     use crate::store::FakeStateStore;
+    use std::net::SocketAddr;
 
     async fn initialized_store() -> FakeStateStore {
         let store = FakeStateStore::new();
@@ -1457,7 +1426,12 @@ mod tests {
             .unwrap();
         assert_eq!(deployed.status, STATUS_RUNNING);
         assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
-        assert!(routes.get(&deployed.id).unwrap().contains("blog.home.lan"));
+        assert!(
+            routes
+                .get(&deployed.id)
+                .unwrap()
+                .answers_on("blog.home.lan")
+        );
     }
 
     #[tokio::test]
@@ -1675,7 +1649,7 @@ mod tests {
         );
         assert!(
             !labels.iter().any(|(k, _)| k.starts_with("traefik.")),
-            "routing belongs to the file provider, not to a label"
+            "routing belongs to the route table, not to a label a proxy reads"
         );
     }
 
@@ -1709,7 +1683,7 @@ mod tests {
             deploys_before,
             "a Hostname change must not recreate the container"
         );
-        assert!(routes.get(&app.id).unwrap().contains("writing.home.lan"));
+        assert!(routes.get(&app.id).unwrap().answers_on("writing.home.lan"));
     }
 
     #[tokio::test]
@@ -1736,8 +1710,12 @@ mod tests {
         .await
         .unwrap();
 
-        let route = routes.get(&app.id).unwrap();
-        assert!(route.contains("Host(`writing.home.lan`) || Host(`blog.home.lan`)"));
+        // The old Hostname answers alongside the new one, so a rename
+        // breaks no bookmark on the LAN.
+        assert_eq!(
+            routes.get(&app.id).unwrap().hostnames,
+            ["writing.home.lan", "blog.home.lan"]
+        );
     }
 
     #[tokio::test]
@@ -1837,10 +1815,15 @@ services:
         );
         assert!(project.dir.ends_with(format!("apps/{}", app.id)));
 
-        // The route points at the web service, not at a container that does
-        // not exist for a Compose Application.
-        let route = routes.get(&app.id).unwrap();
-        assert!(route.contains(&format!("http://sf-app-{}-hermes:9119", app.id)));
+        // The route points at the Host port the web service publishes, not
+        // at a container the proxy has no network to reach.
+        assert_eq!(
+            routes.get(&app.id).unwrap().target,
+            Some(SocketAddr::from((
+                [127, 0, 0, 1],
+                app.web_target_port.unwrap()
+            )))
+        );
     }
 
     #[tokio::test]
@@ -2065,7 +2048,13 @@ services:
             .await
             .unwrap();
 
-        assert!(routes.get(&app.id).unwrap().contains(":8642"));
+        assert_eq!(
+            routes.get(&app.id).unwrap().target,
+            Some(SocketAddr::from((
+                [127, 0, 0, 1],
+                app.web_target_port.unwrap()
+            )))
+        );
         assert_eq!(
             docker.project(&format!("sf-app-{}", app.id)).unwrap(),
             before
@@ -2104,7 +2093,7 @@ services:
     }
 
     #[test]
-    fn validate_hostname_rejects_a_traefik_rule_escape() {
+    fn validate_hostname_rejects_anything_that_is_not_a_hostname() {
         assert!(validate_hostname("blog.home.lan`) || Host(`admin.home.lan").is_err());
     }
 

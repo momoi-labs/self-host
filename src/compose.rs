@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use tracing::info;
 
-/// Where the Platform keeps everything it generates: the DNS configuration, the Traefik
+/// Where the Platform keeps everything it generates: the DNS configuration, the
 /// configuration, the certificates and each Application's data.
 ///
 /// Under `cfg(test)` this is a temporary directory instead. Bootstrap writes

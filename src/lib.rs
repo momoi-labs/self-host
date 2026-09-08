@@ -693,11 +693,8 @@ fn error_response(status: StatusCode, err: &dyn std::error::Error) -> Response {
 fn remove_error_response(err: RemoveError) -> Response {
     let status = match &err {
         RemoveError::NotFound(_) => StatusCode::NOT_FOUND,
-        RemoveError::ProtectedName(_) => StatusCode::FORBIDDEN,
         RemoveError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        RemoveError::Docker(_) | RemoveError::Routing(_) | RemoveError::Store(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        RemoveError::Docker(_) | RemoveError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     error_response(status, &err)
 }
@@ -975,10 +972,9 @@ fn deploy_error_response(err: DeployError) -> Response {
         | DeployError::InvalidCompose(_) => StatusCode::BAD_REQUEST,
         DeployError::NotFound(_) => StatusCode::NOT_FOUND,
         DeployError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        DeployError::Docker(_)
-        | DeployError::Routing(_)
-        | DeployError::NoWebTargetPort(_)
-        | DeployError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        DeployError::Docker(_) | DeployError::NoWebTargetPort(_) | DeployError::Store(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     error_response(status, &err)
 }
@@ -1571,8 +1567,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
+    /// The Platform ran its state store and then its proxy in containers, and
+    /// the console listed them here. It runs neither now, so the list is
+    /// empty and every role is unknown — the endpoint stays because clients
+    /// still ask it.
     #[tokio::test]
-    async fn system_lists_the_infra_containers_by_role() {
+    async fn nothing_of_the_platform_runs_in_a_container_any_more() {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         let app = build_app(
@@ -1583,68 +1583,11 @@ mod tests {
 
         let response = send(&app, "/system", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
-
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
-        let parsed: Value = serde_json::from_slice(&body).unwrap();
-
-        let entries = parsed.as_array().unwrap();
-
-        // The state store is no longer Platform Infra: it is files the binary
-        // owns, so it has no container the console could list.
-        let roles: Vec<&str> = entries
-            .iter()
-            .map(|e| e["role"].as_str().unwrap())
-            .collect();
-        assert_eq!(roles, vec!["proxy"]);
-
-        let names: Vec<&str> = entries
-            .iter()
-            .map(|e| e["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, vec!["sf-system-proxy"]);
-
-        for entry in entries {
-            assert!(!entry["image"].as_str().unwrap().is_empty());
-            assert!(
-                matches!(entry["status"].as_str(), Some("running") | Some("failed")),
-                "status must use the Application vocabulary"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn system_reports_a_seeded_container_as_running() {
-        let store = FakeStateStore::new();
-        store.store_state("api_key", "test-key").await.unwrap();
-        let docker = FakeDocker::new();
-        docker.seed_system_containers();
-        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
-
-        let response = send(&app, "/system", Some("test-key")).await;
-        let body = to_bytes(response.into_body(), 4096).await.unwrap();
-        let parsed: Value = serde_json::from_slice(&body).unwrap();
-
-        for entry in parsed.as_array().unwrap() {
-            assert_eq!(entry["status"], json!("running"));
-            assert_eq!(entry["restarts"], json!(0));
-        }
-    }
-
-    #[tokio::test]
-    async fn system_logs_stream_by_role() {
-        let store = FakeStateStore::new();
-        store.store_state("api_key", "test-key").await.unwrap();
-        let docker = FakeDocker::new();
-        docker.seed_system_containers();
-        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), json!([]));
 
         let response = send(&app, "/system/proxy/logs", Some("test-key")).await;
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = to_bytes(response.into_body(), 4096).await.unwrap();
-        let text = String::from_utf8_lossy(&body).to_string();
-        assert!(text.contains("[fake] log line 1"));
-        assert!(!text.contains("event: notice"));
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2044,11 +1987,11 @@ mod tests {
                     .any(|(k, _)| k.starts_with("traefik."))
             );
         }
-        assert!(
-            route_store
-                .get(&id)
-                .unwrap()
-                .contains("Host(`blog.home.lan`)")
+        let published = route_store.get(&id).unwrap();
+        assert!(published.answers_on("blog.home.lan"));
+        assert_eq!(
+            published.target,
+            Some(std::net::SocketAddr::from(([127, 0, 0, 1], host_port)))
         );
     }
 
@@ -2237,16 +2180,14 @@ mod tests {
         );
     }
 
+    /// Every name the Platform once reserved belonged to a container it ran
+    /// for itself. It runs none, so an Application may be called anything and
+    /// a name nothing answers to is simply not found.
     #[tokio::test]
-    async fn remove_protected_name_returns_403() {
+    async fn no_application_name_is_reserved_any_more() {
         let (app, _) = setup_initialized_app("test-key", "home.lan").await;
 
-        let response = delete_req(&app, "/apps/traefik", Some("test-key")).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-        // Nothing the Platform runs answers to these any more, so an
-        // Application is free to take the name.
-        for name in &["postgres", "coredns"] {
+        for name in &["traefik", "postgres", "coredns"] {
             let response = delete_req(&app, &format!("/apps/{name}"), Some("test-key")).await;
             assert_eq!(
                 response.status(),
