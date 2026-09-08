@@ -1,4 +1,3 @@
-use crate::compose::{ComposeConfig, ComposeError, ComposeRunner, ComposeServiceConfig};
 use crate::compose_app::ComposeProject;
 use async_trait::async_trait;
 use std::os::unix::fs::PermissionsExt;
@@ -13,7 +12,6 @@ pub enum DockerError {
     /// reason belongs to whatever refused, and stays underneath instead of
     /// being glued into our sentence.
     Command(String, Box<dyn std::error::Error + Send + Sync>),
-    Compose(ComposeError),
 }
 
 /// Docker answered and refused, in Docker's own words.
@@ -95,25 +93,6 @@ impl DockerError {
     fn spawn(step: impl Into<String>, e: std::io::Error) -> Self {
         DockerError::Command(step.into(), Box::new(e))
     }
-
-    pub fn from_compose_error(err: ComposeError) -> Self {
-        match err {
-            ComposeError::PortConflict { port, suggestion } => {
-                DockerError::Unavailable(format!("Port {port} is already in use.\n{suggestion}"))
-            }
-            ComposeError::Command(_, e) if e.kind() == std::io::ErrorKind::NotFound => {
-                DockerError::Unavailable(
-                    "Docker is not installed or not in PATH. Install Docker and try again.".into(),
-                )
-            }
-            // The daemon is the usual suspect, but the io error underneath is
-            // what actually knows, so it says so itself.
-            ComposeError::Command(_cmd, e) => {
-                DockerError::spawn("Failed to run Docker. Is the Docker daemon running?", e)
-            }
-            other => DockerError::Compose(other),
-        }
-    }
 }
 
 impl std::fmt::Display for DockerError {
@@ -121,7 +100,6 @@ impl std::fmt::Display for DockerError {
         match self {
             DockerError::Unavailable(msg) => write!(f, "Docker unavailable: {msg}"),
             DockerError::Command(step, _) => write!(f, "{step}"),
-            DockerError::Compose(_) => write!(f, "the Docker Compose command failed"),
         }
     }
 }
@@ -130,24 +108,9 @@ impl std::error::Error for DockerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             DockerError::Command(_, e) => Some(&**e),
-            DockerError::Compose(e) => Some(e),
             _ => None,
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct ContainerConfig {
-    pub image: String,
-    pub name: String,
-    pub ports: Vec<String>,
-    pub env: Vec<String>,
-    pub volumes: Vec<String>,
-    pub restart_policy: String,
-    pub cmd: Vec<String>,
-    pub labels: Vec<(String, String)>,
-    pub networks: Vec<String>,
-    pub extra_hosts: Vec<String>,
 }
 
 /// The bridge Applications share. The Platform is not on it: it reaches an
@@ -168,23 +131,6 @@ pub struct ApplicationContainer {
     pub env: Vec<String>,
 }
 
-impl ContainerConfig {
-    fn to_compose_service(&self) -> ComposeServiceConfig {
-        ComposeServiceConfig {
-            name: self.name.clone(),
-            image: self.image.clone(),
-            ports: self.ports.clone(),
-            env: self.env.clone(),
-            volumes: self.volumes.clone(),
-            restart_policy: self.restart_policy.clone(),
-            cmd: self.cmd.clone(),
-            labels: self.labels.clone(),
-            networks: self.networks.clone(),
-            extra_hosts: self.extra_hosts.clone(),
-        }
-    }
-}
-
 /// What Docker says about one container, as far as the console needs to know.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerState {
@@ -203,8 +149,6 @@ impl ContainerState {
 #[async_trait]
 pub trait DockerRuntime: Send + Sync {
     async fn ping(&self) -> Result<(), DockerError>;
-    async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError>;
-    async fn commit(&self) -> Result<(), DockerError>;
     async fn container_running(&self, name: &str) -> Result<bool, DockerError>;
     /// Sorted names owned by the Application, or its legacy name when no labels match.
     /// Always returns at least one name; a name does not imply a running container.
@@ -245,52 +189,13 @@ pub trait DockerRuntime: Send + Sync {
     ) -> Result<mpsc::Receiver<String>, DockerError>;
 }
 
-pub struct ComposeDocker {
-    runner: ComposeRunner,
-    services: std::sync::Mutex<Vec<ContainerConfig>>,
-}
+/// Docker, as the Platform drives it: the `docker` CLI on this Host.
+#[derive(Default)]
+pub struct ComposeDocker;
 
 impl ComposeDocker {
-    pub fn new() -> Result<Self, DockerError> {
-        let runner = ComposeRunner::new().map_err(DockerError::Compose)?;
-        Ok(ComposeDocker {
-            runner,
-            services: std::sync::Mutex::new(Vec::new()),
-        })
-    }
-
-    fn flush(&self) -> Result<(), DockerError> {
-        let services = self.services.lock().unwrap();
-        if services.is_empty() {
-            return Ok(());
-        }
-
-        let compose_services: Vec<ComposeServiceConfig> =
-            services.iter().map(|s| s.to_compose_service()).collect();
-
-        let networks: Vec<String> = services
-            .iter()
-            .flat_map(|s| s.networks.iter().cloned())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-
-        let config = ComposeConfig {
-            services: compose_services,
-            networks,
-        };
-
-        self.runner
-            .write_compose_file(&config)
-            .map_err(DockerError::Compose)?;
-
-        self.runner.up().map_err(DockerError::from_compose_error)?;
-
-        Ok(())
-    }
-
-    pub fn compose_path(&self) -> std::path::PathBuf {
-        self.runner.path().clone()
+    pub fn new() -> Self {
+        ComposeDocker
     }
 }
 
@@ -318,19 +223,6 @@ impl DockerRuntime for ComposeDocker {
         }
 
         Ok(())
-    }
-
-    async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError> {
-        let mut services = self.services.lock().unwrap();
-
-        // Replace existing service with same name
-        services.retain(|s| s.name != config.name);
-        services.push(config);
-        Ok(())
-    }
-
-    async fn commit(&self) -> Result<(), DockerError> {
-        self.flush()
     }
 
     async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
@@ -807,7 +699,6 @@ fn spawn_log_stream(program: &str, args: Vec<String>) -> mpsc::Receiver<String> 
 #[derive(Clone, Default)]
 pub struct FakeDocker {
     pub apps: std::sync::Arc<std::sync::Mutex<Vec<ApplicationContainer>>>,
-    pub infra: std::sync::Arc<std::sync::Mutex<Vec<ContainerConfig>>>,
     pub pulled: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub built: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     /// When set, `pull_image` fails with this message — the everyday case of a
@@ -834,7 +725,6 @@ impl FakeDocker {
     pub fn new() -> Self {
         FakeDocker {
             apps: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            infra: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pulled: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             built: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pull_failure: None,
@@ -878,7 +768,6 @@ impl FakeDocker {
 
     fn known_container(&self, name: &str) -> bool {
         self.apps.lock().unwrap().iter().any(|a| a.name == name)
-            || self.infra.lock().unwrap().iter().any(|c| c.name == name)
             || self
                 .projects
                 .lock()
@@ -894,10 +783,6 @@ impl FakeDocker {
         }
     }
 
-    pub fn infra_containers(&self) -> Vec<ContainerConfig> {
-        self.infra.lock().unwrap().clone()
-    }
-
     pub fn deployed_apps(&self) -> Vec<String> {
         self.apps
             .lock()
@@ -905,26 +790,6 @@ impl FakeDocker {
             .iter()
             .map(|a| a.name.clone())
             .collect()
-    }
-
-    /// Makes the Platform Infra containers look running, so tests of `/system`
-    /// see the running state without going through `run_bootstrap`.
-    pub fn seed_system_containers(&self) {
-        let mut infra = self.infra.lock().unwrap();
-        for (role, image) in crate::bootstrap::SYSTEM_CONTAINERS {
-            infra.push(ContainerConfig {
-                image: image.to_string(),
-                name: crate::apps::system_container_name(role),
-                ports: vec![],
-                env: vec![],
-                volumes: vec![],
-                restart_policy: "unless-stopped".into(),
-                cmd: vec![],
-                labels: vec![],
-                networks: vec![],
-                extra_hosts: vec![],
-            });
-        }
     }
 }
 
@@ -937,18 +802,8 @@ impl DockerRuntime for FakeDocker {
         }
     }
 
-    async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError> {
-        self.infra.lock().unwrap().push(config);
-        Ok(())
-    }
-
-    async fn commit(&self) -> Result<(), DockerError> {
-        Ok(())
-    }
-
     async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
-        Ok(self.apps.lock().unwrap().iter().any(|a| a.name == name)
-            || self.infra.lock().unwrap().iter().any(|c| c.name == name))
+        Ok(self.apps.lock().unwrap().iter().any(|a| a.name == name))
     }
 
     async fn application_containers(&self, id: &str) -> Result<Vec<String>, DockerError> {
@@ -975,8 +830,7 @@ impl DockerRuntime for FakeDocker {
     }
 
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
-        let running = self.apps.lock().unwrap().iter().any(|a| a.name == name)
-            || self.infra.lock().unwrap().iter().any(|c| c.name == name);
+        let running = self.apps.lock().unwrap().iter().any(|a| a.name == name);
         Ok(running.then_some(0))
     }
 
@@ -1142,14 +996,6 @@ where
         (**self).ping().await
     }
 
-    async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError> {
-        (**self).ensure_container_running(config).await
-    }
-
-    async fn commit(&self) -> Result<(), DockerError> {
-        (**self).commit().await
-    }
-
     async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
         (**self).container_running(name).await
     }
@@ -1237,27 +1083,6 @@ where
 mod tests {
     use super::*;
     use crate::error::ErrorReport;
-
-    #[test]
-    fn container_config_to_compose_service() {
-        let config = ContainerConfig {
-            image: "postgres:18-alpine".into(),
-            name: "test-pg".into(),
-            ports: vec!["15432:5432".into()],
-            env: vec!["POSTGRES_USER=test".into()],
-            volumes: vec!["pg-data:/var/lib/postgresql".into()],
-            restart_policy: "unless-stopped".into(),
-            cmd: vec![],
-            labels: vec![],
-            networks: vec![],
-            extra_hosts: vec![],
-        };
-
-        let svc = config.to_compose_service();
-        assert_eq!(svc.name, "test-pg");
-        assert_eq!(svc.image, "postgres:18-alpine");
-        assert_eq!(svc.restart_policy, "unless-stopped");
-    }
 
     /// Builds the error a refused `docker pull` produces, from real stderr.
     fn refused_pull(stderr: &str) -> DockerError {

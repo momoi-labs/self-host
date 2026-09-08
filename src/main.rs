@@ -252,7 +252,7 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
 async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Result<()> {
     info!("bootstrapping with DNS suffix: {dns_suffix}");
 
-    let docker = ComposeDocker::new()?;
+    let docker = ComposeDocker::new();
 
     refuse_legacy_state(&docker).await?;
 
@@ -1099,15 +1099,9 @@ async fn run_api_server() {
         let _ = store.store_state("api_key", &api_key).await;
     }
 
-    let compose_docker = match ComposeDocker::new() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!("Docker unavailable: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    let docker: Arc<dyn DockerRuntime> = Arc::new(compose_docker);
+    // Nothing here talks to Docker yet, and nothing needs to: DNS, the
+    // console and the API are served whether or not it ever answers.
+    let docker: Arc<dyn DockerRuntime> = Arc::new(ComposeDocker::new());
 
     // Where every Application answers, as the proxy in this process reads it
     // (ADR-0019).
