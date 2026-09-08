@@ -548,9 +548,11 @@ trust_ca() {
 		return
 	fi
 	echo "could not trust the CA on this Host; continuing." >&2
-	echo "Browsers here warn until you run '${BINARY} trust-ca' again from a" >&2
-	echo "session that can authorize the System Keychain, such as Terminal on" >&2
-	echo "the Mac itself. Consumers are unaffected." >&2
+	echo "The daemon and CLI can operate headlessly; the CLI uses the local CA." >&2
+	echo "For browser trust, run '${BINARY} trust-ca' in Terminal in the Mac's" >&2
+	echo "graphical session and approve the system prompt. Retrying over SSH" >&2
+	echo "or through a root LaunchDaemon does not provide that authorization." >&2
+	echo "Consumers must trust the CA on their own machines." >&2
 }
 
 # The Platform itself, supervised by launchd as the Operator's user so that

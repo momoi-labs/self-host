@@ -86,10 +86,18 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
 8. Runs `self-host trust-ca`, so the Host's own browser opens
    `https://admin.<suffix>` without a warning. The System Keychain refuses
    this over SSH, where nobody can authorize it; the installer then warns and
-   carries on, and the command can be run again from Terminal on the Mac.
+   carries on. For browser trust, run the command in Terminal in the Mac's
+   graphical session and approve the system prompt. Retrying over SSH or
+   through a root LaunchDaemon does not supply that authorization, as
+   [tested on macOS 26.5.2](research/macos-headless-ca-trust.md).
+   The daemon and CLI can operate headlessly. The CLI loads the local CA
+   from `~/.config/self-host/certs/ca.pem` for `apps` and `logs`, preserving
+   certificate and hostname verification without requiring `SSL_CERT_FILE`
+   or System Keychain trust. If no local CA exists, it uses system trust.
    Each Consumer trusts the same CA once with `self-host trust-ca --from
    admin.<suffix> --fingerprint <sha256>`, using the fingerprint
-   `self-host init` printed.
+   `self-host init` printed. A macOS Consumer needs graphical authorization
+   for its own System Keychain. Managed Macs can receive the CA through MDM.
 9. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
    `self-host serve`, as the Operator's user, at boot, kept alive. The daemon
    starts DNS from `dns.json`, opens its state directory and serves the API,
