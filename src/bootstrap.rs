@@ -1,29 +1,30 @@
 use crate::apps;
 use crate::compose;
-use crate::db::{DbError, StateStore};
 use crate::docker::{APP_NETWORK, ContainerConfig, DockerError, DockerRuntime, SYSTEM_NETWORK};
+use crate::error::ErrorReport;
+use crate::store::{StateStore, StoreError};
 use crate::tls;
 use rand::Rng;
 use std::net::UdpSocket;
 use tracing::info;
 
-/// Also the image the schema tests run against, so a migration is never
-/// proven on a Postgres the Platform does not actually ship.
-pub const PG_IMAGE: &str = "postgres:18-alpine";
-const PG_ROLE: &str = "db";
 const TRAEFIK_IMAGE: &str = "traefik:v3";
 const TRAEFIK_ROLE: &str = "proxy";
 
 /// The Platform Infra the Platform starts for itself, as `(role, image)` pairs
-/// in display order: the state store, then the traffic proxy.
-/// The role is what names the component (`system_container_name`); the image is
-/// the product that fills it today.
-pub const SYSTEM_CONTAINERS: &[(&str, &str)] =
-    &[(PG_ROLE, PG_IMAGE), (TRAEFIK_ROLE, TRAEFIK_IMAGE)];
+/// in display order. The role is what names the component
+/// (`system_container_name`); the image is the product that fills it today.
+///
+/// Platform state is not in here: it lives in files the Platform owns
+/// (ADR-0018), so the console and the API do not need Docker to answer.
+pub const SYSTEM_CONTAINERS: &[(&str, &str)] = &[(TRAEFIK_ROLE, TRAEFIK_IMAGE)];
 
 pub const DEFAULT_DNS_SUFFIX: &str = "home.lan";
 pub const OPERATOR_API_PORT: u16 = 3721;
-pub const PG_DB_URL: &str = "postgres://selfhost:selfhost@localhost:15432/selfhost";
+
+/// The container an older Platform ran PostgreSQL in. Nothing starts it any
+/// more; it is only recognised so an upgrade can say what to do with it.
+pub const LEGACY_STATE_CONTAINER_ROLE: &str = "db";
 
 #[derive(Debug)]
 pub struct BootstrapResult {
@@ -31,6 +32,10 @@ pub struct BootstrapResult {
     pub api_key: String,
     pub api_listen_addr: String,
     pub host_ip: String,
+    /// Why the Platform Infra could not be started, when Docker was missing or
+    /// unreachable. Configuration and Platform state are complete either way;
+    /// only Application execution and HTTPS have to wait for Docker.
+    pub execution_unavailable: Option<ErrorReport>,
 }
 
 pub fn validate_dns_suffix(suffix: &str) -> Result<(), String> {
@@ -62,8 +67,6 @@ pub async fn run_bootstrap(
 ) -> Result<BootstrapResult, BootstrapError> {
     validate_dns_suffix(dns_suffix).map_err(BootstrapError::InvalidDnsSuffix)?;
 
-    docker.ping().await?;
-
     let api_key = generate_api_key();
     // Detection picks the interface the default route leaves through, which
     // is the LAN one. `--host-ip` is for the Host where that guess is wrong:
@@ -91,7 +94,19 @@ pub async fn run_bootstrap(
     dns_config
         .save()
         .map_err(|e| BootstrapError::ConfigWrite(e.to_string()))?;
-    start_infra_containers(docker).await?;
+
+    // Docker runs Applications and, until the proxy moves into the binary, the
+    // HTTPS frontend. It is not what the Platform stores its state in, so a
+    // Host without it still gets a configured Platform and a working console.
+    let execution_unavailable = match start_infra_containers(docker).await {
+        Ok(()) => None,
+        Err(BootstrapError::Docker(e)) => {
+            let report = ErrorReport::new(&e);
+            tracing::warn!("Application execution is unavailable: {report}");
+            Some(report)
+        }
+        Err(e) => return Err(e),
+    };
 
     let api_listen_addr = format!("0.0.0.0:{OPERATOR_API_PORT}");
 
@@ -102,6 +117,7 @@ pub async fn run_bootstrap(
         api_key,
         api_listen_addr,
         host_ip,
+        execution_unavailable,
     })
 }
 
@@ -158,7 +174,7 @@ pub async fn persist_bootstrap_state(
     store: &impl StateStore,
     result: &BootstrapResult,
 ) -> Result<(), BootstrapError> {
-    store.initialize_schema().await?;
+    store.initialize().await?;
 
     if store.is_initialized().await? {
         return Err(BootstrapError::AlreadyInitialized);
@@ -171,7 +187,15 @@ pub async fn persist_bootstrap_state(
     Ok(())
 }
 
+/// Brings the Platform Infra up, or says why it cannot. Bootstrap completes
+/// without it, so this is also how a Host that had no Docker at `init` time is
+/// repaired once it does.
+pub async fn start_platform_infra(docker: &impl DockerRuntime) -> Result<(), BootstrapError> {
+    start_infra_containers(docker).await
+}
+
 async fn start_infra_containers(docker: &impl DockerRuntime) -> Result<(), BootstrapError> {
+    docker.ping().await?;
     docker.ensure_network(SYSTEM_NETWORK).await?;
     docker.ensure_network(APP_NETWORK).await?;
 
@@ -190,51 +214,30 @@ async fn start_infra_containers(docker: &impl DockerRuntime) -> Result<(), Boots
 /// The Platform Infra containers, as configuration. Applications reach Traefik
 /// and nothing else: only the proxy is on both networks.
 fn infra_containers() -> Vec<ContainerConfig> {
-    vec![
-        ContainerConfig {
-            image: PG_IMAGE.to_string(),
-            name: apps::system_container_name(PG_ROLE),
-            // Loopback only. The state store holds every Operator secret
-            // behind credentials fixed at `selfhost:selfhost` (ADR-0012), and
-            // the only client is the Platform binary on the Host.
-            ports: vec!["127.0.0.1:15432:5432".into()],
-            env: vec![
-                "POSTGRES_USER=selfhost".into(),
-                "POSTGRES_PASSWORD=selfhost".into(),
-                "POSTGRES_DB=selfhost".into(),
-            ],
-            volumes: vec!["self-host-pg-data:/var/lib/postgresql".into()],
-            restart_policy: "unless-stopped".into(),
-            cmd: vec![],
-            labels: vec![],
-            networks: vec![SYSTEM_NETWORK.to_string()],
-            extra_hosts: vec![],
-        },
-        ContainerConfig {
-            image: TRAEFIK_IMAGE.to_string(),
-            name: apps::system_container_name(TRAEFIK_ROLE),
-            ports: vec!["80:80".into(), "443:443".into()],
-            env: vec![],
-            volumes: vec![
-                "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
-                format!("{}:/certs/cert.pem:ro", tls::cert_path().display()),
-                format!("{}:/certs/key.pem:ro", tls::key_path().display()),
-                format!(
-                    "{}:/etc/traefik/traefik.yml:ro",
-                    tls::traefik_config_path().display()
-                ),
-                format!(
-                    "{}:/etc/traefik/dynamic:ro",
-                    tls::traefik_dynamic_dir().display()
-                ),
-            ],
-            restart_policy: "unless-stopped".into(),
-            cmd: tls::traefik_args(),
-            labels: vec![],
-            networks: vec![SYSTEM_NETWORK.to_string(), APP_NETWORK.to_string()],
-            extra_hosts: vec!["host.docker.internal:host-gateway".into()],
-        },
-    ]
+    vec![ContainerConfig {
+        image: TRAEFIK_IMAGE.to_string(),
+        name: apps::system_container_name(TRAEFIK_ROLE),
+        ports: vec!["80:80".into(), "443:443".into()],
+        env: vec![],
+        volumes: vec![
+            "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
+            format!("{}:/certs/cert.pem:ro", tls::cert_path().display()),
+            format!("{}:/certs/key.pem:ro", tls::key_path().display()),
+            format!(
+                "{}:/etc/traefik/traefik.yml:ro",
+                tls::traefik_config_path().display()
+            ),
+            format!(
+                "{}:/etc/traefik/dynamic:ro",
+                tls::traefik_dynamic_dir().display()
+            ),
+        ],
+        restart_policy: "unless-stopped".into(),
+        cmd: tls::traefik_args(),
+        labels: vec![],
+        networks: vec![SYSTEM_NETWORK.to_string(), APP_NETWORK.to_string()],
+        extra_hosts: vec!["host.docker.internal:host-gateway".into()],
+    }]
 }
 
 fn generate_api_key() -> String {
@@ -267,6 +270,16 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!();
     println!("DNS Suffix: {}", result.dns_suffix);
     println!();
+
+    if let Some(reason) = &result.execution_unavailable {
+        println!("--- Application execution is unavailable ---");
+        println!("{reason}");
+        println!();
+        println!("The Platform is configured and its state is saved. DNS, the Operator API");
+        println!("and the console work without Docker. Install or start Docker, then run");
+        println!("'self-host init' again to bring up HTTPS and deploy Applications.");
+        println!();
+    }
 
     println!("--- Consumer DNS Setup ---");
     println!("Point your LAN devices (or router) to use this Host as DNS server:");
@@ -349,7 +362,7 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
 #[derive(Debug)]
 pub enum BootstrapError {
     Docker(DockerError),
-    Db(DbError),
+    Store(StoreError),
     InvalidDnsSuffix(String),
     InvalidHostIp(String),
     AlreadyInitialized,
@@ -371,9 +384,9 @@ impl From<DockerError> for BootstrapError {
     }
 }
 
-impl From<DbError> for BootstrapError {
-    fn from(e: DbError) -> Self {
-        BootstrapError::Db(e)
+impl From<StoreError> for BootstrapError {
+    fn from(e: StoreError) -> Self {
+        BootstrapError::Store(e)
     }
 }
 
@@ -387,7 +400,7 @@ impl std::fmt::Display for BootstrapError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BootstrapError::Docker(e) => write!(f, "{e}"),
-            BootstrapError::Db(e) => write!(f, "{e}"),
+            BootstrapError::Store(e) => write!(f, "{e}"),
             BootstrapError::InvalidDnsSuffix(msg) => write!(f, "invalid DNS suffix: {msg}"),
             BootstrapError::InvalidHostIp(ip) => write!(f, "'{ip}' is not an IP address"),
             BootstrapError::AlreadyInitialized => {
@@ -425,7 +438,7 @@ impl std::error::Error for BootstrapError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             BootstrapError::Docker(e) => Some(e),
-            BootstrapError::Db(e) => Some(e),
+            BootstrapError::Store(e) => Some(e),
             BootstrapError::Tls(e) => Some(e),
             _ => None,
         }
@@ -467,9 +480,8 @@ mod tests {
         for container in infra_containers() {
             let on_app_network = container.networks.iter().any(|n| n == APP_NETWORK);
 
-            // An Application shares a bridge with the proxy that serves it and
-            // with nothing else: the state store holds every Operator secret
-            // behind a fixed password.
+            // An Application shares a bridge with the proxy that serves it
+            // and with nothing else.
             if container.name == apps::system_container_name(TRAEFIK_ROLE) {
                 assert!(on_app_network, "the proxy cannot reach Applications");
             } else {
@@ -482,17 +494,16 @@ mod tests {
         }
     }
 
+    /// The Platform used to keep its state in a container, so a Host without
+    /// Docker had no console, no configuration and no credentials either.
     #[test]
-    fn the_state_store_is_not_published_to_the_lan() {
-        let pg = infra_containers()
-            .into_iter()
-            .find(|container| container.name == apps::system_container_name(PG_ROLE))
-            .unwrap();
+    fn no_platform_infra_container_holds_the_platform_state() {
+        let legacy = apps::system_container_name(LEGACY_STATE_CONTAINER_ROLE);
 
-        for port in &pg.ports {
-            assert!(
-                port.starts_with("127.0.0.1:"),
-                "the state store is published on {port}, reachable from the LAN"
+        for container in infra_containers() {
+            assert_ne!(
+                container.name, legacy,
+                "the Platform state is back inside a container"
             );
         }
     }
@@ -515,7 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn preflight_rejects_a_different_dns_suffix_before_writes() {
-        let store = crate::db::FakeStateStore::new();
+        let store = crate::store::FakeStateStore::new();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
 
         let error = preflight_initialized(&store, "test.lan").await.unwrap_err();

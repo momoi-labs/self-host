@@ -1,6 +1,7 @@
 use crate::compose::{ComposeConfig, ComposeError, ComposeRunner, ComposeServiceConfig};
 use crate::compose_app::ComposeProject;
 use async_trait::async_trait;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tokio::sync::mpsc;
 
@@ -722,7 +723,17 @@ fn write_project(project: &ComposeProject) -> Result<(), DockerError> {
     for dir in &project.bind_dirs {
         std::fs::create_dir_all(dir).map_err(|e| io("create data directory", e))?;
     }
-    std::fs::write(project_file(project), &project.yaml).map_err(|e| io("write compose.yml", e))
+    let path = project_file(project);
+    std::fs::write(&path, &project.yaml).map_err(|e| io("write compose.yml", e))?;
+
+    // The rendered project carries the Application's environment, which is
+    // where an Operator's API tokens and database passwords end up. It is
+    // generated from state that is already `0600`; it must not be the copy
+    // anyone on the Host can read. The bind-mounted data directories keep
+    // their own permissions: a container runs as its own user and has to be
+    // able to reach them.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| io("restrict compose.yml", e))
 }
 
 fn compose(project: &ComposeProject, verb: &[&str], step: &str) -> Result<(), DockerError> {
@@ -811,6 +822,9 @@ pub struct FakeDocker {
     /// When set, `pull_image` fails with this message — the everyday case of a
     /// typo in an image tag.
     pub pull_failure: Option<String>,
+    /// When set, the runtime is not there to talk to: Docker is not installed
+    /// on the Host, or its daemon is down.
+    pub unreachable: Option<String>,
     /// Compose projects brought up, latest definition per name.
     pub projects: std::sync::Arc<std::sync::Mutex<Vec<ComposeProject>>>,
     /// Containers the Operator stopped, by name.
@@ -830,6 +844,7 @@ impl FakeDocker {
             pulled: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             built: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pull_failure: None,
+            unreachable: None,
             projects: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             stopped: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
             exited: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
@@ -914,7 +929,10 @@ impl FakeDocker {
 #[async_trait]
 impl DockerRuntime for FakeDocker {
     async fn ping(&self) -> Result<(), DockerError> {
-        Ok(())
+        match &self.unreachable {
+            Some(reason) => Err(DockerError::Unavailable(reason.clone())),
+            None => Ok(()),
+        }
     }
 
     async fn ensure_container_running(&self, config: ContainerConfig) -> Result<(), DockerError> {

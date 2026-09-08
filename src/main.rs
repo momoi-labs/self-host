@@ -5,9 +5,10 @@ use clap::{Parser, Subcommand};
 use self_host::bootstrap::{self, BootstrapResult, OPERATOR_API_PORT};
 use self_host::build_app;
 use self_host::config::CliConfig;
-use self_host::db::{PgStateStore, StateStore};
 use self_host::docker::{ComposeDocker, DockerRuntime};
 use self_host::error::ErrorReport;
+use self_host::file_store::{self, FileStateStore};
+use self_host::store::StateStore;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -232,15 +233,12 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        let store = PgStateStore::connect(bootstrap::PG_DB_URL).await?;
-        let suffix = store
-            .get_state("dns_suffix")
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("DNS Suffix is missing; run 'self-host init' first"))?;
-        let host_ip = store
-            .get_state("host_ip")
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Host IP is missing; run 'self-host init' first"))?;
+        // The DNS configuration the daemon serves from, not the store: the
+        // daemon holds the store as its writer while it runs, and this is the
+        // one place the Host's own resolver has to agree with.
+        let config = self_host::dns::Config::load()?;
+        let suffix = config.dns_suffix;
+        let host_ip = config.host_ip.to_string();
         self_host::host_dns::install(&suffix, &host_ip)?;
         self_host::host_dns::check(&suffix, &host_ip).await
             .map_err(|e| anyhow::anyhow!("DNS settings were saved, but verification failed: {e}. Check that the Platform DNS is running, then retry 'self-host setup-dns'."))?;
@@ -255,33 +253,47 @@ async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Re
 
     let docker = ComposeDocker::new()?;
 
-    docker.ping().await?;
-    let db_name = self_host::apps::system_container_name("db");
-    if docker.container_running(&db_name).await? {
-        wait_for_postgres().await?;
-        let store = PgStateStore::connect(bootstrap::PG_DB_URL).await?;
-        if bootstrap::preflight_initialized(&store, dns_suffix).await? {
-            let api_key = store
-                .get_api_key()
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("initialized Platform has no API key"))?;
-            save_cli_config_values(dns_suffix, &api_key)?;
-            println!("Platform is already initialized with DNS Suffix '{dns_suffix}'.");
-            println!("Existing DNS, TLS and routing configuration is consistent.");
-            println!("CLI config points to https://admin.{dns_suffix}.");
-            #[cfg(target_os = "linux")]
-            println!("Run 'self-host setup-dns' to configure or repair persistent Host DNS.");
-            return Ok(());
+    refuse_legacy_state(&docker).await?;
+
+    // Reading does not take the writer lock, so this still answers while the
+    // daemon is running.
+    let existing = FileStateStore::read_only(file_store::state_dir())?;
+    if bootstrap::preflight_initialized(&existing, dns_suffix).await? {
+        let api_key = existing
+            .get_api_key()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("initialized Platform has no API key"))?;
+        save_cli_config_values(dns_suffix, &api_key)?;
+        println!("Platform is already initialized with DNS Suffix '{dns_suffix}'.");
+        println!("Existing DNS, TLS and routing configuration is consistent.");
+        println!("CLI config points to https://admin.{dns_suffix}.");
+
+        // Bootstrap completes on a Host with no Docker, leaving the Platform
+        // configured but unable to run anything. Running init again is how the
+        // Operator repairs that once Docker is there.
+        match bootstrap::start_platform_infra(&docker).await {
+            Ok(()) => println!("Platform Infra is up."),
+            Err(e) => {
+                println!();
+                println!("Application execution is still unavailable:");
+                println!("{}", ErrorReport::new(&e));
+                println!("DNS, the Operator API and the console do not need it.");
+            }
         }
-    } else if bootstrap::platform_configuration_exists() {
+
+        #[cfg(target_os = "linux")]
+        println!("Run 'self-host setup-dns' to configure or repair persistent Host DNS.");
+        return Ok(());
+    }
+    drop(existing);
+
+    if bootstrap::platform_configuration_exists() {
         return Err(bootstrap::BootstrapError::ExistingConfiguration.into());
     }
 
     let result = bootstrap::run_bootstrap(&docker, dns_suffix, host_ip).await?;
 
-    wait_for_postgres().await?;
-
-    let store = PgStateStore::connect(bootstrap::PG_DB_URL).await?;
+    let store = FileStateStore::open(file_store::state_dir())?;
 
     match bootstrap::persist_bootstrap_state(&store, &result).await {
         Ok(()) => {}
@@ -987,72 +999,30 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Polls Docker until it answers. The first minute after boot is the usual
-/// wait; a runtime that never comes is logged once a minute, forever.
-async fn wait_for_docker(docker: &ComposeDocker) {
-    let mut attempt: u32 = 0;
-    loop {
-        match docker.ping().await {
-            Ok(()) => {
-                if attempt > 0 {
-                    info!("Docker is available");
-                }
-                return;
-            }
-            Err(e) => {
-                attempt += 1;
-                if attempt == 1 || attempt.is_multiple_of(30) {
-                    tracing::warn!("waiting for Docker: {e}");
-                }
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            }
-        }
-    }
-}
-
-/// Polls the state store until it answers. Without one there is nothing to
-/// serve: every Application and the API key live in it.
-async fn wait_for_state_store() -> PgStateStore {
-    let mut attempt: u32 = 0;
-    loop {
-        match PgStateStore::connect(bootstrap::PG_DB_URL).await {
-            Ok(store) => {
-                if attempt > 0 {
-                    info!("PostgreSQL is available");
-                }
-                return store;
-            }
-            Err(e) => {
-                attempt += 1;
-                if attempt == 1 || attempt.is_multiple_of(30) {
-                    tracing::warn!(
-                        "waiting for PostgreSQL (run 'self-host init' if this Host was never bootstrapped): {e}"
-                    );
-                }
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            }
-        }
-    }
-}
-
-async fn wait_for_postgres() -> anyhow::Result<()> {
-    let max_attempts = 30;
-    for attempt in 1..=max_attempts {
-        match PgStateStore::connect(bootstrap::PG_DB_URL).await {
-            Ok(_) => {
-                info!("PostgreSQL is ready");
-                return Ok(());
-            }
-            Err(_) if attempt < max_attempts => {
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        }
+/// Refuses to bootstrap on top of a Platform that still keeps its state in
+/// PostgreSQL. The Platform cannot read that database any more, and silently
+/// starting an empty installation next to it would strand every Application
+/// the Operator deployed.
+async fn refuse_legacy_state(docker: &ComposeDocker) -> anyhow::Result<()> {
+    if file_store::state_dir().join("platform.json").exists() {
+        return Ok(());
     }
 
-    Err(anyhow::anyhow!("PostgreSQL did not become ready in time"))
+    let legacy = self_host::apps::system_container_name(bootstrap::LEGACY_STATE_CONTAINER_ROLE);
+    if !docker.container_running(&legacy).await.unwrap_or(false) {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "this Host still stores its Platform state in PostgreSQL ({legacy}), which this \
+         Platform no longer reads.\n\
+         Export it first, then start over:\n  \
+         docker exec {legacy} pg_dump -U selfhost selfhost > self-host-state.sql\n  \
+         self-host reset\n  \
+         self-host init\n\
+         See docs/operating.md for what the dump contains and how to re-create \
+         Applications from it."
+    ))
 }
 
 fn cli_config_from_bootstrap(result: &BootstrapResult) -> CliConfig {
@@ -1108,6 +1078,26 @@ async fn run_server() {
 async fn run_api_server() {
     let (api_key, listen_addr) = resolve_server_config().await;
 
+    // The state comes first, and from files. The console, the configuration
+    // and the Operator's credentials no longer wait on a container runtime.
+    let store = match FileStateStore::open(file_store::state_dir()) {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::error!("failed to open the Platform state: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = store.initialize().await {
+        tracing::error!("failed to prepare the Platform state directory: {e}");
+        std::process::exit(1);
+    }
+
+    // If we have state but no stored API key, use env var
+    if store.get_api_key().await.ok().flatten().is_none() && !api_key.is_empty() {
+        let _ = store.store_state("api_key", &api_key).await;
+    }
+
     let compose_docker = match ComposeDocker::new() {
         Ok(d) => d,
         Err(e) => {
@@ -1116,33 +1106,16 @@ async fn run_api_server() {
         }
     };
 
-    wait_for_docker(&compose_docker).await;
-
-    // Docker's restart policy brings the Infra back after a reboot; this
-    // covers the rest, and is a no-op when everything is already up.
-    if let Err(e) = compose_docker.infra_up() {
-        tracing::warn!(
-            "failed to bring the Platform Infra up: {}",
-            ErrorReport::new(&e)
-        );
-    }
-
     let docker: Arc<dyn DockerRuntime> = Arc::new(compose_docker);
 
-    let store = wait_for_state_store().await;
+    // Docker's restart policy brings the Infra back after a reboot; this
+    // covers the rest, and is a no-op when everything is already up. A Docker
+    // that is missing, or still starting, must not hold up the listener: it
+    // only costs Application execution and HTTPS, so it runs alongside.
+    tokio::spawn(bring_infra_up());
 
-    // Ensure schema includes applications table for existing installs.
-    if let Err(e) = store.initialize_schema().await {
-        tracing::warn!("failed to initialize schema: {e}");
-    }
-
-    // If we have a DB but no stored API key, use env var
-    if store.get_api_key().await.ok().flatten().is_none() && !api_key.is_empty() {
-        let _ = store.store_state("api_key", &api_key).await;
-    }
-
-    // A row left `pending` by a restart is nobody's deploy any more; settle it
-    // against what Docker is actually running before serving.
+    // A record left `pending` by a restart is nobody's deploy any more; settle
+    // it against what Docker is actually running before serving.
     let routes: Arc<dyn self_host::routes::RouteStore> =
         Arc::new(self_host::routes::FileRoutes::new());
 
@@ -1170,6 +1143,27 @@ async fn run_api_server() {
     info!("listening on {listen_addr}");
 
     axum::serve(listener, app).await.expect("server error");
+}
+
+/// Brings the Platform Infra up off the serving path. `docker compose up`
+/// blocks, and on a Host where Docker is starting or absent it can block for a
+/// long time or fail outright; neither is a reason to delay the console.
+async fn bring_infra_up() {
+    let result = tokio::task::spawn_blocking(|| {
+        let docker = ComposeDocker::new()?;
+        docker.infra_up()
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(
+            "failed to bring the Platform Infra up; Applications and HTTPS are unavailable \
+             until Docker is reachable: {}",
+            ErrorReport::new(&e)
+        ),
+        Err(e) => tracing::warn!("failed to bring the Platform Infra up: {e}"),
+    }
 }
 
 async fn resolve_server_config() -> (String, String) {
@@ -1251,6 +1245,7 @@ mod tests {
             api_key: "secret".into(),
             api_listen_addr: "0.0.0.0:3721".into(),
             host_ip: "192.168.1.10".into(),
+            execution_unavailable: None,
         };
 
         let config = cli_config_from_bootstrap(&result);

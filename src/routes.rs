@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::apps::{APP_CONTAINER_PORT, SOURCE_COMPOSE, container_name_for, project_name_for};
 use crate::compose_app;
-use crate::db::ApplicationRecord;
+use crate::store::ApplicationRecord;
 
 #[derive(Debug)]
 pub enum RouteError {

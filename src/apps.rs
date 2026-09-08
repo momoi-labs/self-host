@@ -1,8 +1,8 @@
 use crate::compose_app::{self, ComposeDefinition, ComposeDefinitionError, ComposeProject};
-use crate::db::{DbError, StateStore};
 use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
 use crate::routes::{RouteError, RouteStore};
+use crate::store::{StateStore, StoreError};
 
 pub const APP_CONTAINER_PORT: u16 = 80;
 
@@ -25,7 +25,7 @@ pub fn generate_app_id() -> String {
         .collect()
 }
 
-pub use crate::db::ApplicationRecord;
+pub use crate::store::ApplicationRecord;
 
 /// The states an Application row can be in. `pending` is written before any
 /// Docker work starts, so a crash mid-deploy is visible rather than silent.
@@ -42,8 +42,11 @@ pub const SOURCE_IMAGE: &str = "image";
 pub const SOURCE_PATH: &str = "path";
 pub const SOURCE_COMPOSE: &str = "compose";
 
-/// Names reserved for Platform Infra — remove must reject these.
-const PROTECTED_NAMES: &[&str] = &["postgres", "coredns", "traefik"];
+/// Names reserved for Platform Infra — remove must reject these. Only the
+/// proxy is left: DNS moved into the binary (ADR-0017) and the state store
+/// into files (ADR-0018), so "coredns" and "postgres" are names an Operator
+/// may now give an Application of their own.
+const PROTECTED_NAMES: &[&str] = &["traefik"];
 
 #[derive(Debug)]
 pub enum DeployError {
@@ -58,7 +61,7 @@ pub enum DeployError {
     InvalidCompose(ComposeDefinitionError),
     Docker(DockerError),
     Routing(RouteError),
-    Db(DbError),
+    Store(StoreError),
 }
 
 impl std::fmt::Display for DeployError {
@@ -81,7 +84,7 @@ impl std::fmt::Display for DeployError {
             DeployError::InvalidCompose(_) => write!(f, "invalid Compose definition"),
             DeployError::Docker(_) => write!(f, "failed to deploy the Application"),
             DeployError::Routing(_) => write!(f, "failed to publish the Application on the LAN"),
-            DeployError::Db(_) => write!(f, "failed to record the Application"),
+            DeployError::Store(_) => write!(f, "failed to record the Application"),
         }
     }
 }
@@ -92,7 +95,7 @@ impl std::error::Error for DeployError {
             DeployError::InvalidCompose(e) => Some(e),
             DeployError::Docker(e) => Some(e),
             DeployError::Routing(e) => Some(e),
-            DeployError::Db(e) => Some(e),
+            DeployError::Store(e) => Some(e),
             _ => None,
         }
     }
@@ -110,9 +113,9 @@ impl From<RouteError> for DeployError {
     }
 }
 
-impl From<DbError> for DeployError {
-    fn from(e: DbError) -> Self {
-        DeployError::Db(e)
+impl From<StoreError> for DeployError {
+    fn from(e: StoreError) -> Self {
+        DeployError::Store(e)
     }
 }
 
@@ -564,8 +567,19 @@ pub async fn reconcile(
     docker: &(impl DockerRuntime + ?Sized),
     routes: &(impl RouteStore + ?Sized),
 ) -> Result<(), DeployError> {
+    // An executor that cannot be reached observes nothing. Settling a deploy
+    // against that silence would report every Application as failed because
+    // Docker is down, so an interrupted deploy stays pending and stays visible.
+    let executor_available = docker.ping().await.is_ok();
+    if !executor_available {
+        tracing::warn!(
+            "Application execution is unavailable, so interrupted deploys stay pending; \
+             saved configuration is untouched"
+        );
+    }
+
     for mut app in store.list_applications().await? {
-        if app.status == STATUS_PENDING {
+        if app.status == STATUS_PENDING && executor_available {
             let states = service_states(docker, &app).await;
             let running = !states.is_empty() && states.iter().all(|s| s.state == "running");
 
@@ -825,7 +839,7 @@ pub enum RemoveError {
     ProtectedName(String),
     Docker(DockerError),
     Routing(RouteError),
-    Db(DbError),
+    Store(StoreError),
 }
 
 impl std::fmt::Display for RemoveError {
@@ -845,7 +859,7 @@ impl std::fmt::Display for RemoveError {
             RemoveError::Routing(_) => {
                 write!(f, "failed to withdraw the Application from the LAN")
             }
-            RemoveError::Db(_) => write!(f, "failed to delete the Application record"),
+            RemoveError::Store(_) => write!(f, "failed to delete the Application record"),
         }
     }
 }
@@ -855,7 +869,7 @@ impl std::error::Error for RemoveError {
         match self {
             RemoveError::Docker(e) => Some(e),
             RemoveError::Routing(e) => Some(e),
-            RemoveError::Db(e) => Some(e),
+            RemoveError::Store(e) => Some(e),
             _ => None,
         }
     }
@@ -873,11 +887,11 @@ impl From<RouteError> for RemoveError {
     }
 }
 
-impl From<DbError> for RemoveError {
-    fn from(e: DbError) -> Self {
+impl From<StoreError> for RemoveError {
+    fn from(e: StoreError) -> Self {
         match e {
-            DbError::NotFound(name) => RemoveError::NotFound(name),
-            other => RemoveError::Db(other),
+            StoreError::NotFound(name) => RemoveError::NotFound(name),
+            other => RemoveError::Store(other),
         }
     }
 }
@@ -1119,7 +1133,7 @@ pub enum EnvError {
     NotInitialized,
     NotFound(String),
     Docker(DockerError),
-    Db(DbError),
+    Store(StoreError),
 }
 
 impl std::fmt::Display for EnvError {
@@ -1130,7 +1144,7 @@ impl std::fmt::Display for EnvError {
             }
             EnvError::NotFound(name) => write!(f, "Application '{name}' not found"),
             EnvError::Docker(_) => write!(f, "failed to restart the Application container"),
-            EnvError::Db(_) => write!(f, "failed to read or write the Application environment"),
+            EnvError::Store(_) => write!(f, "failed to read or write the Application environment"),
         }
     }
 }
@@ -1139,7 +1153,7 @@ impl std::error::Error for EnvError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             EnvError::Docker(e) => Some(e),
-            EnvError::Db(e) => Some(e),
+            EnvError::Store(e) => Some(e),
             _ => None,
         }
     }
@@ -1151,9 +1165,9 @@ impl From<DockerError> for EnvError {
     }
 }
 
-impl From<DbError> for EnvError {
-    fn from(e: DbError) -> Self {
-        EnvError::Db(e)
+impl From<StoreError> for EnvError {
+    fn from(e: StoreError) -> Self {
+        EnvError::Store(e)
     }
 }
 
@@ -1268,7 +1282,7 @@ pub enum LogsError {
     NotInitialized,
     NotFound(String),
     Docker(DockerError),
-    Db(DbError),
+    Store(StoreError),
 }
 
 impl std::fmt::Display for LogsError {
@@ -1279,7 +1293,7 @@ impl std::fmt::Display for LogsError {
             }
             LogsError::NotFound(name) => write!(f, "Application '{name}' not found"),
             LogsError::Docker(_) => write!(f, "failed to stream the Application logs"),
-            LogsError::Db(_) => write!(f, "failed to look up the Application"),
+            LogsError::Store(_) => write!(f, "failed to look up the Application"),
         }
     }
 }
@@ -1288,7 +1302,7 @@ impl std::error::Error for LogsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LogsError::Docker(e) => Some(e),
-            LogsError::Db(e) => Some(e),
+            LogsError::Store(e) => Some(e),
             _ => None,
         }
     }
@@ -1300,18 +1314,18 @@ impl From<DockerError> for LogsError {
     }
 }
 
-impl From<DbError> for LogsError {
-    fn from(e: DbError) -> Self {
-        LogsError::Db(e)
+impl From<StoreError> for LogsError {
+    fn from(e: StoreError) -> Self {
+        LogsError::Store(e)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::FakeStateStore;
     use crate::docker::FakeDocker;
     use crate::routes::FakeRoutes;
+    use crate::store::FakeStateStore;
 
     async fn initialized_store() -> FakeStateStore {
         let store = FakeStateStore::new();
@@ -1388,6 +1402,63 @@ mod tests {
         assert_eq!(settled.status, STATUS_RUNNING);
         assert_eq!(settled.last_error, None);
         assert!(routes.get(&settled.id).is_some());
+    }
+
+    /// A Host whose Docker is gone observes nothing. Reporting every
+    /// Application as failed, or worse as stopped, would turn an outage into a
+    /// change the Operator never asked for.
+    #[tokio::test]
+    async fn reconcile_leaves_saved_state_alone_when_the_executor_is_unreachable() {
+        let store = initialized_store().await;
+        let routes = FakeRoutes::new();
+        let docker = FakeDocker::new();
+        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "journal",
+            "nginx:alpine",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // One deploy interrupted by a restart, one Application the Operator
+        // stopped on purpose.
+        let mut pending = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        pending.status = STATUS_PENDING.into();
+        store.insert_application(&pending).await.unwrap();
+        let mut stopped = store
+            .find_application_by_name("journal")
+            .await
+            .unwrap()
+            .unwrap();
+        stopped.status = STATUS_STOPPED.into();
+        store.insert_application(&stopped).await.unwrap();
+
+        let gone = FakeDocker {
+            unreachable: Some("Cannot connect to the Docker daemon".into()),
+            ..FakeDocker::new()
+        };
+        reconcile(&store, &gone, &routes).await.unwrap();
+
+        assert_eq!(
+            store.get_application(&pending.id).await.unwrap().unwrap(),
+            pending,
+            "an unreachable executor settled a deploy it never observed"
+        );
+        assert_eq!(
+            store.get_application(&stopped.id).await.unwrap().unwrap(),
+            stopped
+        );
     }
 
     #[tokio::test]

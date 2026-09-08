@@ -12,8 +12,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use crate::db::DbError;
 use crate::error::ErrorReport;
+use crate::store::StoreError;
 use rand::Rng;
 
 pub mod apps;
@@ -22,18 +22,19 @@ pub mod compose;
 pub mod compose_app;
 pub mod config;
 pub mod console;
-pub mod db;
 pub mod dns;
 pub mod docker;
 pub mod error;
+pub mod file_store;
 pub mod host_dns;
 pub mod routes;
+pub mod store;
 pub mod tls;
 
 use apps::{DeployError, RemoveError};
-use db::StateStore;
 use docker::DockerRuntime;
 use routes::RouteStore;
+use store::StateStore;
 
 #[derive(Clone)]
 struct AppState<S: StateStore> {
@@ -692,7 +693,7 @@ fn remove_error_response(err: RemoveError) -> Response {
         RemoveError::NotFound(_) => StatusCode::NOT_FOUND,
         RemoveError::ProtectedName(_) => StatusCode::FORBIDDEN,
         RemoveError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        RemoveError::Docker(_) | RemoveError::Routing(_) | RemoveError::Db(_) => {
+        RemoveError::Docker(_) | RemoveError::Routing(_) | RemoveError::Store(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
     };
@@ -748,7 +749,7 @@ fn env_error_response(err: apps::EnvError) -> Response {
     let status = match &err {
         apps::EnvError::NotFound(_) => StatusCode::NOT_FOUND,
         apps::EnvError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        apps::EnvError::Docker(_) | apps::EnvError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        apps::EnvError::Docker(_) | apps::EnvError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     error_response(status, &err)
 }
@@ -763,7 +764,7 @@ async fn list_app_containers<S: StateStore>(
             Err(err) => logs_error_response(&apps::LogsError::Docker(err)),
         },
         Ok(None) => logs_error_response(&apps::LogsError::NotFound(id)),
-        Err(err) => logs_error_response(&apps::LogsError::Db(err)),
+        Err(err) => logs_error_response(&apps::LogsError::Store(err)),
     }
 }
 
@@ -792,7 +793,7 @@ async fn stream_logs_by_id<S: StateStore>(
     match state.store.get_application(&id).await {
         Ok(Some(app)) => stream_logs_for(state, app, query.container).await,
         Ok(None) => logs_error_response(&apps::LogsError::NotFound(id)),
-        Err(err) => logs_error_response(&apps::LogsError::Db(err)),
+        Err(err) => logs_error_response(&apps::LogsError::Store(err)),
     }
 }
 
@@ -884,7 +885,7 @@ fn logs_error_response(err: &apps::LogsError) -> Response {
     let status = match err {
         apps::LogsError::NotFound(_) => StatusCode::NOT_FOUND,
         apps::LogsError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        apps::LogsError::Docker(_) | apps::LogsError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        apps::LogsError::Docker(_) | apps::LogsError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     error_response(status, err)
 }
@@ -954,8 +955,8 @@ async fn revoke_key<S: StateStore>(
 ) -> Response {
     match state.store.revoke_api_key(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(DbError::NotFound(_)) => {
-            error_response(StatusCode::NOT_FOUND, &DbError::NotFound("key".into()))
+        Err(StoreError::NotFound(_)) => {
+            error_response(StatusCode::NOT_FOUND, &StoreError::NotFound("key".into()))
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
@@ -972,7 +973,7 @@ fn deploy_error_response(err: DeployError) -> Response {
         | DeployError::InvalidCompose(_) => StatusCode::BAD_REQUEST,
         DeployError::NotFound(_) => StatusCode::NOT_FOUND,
         DeployError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        DeployError::Docker(_) | DeployError::Routing(_) | DeployError::Db(_) => {
+        DeployError::Docker(_) | DeployError::Routing(_) | DeployError::Store(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
     };
@@ -1025,9 +1026,9 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, header};
     use axum::response::Response;
-    use db::FakeStateStore;
     use docker::FakeDocker;
     use serde_json::{Value, json};
+    use store::FakeStateStore;
     use tower::ServiceExt;
 
     async fn send(app: &Router, uri: &str, api_key: Option<&str>) -> Response {
@@ -1567,7 +1568,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_lists_the_two_infra_containers_by_role() {
+    async fn system_lists_the_infra_containers_by_role() {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         let app = build_app(
@@ -1583,19 +1584,20 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&body).unwrap();
 
         let entries = parsed.as_array().unwrap();
-        assert_eq!(entries.len(), 2);
 
+        // The state store is no longer Platform Infra: it is files the binary
+        // owns, so it has no container the console could list.
         let roles: Vec<&str> = entries
             .iter()
             .map(|e| e["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, vec!["db", "proxy"]);
+        assert_eq!(roles, vec!["proxy"]);
 
         let names: Vec<&str> = entries
             .iter()
             .map(|e| e["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["sf-system-db", "sf-system-proxy"]);
+        assert_eq!(names, vec!["sf-system-proxy"]);
 
         for entry in entries {
             assert!(!entry["image"].as_str().unwrap().is_empty());
@@ -1772,6 +1774,7 @@ mod tests {
             api_key: "generated-key".into(),
             api_listen_addr: "192.168.1.100:3721".into(),
             host_ip: "192.168.1.100".into(),
+            execution_unavailable: None,
         };
 
         bootstrap::persist_bootstrap_state(&store, &result)
@@ -1800,6 +1803,7 @@ mod tests {
             api_key: "key1".into(),
             api_listen_addr: "127.0.0.1:3721".into(),
             host_ip: "127.0.0.1".into(),
+            execution_unavailable: None,
         };
 
         bootstrap::persist_bootstrap_state(&store, &result1)
@@ -1811,6 +1815,7 @@ mod tests {
             api_key: "key2".into(),
             api_listen_addr: "127.0.0.1:3721".into(),
             host_ip: "127.0.0.1".into(),
+            execution_unavailable: None,
         };
 
         let err = bootstrap::persist_bootstrap_state(&store, &result2)
@@ -2178,12 +2183,17 @@ mod tests {
     async fn remove_protected_name_returns_403() {
         let (app, _) = setup_initialized_app("test-key", "home.lan").await;
 
-        for name in &["postgres", "coredns", "traefik"] {
+        let response = delete_req(&app, "/apps/traefik", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // Nothing the Platform runs answers to these any more, so an
+        // Application is free to take the name.
+        for name in &["postgres", "coredns"] {
             let response = delete_req(&app, &format!("/apps/{name}"), Some("test-key")).await;
             assert_eq!(
                 response.status(),
-                StatusCode::FORBIDDEN,
-                "should forbid removal of '{name}'"
+                StatusCode::NOT_FOUND,
+                "'{name}' is still reserved for Platform Infra that no longer exists"
             );
         }
     }
@@ -2319,8 +2329,8 @@ mod bootstrap_tests {
 #[cfg(test)]
 mod deploy_path_tests {
     use super::*;
-    use crate::db::FakeStateStore;
     use crate::docker::FakeDocker;
+    use crate::store::FakeStateStore;
     use axum::body::to_bytes;
     use axum::http::StatusCode;
     use serde_json::{Value, json};

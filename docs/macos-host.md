@@ -73,9 +73,10 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    `self-host init` printed.
 8. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,
    `self-host serve`, as the Operator's user, at boot, kept alive. The daemon
-   starts DNS from `dns.json`, then waits for Docker, brings the Infra up
-   if it is not, waits for PostgreSQL, then serves the API. It logs once a
-   minute while waiting for Docker or PostgreSQL.
+   starts DNS from `dns.json`, opens its state directory and serves the API,
+   none of which needs Docker. Bringing the Platform Infra up runs alongside;
+   a Docker that is still starting delays HTTPS and Applications, not the
+   console.
 
 Logs land in `~/Library/Logs/self-host/`. `sudo launchctl print
 system/dev.momoi.self-host` shows the daemon's state.
@@ -86,7 +87,8 @@ system/dev.momoi.self-host` shows the daemon's state.
 | --- | --- |
 | Colima VM and Docker daemon | `dev.momoi.self-host.colima` LaunchDaemon |
 | Platform Infra containers | Docker's `unless-stopped` restart policy, and `self-host serve` as a fallback |
-| DNS | The Platform daemon, before Docker or PostgreSQL is available |
+| DNS | The Platform daemon, before Docker is available |
+| Platform state | Files under `~/.config/self-host/state/`; the daemon reads them at startup |
 | The Platform | `dev.momoi.self-host` LaunchDaemon |
 | Application containers | Docker's `unless-stopped` restart policy; the Platform sets it on every Compose service that has none |
 | Application routes | `self-host serve` republishes every running Application's route on start |

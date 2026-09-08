@@ -33,7 +33,7 @@ self-host serve # keep running; use another terminal for the next command
 self-host setup-dns # Linux with systemd-resolved
 ```
 
-DNS starts with `serve`, before Docker or PostgreSQL is available. It answers
+DNS starts with `serve`, before Docker is available. It answers
 port 53 over UDP and TCP — on Linux at the saved Host IP, on macOS at every
 interface, because that is the only privileged bind the Operator gets there
 ([ADR-0017](docs/adr/0017-host-native-dns.md)). Names under the DNS Suffix
@@ -77,6 +77,16 @@ self-host apps stop hermes && self-host apps start hermes
 The supported Compose subset is in
 [docs/compose-applications.md](docs/compose-applications.md); the Hermes
 workflow is in [docs/hermes.md](docs/hermes.md).
+
+## Platform state
+
+Everything you configure lives in `~/.config/self-host/state/`, written by the
+daemon as files it owns. There is no database to run: the console, the API and
+your saved configuration work on a Host where Docker is missing or stopped.
+Docker runs Applications, and for now serves public HTTPS.
+
+Backing it up, restoring it, and upgrading from an installation that used
+PostgreSQL are in [docs/operating.md](docs/operating.md).
 
 ## Local HTTPS
 

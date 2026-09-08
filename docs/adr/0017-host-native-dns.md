@@ -4,7 +4,7 @@ The Platform binds UDP and TCP port 53 on the Host's configured LAN address.
 CoreDNS no longer runs in a container. On macOS, putting DNS behind the Docker
 VM required address forwarding and file mounts before the house could resolve
 an Application Hostname. Native DNS removes those dependencies and keeps name
-resolution available while Docker and PostgreSQL are starting or unavailable.
+resolution available while Docker is starting or unavailable.
 
 Hickory serves an in-memory wildcard zone for the DNS Suffix and forwards other
 names to Cloudflare at `1.1.1.1` and `1.0.0.1`. Its server and resolver handle
@@ -18,8 +18,9 @@ record in client caches. The suffix apex holds SOA and NS records.
 
 Bootstrap writes the DNS Suffix and Host IP to `dns.json` in the Platform
 configuration directory. The daemon reads it before touching Docker or the
-state store. The Host needs a fixed LAN address; if that address has not
-appeared at boot, DNS waits for it. Port conflicts or missing bind permissions
+state store; `self-host setup-dns` reads it too, so the Host resolver agrees
+with what the Platform actually serves. The Host needs a fixed LAN address; if
+that address has not appeared at boot, DNS waits for it. Port conflicts or missing bind permissions
 stop startup with an error so the supervisor can report and restart the daemon.
 
 Port 53 is privileged, and the two Hosts grant it differently, so they do not
@@ -46,8 +47,10 @@ other than the one queried if the Host is multi-homed.
 Records come from the Host IP in `dns.json` on both, whatever the listener is
 bound to.
 
-Only PostgreSQL and Traefik remain Infra containers. Existing installations
-must be reset before using this version; no CoreDNS migration is provided.
+Only PostgreSQL and Traefik remained Infra containers;
+[ADR-0018](0018-platform-state-in-files.md) has since removed PostgreSQL.
+Existing installations must be reset before using this version; no CoreDNS
+migration is provided.
 
 **Status:** accepted
 
