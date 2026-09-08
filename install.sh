@@ -238,6 +238,7 @@ prepare_colima() {
 	ln -sf "$brew_prefix/opt/docker-compose/bin/docker-compose" "$home/.docker/cli-plugins/docker-compose"
 
 	write_colima_template "$home"
+	write_lima_override "$home"
 
 	# A Colima started by hand belongs to a login session. Hand it to launchd.
 	if colima status >/dev/null 2>&1; then
@@ -297,11 +298,11 @@ EOF
 # its configuration file as a directory and crash-loops, and so does any
 # Compose Application with a bind mount.
 #
-# Naming DNS resolvers turns Lima's host resolver off — colima sets
-# `hostResolver.enabled` to `len(network.dns) == 0` — and with it the listener
-# `limactl` keeps on TCP port 53 of the Mac, which is the port the Platform
-# serves on (ADR-0017). The VM loses the `host.docker.internal` mapping that
-# resolver injected; Traefik gets that from `extra_hosts` instead.
+# Naming DNS resolvers gives the VM its own, and turns Lima's host resolver
+# off with them — colima sets `hostResolver.enabled` to
+# `len(network.dns) == 0`. Nothing in the Platform wants the
+# `host.docker.internal` mapping that resolver injected any more. This is not
+# what frees port 53; see write_lima_override.
 #
 # An existing profile keeps its own file, so both land there too.
 write_colima_template() {
@@ -347,6 +348,40 @@ mounts:
 EOF
 		fi
 	fi
+}
+
+# The Colima guest runs dnsmasq on port 53, and Lima republishes a guest
+# listener on the same port of the Mac. That is what holds `TCP *:53` there,
+# ahead of the Platform, with no container publishing anything — and colima
+# has no setting for it. Turning Lima's host resolver off does not touch it:
+# the port stays taken either way.
+#
+# Lima reads `$LIMA_HOME/_config/override.yaml` ahead of each instance's own
+# file, and port-forward rules are matched in that order, so a rule that
+# ignores guest port 53 wins. Only that port: Applications are still reached
+# through forwarded ports like anything else.
+write_lima_override() {
+	local home="$1" override
+	override="$home/.colima/_lima/_config/override.yaml"
+
+	# An override the Operator wrote is theirs. Say what is missing.
+	if [ -f "$override" ] && ! grep -q "self-host installer" "$override"; then
+		echo "${override} already exists; add a portForwards rule that ignores" >&2
+		echo "guest port 53, or Lima takes the port the Platform serves DNS on." >&2
+		return
+	fi
+
+	mkdir -p "$(dirname "$override")"
+	cat >"$override" <<'EOF'
+# Written by the self-host installer. Lima republishes the Colima guest's
+# dnsmasq on port 53 of the Mac, where the Platform serves DNS.
+portForwards:
+  - guestPort: 53
+    ignore: true
+  - guestIP: "0.0.0.0"
+    guestPort: 53
+    ignore: true
+EOF
 }
 
 # A profile Colima already created keeps its own `network.dns`. Empty is the
