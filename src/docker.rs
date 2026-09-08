@@ -155,7 +155,8 @@ pub struct ContainerConfig {
 pub const SYSTEM_NETWORK: &str = "sf-system";
 pub const APP_NETWORK: &str = "sf-apps";
 
-/// Application container: Traefik Host routing via labels; no host port publish.
+/// Application container: routed by Hostname, and publishing its Web Target
+/// on loopback so the Host's proxy can reach it (ADR-0019).
 #[derive(Debug, Clone)]
 pub struct ApplicationContainer {
     pub name: String,
@@ -1002,11 +1003,16 @@ impl DockerRuntime for FakeDocker {
     }
 
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
-        // Mirror production contract: Applications must not publish host ports.
-        if !config.ports.is_empty() {
-            return Err(DockerError::Unavailable(
-                "Application containers must not publish host ports".into(),
-            ));
+        // Mirror the production contract: an Application publishes its Web
+        // Target for the proxy on the Host and nothing on the LAN.
+        if let Some(port) = config
+            .ports
+            .iter()
+            .find(|port| !port.starts_with("127.0.0.1:"))
+        {
+            return Err(DockerError::Unavailable(format!(
+                "Application containers may only publish on loopback, not '{port}'"
+            )));
         }
         self.apps.lock().unwrap().push(config);
         Ok(())

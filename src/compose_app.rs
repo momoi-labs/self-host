@@ -152,6 +152,14 @@ pub struct WebTarget {
     pub port: u16,
 }
 
+/// A Web Target and the Host port it answers on, so a proxy that is not on
+/// the Application's network can reach it (ADR-0019).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedTarget {
+    pub target: WebTarget,
+    pub host_port: u16,
+}
+
 /// The rendered project, ready for `docker compose`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposeProject {
@@ -274,12 +282,17 @@ impl ComposeDefinition {
     /// identity labels, the Application network next to the project's own,
     /// a restart policy if it had none, and the Platform's environment on top
     /// of its own. Host paths are pinned under the Application's directory.
+    /// `published` is the Web Target's Host port, when it has one. Only that
+    /// one service gets it, and only on loopback: the rest of the project
+    /// stays reachable on the Application's own network and nowhere else.
+    /// Ports the Operator published themselves are left exactly as written.
     pub fn render(
         &self,
         name: &str,
         dir: &Path,
         labels: &[(String, String)],
         env: &[(String, String)],
+        published: Option<&PublishedTarget>,
     ) -> ComposeProject {
         let data_dir = dir.join("data");
         let mut services = Mapping::new();
@@ -318,6 +331,20 @@ impl ComposeDefinition {
             }
             if !environment.is_empty() {
                 body.insert("environment".into(), to_string_mapping(&environment));
+            }
+
+            if let Some(published) = published
+                && published.target.service == service.name
+            {
+                let mut ports = match body.get("ports") {
+                    Some(Value::Sequence(declared)) => declared.clone(),
+                    _ => Vec::new(),
+                };
+                ports.push(Value::String(crate::ports::publication(
+                    published.host_port,
+                    published.target.port,
+                )));
+                body.insert("ports".into(), Value::Sequence(ports));
             }
 
             if let Some(Value::Sequence(mounts)) = body.get("volumes") {
@@ -664,6 +691,7 @@ services:
             Path::new("/cfg/apps/k3n8qz4v2x1p"),
             &[("sf.app.id".into(), "k3n8qz4v2x1p".into())],
             &[],
+            None,
         )
     }
 
@@ -759,6 +787,66 @@ services:
     }
 
     #[test]
+    fn the_web_target_is_published_on_loopback_beside_what_the_operator_declared() {
+        let def = hermes();
+        let published = PublishedTarget {
+            target: def.web_target(None, Some(9119)).unwrap(),
+            host_port: 20001,
+        };
+        let project = def.render(
+            "sf-app-x",
+            Path::new("/cfg/apps/x"),
+            &[],
+            &[],
+            Some(&published),
+        );
+
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        let ports = doc["services"]["hermes"]["ports"].as_sequence().unwrap();
+        assert_eq!(
+            ports
+                .iter()
+                .map(|p| p.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            // What the Operator published stays exactly as they wrote it; the
+            // Web Target's own publication is added, on loopback.
+            ["8642:8642", "9119:9119", "127.0.0.1:20001:9119"]
+        );
+    }
+
+    #[test]
+    fn only_the_web_target_service_is_published_on_the_host() {
+        let def = ComposeDefinition::parse(
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n  db:\n    image: postgres\n",
+        )
+        .unwrap();
+        let published = PublishedTarget {
+            target: def.web_target(Some("web"), Some(80)).unwrap(),
+            host_port: 20002,
+        };
+        let project = def.render(
+            "sf-app-x",
+            Path::new("/cfg/apps/x"),
+            &[],
+            &[],
+            Some(&published),
+        );
+
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        assert_eq!(
+            doc["services"]["web"]["ports"]
+                .as_sequence()
+                .unwrap()
+                .last()
+                .unwrap(),
+            "127.0.0.1:20002:80"
+        );
+        // The database is the Application's business, and reachable only on
+        // the Application's own network.
+        assert!(doc["services"]["db"]["ports"].is_null());
+    }
+
+    #[test]
     fn platform_environment_goes_on_top_of_the_services_own() {
         let project = hermes().render(
             "sf-app-x",
@@ -768,6 +856,7 @@ services:
                 ("HERMES_DASHBOARD".into(), "0".into()),
                 ("OPENROUTER_API_KEY".into(), "sk-test".into()),
             ],
+            None,
         );
         let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
         let env = &doc["services"]["hermes"]["environment"];

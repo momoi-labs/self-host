@@ -39,6 +39,11 @@ pub struct ApplicationRecord {
     /// The container port the Hostname routes to. `None` means the default
     /// HTTP port of a single-container Application.
     pub web_port: Option<u16>,
+    /// The Host port the Web Target is published on, so the embedded proxy
+    /// can reach it from outside Docker (ADR-0019). Allocated once and kept:
+    /// the proxy reads it back after a restart instead of asking Docker.
+    /// `None` for an Application deployed before the proxy moved in-process.
+    pub web_target_port: Option<u16>,
 }
 
 #[derive(Debug)]

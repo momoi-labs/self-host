@@ -27,6 +27,7 @@ pub mod docker;
 pub mod error;
 pub mod file_store;
 pub mod host_dns;
+pub mod ports;
 pub mod proxy;
 pub mod routes;
 pub mod store;
@@ -974,9 +975,10 @@ fn deploy_error_response(err: DeployError) -> Response {
         | DeployError::InvalidCompose(_) => StatusCode::BAD_REQUEST,
         DeployError::NotFound(_) => StatusCode::NOT_FOUND,
         DeployError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        DeployError::Docker(_) | DeployError::Routing(_) | DeployError::Store(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        DeployError::Docker(_)
+        | DeployError::Routing(_)
+        | DeployError::NoWebTargetPort(_)
+        | DeployError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     error_response(status, &err)
 }
@@ -1465,6 +1467,7 @@ mod tests {
             compose: None,
             web_service: None,
             web_port: None,
+            web_target_port: None,
         };
         store.insert_application(&record).await.unwrap();
         let docker = FakeDocker::new();
@@ -1998,7 +2001,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deploy_runs_application_without_host_ports() {
+    async fn deploy_publishes_the_web_target_on_loopback_only() {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
@@ -2018,11 +2021,22 @@ mod tests {
 
         assert_eq!(docker.pulled.lock().unwrap().as_slice(), ["nginx:alpine"]);
 
+        let deployed_app = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        let id = deployed_app.id.clone();
+        let host_port = deployed_app.web_target_port.expect("a Web Target port");
+
         {
             let deployed = docker.apps.lock().unwrap();
             assert_eq!(deployed.len(), 1);
-            assert!(deployed[0].ports.is_empty());
-            // Routing is a file Traefik watches, not a label on the container.
+            // The Web Target is reachable by the proxy on the Host, and by
+            // nothing on the LAN.
+            assert_eq!(deployed[0].ports, [format!("127.0.0.1:{host_port}:80")]);
+            // Routing is decided by the route table, not a label on the
+            // container.
             assert!(
                 !deployed[0]
                     .labels
@@ -2030,18 +2044,61 @@ mod tests {
                     .any(|(k, _)| k.starts_with("traefik."))
             );
         }
-
-        let id = store
-            .find_application_by_name("blog")
-            .await
-            .unwrap()
-            .unwrap()
-            .id;
         assert!(
             route_store
                 .get(&id)
                 .unwrap()
                 .contains("Host(`blog.home.lan`)")
+        );
+    }
+
+    #[tokio::test]
+    async fn each_application_keeps_its_own_web_target_port_across_redeploys() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        for name in ["blog", "wiki"] {
+            post_json(
+                &app,
+                "/apps",
+                Some("test-key"),
+                json!({"name": name, "image": "nginx:alpine"}),
+            )
+            .await;
+            settle(&store, name).await;
+        }
+
+        let blog = store
+            .find_application_by_name("blog")
+            .await
+            .unwrap()
+            .unwrap();
+        let wiki = store
+            .find_application_by_name("wiki")
+            .await
+            .unwrap()
+            .unwrap();
+        let blog_port = blog.web_target_port.expect("a Web Target port");
+        assert_ne!(blog_port, wiki.web_target_port.unwrap());
+
+        // A redeploy is the same Application at the same address. Nothing
+        // outside the Platform depends on the number, but an Operator reading
+        // `docker ps` should not find it different every time.
+        put_json(
+            &app,
+            &format!("/apps/id/{}", blog.id),
+            Some("test-key"),
+            json!({"image": "nginx:latest"}),
+        )
+        .await;
+        settle(&store, "blog").await;
+        assert_eq!(
+            store
+                .get_application(&blog.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .web_target_port,
+            Some(blog_port)
         );
     }
 

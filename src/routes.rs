@@ -154,6 +154,82 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), RouteError> {
         .map_err(|e| RouteError::Write(format!("rename into {}: {e}", path.display())))
 }
 
+/// Routes published into the embedded proxy's route table (ADR-0019).
+///
+/// This is the whole adapter between an Application on record and the proxy's
+/// [`Publisher`](crate::proxy::Publisher): the Hostnames come off the record,
+/// and the reachable address is loopback on the Host port the Web Target was
+/// published on. An Application without one — deployed before the proxy moved
+/// into the binary, or not yet started — publishes with no target, so the
+/// proxy answers that its Application is unavailable rather than pretending
+/// the Hostname does not exist.
+pub struct ProxyRoutes {
+    table: crate::proxy::RouteTable,
+}
+
+impl ProxyRoutes {
+    pub fn new(table: crate::proxy::RouteTable) -> Self {
+        ProxyRoutes { table }
+    }
+}
+
+impl RouteStore for ProxyRoutes {
+    fn publish(&self, app: &ApplicationRecord) -> Result<(), RouteError> {
+        use crate::proxy::Publisher;
+
+        let hostnames: Vec<String> = hostnames(app).into_iter().map(str::to_string).collect();
+        let target = app
+            .web_target_port
+            .map(|port| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+        self.table.publish(&app.id, &hostnames, target);
+        Ok(())
+    }
+
+    fn withdraw(&self, id: &str) -> Result<(), RouteError> {
+        use crate::proxy::Publisher;
+
+        self.table.withdraw(id);
+        Ok(())
+    }
+}
+
+/// Every route store the Platform keeps, written to as one.
+///
+/// The Traefik files and the embedded proxy's table describe the same routes
+/// in two places while both are serving, and an Application published to only
+/// one of them would answer differently depending on which proxy a Consumer
+/// reached. The first failure is the one reported, and the rest are still
+/// written: a store that is behind is worse than a store that is behind *and*
+/// was never told the rest.
+pub struct AllRoutes(Vec<Box<dyn RouteStore>>);
+
+impl AllRoutes {
+    pub fn new(stores: Vec<Box<dyn RouteStore>>) -> Self {
+        AllRoutes(stores)
+    }
+}
+
+impl RouteStore for AllRoutes {
+    fn publish(&self, app: &ApplicationRecord) -> Result<(), RouteError> {
+        // Deliberately not `try_fold`: a store skipped because an earlier one
+        // failed is a store that now describes a different route than the
+        // rest. Every store is written, and the first failure is reported.
+        let mut outcome = Ok(());
+        for store in &self.0 {
+            outcome = outcome.and(store.publish(app));
+        }
+        outcome
+    }
+
+    fn withdraw(&self, id: &str) -> Result<(), RouteError> {
+        let mut outcome = Ok(());
+        for store in &self.0 {
+            outcome = outcome.and(store.withdraw(id));
+        }
+        outcome
+    }
+}
+
 /// Routes kept in memory, for tests.
 #[derive(Default)]
 pub struct FakeRoutes {
@@ -209,6 +285,7 @@ mod tests {
             compose: None,
             web_service: None,
             web_port: None,
+            web_target_port: None,
         }
     }
 
@@ -243,6 +320,64 @@ mod tests {
     fn an_alias_repeating_the_hostname_is_not_routed_twice() {
         let record = app("abc123", "blog.home.lan", &["blog.home.lan"]);
         assert_eq!(hostnames(&record), vec!["blog.home.lan"]);
+    }
+
+    #[test]
+    fn the_proxy_table_answers_every_hostname_on_the_web_targets_host_port() {
+        let table = crate::proxy::RouteTable::new();
+        let routes = ProxyRoutes::new(table.clone());
+        let mut record = app("abc123", "writing.home.lan", &["blog.home.lan"]);
+        record.web_target_port = Some(20001);
+
+        routes.publish(&record).unwrap();
+
+        let expected = Some(Some("127.0.0.1:20001".parse().unwrap()));
+        assert_eq!(table.target_for("writing.home.lan"), expected);
+        assert_eq!(table.target_for("blog.home.lan"), expected);
+
+        routes.withdraw("abc123").unwrap();
+        assert_eq!(table.target_for("writing.home.lan"), None);
+    }
+
+    #[test]
+    fn an_application_with_no_web_target_port_is_published_as_unavailable() {
+        let table = crate::proxy::RouteTable::new();
+        let routes = ProxyRoutes::new(table.clone());
+
+        routes
+            .publish(&app("abc123", "blog.home.lan", &[]))
+            .unwrap();
+
+        // Known, and answering nowhere: a 503, not a 404 claiming there is no
+        // such Application.
+        assert_eq!(table.target_for("blog.home.lan"), Some(None));
+    }
+
+    #[test]
+    fn every_store_is_written_even_when_an_earlier_one_fails() {
+        struct Broken;
+        impl RouteStore for Broken {
+            fn publish(&self, _: &ApplicationRecord) -> Result<(), RouteError> {
+                Err(RouteError::Write("disk is gone".into()))
+            }
+            fn withdraw(&self, _: &str) -> Result<(), RouteError> {
+                Err(RouteError::Write("disk is gone".into()))
+            }
+        }
+
+        let table = crate::proxy::RouteTable::new();
+        let mut record = app("abc123", "blog.home.lan", &[]);
+        record.web_target_port = Some(20001);
+        let all = AllRoutes::new(vec![
+            Box::new(Broken),
+            Box::new(ProxyRoutes::new(table.clone())),
+        ]);
+
+        assert!(all.publish(&record).is_err());
+        assert_eq!(
+            table.target_for("blog.home.lan"),
+            Some(Some("127.0.0.1:20001".parse().unwrap()))
+        );
     }
 
     #[test]

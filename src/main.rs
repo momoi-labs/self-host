@@ -1114,11 +1114,18 @@ async fn run_api_server() {
     // only costs Application execution and HTTPS, so it runs alongside.
     tokio::spawn(bring_infra_up());
 
+    // Both proxies are told about every route while both are serving: the
+    // files Traefik watches, and the table the embedded proxy reads
+    // (ADR-0019).
+    let table = self_host::proxy::RouteTable::new();
+    let routes: Arc<dyn self_host::routes::RouteStore> =
+        Arc::new(self_host::routes::AllRoutes::new(vec![
+            Box::new(self_host::routes::FileRoutes::new()),
+            Box::new(self_host::routes::ProxyRoutes::new(table.clone())),
+        ]));
+
     // A record left `pending` by a restart is nobody's deploy any more; settle
     // it against what Docker is actually running before serving.
-    let routes: Arc<dyn self_host::routes::RouteStore> =
-        Arc::new(self_host::routes::FileRoutes::new());
-
     if let Err(e) = self_host::apps::reconcile(&store, docker.as_ref(), routes.as_ref()).await {
         tracing::warn!("failed to reconcile Applications: {e}");
     }
@@ -1134,7 +1141,11 @@ async fn run_api_server() {
         }
     }
 
-    let app = build_app(store, docker, routes);
+    let app = build_app(store.clone(), docker, routes);
+
+    if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
+        tokio::spawn(serve_embedded_proxy(dns_suffix, app.clone(), table));
+    }
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
@@ -1143,6 +1154,41 @@ async fn run_api_server() {
     info!("listening on {listen_addr}");
 
     axum::serve(listener, app).await.expect("server error");
+}
+
+/// Serves the embedded proxy beside Traefik, on ports of its own (ADR-0019).
+///
+/// It answers with the same certificates, the same admin Hostname and the same
+/// routes the Platform just published, so it can be checked against the proxy
+/// still carrying the Host's traffic before it takes over 80 and 443. Nothing
+/// depends on it yet: failing to start costs this listener and nothing else,
+/// which is why it is a warning and not the end of the daemon.
+async fn serve_embedded_proxy(
+    dns_suffix: String,
+    admin_router: axum::Router,
+    table: self_host::proxy::RouteTable,
+) {
+    let config = self_host::proxy::ProxyConfig {
+        cert_path: self_host::tls::cert_path(),
+        key_path: self_host::tls::key_path(),
+        bind_ip: std::net::IpAddr::from([0, 0, 0, 0]),
+        https_port: env_port("SELF_HOST_PROXY_HTTPS_PORT", 8443),
+        http_port: env_port("SELF_HOST_PROXY_HTTP_PORT", 8080),
+        admin_hostname: format!("admin.{dns_suffix}"),
+    };
+    let (https, http) = (config.https_port, config.http_port);
+
+    info!("embedded proxy preview: https on {https}, http on {http}");
+    if let Err(error) = self_host::proxy::serve(config, admin_router, table).await {
+        tracing::warn!("the embedded proxy is not serving: {error:#}");
+    }
+}
+
+fn env_port(name: &str, default: u16) -> u16 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Brings the Platform Infra up off the serving path. `docker compose up`
