@@ -13,7 +13,13 @@ changes. An HTTP listener on 80 does nothing but redirect to `https://`, as
 Traefik's did. Reverse-proxying to an Application uses `hyper`'s client
 directly rather than a crate built for it: the request/response types, chunked
 bodies, and `Upgrade` handling for WebSockets are `hyper`'s, not
-hand-rolled. `admin.<suffix>` is not a proxied hop at all — the request is
+hand-rolled. ALPN offers HTTP/2 and HTTP/1.1, as Traefik did, and an
+Application is reached over HTTP/1.1 either way — so a Consumer keeps the
+protocol it had, and an Application sees the one it always saw. A request that
+arrives on HTTP/2 carries its Hostname as `:authority` and no `Host` header,
+so one is put back before it is forwarded; an Application that builds URLs
+from `Host` would otherwise answer with links to a loopback port.
+`admin.<suffix>` is not a proxied hop at all — the request is
 served straight from the in-process console/API `Router` that `build_app`
 already returns, since it and the proxy now share a process.
 

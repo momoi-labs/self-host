@@ -221,9 +221,11 @@ async fn serve_https(
                 let ctx = ctx.clone();
                 async move { Ok::<_, Infallible>(handle(req, ctx, peer.ip()).await) }
             });
-            if let Err(error) = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, service)
-                .with_upgrades()
+            // HTTP/2 or HTTP/1.1, whichever the client negotiated over ALPN.
+            // Upgrades stay available on the HTTP/1.1 side, which is where a
+            // browser opens a WebSocket anyway.
+            if let Err(error) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(io, service)
                 .await
             {
                 tracing::debug!(%peer, "proxy connection error: {error}");
@@ -372,6 +374,18 @@ async fn proxy_to(
         parts.headers.insert("x-forwarded-for", value);
     }
 
+    // An HTTP/2 request carries its Hostname as `:authority` and has no
+    // `Host` header at all. Downgrading it to HTTP/1.1 without putting one
+    // back would hand the Application the target's address as its Hostname,
+    // and an Application that builds URLs from `Host` would answer with links
+    // to a loopback port.
+    if !parts.headers.contains_key(header::HOST)
+        && let Some(authority) = parts.uri.authority()
+        && let Ok(value) = HeaderValue::from_str(authority.as_str())
+    {
+        parts.headers.insert(header::HOST, value);
+    }
+
     let path_and_query = parts
         .uri
         .path_and_query()
@@ -381,6 +395,8 @@ async fn proxy_to(
         Ok(uri) => uri,
         Err(_) => return bad_request("invalid request target"),
     };
+    // Applications are reached over HTTP/1.1, as they were behind Traefik.
+    parts.version = hyper::Version::HTTP_11;
 
     let outgoing = Request::from_parts(parts, body.map_err(BoxError::from).boxed_unsync());
 
@@ -412,7 +428,18 @@ async fn proxy_to(
         });
     }
 
-    let (parts, body) = backend_response.into_parts();
+    let (mut parts, body) = backend_response.into_parts();
+    // What the Application said to us about this one connection is not for
+    // the Consumer, and HTTP/2 forbids these headers outright. An upgrade is
+    // the exception: its `Connection` and `Upgrade` are the handshake.
+    if parts.status != StatusCode::SWITCHING_PROTOCOLS {
+        for name in HOP_BY_HOP {
+            parts.headers.remove(*name);
+        }
+        parts.headers.remove(header::CONNECTION);
+        parts.headers.remove(header::UPGRADE);
+        parts.headers.remove(header::TRANSFER_ENCODING);
+    }
     Response::from_parts(parts, body.map_err(BoxError::from).boxed_unsync())
 }
 
@@ -453,7 +480,7 @@ fn load_tls_config(cert_path: &Path, key_path: &Path) -> anyhow::Result<rustls::
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .context("build TLS server config")?;
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(config)
 }
 
@@ -574,14 +601,21 @@ mod integration {
     fn client_config(
         trusted: rustls::pki_types::CertificateDer<'static>,
     ) -> Arc<rustls::ClientConfig> {
+        client_config_for(trusted, b"http/1.1")
+    }
+
+    fn client_config_for(
+        trusted: rustls::pki_types::CertificateDer<'static>,
+        protocol: &[u8],
+    ) -> Arc<rustls::ClientConfig> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut roots = rustls::RootCertStore::empty();
         roots.add(trusted).unwrap();
-        Arc::new(
-            rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth(),
-        )
+        let mut config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![protocol.to_vec()];
+        Arc::new(config)
     }
 
     /// One request/response over a fresh TLS connection, `Host` set from
@@ -655,7 +689,9 @@ mod integration {
         match req.uri().path() {
             "/reflect" => {
                 let mut lines = String::new();
+                lines.push_str(&format!("version={:?}\n", req.version()));
                 for name in [
+                    "host",
                     "x-custom",
                     "x-forwarded-for",
                     "x-forwarded-proto",
@@ -808,6 +844,49 @@ mod integration {
         assert!(body.contains("x-forwarded-proto=https"), "{body}");
         assert!(!body.contains("1.2.3.4"), "{body}");
         assert!(body.contains("x-forwarded-for=127.0.0.1"), "{body}");
+        assert!(body.contains("x-forwarded-host=blog.home.lan"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_asks_for_http2_gets_it_and_the_application_still_sees_http1() {
+        let backend = spawn_backend().await;
+        let table = RouteTable::new();
+        table.publish("abc", &["blog.home.lan".into()], Some(backend));
+        let (https_addr, _, cert) = spawn_proxy(Router::new(), table).await;
+
+        let tcp = TcpStream::connect(https_addr).await.unwrap();
+        let connector = tokio_rustls::TlsConnector::from(client_config_for(cert, b"h2"));
+        let tls = connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+            .unwrap();
+        assert_eq!(
+            tls.get_ref().1.alpn_protocol(),
+            Some(&b"h2"[..]),
+            "the proxy did not negotiate HTTP/2"
+        );
+
+        let (mut sender, conn) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .unwrap();
+        tokio::spawn(conn);
+
+        // HTTP/2 carries the Hostname as `:authority`, with no Host header.
+        let req = Request::builder()
+            .uri("https://blog.home.lan/reflect")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.version(), hyper::Version::HTTP_2);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        // The Application is reached over HTTP/1.1 and told which Hostname
+        // the Consumer asked for, not the loopback address behind it.
+        assert!(body.contains("version=HTTP/1.1"), "{body}");
+        assert!(body.contains("host=blog.home.lan"), "{body}");
         assert!(body.contains("x-forwarded-host=blog.home.lan"), "{body}");
     }
 
