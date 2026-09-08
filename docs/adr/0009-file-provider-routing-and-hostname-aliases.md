@@ -55,5 +55,11 @@ A Hostname change no longer recreates the container, so it is no longer
 downtime and the console does not need to present it as such. Changing the
 image still recreates.
 
-**Status:** accepted
+**Status:** superseded
+
+**Superseded by:** [ADR-0019](0019-embedded-http-proxy.md). The routes moved
+from a directory Traefik watched to a table the Platform serves from
+directly. What this decision was for survives it: routing is still keyed on
+the Application's id rather than its container, a Hostname change is still a
+write and not a recreate, and aliases still make a rename non-breaking.
 **Extends:** ADR-0003 (Traefik with the Docker provider), ADR-0008

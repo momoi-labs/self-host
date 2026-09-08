@@ -2,4 +2,8 @@
 
 For the MVP, LAN clients must resolve `name.<suffix>` to the Host IP; HTTP routing by `Host` stays in the reverse proxy. Research in `docs/research/lan-dns-service-discovery.md` showed dumb DNS is enough and Consul is overkill. We chose **dnsmasq** as an Infra container (smaller surface than CoreDNS/Consul; less risk than implementing DNS in the binary now) and **Traefik** with the Docker provider. Consul and in-binary DNS are out of MVP.
 
-**Status:** accepted
+**Status:** superseded
+
+**Superseded by:** [ADR-0017](0017-host-native-dns.md) on DNS and
+[ADR-0019](0019-embedded-http-proxy.md) on the proxy. Neither runs in a
+container any more; the Platform serves both from its own process.

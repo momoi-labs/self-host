@@ -26,15 +26,18 @@ kept verbatim on the Application's row and is what the console edits.
 ## Routing
 
 The Hostname routes to one service and one container port, the web target.
-The web port is the port the service listens on inside its container, not a
-port on the Host: Traefik forwards to it over `sf-apps`, and Consumers only
-ever see the Hostname on 443. The console asks for both. Left empty, the web
-service is the first one that publishes a port and the web port is the
-container side of its first publication. The resolved pair is recorded, so the route never guesses
-again; changing either rewrites the Traefik route without touching Docker.
+The web port is the port the service listens on inside its container, and
+Consumers only ever see the Hostname on 443. The console asks for both. Left
+empty, the web service is the first one that publishes a port and the web port
+is the container side of its first publication. The resolved pair is recorded,
+so the route never guesses again; changing either rewrites the route without
+touching Docker.
 
-Traefik reaches the service by container name over `sf-apps`, with HTTPS on
-the Hostname and no host port involved.
+The Platform's proxy runs on the Host, not on `sf-apps`, so it cannot reach a
+container by name. The web target is published on a Host port bound to
+loopback instead (ADR-0019): reachable by the proxy, and by nothing on the
+LAN. The port is chosen once and kept, and only the web target's service gets
+one.
 
 ## Published ports
 
@@ -121,6 +124,7 @@ services:
 
 Web service `hermes`, web port `9119`: the port the dashboard listens on
 inside the container. Consumers open `https://hermes.<suffix>`, resolved by
-the Platform DNS and served by Traefik, which forwards to that port over `sf-apps`.
-No host port is published; the file has no `ports` at all. See
+the Platform DNS and served by the Platform itself, which forwards to the
+loopback port that container port is published on. The file publishes no port
+of its own; it has no `ports` at all. See
 [hermes.md](hermes.md) for the complete workflow.
