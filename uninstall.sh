@@ -17,6 +17,7 @@
 set -euo pipefail
 
 BINARY="self-host"
+WATCHDOG="self-host-colima"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 CA_NAME="Self-Host LAN CA"
 
@@ -85,7 +86,7 @@ confirm() {
 	echo "  - ${HOME}/.config/self-host, including the CA and the API key"
 	echo "  - the CA from the System Keychain, so browsers warn again"
 	echo "  - /etc/resolver/${SUFFIX}"
-	echo "  - ${INSTALL_DIR}/${BINARY} and ${HOME}/Library/Logs/self-host"
+	echo "  - ${INSTALL_DIR}/${BINARY}, ${INSTALL_DIR}/${WATCHDOG} and the logs"
 	if [ "${SELF_HOST_DELETE_VM:-}" = "1" ]; then
 		echo "  - the Colima VM and everything else inside it"
 	else
@@ -182,15 +183,18 @@ remove_ca() {
 	done
 }
 
+# The binary and the Colima watchdog the installer wrote beside it.
 remove_binary() {
-	if [ -f "$INSTALL_DIR/$BINARY" ]; then
-		echo "removing ${INSTALL_DIR}/${BINARY}..."
+	local name
+	for name in "$BINARY" "$WATCHDOG"; do
+		[ -f "$INSTALL_DIR/$name" ] || continue
+		echo "removing ${INSTALL_DIR}/${name}..."
 		if [ -w "$INSTALL_DIR" ]; then
-			rm -f "$INSTALL_DIR/$BINARY"
+			rm -f "$INSTALL_DIR/$name"
 		else
-			sudo rm -f "$INSTALL_DIR/$BINARY"
+			sudo rm -f "$INSTALL_DIR/$name"
 		fi
-	fi
+	done
 }
 
 remove_logs() {
