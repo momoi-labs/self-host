@@ -31,7 +31,7 @@ On a LAN Host, the Operator downloads the Platform binary, starts it (Bootstrap)
 | 8 | TLS | **HTTP only** in MVP (HTTPS/local CA later) — for Consumer traffic; Operator API is also HTTP on the LAN in MVP |
 | 9 | Hostname | Default `name.<DNS Suffix>`; explicit **override** allowed |
 | 10 | DNS / discovery | **dnsmasq** (Infra container) — dumb DNS `*.<suffix>` → Host IP. Consul rejected for MVP; DNS-in-binary considered and not chosen |
-| 11 | Platform state | **PostgreSQL 18** (Infra container on Bootstrap). SQLite considered and rejected in favor of PG for familiarity / future path |
+| 11 | Platform state | **Files the Platform owns**, under `~/.config/self-host/state/` ([ADR-0018](adr/0018-platform-state-in-files.md)). PostgreSQL 18 was the original choice and made Docker a dependency of reading configuration |
 | 12 | HTTP proxy | **Traefik** (Docker provider; route by `Host`) |
 | 13 | Logs | **`self-host logs <app>`** — stream over **HTTP** from Docker; no Platform-owned retention in MVP |
 | 14 | CLI | Disco-style spaced subcommands (`apps add`, not `apps:add`). Binary: **`self-host`**. Resource: **`apps`**. Quickstart: `init` → `apps add` (`--image` \| `--path`) → `list` / `logs` / `remove`. No GitHub/`git push`/`init user@host` in MVP |

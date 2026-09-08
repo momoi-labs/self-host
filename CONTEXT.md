@@ -53,5 +53,9 @@ The Compose service and container port an Application's Hostname routes to. Reso
 _Avoid_: backend (Traefik's word), main service, entrypoint
 
 **Platform Infra**:
-Components the Platform starts for itself (e.g. HTTP traffic proxy, local DNS, state store) — not Operator Applications.
+Components the Platform starts for itself (e.g. the HTTP traffic proxy) — not Operator Applications. DNS and the state store are not Infra: the Platform serves DNS itself (ADR-0017) and keeps its state in files it owns (ADR-0018).
 _Avoid_: dependencies (ambiguous with app deps), sidecars
+
+**Platform State**:
+Everything the Operator configured, as the Platform records it: settings, credentials, and each Application's identity, publication, definition and environment. Authoritative, owned by the daemon, and separate from anything generated from it.
+_Avoid_: database, cache, the state store (as a component that runs)
