@@ -186,10 +186,12 @@ export function AppDetail({
           <AlertDialogHeader>
             <AlertDialogTitle>Remove application</AlertDialogTitle>
           </AlertDialogHeader>
-          <AlertDialogDescription>
-            "{app.name}" and its {isCompose(app) ? "containers" : "container"} will be removed.
-            Named volumes and the data directory are kept on the Host.
-          </AlertDialogDescription>
+          <div className="dialog-body">
+            <AlertDialogDescription>
+              <code>{app.name}</code> and its {isCompose(app) ? "containers" : "container"} will be removed.
+              Named volumes and the data directory are kept on the Host.
+            </AlertDialogDescription>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction className="btn-danger" onClick={() => void remove()}>
