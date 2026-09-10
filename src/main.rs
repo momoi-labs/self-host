@@ -32,6 +32,9 @@ enum Command {
         /// interface actually has it (default: none)
         #[arg(long)]
         host_ip: Option<String>,
+        /// Set the initial API key instead of generating one
+        #[arg(long, value_parser = parse_init_api_key)]
+        api_key: Option<String>,
     },
     /// Configure persistent Host DNS on Linux with systemd-resolved
     SetupDns,
@@ -188,8 +191,12 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Init { dns, host_ip }) => {
-            if let Err(e) = run_init_command(&dns, host_ip.as_deref()).await {
+        Some(Command::Init {
+            dns,
+            host_ip,
+            api_key,
+        }) => {
+            if let Err(e) = run_init_command(&dns, host_ip.as_deref(), api_key.as_deref()).await {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
@@ -253,7 +260,26 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
     }
 }
 
-async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Result<()> {
+fn parse_init_api_key(value: &str) -> Result<String, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err("API key must contain only visible ASCII characters, without spaces".into());
+    }
+    Ok(value.to_owned())
+}
+
+fn check_existing_api_key(existing: &str, requested: Option<&str>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        requested.is_none_or(|key| key == existing),
+        "Platform is already initialized with a different API key; init cannot change it"
+    );
+    Ok(())
+}
+
+async fn run_init_command(
+    dns_suffix: &str,
+    host_ip: Option<&str>,
+    requested_api_key: Option<&str>,
+) -> anyhow::Result<()> {
     info!("bootstrapping with DNS suffix: {dns_suffix}");
 
     let docker = CliDocker::new();
@@ -268,6 +294,7 @@ async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Re
             .get_api_key()
             .await?
             .ok_or_else(|| anyhow::anyhow!("initialized Platform has no API key"))?;
+        check_existing_api_key(&api_key, requested_api_key)?;
         save_cli_config_values(dns_suffix, &api_key)?;
         println!("Platform is already initialized with DNS Suffix '{dns_suffix}'.");
         println!("Existing DNS, TLS and routing configuration is consistent.");
@@ -296,13 +323,21 @@ async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Re
         return Err(bootstrap::BootstrapError::ExistingConfiguration.into());
     }
 
-    let result = bootstrap::run_bootstrap(&docker, dns_suffix, host_ip).await?;
+    let mut result = bootstrap::run_bootstrap(&docker, dns_suffix, host_ip).await?;
+    if let Some(api_key) = requested_api_key {
+        result.api_key = api_key.to_owned();
+    }
 
     let store = FileStateStore::open(file_store::state_dir())?;
 
     match bootstrap::persist_bootstrap_state(&store, &result).await {
         Ok(()) => {}
         Err(bootstrap::BootstrapError::AlreadyInitialized) => {
+            let existing_key = store
+                .get_api_key()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("initialized Platform has no API key"))?;
+            check_existing_api_key(&existing_key, requested_api_key)?;
             eprintln!("Platform is already initialized.");
             eprintln!("Start the daemon with: self-host serve");
             return Ok(());
@@ -1296,6 +1331,40 @@ async fn resolve_server_config() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_accepts_an_optional_api_key() {
+        for key in [None, Some("local"), Some("dev-123_ABC")] {
+            let mut args = vec!["self-host", "init", "--dns", "prototype.lan"];
+            if let Some(key) = key {
+                args.extend(["--api-key", key]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Init { api_key, .. }) = cli.command else {
+                panic!("expected init");
+            };
+            assert_eq!(api_key.as_deref(), key);
+        }
+    }
+
+    #[test]
+    fn init_rejects_keys_that_cannot_be_used_as_bearer_tokens() {
+        for key in ["", " ", "local dev", "local\n", "local\t", "olá"] {
+            assert!(Cli::try_parse_from(["self-host", "init", "--api-key", key]).is_err());
+        }
+    }
+
+    #[test]
+    fn init_preserves_an_existing_api_key() {
+        assert!(check_existing_api_key("local", None).is_ok());
+        assert!(check_existing_api_key("local", Some("local")).is_ok());
+        let error = check_existing_api_key("saved-secret", Some("different-secret"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("init cannot change it"));
+        assert!(!error.contains("saved-secret"));
+        assert!(!error.contains("different-secret"));
+    }
 
     /// The layers, not the rendering: `{:?}` on an anyhow error also carries a
     /// backtrace wherever `RUST_BACKTRACE` is set, and CI sets it.

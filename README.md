@@ -34,6 +34,16 @@ self-host serve # keep running; use another terminal for the next command
 self-host setup-dns # Linux with systemd-resolved
 ```
 
+For development, choose a fixed API key during initialization:
+
+```bash
+self-host init --dns prototype.lan --api-key local
+```
+
+Without `--api-key`, `init` generates a random key. The key is saved for the
+console and CLI. Running `init` again accepts the same key or no key; it rejects
+a different key without replacing the saved one.
+
 DNS starts with `serve`, before Docker is available. It answers
 port 53 over UDP and TCP — on Linux at the saved Host IP, on macOS at every
 interface, because that is the only privileged bind the Operator gets there
