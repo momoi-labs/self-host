@@ -56,12 +56,14 @@ export function AppForm({
   onSubmit,
   onCancel,
   onRemove,
+  removing,
 }: {
   app?: App;
   dnsSuffix: string;
   onSubmit: (body: Submission, source: string) => Promise<Report | null>;
   onCancel?: () => void;
   onRemove?: () => void;
+  removing?: boolean;
 }) {
   const creating = !app;
   const [source, setSource] = useState(creating ? "image" : app?.development ? "dev-image" : isCompose(app) ? "compose" : "image");
@@ -486,10 +488,10 @@ export function AppForm({
           </>
         ) : (
           <>
-            <Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={onRemove}>
-              Remove application
+            <Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={onRemove} disabled={removing}>
+              {removing ? "Removing..." : "Remove application"}
             </Button>
-            <Button size="sm" variant="primary" type="submit">
+            <Button size="sm" variant="primary" type="submit" disabled={removing}>
               Save and redeploy
             </Button>
           </>

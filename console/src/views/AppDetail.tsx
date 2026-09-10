@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,11 +40,14 @@ export function AppDetail({
 }) {
   const notify = useToast();
   const [confirming, setConfirming] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const removalInFlight = useRef(false);
 
   const canStop = app.status === "running" || app.status === "failed";
   const canStart = app.status === "stopped" || app.status === "failed";
 
   async function lifecycle(verb: string) {
+    if (removalInFlight.current) return;
     try {
       const res = await api(`/apps/id/${encodeURIComponent(app.id)}/${verb}`, { method: "POST" });
       if (!res.ok) {
@@ -64,6 +67,7 @@ export function AppDetail({
   }
 
   async function save(body: Submission): Promise<Report | null> {
+    if (removalInFlight.current) return { error: "Application removal is in progress.", caused_by: [] };
     let failure: Report | null = null;
     try {
       const res = await api(`/apps/id/${encodeURIComponent(app.id)}`, {
@@ -97,11 +101,18 @@ export function AppDetail({
   }
 
   async function remove() {
+    if (removalInFlight.current) return;
+    removalInFlight.current = true;
     setConfirming(false);
+    setRemoving(true);
+    notify("neutral", "Removing application...");
     try {
       const res = await api(`/apps/${encodeURIComponent(app.name)}`, { method: "DELETE" });
       if (!res.ok) {
-        notify("danger", `Could not remove ${app.name}`, await failureOf(res));
+        const failure = await failureOf(res);
+        notify("danger", `Could not remove ${app.name}`, failure);
+        setRemoving(false);
+        removalInFlight.current = false;
         return;
       }
       notify("success", "Application removed", {
@@ -109,9 +120,14 @@ export function AppDetail({
         caused_by: [],
       });
     } catch (cause) {
-      notify("danger", `Could not remove ${app.name}`, (cause as Error).message);
+      const failure = { error: "Network error", caused_by: [(cause as Error).message] };
+      notify("danger", `Could not remove ${app.name}`, failure);
+      setRemoving(false);
+      removalInFlight.current = false;
       return;
     }
+    setRemoving(false);
+    removalInFlight.current = false;
     onRemoved();
     await reload();
   }
@@ -134,15 +150,15 @@ export function AppDetail({
         </PageHeader>
         <div className="lifecycle">
           <StatusBadge tone={statusTone(app.status)}>{app.status}</StatusBadge>
-          <Button size="sm" disabled={!canStart} onClick={() => void lifecycle("start")}>
+          <Button size="sm" disabled={removing || !canStart} onClick={() => void lifecycle("start")}>
             Start
           </Button>
-          <Button size="sm" disabled={!canStop} onClick={() => void lifecycle("stop")}>
+          <Button size="sm" disabled={removing || !canStop} onClick={() => void lifecycle("stop")}>
             Stop
           </Button>
           <Button
             size="sm"
-            disabled={app.status !== "running"}
+            disabled={removing || app.status !== "running"}
             onClick={() => void lifecycle("restart")}
           >
             Restart
@@ -167,7 +183,12 @@ export function AppDetail({
               app={app}
               dnsSuffix={dnsSuffix}
               onSubmit={save}
-              onRemove={() => setConfirming(true)}
+              removing={removing}
+              onRemove={() => {
+                if (!removing && !removalInFlight.current) {
+                  setConfirming(true);
+                }
+              }}
             />
           </Pane>
           <Splitter defaultSize={42} min={25} max={70} aria-label="Resize the form and the logs" />

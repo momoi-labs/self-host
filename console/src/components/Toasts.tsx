@@ -4,14 +4,14 @@ import { ToastDescription, useToast as useKisoToast } from "@momoi-labs/kiso-rea
 import { asReport } from "../lib/api.js";
 import { Causes } from "./Causes.js";
 
-type Notify = (kind: "success" | "danger", title: string, body?: unknown) => void;
+type Notify = (kind: "success" | "danger" | "neutral", title: string, body?: unknown) => void;
 
 /** Keeps the Platform's error and cause chain together in a notification. */
 export function useToast(): Notify {
   const notify = useKisoToast();
   return useCallback<Notify>((kind, title, body) => {
     const report = body ? asReport(body) : null;
-    notify(kind === "danger" ? "error" : "success", title, report ? (
+    notify(kind === "danger" ? "error" : kind === "neutral" ? "neutral" : "success", title, report ? (
       <>
         <ToastDescription>{report.error}</ToastDescription>
         <Causes report={report} />
