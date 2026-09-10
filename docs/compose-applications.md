@@ -70,9 +70,17 @@ directory on the Host.
 ## Supported service keys
 
 `image` (required), `command`, `entrypoint`, `environment`, `ports`,
-`volumes`, `restart`, `depends_on`, `deploy`, `healthcheck`, `labels`,
-`working_dir`, `user`, `expose`, `stop_grace_period`, `init`.
+`volumes`, `extra_hosts`, `restart`, `depends_on`, `deploy`, `healthcheck`,
+`labels`, `working_dir`, `user`, `expose`, `stop_grace_period`, `init`.
 `container_name` is accepted and replaced.
+
+`extra_hosts` takes the short syntax only, one `HOST:ADDRESS` string per
+list item. Docker resolves the address `host-gateway` to the Host, so
+`host.docker.internal:host-gateway` reaches the Host by name, which the
+container otherwise cannot. A plain `name:address` entry adds no reach:
+it only lets a name resolve to an address the container could already
+open a socket to, which is what a TLS-verified HTTPS call to a LAN
+service needs.
 
 Top level: `services`, `volumes` (named volumes without `external`),
 `version` (ignored), `name` (ignored).
