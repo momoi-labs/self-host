@@ -201,6 +201,12 @@ pub trait DockerRuntime: Send + Sync {
     /// Application by label. Containers the Platform does not own are not
     /// the Platform's to report.
     async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError>;
+    async fn open_terminal(
+        &self,
+        container: &str,
+        size: crate::terminal::Size,
+        user: Option<&str>,
+    ) -> Result<crate::terminal::Session, DockerError>;
     async fn start_container(&self, name: &str) -> Result<(), DockerError>;
     async fn stop_container(&self, name: &str) -> Result<(), DockerError>;
     async fn restart_container(&self, name: &str) -> Result<(), DockerError>;
@@ -234,6 +240,15 @@ impl CliDocker {
 
 #[async_trait]
 impl DockerRuntime for CliDocker {
+    async fn open_terminal(
+        &self,
+        container: &str,
+        size: crate::terminal::Size,
+        user: Option<&str>,
+    ) -> Result<crate::terminal::Session, DockerError> {
+        crate::terminal::open(container, size, user).await
+    }
+
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
         let step = "failed to check images used by containers";
         let output = tokio::process::Command::new("docker")
@@ -1004,6 +1019,8 @@ fn fake_stats(container: &str, application: &str) -> ContainerStats {
     }
 }
 
+pub type RecordedTerminal = (String, crate::terminal::Size, Option<String>);
+
 #[derive(Clone, Default)]
 pub struct FakeDocker {
     pub apps: std::sync::Arc<std::sync::Mutex<Vec<ApplicationContainer>>>,
@@ -1027,6 +1044,7 @@ pub struct FakeDocker {
     /// When set, `run_application` fails with this message — a Host that
     /// cannot start the container it was asked for.
     pub run_failure: Option<String>,
+    pub terminals: std::sync::Arc<std::sync::Mutex<Vec<RecordedTerminal>>>,
 }
 
 impl FakeDocker {
@@ -1042,6 +1060,7 @@ impl FakeDocker {
             exited: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
             compose_failure: None,
             run_failure: None,
+            terminals: Default::default(),
         }
     }
 
@@ -1103,6 +1122,20 @@ impl FakeDocker {
 
 #[async_trait]
 impl DockerRuntime for FakeDocker {
+    async fn open_terminal(
+        &self,
+        container: &str,
+        size: crate::terminal::Size,
+        user: Option<&str>,
+    ) -> Result<crate::terminal::Session, DockerError> {
+        self.ping().await?;
+        self.terminals
+            .lock()
+            .unwrap()
+            .push((container.into(), size, user.map(str::to_owned)));
+        Ok(crate::terminal::Session::fake())
+    }
+
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
         self.ping().await?;
         Ok(self
@@ -1350,6 +1383,15 @@ impl<T> DockerRuntime for std::sync::Arc<T>
 where
     T: DockerRuntime + ?Sized,
 {
+    async fn open_terminal(
+        &self,
+        container: &str,
+        size: crate::terminal::Size,
+        user: Option<&str>,
+    ) -> Result<crate::terminal::Session, DockerError> {
+        (**self).open_terminal(container, size, user).await
+    }
+
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
         (**self).container_images().await
     }

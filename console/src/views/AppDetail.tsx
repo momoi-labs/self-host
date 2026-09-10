@@ -24,8 +24,8 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { AppForm, type Submission } from "../components/AppForm.js";
+import { AppConsole } from "../components/AppConsole.js";
 import { ContainerResources } from "../components/ContainerResources.js";
-import { AppLogPane } from "../components/LogPane.js";
 import { Failure } from "../components/Failure.js";
 import { HttpStatus } from "../components/HttpStatus.js";
 import { StatusBadge } from "../components/StatusBadge.js";
@@ -225,8 +225,8 @@ export function AppDetail({
             </Tabs>
           </Pane>
           <Splitter defaultSize={42} min={25} max={70} aria-label="Resize the form and the logs" />
-          <Pane className="pane-logs">
-            <AppLogPane id={app.id} />
+          <Pane className="pane-console">
+            <AppConsole id={app.id} />
           </Pane>
         </Split>
       </Card>

@@ -35,7 +35,7 @@ export default defineConfig({
         "/metrics",
       ].map((path) => [
         path,
-        { target: "http://127.0.0.1:3721", changeOrigin: true },
+        { target: "http://127.0.0.1:3721", changeOrigin: true, ws: true },
       ]),
     ),
   },
