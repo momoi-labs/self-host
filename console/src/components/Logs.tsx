@@ -9,7 +9,8 @@ export function Logs({ url, label }: { url: string | null; label: string }) {
   return (
     <LogView role="log" aria-live="polite" tabIndex={0} aria-label={label}>
       {lines.map((line, i) => (
-        <LogViewLine key={i} className={line.level ? `log-${line.level}` : undefined}>
+        <LogViewLine key={i} className={/^[ ▀▄█]+$/.test(line.text) && /[▀▄█]/.test(line.text)
+          ? "log-block-art" : line.level ? `log-${line.level}` : undefined}>
           {line.text}
         </LogViewLine>
       ))}

@@ -43,6 +43,9 @@
 .pane-logs > :first-child { padding: var(--spacing-lg); }
 .pane-logs .logview { min-height: 0; border: 0; border-radius: 0; padding: 0; --corner-mark: 0; }
 .pane-logs .log-scroll { padding: var(--spacing-lg); }
+.logview [data-slot="log-view-line"] { white-space: pre; min-height: 1lh; }
+/* Terminal block art needs adjoining cells, without text line spacing. */
+.logview .log-block-art { font-family: "Courier New", monospace; line-height: 1; letter-spacing: 0; }
 
 /* The application detail. The form pane opens at a readable measure instead
    of at half the window: half of a wide screen is more form than the fields
