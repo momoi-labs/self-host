@@ -14,11 +14,13 @@ import { Icon } from "../components/Icon.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import type { Report } from "../lib/types.js";
+import { devImageTemplate, devImageTemplates, type ImageDependency } from "../lib/devImageTemplates.js";
 
-type Dependency = { tool: string; version: string; allow_builds?: string[] };
+type Dependency = ImageDependency;
 type DevImage = {
   id: string;
   name: string;
+  template_id?: string | null;
   dependencies: Dependency[];
   build_checks?: string[];
   image: string;
@@ -207,6 +209,7 @@ export function DevImages({ listing, selected, onOpen }: {
   const [images, setImages] = useState<DevImage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState("");
+  const [templateId, setTemplateId] = useState("");
   const [dependencies, setDependencies] = useState<Dependency[]>([]);
   const [buildChecks, setBuildChecks] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -226,6 +229,7 @@ export function DevImages({ listing, selected, onOpen }: {
 
   useEffect(() => {
     setName(current?.name ?? "");
+    setTemplateId(current?.template_id ?? "");
     setDependencies(current?.dependencies ?? []);
     setBuildChecks((current?.build_checks ?? []).join("\n"));
     setFailure(null);
@@ -233,6 +237,16 @@ export function DevImages({ listing, selected, onOpen }: {
     // Load the recipe when opening it; log polls must not overwrite edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listing, selected, current?.id]);
+
+  function chooseTemplate(id: string) {
+    const template = devImageTemplate(id);
+    const previous = devImageTemplate(templateId);
+    setTemplateId(id);
+    setName((name) => !name || name === previous?.imageName ? template?.imageName ?? "" : name);
+    setDependencies(structuredClone(template?.dependencies ?? []));
+    setBuildChecks((template?.buildChecks ?? []).join("\n"));
+    setEditorKey((value) => value + 1);
+  }
 
   useEffect(() => {
     let active = true;
@@ -263,7 +277,7 @@ export function DevImages({ listing, selected, onOpen }: {
     setFailure(null);
     try {
       const response = await api("/dev-images", {
-        method: "POST", body: JSON.stringify({ id: selected, name: name.trim(), dependencies, build_checks: checks }),
+        method: "POST", body: JSON.stringify({ id: selected, name: name.trim(), template_id: templateId || null, dependencies, build_checks: checks }),
       });
       if (!response.ok) throw await failureOf(response);
       const image = await response.json() as DevImage;
@@ -401,6 +415,16 @@ export function DevImages({ listing, selected, onOpen }: {
                   {current.status === "ready" ? "Built" : current.status === "failed" ? "Failed" : "Building"}
                 </StatusBadge> : null}
               </div>
+              {!selected ? (
+                <FormField id="dev-image-template" label="Template"
+                  hint="Start with a template, then edit any field before building.">
+                  <select id="dev-image-template" className="input" value={templateId}
+                    disabled={editingDisabled} onChange={(event) => chooseTemplate(event.target.value)}>
+                    <option value="">Custom image</option>
+                    {devImageTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                  </select>
+                </FormField>
+              ) : null}
               <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
                 value={name} onChange={(event) => setName(event.target.value)}
                 required maxLength={128} disabled={editingDisabled}

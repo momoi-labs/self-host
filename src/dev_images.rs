@@ -81,6 +81,8 @@ pub struct Dependency {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Recipe {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
     pub dependencies: Vec<Dependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub build_checks: Vec<String>,
@@ -88,6 +90,13 @@ pub struct Recipe {
 
 impl Recipe {
     fn validate(&self) -> Result<(), String> {
+        if self
+            .template_id
+            .as_deref()
+            .is_some_and(|id| id != "t3-code")
+        {
+            return Err("Unknown development image template.".into());
+        }
         if self.build_checks.len() > 16
             || self.build_checks.iter().any(|command| {
                 command.trim().is_empty()
@@ -709,6 +718,7 @@ mod tests {
     fn image_tag_uses_the_md5_of_the_exact_mise_file() {
         let mut recipe = Recipe {
             build_checks: vec![],
+            template_id: None,
             name: "Minha Imagem de Ação".into(),
             dependencies: vec![Dependency {
                 tool: "node".into(),
@@ -730,6 +740,7 @@ mod tests {
     fn npm_recipe_is_passed_to_mise_without_adding_a_runtime() {
         let recipe = Recipe {
             build_checks: vec![],
+            template_id: None,
             name: "coding".into(),
             dependencies: vec![Dependency {
                 tool: "npm:@openai/codex".into(),
@@ -769,6 +780,7 @@ mod tests {
     fn validates_recipes_before_rendering_config() {
         let mut recipe = Recipe {
             build_checks: vec![],
+            template_id: None,
             name: "web-dev".into(),
             dependencies: vec![Dependency {
                 tool: "node".into(),
@@ -800,6 +812,22 @@ mod tests {
             recipe.name = name.into();
             assert!(recipe.validate().is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn templates_do_not_change_recipe_contents_or_the_image_tag() {
+        let mut recipe: Recipe = serde_json::from_str(
+            r#"{"name":"custom","dependencies":[{"tool":"node","version":"24"}]}"#,
+        )
+        .unwrap();
+        let original = recipe.image_tag("test");
+        recipe.template_id = Some("t3-code".into());
+        assert!(recipe.validate().is_ok());
+        assert_eq!(recipe.image_tag("test"), original);
+        assert_eq!(recipe.dependencies.len(), 1);
+        assert!(recipe.build_checks.is_empty());
+        recipe.template_id = Some("missing-template".into());
+        assert!(recipe.validate().is_err());
     }
 
     #[test]
@@ -840,6 +868,7 @@ mod tests {
             id: "test".into(),
             recipe: Recipe {
                 build_checks: vec![],
+                template_id: None,
                 name: "test".into(),
                 dependencies: vec![Dependency {
                     tool: "node".into(),

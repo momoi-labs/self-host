@@ -18,6 +18,7 @@ import type { App, ComposeService, Inspection, Report } from "../lib/types.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
 import { Services } from "./Services.js";
+import { devImageTemplate } from "../lib/devImageTemplates.js";
 
 export type Submission = {
   name: string;
@@ -36,7 +37,7 @@ export type Submission = {
   };
 };
 
-type DevImage = { id: string; name: string; image: string; status: string };
+type DevImage = { id: string; name: string; image: string; status: string; template_id?: string | null };
 
 type Errors = {
   hostname?: string;
@@ -71,6 +72,7 @@ export function AppForm({
   const [startCommand, setStartCommand] = useState(app?.development?.command ?? "");
   const [devPort, setDevPort] = useState(app?.development ? String(app.development.web_port) : "");
   const [persistData, setPersistData] = useState(app?.development?.persist_data ?? false);
+  const runtimeEdited = useRef(false);
   const [devImages, setDevImages] = useState<DevImage[]>([]);
   const [devImagesLoading, setDevImagesLoading] = useState(false);
   const [devImagesFailure, setDevImagesFailure] = useState<Report | null>(null);
@@ -381,6 +383,12 @@ export function AppForm({
               onChange={(event) => {
                 const selected = devImages.find((image) => image.image === event.target.value);
                 if (selected) {
+                  const template = devImageTemplate(selected.template_id);
+                  if (creating && !devImageId && !runtimeEdited.current && template) {
+                    setStartCommand(template.application.command);
+                    setDevPort(String(template.application.web_port));
+                    setPersistData(template.application.persist_data);
+                  }
                   setDevImageId(selected.id);
                   setDevImageTag(selected.image);
                 }
@@ -397,17 +405,17 @@ export function AppForm({
             <p className="muted t-label">A newer successful build is available. Select it and save to redeploy.</p>
           ) : null}
           <FormField id="f-start-command" label="Start command" className="mono"
-            value={startCommand} onChange={(event) => setStartCommand(event.target.value)} required
+            value={startCommand} onChange={(event) => { runtimeEdited.current = true; setStartCommand(event.target.value); }} required
             placeholder="t3 serve --host 0.0.0.0 --port 3000"
             hint="Call installed tools directly, e.g. t3. The server must listen on 0.0.0.0 and the web port below." />
           <FormField id="f-dev-port" label="Web port" type="number" min={1} max={65535}
-            value={devPort} onChange={(event) => setDevPort(event.target.value)} required placeholder="3000"
+            value={devPort} onChange={(event) => { runtimeEdited.current = true; setDevPort(event.target.value); }} required placeholder="3000"
             onWheel={(event) => event.currentTarget.blur()}
             hint="The port your server listens on inside the container." />
           <div className="field">
             <div className="check">
               <Checkbox id="f-persist-data" checked={persistData}
-                onCheckedChange={(checked) => setPersistData(checked === true)}
+                onCheckedChange={(checked) => { runtimeEdited.current = true; setPersistData(checked === true); }}
                 aria-describedby="f-persist-data-hint" />
               <Label htmlFor="f-persist-data">Persist data</Label>
             </div>
