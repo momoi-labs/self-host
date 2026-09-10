@@ -27,3 +27,21 @@ jobs:
       - run: cargo test --no-fail-fast
       - run: cargo clippy -- -D warnings
 
+  # The release builds two apple-darwin targets, so a cfg(target_os = "macos")
+  # branch can merge without a compiler ever seeing it (that happened with
+  # #64). A full suite here costs minutes; a check catches exactly that class.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The console ships inside the binary, so it is built before cargo is.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: console
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo check --all-targets
+
