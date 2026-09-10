@@ -134,6 +134,7 @@ mod tests {
             web_service: None,
             web_port: None,
             web_target_port: Some(20001),
+            development: None,
         }
     }
 

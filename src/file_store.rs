@@ -30,7 +30,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use crate::error::ErrorReport;
-use crate::store::{ApiKeyRecord, ApplicationRecord, StateStore, StoreError};
+use crate::store::{
+    ApiKeyRecord, ApplicationRecord, DevelopmentApplication, StateStore, StoreError,
+};
 
 /// The format the Platform writes. A file that declares a higher version was
 /// written by a newer Platform and is not guessed at.
@@ -90,7 +92,18 @@ struct ApplicationFile {
     #[serde(default)]
     web_target_port: Option<u16>,
     #[serde(default)]
+    development: Option<DevelopmentApplicationFile>,
+    #[serde(default)]
     env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DevelopmentApplicationFile {
+    image_id: String,
+    tag: String,
+    command: String,
+    web_port: u16,
+    persist_data: bool,
 }
 
 /// One Application as it sits in memory: the committed record plus the Compose
@@ -218,6 +231,7 @@ impl From<&AppEntry> for ApplicationRecord {
             web_service: f.web_service.clone(),
             web_port: f.web_port,
             web_target_port: f.web_target_port,
+            development: f.development.as_ref().map(development_from_file),
         }
     }
 }
@@ -238,9 +252,30 @@ fn entry_from(app: &ApplicationRecord) -> AppEntry {
             web_service: app.web_service.clone(),
             web_port: app.web_port,
             web_target_port: app.web_target_port,
+            development: app.development.as_ref().map(development_to_file),
             env: BTreeMap::new(),
         },
         compose: app.compose.clone(),
+    }
+}
+
+fn development_from_file(value: &DevelopmentApplicationFile) -> DevelopmentApplication {
+    DevelopmentApplication {
+        image_id: value.image_id.clone(),
+        tag: value.tag.clone(),
+        command: value.command.clone(),
+        web_port: value.web_port,
+        persist_data: value.persist_data,
+    }
+}
+
+fn development_to_file(value: &DevelopmentApplication) -> DevelopmentApplicationFile {
+    DevelopmentApplicationFile {
+        image_id: value.image_id.clone(),
+        tag: value.tag.clone(),
+        command: value.command.clone(),
+        web_port: value.web_port,
+        persist_data: value.persist_data,
     }
 }
 
@@ -750,6 +785,7 @@ mod tests {
             web_service: None,
             web_port: None,
             web_target_port: None,
+            development: None,
         }
     }
 
@@ -771,6 +807,13 @@ mod tests {
         // restart, rather than asking Docker where the container ended up.
         app.web_target_port = Some(20001);
         app.status = STATUS_STOPPED.into();
+        app.development = Some(DevelopmentApplication {
+            image_id: "dev-image".into(),
+            tag: "sf-img-dev-image:old".into(),
+            command: "t3 serve --port 3000".into(),
+            web_port: 3000,
+            persist_data: true,
+        });
         store.insert_application(&app).await.unwrap();
         store.set_env(&app.id, "TOKEN", "value").await.unwrap();
         store.create_api_key("key-1", "laptop").await.unwrap();

@@ -161,7 +161,17 @@ pub trait DockerRuntime: Send + Sync {
     /// with members is left alone and reported as an error, never force-removed.
     async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError>;
     async fn pull_image(&self, image: &str) -> Result<(), DockerError>;
+    async fn container_images(&self) -> Result<Vec<String>, DockerError>;
+    async fn remove_image_repository(&self, repository: &str) -> Result<(), DockerError>;
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError>;
+    async fn build_image_with_logs(
+        &self,
+        path: &str,
+        tag: &str,
+        _logs: mpsc::Sender<String>,
+    ) -> Result<(), DockerError> {
+        self.build_image(path, tag).await
+    }
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError>;
     async fn remove_container(&self, name: &str) -> Result<(), DockerError>;
     async fn stream_logs(
@@ -204,6 +214,55 @@ impl CliDocker {
 
 #[async_trait]
 impl DockerRuntime for CliDocker {
+    async fn container_images(&self) -> Result<Vec<String>, DockerError> {
+        let step = "failed to check images used by containers";
+        let output = tokio::process::Command::new("docker")
+            .args(["ps", "-a", "--format", "{{.Image}}"])
+            .output()
+            .await
+            .map_err(|error| DockerError::spawn(step, error))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(step, &output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    }
+
+    async fn remove_image_repository(&self, repository: &str) -> Result<(), DockerError> {
+        let step = format!("failed to remove image '{repository}'");
+        let output = tokio::process::Command::new("docker")
+            .args([
+                "image",
+                "ls",
+                "--filter",
+                &format!("reference={repository}:*"),
+                "--format",
+                "{{.Repository}}:{{.Tag}}",
+            ])
+            .output()
+            .await
+            .map_err(|error| DockerError::spawn(&step, error))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(&step, &output));
+        }
+        let tags = String::from_utf8_lossy(&output.stdout);
+        if tags.trim().is_empty() {
+            return Ok(());
+        }
+        let output = tokio::process::Command::new("docker")
+            .args(["image", "rm"])
+            .args(tags.lines())
+            .output()
+            .await
+            .map_err(|error| DockerError::spawn(&step, error))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(&step, &output));
+        }
+        Ok(())
+    }
+
     async fn ping(&self) -> Result<(), DockerError> {
         // Check if docker is available
         let output = std::process::Command::new("docker")
@@ -333,6 +392,20 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
+        if image.starts_with("sf-img-") || image.starts_with("self-host-dev-") {
+            let step = format!(
+                "development image '{image}' is not available on this Host; build it again"
+            );
+            let output = std::process::Command::new("docker")
+                .args(["image", "inspect", image])
+                .output()
+                .map_err(|error| DockerError::spawn(step.clone(), error))?;
+            return if output.status.success() {
+                Ok(())
+            } else {
+                Err(DockerError::refused(step, &output))
+            };
+        }
         let output = std::process::Command::new("docker")
             .args(["pull", image])
             .output()
@@ -349,9 +422,11 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
-        let output = std::process::Command::new("docker")
+        let output = tokio::process::Command::new("docker")
             .args(["build", "-t", tag, path])
+            .kill_on_drop(true)
             .output()
+            .await
             .map_err(|e| DockerError::spawn(format!("failed to build image from '{path}'"), e))?;
 
         if !output.status.success() {
@@ -361,6 +436,57 @@ impl DockerRuntime for CliDocker {
             ));
         }
 
+        Ok(())
+    }
+
+    async fn build_image_with_logs(
+        &self,
+        path: &str,
+        tag: &str,
+        logs: mpsc::Sender<String>,
+    ) -> Result<(), DockerError> {
+        use std::process::Stdio;
+        use tokio::io::AsyncReadExt;
+
+        let step = format!("failed to build image '{tag}'");
+        let mut child = tokio::process::Command::new("docker")
+            .args(["build", "--progress=plain", "-t", tag, path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| DockerError::spawn(&step, error))?;
+        async fn forward(
+            mut reader: impl tokio::io::AsyncRead + Unpin,
+            logs: mpsc::Sender<String>,
+        ) -> std::io::Result<()> {
+            let mut buffer = [0; 4096];
+            loop {
+                let count = reader.read(&mut buffer).await?;
+                if count == 0 {
+                    return Ok(());
+                }
+                let _ = logs
+                    .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
+                    .await;
+            }
+        }
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (_, _, status) = tokio::try_join!(
+            forward(stdout, logs.clone()),
+            forward(stderr, logs),
+            child.wait()
+        )
+        .map_err(|error| DockerError::spawn(&step, error))?;
+        if !status.success() {
+            return Err(DockerError::Command(
+                step,
+                Box::new(std::io::Error::other(format!(
+                    "Docker exited with {status}. See the build log."
+                ))),
+            ));
+        }
         Ok(())
     }
 
@@ -823,6 +949,25 @@ impl FakeDocker {
 
 #[async_trait]
 impl DockerRuntime for FakeDocker {
+    async fn container_images(&self) -> Result<Vec<String>, DockerError> {
+        self.ping().await?;
+        Ok(self
+            .apps
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|app| app.image.clone())
+            .collect())
+    }
+
+    async fn remove_image_repository(&self, repository: &str) -> Result<(), DockerError> {
+        self.built
+            .lock()
+            .unwrap()
+            .retain(|(_, tag)| !tag.starts_with(&format!("{repository}:")));
+        Ok(())
+    }
+
     async fn ping(&self) -> Result<(), DockerError> {
         match &self.unreachable {
             Some(reason) => Err(DockerError::Unavailable(reason.clone())),
@@ -1024,6 +1169,14 @@ impl<T> DockerRuntime for std::sync::Arc<T>
 where
     T: DockerRuntime + ?Sized,
 {
+    async fn container_images(&self) -> Result<Vec<String>, DockerError> {
+        (**self).container_images().await
+    }
+
+    async fn remove_image_repository(&self, repository: &str) -> Result<(), DockerError> {
+        (**self).remove_image_repository(repository).await
+    }
+
     async fn ping(&self) -> Result<(), DockerError> {
         (**self).ping().await
     }
@@ -1054,6 +1207,15 @@ where
 
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
         (**self).build_image(path, tag).await
+    }
+
+    async fn build_image_with_logs(
+        &self,
+        path: &str,
+        tag: &str,
+        logs: mpsc::Sender<String>,
+    ) -> Result<(), DockerError> {
+        (**self).build_image_with_logs(path, tag, logs).await
     }
 
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {

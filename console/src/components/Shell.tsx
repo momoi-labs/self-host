@@ -39,6 +39,7 @@ export function Shell({
   healthy,
   overview,
   deploy,
+  devImages = { href: "/console/#dev-images", active: false },
   application,
   children,
 }: {
@@ -48,6 +49,7 @@ export function Shell({
   healthy: boolean;
   overview: Destination;
   deploy: Destination;
+  devImages?: Destination;
   application: (app: App) => Destination;
   children: ReactNode;
 }) {
@@ -82,7 +84,10 @@ export function Shell({
       }
       navigation={[
         {
-          destinations: [{ ...overview, label: "Overview", leading: <Icon name="chart" /> }],
+          destinations: [
+            { ...overview, label: "Overview", leading: <Icon name="chart" /> },
+            { ...devImages, label: "Development images", leading: <Icon name="box" /> },
+          ],
         },
         {
           label: "Applications",
