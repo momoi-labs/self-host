@@ -179,6 +179,26 @@
 .yaml-highlight .token.string { color: var(--color-success); }
 .yaml-highlight .token.number, .yaml-highlight .token.boolean, .yaml-highlight .token.null { color: var(--color-info); }
 .yaml-highlight .token.comment, .yaml-highlight .token.punctuation { color: var(--color-muted-foreground); }
+.shell-editor { position: relative; min-width: 0; overflow: hidden; padding-inline-start: 3.25rem; background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.shell-editor-gutter { position: absolute; inset: 0 auto 0 0; width: 3.25rem; box-sizing: border-box; overflow: hidden; padding: var(--spacing-sm) var(--spacing-sm) var(--spacing-sm) 0; border-inline-end: 1px solid var(--color-border); color: var(--color-muted-foreground); background: var(--color-muted); font: var(--type-size-label)/var(--type-line-height-normal) var(--font-mono); text-align: end; user-select: none; }
+.shell-editor-gutter span { display: block; line-height: var(--type-line-height-normal); }
+.shell-editor-code { position: relative; min-width: 0; overflow: hidden; }
+.shell-editor-input, .shell-highlight { box-sizing: border-box; min-width: 100%; font-family: var(--font-mono); font-size: var(--type-size-label); line-height: var(--type-line-height-normal); tab-size: 2; white-space: pre; }
+.shell-editor-input { position: relative; display: block; width: 100%; margin: 0; overflow: auto; border: 0; border-radius: 0; background: transparent; color: transparent; caret-color: var(--color-foreground); }
+.shell-editor-input::selection { color: var(--color-foreground); background: var(--color-secondary); }
+.shell-editor-fallback .shell-highlight { display: none; }
+.shell-editor-fallback .shell-editor-input { color: var(--color-foreground); }
+.shell-highlight { position: absolute; inset: 0; overflow: hidden; padding: var(--spacing-sm) var(--spacing-md); color: var(--color-foreground); pointer-events: none; }
+.shell-highlight .token.comment { color: var(--color-muted-foreground); }
+.shell-highlight .token.string { color: var(--color-success); }
+.shell-highlight .token.variable, .shell-highlight .token.function { color: var(--color-primary); }
+.shell-highlight .token.keyword, .shell-highlight .token.builtin { color: var(--color-info); }
+.shell-highlight .token.operator { color: var(--color-warning); }
+.shell-highlight .token.number { color: var(--color-info); }
+@media (forced-colors: active) {
+  .shell-highlight { display: none; }
+  .shell-editor-input { color: CanvasText; }
+}
 @media (forced-colors: active) {
   .yaml-highlight { display: none; }
   .yaml-editor .compose-editor { color: CanvasText; }
