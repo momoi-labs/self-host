@@ -34,6 +34,7 @@ pub mod ports;
 pub mod proxy;
 pub mod routes;
 pub mod store;
+pub mod terminal;
 pub mod tls;
 
 use apps::{DeployError, RemoveError};
@@ -93,6 +94,8 @@ pub fn build_app<S: StateStore>(
             state.clone(),
             require_api_key::<S>,
         ))
+        // This route authenticates its first WebSocket frame before opening a PTY.
+        .route("/apps/id/{id}/terminal", get(terminal::upgrade::<S>))
         .with_state(state);
 
     console::console_router()

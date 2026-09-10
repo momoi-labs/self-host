@@ -280,3 +280,22 @@
   .yaml-highlight { display: none; }
   .yaml-editor .compose-editor { color: CanvasText; }
 }
+
+/* Application logs and the interactive terminal share the output pane. */
+.detail-panel .split > .pane-console { flex: 1; min-height: 320px; padding: 0; overflow: hidden; }
+.app-console { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-width: 0; }
+.app-console > [data-slot="tabs-list"] { padding-inline: var(--spacing-lg); flex-shrink: 0; }
+.app-console > [data-slot="tabs-content"] { margin: 0; padding: 0; min-height: 0; min-width: 0; overflow: hidden; }
+.app-console > [data-state="inactive"] { display: none; }
+.app-console-logs { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-height: 0; }
+.app-console-logs > :first-child { padding: var(--spacing-lg); }
+.app-console .logview { min-height: 0; border: 0; border-radius: 0; --corner-mark: 0; }
+.app-console .log-scroll { padding: var(--spacing-lg); }
+
+.container-terminal { position: relative; height: 100%; min-height: 320px; }
+.terminal-screen { position: absolute; inset: 0; min-width: 0; overflow: hidden; padding: 12px; background: #121116; }
+.terminal-screen .xterm { height: 100%; }
+.terminal-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--spacing-md); position: absolute; inset: 0; height: 100%; overflow: auto; border: 0; border-radius: 0; --corner-mark: 0; }
+.terminal-picker { width: min(100%, 320px); text-align: start; }
+.terminal-session-controls { position: absolute; inset-block-start: 4px; inset-inline-end: 4px; display: flex; align-items: center; gap: var(--spacing-sm); color: #dedbd7; background: #121116; border-radius: var(--radius-md); }
+.terminal-session-controls button { color: inherit; padding: var(--spacing-xs); }
