@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 
 export type View =
   | { view: "overview"; id: null }
-  | { view: "system"; id: string }
   | { view: "app"; id: string }
   | { view: "new"; id: null };
 
@@ -17,19 +16,18 @@ function fromHash(): View | null {
   const hash = location.hash;
   if (hash === "#new") return { view: "new", id: null };
   if (hash.startsWith("#app-")) return { view: "app", id: hash.slice(5) };
-  if (hash.startsWith("#system-")) return { view: "system", id: hash.slice(8) };
   return null;
 }
 
 function fromHistory(): View {
   const state = history.state as View | null;
-  if (state?.view === "app" || state?.view === "system") return state;
+  if (state?.view === "app") return state;
   if (state?.view === "new") return { view: "new", id: null };
   return fromHash() ?? overview;
 }
 
 /**
- * The four views live in history state, so Back returns to the list instead of
+ * The views live in history state, so Back returns to the list instead of
  * leaving the console. A view the record no longer supports — an Application
  * that was removed in another tab — falls back to the Overview.
  */

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 use x509_parser::{extensions::ParsedExtension, parse_x509_certificate};
 
-use crate::compose;
+use crate::paths;
 
 #[derive(Debug)]
 pub enum TlsError {
@@ -34,7 +34,7 @@ impl std::fmt::Display for TlsError {
 impl std::error::Error for TlsError {}
 
 pub fn certs_dir() -> PathBuf {
-    compose::platform_config_dir().join("certs")
+    paths::platform_config_dir().join("certs")
 }
 
 pub fn cert_path() -> PathBuf {

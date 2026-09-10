@@ -28,17 +28,6 @@ export type App = {
   services?: ServiceState[];
 };
 
-export type SystemContainer = {
-  role: string;
-  name: string;
-  image: string;
-  status: string;
-  restarts?: number | null;
-};
-
-/** A service on the Overview is an Application or a Platform Infra container. */
-export type Service = (App | SystemContainer) & { role?: string };
-
 export type ComposePort = { container: number | string };
 
 export type ComposeVolume = {

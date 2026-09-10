@@ -157,6 +157,9 @@ pub trait DockerRuntime: Send + Sync {
     /// is no container to ask about.
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError>;
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError>;
+    /// Removes a network when it is there, and says whether it was. A network
+    /// with members is left alone and reported as an error, never force-removed.
+    async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError>;
     async fn pull_image(&self, image: &str) -> Result<(), DockerError>;
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError>;
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError>;
@@ -191,16 +194,16 @@ pub trait DockerRuntime: Send + Sync {
 
 /// Docker, as the Platform drives it: the `docker` CLI on this Host.
 #[derive(Default)]
-pub struct ComposeDocker;
+pub struct CliDocker;
 
-impl ComposeDocker {
+impl CliDocker {
     pub fn new() -> Self {
-        ComposeDocker
+        CliDocker
     }
 }
 
 #[async_trait]
-impl DockerRuntime for ComposeDocker {
+impl DockerRuntime for CliDocker {
     async fn ping(&self) -> Result<(), DockerError> {
         // Check if docker is available
         let output = std::process::Command::new("docker")
@@ -302,6 +305,31 @@ impl DockerRuntime for ComposeDocker {
         }
 
         Ok(())
+    }
+
+    async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError> {
+        let inspect = std::process::Command::new("docker")
+            .args(["network", "inspect", name])
+            .output()
+            .map_err(|e| DockerError::spawn("failed to inspect the Docker network", e))?;
+
+        if !inspect.status.success() {
+            return Ok(false);
+        }
+
+        let remove = std::process::Command::new("docker")
+            .args(["network", "rm", name])
+            .output()
+            .map_err(|e| DockerError::spawn("failed to remove the Docker network", e))?;
+
+        if !remove.status.success() {
+            return Err(DockerError::refused(
+                format!("failed to remove the Docker network '{name}'"),
+                &remove,
+            ));
+        }
+
+        Ok(true)
     }
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
@@ -838,6 +866,10 @@ impl DockerRuntime for FakeDocker {
         Ok(())
     }
 
+    async fn remove_network_if_exists(&self, _name: &str) -> Result<bool, DockerError> {
+        Ok(false)
+    }
+
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
         if let Some(message) = &self.pull_failure {
             return Err(DockerError::Command(
@@ -1010,6 +1042,10 @@ where
 
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
         (**self).ensure_network(name).await
+    }
+
+    async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError> {
+        (**self).remove_network_if_exists(name).await
     }
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {

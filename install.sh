@@ -297,9 +297,9 @@ EOF
 # Colima reads ~/.colima/_templates/default.yaml when it creates a profile.
 #
 # Without an explicit mount the VM shares nothing of the Mac, and Docker
-# creates every bind mount as an empty directory inside the VM: Traefik reads
-# its configuration file as a directory and crash-loops, and so does any
-# Compose Application with a bind mount.
+# creates every bind mount as an empty directory inside the VM, so a Compose
+# Application with a bind mount sees an empty directory instead of the Host
+# path.
 #
 # Naming DNS resolvers gives the VM its own, and turns Lima's host resolver
 # off with them — colima sets `hostResolver.enabled` to

@@ -1,21 +1,16 @@
-use crate::compose;
 use crate::docker::{APP_NETWORK, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
+use crate::paths;
 use crate::store::{StateStore, StoreError};
 use crate::tls;
 use rand::Rng;
 use std::net::UdpSocket;
 use tracing::info;
 
-/// The Platform Infra the Platform starts for itself, as `(role, image)`
-/// pairs. There is none left: state is files the Platform owns (ADR-0018),
-/// DNS is served from the binary (ADR-0017) and so is HTTP (ADR-0019). Docker
-/// runs Applications, and nothing of the Platform's own.
-pub const SYSTEM_CONTAINERS: &[(&str, &str)] = &[];
-
 /// The container an older Platform ran Traefik in. Nothing starts it any
 /// more; it is only recognised so an upgrade can take ports 80 and 443 back
-/// from it.
+/// from it. Hosts that never ran a 0.1.x Platform have nothing to recognise,
+/// and once no supported upgrade path starts below 0.2.0 this can go: 0.3.0.
 pub const LEGACY_PROXY_CONTAINER_ROLE: &str = "proxy";
 
 pub const DEFAULT_DNS_SUFFIX: &str = "home.lan";
@@ -23,6 +18,7 @@ pub const OPERATOR_API_PORT: u16 = 3721;
 
 /// The container an older Platform ran PostgreSQL in. Nothing starts it any
 /// more; it is only recognised so an upgrade can say what to do with it.
+/// Same end as the proxy role: 0.3.0.
 pub const LEGACY_STATE_CONTAINER_ROLE: &str = "db";
 
 #[derive(Debug)]
@@ -91,7 +87,7 @@ pub async fn run_bootstrap(
     // Docker runs Applications and nothing else now. It is not where the
     // Platform keeps its state, nor how it serves DNS or HTTPS, so a Host
     // without it still gets a configured Platform and a working console.
-    let execution_unavailable = match start_infra_containers(docker).await {
+    let execution_unavailable = match prepare_execution(docker).await {
         Ok(()) => None,
         Err(BootstrapError::Docker(e)) => {
             let report = ErrorReport::new(&e);
@@ -136,11 +132,7 @@ pub async fn preflight_initialized(
 }
 
 pub fn platform_configuration_exists() -> bool {
-    compose::platform_config_dir()
-        .join("docker-compose.yml")
-        .exists()
-        || crate::dns::config_path().exists()
-        || tls::certs_dir().exists()
+    paths::platform_config_dir().join("dns.json").exists() || tls::certs_dir().exists()
 }
 
 fn validate_configuration(dns_suffix: &str) -> Result<(), BootstrapError> {
@@ -179,10 +171,6 @@ pub async fn persist_bootstrap_state(
 /// completes without it, so this is also how a Host that had no Docker at
 /// `init` time is repaired once it does.
 pub async fn prepare_execution(docker: &impl DockerRuntime) -> Result<(), BootstrapError> {
-    start_infra_containers(docker).await
-}
-
-async fn start_infra_containers(docker: &impl DockerRuntime) -> Result<(), BootstrapError> {
     docker.ping().await?;
     // The one network the Platform still needs: the bridge Applications share
     // so a Compose project can talk to itself.
@@ -400,15 +388,6 @@ impl std::error::Error for BootstrapError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The Platform used to run its state store and its proxy in containers,
-    /// so a Host without Docker had no console, no configuration and no way
-    /// in. Both are served from this process now, and nothing is left for
-    /// Docker to hold on the Platform's behalf.
-    #[test]
-    fn the_platform_runs_no_infra_container_of_its_own() {
-        assert!(SYSTEM_CONTAINERS.is_empty());
-    }
 
     #[tokio::test]
     async fn preflight_rejects_a_different_dns_suffix_before_writes() {
