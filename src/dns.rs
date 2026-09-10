@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use hickory_server::Server;
 use hickory_server::proto::rr::{
-    LowerName, Name, RData, Record, RecordType, TSigResponseContext,
-    rdata::{A, AAAA, NS, SOA},
+    LowerName, Name, RData, Record, RecordType, RrKey, TSigResponseContext,
+    rdata::{A, NS, SOA},
 };
 use hickory_server::resolver::config::{NameServerConfig, ResolverOpts};
 use hickory_server::server::{Request, RequestInfo};
@@ -21,19 +21,30 @@ use hickory_server::zone_handler::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::Mutex;
 
-#[derive(Debug, Deserialize, Serialize)]
+use crate::host_addresses::{self, AddressPolicy};
+
+/// What DNS serves for the local zone, written by `init`. The addresses are a
+/// policy, not a list: the Platform publishes what the interfaces actually
+/// have, refreshed every 30 seconds (#61). A `host_ip` left by an older
+/// Platform is migrated on load into `include`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub dns_suffix: String,
-    pub host_ip: IpAddr,
+    #[serde(default)]
+    pub host_addresses: AddressPolicy,
 }
 
 impl Config {
-    pub fn new(dns_suffix: &str, host_ip: &str) -> anyhow::Result<Self> {
+    pub fn new(dns_suffix: &str, include: Vec<Ipv4Addr>) -> anyhow::Result<Self> {
         let config = Self {
             dns_suffix: dns_suffix.into(),
-            host_ip: host_ip.parse()?,
+            host_addresses: AddressPolicy {
+                include,
+                exclude: Vec::new(),
+            },
         };
         config.validate()?;
         Ok(config)
@@ -53,19 +64,54 @@ impl Config {
             "invalid DNS Suffix"
         );
         Name::from_ascii(format!("*.{}.", self.dns_suffix))?;
-        anyhow::ensure!(
-            !self.host_ip.is_unspecified() && !self.host_ip.is_multicast(),
-            "Host IP must be a unicast address"
-        );
+        for address in self
+            .host_addresses
+            .include
+            .iter()
+            .chain(self.host_addresses.exclude.iter())
+        {
+            anyhow::ensure!(
+                !address.is_unspecified() && !address.is_multicast(),
+                "host address {address} is not a unicast address"
+            );
+        }
         Ok(())
     }
 
     pub fn load() -> anyhow::Result<Self> {
         let bytes =
             std::fs::read(config_path()).context("read dns.json; run 'self-host init' first")?;
-        let config: Self = serde_json::from_slice(&bytes).context("parse dns.json")?;
-        config.validate()?;
-        Ok(config)
+        Self::from_json(&bytes)
+    }
+
+    fn from_json(bytes: &[u8]) -> anyhow::Result<Self> {
+        match serde_json::from_slice::<Self>(bytes) {
+            Ok(config) => {
+                config.validate()?;
+                Ok(config)
+            }
+            // An older Platform named one address in the file. That address
+            // was what an unattended boot served even when the interface was
+            // down, so it becomes an `include` candidate: published only when
+            // it is actually up.
+            Err(_) => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct SingleAddress {
+                    dns_suffix: String,
+                    host_ip: IpAddr,
+                }
+                let legacy: SingleAddress =
+                    serde_json::from_slice(bytes).context("parse dns.json")?;
+                let address = match legacy.host_ip {
+                    IpAddr::V4(ip) => ip,
+                    IpAddr::V6(_) => {
+                        anyhow::bail!("dns.json names an IPv6 address; IPv6 is not supported yet")
+                    }
+                };
+                Self::new(&legacy.dns_suffix, vec![address])
+            }
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -98,14 +144,23 @@ fn cloudflare() -> ForwardConfig {
     }
 }
 
-fn catalog(config: &Config, upstream: ForwardConfig) -> anyhow::Result<Catalog> {
+fn catalog(
+    config: &Config,
+    addresses: &[Ipv4Addr],
+    upstream: ForwardConfig,
+) -> anyhow::Result<(Catalog, Arc<WildcardZone>, Name)> {
     config.validate()?;
+    anyhow::ensure!(
+        !addresses.is_empty(),
+        "no LAN address to publish; connect the Host to the LAN"
+    );
     let origin = Name::from_ascii(format!("{}.", config.dns_suffix))?;
     let nameserver = Name::from_ascii(format!("ns.{}.", config.dns_suffix))?;
     let mailbox = Name::from_ascii(format!("hostmaster.{}.", config.dns_suffix))?;
+    let wildcard = Name::from_ascii(format!("*.{}.", config.dns_suffix))?;
     let mut local: InMemoryZoneHandler =
         InMemoryZoneHandler::empty(origin.clone(), ZoneType::Primary, AxfrPolicy::Deny);
-    let records = [
+    let mut records = vec![
         Record::from_rdata(
             origin.clone(),
             60,
@@ -120,15 +175,14 @@ fn catalog(config: &Config, upstream: ForwardConfig) -> anyhow::Result<Catalog> 
             )),
         ),
         Record::from_rdata(origin.clone(), 60, RData::NS(NS(nameserver))),
-        Record::from_rdata(
-            Name::from_ascii(format!("*.{}.", config.dns_suffix))?,
-            60,
-            match config.host_ip {
-                IpAddr::V4(ip) => RData::A(A(ip)),
-                IpAddr::V6(ip) => RData::AAAA(AAAA(ip)),
-            },
-        ),
     ];
+    for address in addresses {
+        records.push(Record::from_rdata(
+            wildcard.clone(),
+            60,
+            RData::A(A(*address)),
+        ));
+    }
     for record in records {
         anyhow::ensure!(
             local.upsert_mut(record, 1),
@@ -138,27 +192,55 @@ fn catalog(config: &Config, upstream: ForwardConfig) -> anyhow::Result<Catalog> 
     let forward = ForwardZoneHandler::builder_tokio(upstream)
         .build()
         .map_err(anyhow::Error::msg)?;
+    let zone = Arc::new(WildcardZone {
+        origin: origin.clone().into(),
+        handler: Mutex::new(local),
+    });
     let mut catalog = Catalog::new();
-    catalog.upsert(origin.into(), vec![Arc::new(WildcardZone(local))]);
+    catalog.upsert(origin.into(), vec![zone.clone()]);
     catalog.upsert(Name::root().into(), vec![Arc::new(forward)]);
-    Ok(catalog)
+    Ok((catalog, zone, wildcard))
 }
 
 // Hickory's in-memory lookup reports NXDOMAIN when only a different type
 // exists at a wildcard. Every name in our wildcard zone exists: a missing
 // type must be NODATA, or clients may negatively cache the working A/AAAA too.
-struct WildcardZone(InMemoryZoneHandler);
+//
+// The handler sits behind a mutex because the address records change under
+// it: the 30-second scan rewrites the wildcard RRset in place, and a lookup
+// that lands mid-rewrite must see the old set or the new one, never neither.
+struct WildcardZone {
+    origin: LowerName,
+    handler: Mutex<InMemoryZoneHandler>,
+}
+
+impl WildcardZone {
+    /// Replaces the wildcard A records with `addresses`. The whole RRset goes
+    /// first, so a withdrawn interface stops being answered within one scan,
+    /// inside the 60-second TTL a client may cache.
+    async fn publish_addresses(&self, wildcard: &Name, addresses: &[Ipv4Addr]) {
+        let mut handler = self.handler.lock().await;
+        let key = RrKey::new(wildcard.clone().into(), RecordType::A);
+        handler.records_get_mut().remove(&key);
+        for address in addresses {
+            handler.upsert_mut(
+                Record::from_rdata(wildcard.clone(), 60, RData::A(A(*address))),
+                1,
+            );
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl ZoneHandler for WildcardZone {
     fn zone_type(&self) -> ZoneType {
-        self.0.zone_type()
+        ZoneType::Primary
     }
     fn axfr_policy(&self) -> AxfrPolicy {
         AxfrPolicy::Deny
     }
     fn origin(&self) -> &LowerName {
-        self.0.origin()
+        &self.origin
     }
 
     async fn lookup(
@@ -168,7 +250,9 @@ impl ZoneHandler for WildcardZone {
         request_info: Option<&RequestInfo<'_>>,
         options: LookupOptions,
     ) -> LookupControlFlow<AuthLookup> {
-        self.0
+        self.handler
+            .lock()
+            .await
             .lookup(name, rtype, request_info, options)
             .await
             .map_err(wildcard_error)
@@ -179,7 +263,7 @@ impl ZoneHandler for WildcardZone {
         request: &Request,
         options: LookupOptions,
     ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
-        let (lookup, signature) = self.0.search(request, options).await;
+        let (lookup, signature) = self.handler.lock().await.search(request, options).await;
         (lookup.map_err(wildcard_error), signature)
     }
 
@@ -188,7 +272,7 @@ impl ZoneHandler for WildcardZone {
         name: &LowerName,
         options: LookupOptions,
     ) -> LookupControlFlow<AuthLookup> {
-        self.0.nsec_records(name, options).await
+        self.handler.lock().await.nsec_records(name, options).await
     }
 }
 
@@ -202,10 +286,11 @@ fn wildcard_error(error: LookupError) -> LookupError {
 
 async fn bind(
     config: &Config,
+    addresses: &[Ipv4Addr],
     address: SocketAddr,
     upstream: ForwardConfig,
 ) -> anyhow::Result<(Server<Catalog>, SocketAddr)> {
-    let catalog = catalog(config, upstream)?;
+    let (catalog, zone, wildcard) = catalog(config, addresses, upstream)?;
     // Bind both transports before spawning either listener.
     let udp = UdpSocket::bind(address)
         .await
@@ -213,11 +298,51 @@ async fn bind(
     let tcp = TcpListener::bind(udp.local_addr()?)
         .await
         .context("bind DNS TCP listener")?;
-    let address = udp.local_addr()?;
+    let bound = udp.local_addr()?;
     let mut server = Server::new(catalog);
     server.register_socket(udp);
     server.register_listener(tcp, Duration::from_secs(5), 16);
-    Ok((server, address))
+
+    // The 30-second scan from #61's decision: local records carry a
+    // 60-second TTL, so a withdrawn address stops being served inside the
+    // window a client may hold it. Polling keeps one code path for every
+    // Host, with no per-platform interface watcher.
+    let policy = config.clone();
+    let initial = addresses.to_vec();
+    tokio::spawn(async move {
+        let mut timer = tokio::time::interval(Duration::from_secs(30));
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // `interval` ticks immediately; the scan that built the zone is
+        // seconds old, so the first real check is one interval out.
+        timer.tick().await;
+        let mut published: Vec<Ipv4Addr> = initial;
+        loop {
+            timer.tick().await;
+            let scanned = scan_addresses(&policy);
+            match scanned {
+                Ok((_, current)) if current != published => {
+                    zone.publish_addresses(&wildcard, &current).await;
+                    tracing::info!(?current, "DNS published addresses changed");
+                    published = current;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!("could not scan the Host addresses: {error:#}");
+                }
+            }
+        }
+    });
+
+    Ok((server, bound))
+}
+
+/// What the interfaces have right now: the address the default route leaves
+/// through, and everything the policy publishes.
+fn scan_addresses(config: &Config) -> anyhow::Result<(Ipv4Addr, Vec<Ipv4Addr>)> {
+    let source = host_addresses::default_source()?;
+    let interfaces = host_addresses::interfaces()?;
+    let addresses = host_addresses::select(&config.host_addresses, source, &interfaces);
+    Ok((source, addresses))
 }
 
 /// Where DNS listens, which is not the same question on both Hosts.
@@ -246,11 +371,29 @@ const BIND_HINT: &str = "Find what already holds port 53 with 'lsof -nP -iTCP:53
 const BIND_HINT: &str = "Check port 53 conflicts; grant CAP_NET_BIND_SERVICE to the Platform";
 
 pub async fn start(config: &Config) -> anyhow::Result<Server<Catalog>> {
-    let address = listen_address(config.host_ip);
+    // An unattended boot may reach DNS before any interface is up, so the
+    // scan is retried until there is something to serve and something to
+    // listen on. Publishing an address that is not there is what #61 forbids.
+    let (primary, addresses) = loop {
+        match scan_addresses(config) {
+            Ok((primary, addresses)) if !addresses.is_empty() => break (primary, addresses),
+            Ok(_) | Err(_) => {
+                tracing::warn!("waiting for the Host LAN address before starting DNS");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    };
     loop {
-        match bind(config, address, cloudflare()).await {
-            Ok((server, _)) => {
-                tracing::info!(%address, suffix = %config.dns_suffix, "DNS listening on UDP and TCP");
+        match bind(
+            config,
+            &addresses,
+            listen_address(IpAddr::from(primary)),
+            cloudflare(),
+        )
+        .await
+        {
+            Ok((server, address)) => {
+                tracing::info!(%address, ?addresses, suffix = %config.dns_suffix, "DNS listening on UDP and TCP");
                 return Ok(server);
             }
             Err(error)
@@ -258,12 +401,13 @@ pub async fn start(config: &Config) -> anyhow::Result<Server<Catalog>> {
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrNotAvailable) =>
             {
-                tracing::warn!(%address, "waiting for the Host LAN address before starting DNS");
+                tracing::warn!("waiting for the Host LAN address before starting DNS");
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(error) => {
                 return Err(anyhow!(
-                    "cannot start DNS on {address}: {error:#}. {BIND_HINT}"
+                    "cannot start DNS on {}: {error:#}. {BIND_HINT}",
+                    listen_address(IpAddr::from(primary))
                 ));
             }
         }
@@ -344,7 +488,8 @@ mod tests {
 
     async fn local_server(upstream: ForwardConfig) -> (Server<Catalog>, SocketAddr) {
         bind(
-            &Config::new("home.lan", "192.0.2.10").unwrap(),
+            &Config::new("home.lan", vec![]).unwrap(),
+            &[Ipv4Addr::new(192, 0, 2, 10)],
             "127.0.0.1:0".parse().unwrap(),
             upstream,
         )
@@ -530,36 +675,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ipv6_host_answers_aaaa_instead_of_a() {
+    async fn the_wildcard_answers_with_every_published_address() {
+        let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let (mut server, address) = bind(
-            &Config::new("home.lan", "2001:db8::1").unwrap(),
+            &Config::new("home.lan", vec![]).unwrap(),
+            &[Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(192, 0, 2, 11)],
             "127.0.0.1:0".parse().unwrap(),
-            cloudflare(),
+            upstream(&[unavailable.local_addr().unwrap()]),
         )
         .await
         .unwrap();
-        let answer = exchange(
-            address,
-            &query("app.home.lan.", RecordType::AAAA, None),
-            false,
+        let response = exchange(address, &query("app.home.lan.", RecordType::A, None), false).await;
+        assert_eq!(response.response_code, ResponseCode::NoError);
+        let mut answers: Vec<Ipv4Addr> = response
+            .answers
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::A(A(ip)) => Some(*ip),
+                _ => None,
+            })
+            .collect();
+        answers.sort();
+        assert_eq!(
+            answers,
+            vec![Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(192, 0, 2, 11)]
+        );
+        server.shutdown_gracefully().await.unwrap();
+    }
+
+    async fn catalog_with(addresses: &[Ipv4Addr]) -> (Arc<WildcardZone>, Name) {
+        let config = Config::new("home.lan", vec![]).unwrap();
+        let (_, zone, wildcard) = catalog(
+            &config,
+            addresses,
+            upstream(&[("127.0.0.1:1".parse().unwrap())]),
+        )
+        .unwrap();
+        (zone, wildcard)
+    }
+
+    async fn wildcard_answers(zone: &WildcardZone, wildcard: &Name) -> usize {
+        match ZoneHandler::lookup(
+            zone,
+            &wildcard.clone().into(),
+            RecordType::A,
+            None,
+            LookupOptions::default(),
+        )
+        .await
+        {
+            LookupControlFlow::Continue(Ok(answers)) => answers.iter().count(),
+            LookupControlFlow::Continue(Err(_)) => 0,
+            LookupControlFlow::Break(_) | LookupControlFlow::Skip => {
+                panic!("unexpected lookup result")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn publishing_replaces_the_whole_address_set() {
+        let (zone, wildcard) = catalog_with(&[Ipv4Addr::new(192, 0, 2, 10)]).await;
+        assert_eq!(wildcard_answers(&zone, &wildcard).await, 1);
+
+        zone.publish_addresses(
+            &wildcard,
+            &[Ipv4Addr::new(192, 0, 2, 11), Ipv4Addr::new(192, 0, 2, 12)],
         )
         .await;
-        assert_eq!(
-            &answer.answers[0].data,
-            &RData::AAAA(AAAA("2001:db8::1".parse().unwrap()))
-        );
-        let empty = exchange(address, &query("app.home.lan.", RecordType::A, None), false).await;
-        assert_eq!(empty.response_code, ResponseCode::NoError);
-        assert!(empty.answers.is_empty());
-        server.shutdown_gracefully().await.unwrap();
+        assert_eq!(wildcard_answers(&zone, &wildcard).await, 2);
+
+        zone.publish_addresses(&wildcard, &[]).await;
+        assert_eq!(wildcard_answers(&zone, &wildcard).await, 0);
     }
 
     #[tokio::test]
     async fn bind_conflicts_fail_without_leaving_a_partial_listener() {
-        let config = Config::new("home.lan", "192.0.2.10").unwrap();
+        let config = Config::new("home.lan", vec![]).unwrap();
         let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = udp.local_addr().unwrap();
-        let error = bind(&config, address, cloudflare()).await.err().unwrap();
+        let error = bind(
+            &config,
+            &[Ipv4Addr::new(192, 0, 2, 10)],
+            address,
+            cloudflare(),
+        )
+        .await
+        .err()
+        .unwrap();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::AddrInUse
@@ -567,7 +769,15 @@ mod tests {
         drop(udp);
 
         let tcp = TcpListener::bind(address).await.unwrap();
-        let error = bind(&config, address, cloudflare()).await.err().unwrap();
+        let error = bind(
+            &config,
+            &[Ipv4Addr::new(192, 0, 2, 10)],
+            address,
+            cloudflare(),
+        )
+        .await
+        .err()
+        .unwrap();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::AddrInUse
@@ -607,10 +817,41 @@ mod tests {
             "home.local",
             "home.LOCAL",
         ] {
-            assert!(Config::new(suffix, "192.0.2.1").is_err());
+            assert!(Config::new(suffix, vec![]).is_err());
         }
-        for ip in ["hostname", "0.0.0.0", "::", "224.0.0.1"] {
-            assert!(Config::new("home.lan", ip).is_err());
+        for ip in ["0.0.0.0", "224.0.0.1"] {
+            let address: Ipv4Addr = ip.parse().unwrap();
+            assert!(Config::new("home.lan", vec![address]).is_err());
         }
+    }
+
+    #[test]
+    fn a_legacy_single_address_file_migrates_into_an_include() {
+        let config =
+            Config::from_json(br#"{"dns_suffix": "home.lan", "host_ip": "192.168.1.101"}"#)
+                .unwrap();
+        assert_eq!(config.dns_suffix, "home.lan");
+        assert_eq!(
+            config.host_addresses.include,
+            vec![Ipv4Addr::new(192, 168, 1, 101)]
+        );
+    }
+
+    #[test]
+    fn a_legacy_ipv6_address_is_refused_until_ipv6_is_supported() {
+        assert!(
+            Config::from_json(br#"{"dns_suffix": "home.lan", "host_ip": "2001:db8::1"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn the_policy_survives_a_save_and_load() {
+        let config = Config::new("home.lan", vec![Ipv4Addr::new(192, 168, 1, 101)]).unwrap();
+        let json = serde_json::to_vec(&config).unwrap();
+        let loaded = Config::from_json(&json).unwrap();
+        assert_eq!(
+            loaded.host_addresses.include,
+            vec![Ipv4Addr::new(192, 168, 1, 101)]
+        );
     }
 }

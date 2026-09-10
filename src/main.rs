@@ -27,7 +27,9 @@ enum Command {
         /// DNS suffix for Application Hostnames (default: home.lan)
         #[arg(long, default_value = bootstrap::DEFAULT_DNS_SUFFIX)]
         dns: String,
-        /// The LAN address Consumers reach this Host on (default: detected)
+        /// A LAN address the Platform should also publish, even though it is
+        /// off the default gateway's subnet; it is still served only while an
+        /// interface actually has it (default: none)
         #[arg(long)]
         host_ip: Option<String>,
     },
@@ -236,10 +238,12 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
     {
         // The DNS configuration the daemon serves from, not the store: the
         // daemon holds the store as its writer while it runs, and this is the
-        // one place the Host's own resolver has to agree with.
+        // one place the Host's own resolver has to agree with. The resolver
+        // takes one address, so it takes the one the default route leaves
+        // through.
         let config = self_host::dns::Config::load()?;
         let suffix = config.dns_suffix;
-        let host_ip = config.host_ip.to_string();
+        let host_ip = self_host::host_addresses::default_source()?.to_string();
         self_host::host_dns::install(&suffix, &host_ip)?;
         self_host::host_dns::check(&suffix, &host_ip).await
             .map_err(|e| anyhow::anyhow!("DNS settings were saved, but verification failed: {e}. Check that the Platform DNS is running, then retry 'self-host setup-dns'."))?;
@@ -1360,6 +1364,7 @@ mod tests {
             api_key: "secret".into(),
             api_listen_addr: "0.0.0.0:3721".into(),
             host_ip: "192.168.1.10".into(),
+            host_addresses: vec!["192.168.1.10".parse().unwrap()],
             execution_unavailable: None,
         };
 
