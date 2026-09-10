@@ -81,6 +81,7 @@ pub fn build_app<S: StateStore>(
         .route("/apps/{name}/logs", get(stream_logs::<S>))
         .route("/apps/id/{id}/logs", get(stream_logs_by_id::<S>))
         .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
+        .route("/apps/id/{id}/http-status", get(http_status::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
         .layer(middleware::from_fn_with_state(
@@ -364,6 +365,216 @@ async fn observed<S: StateStore>(
         restarts,
         services: services.into_iter().map(Into::into).collect(),
         ..ApplicationResponse::from(app)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpReadiness {
+    Responding,
+    Error,
+    Unreachable,
+    Unknown,
+}
+
+impl From<HttpReadiness> for String {
+    fn from(value: HttpReadiness) -> Self {
+        match value {
+            HttpReadiness::Responding => "responding",
+            HttpReadiness::Error => "error",
+            HttpReadiness::Unreachable => "unreachable",
+            HttpReadiness::Unknown => "unknown",
+        }
+        .into()
+    }
+}
+
+/// Probe the configured Web Target with a short timeout. Any HTTP response,
+/// including 401 or 404, proves that an HTTP server answered.
+async fn http_readiness(
+    app: &apps::ApplicationRecord,
+    services: &[apps::ServiceState],
+) -> HttpReadiness {
+    let target_service = app
+        .web_service
+        .clone()
+        .or_else(|| {
+            app.compose
+                .as_deref()
+                .and_then(|compose| compose_app::ComposeDefinition::parse(compose).ok())
+                .and_then(|definition| definition.web_target(None, None).ok())
+                .map(|target| target.service)
+        })
+        .unwrap_or_else(|| "app".into());
+    if app.status != apps::STATUS_RUNNING
+        || app.web_target_port.is_none()
+        || services
+            .iter()
+            .find(|service| target_service == service.service)
+            .is_none_or(|service| service.state != "running")
+    {
+        return HttpReadiness::Unknown;
+    }
+
+    let port = app.web_target_port.expect("checked above");
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_secs(2))
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return HttpReadiness::Unknown,
+    };
+    match client
+        .get(format!("http://127.0.0.1:{port}/"))
+        .header(reqwest::header::HOST, &app.hostname)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_server_error() => HttpReadiness::Error,
+        Ok(_) => HttpReadiness::Responding,
+        Err(_) => HttpReadiness::Unreachable,
+    }
+}
+
+#[cfg(test)]
+mod http_readiness_tests {
+    use super::*;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn app(port: u16) -> apps::ApplicationRecord {
+        apps::ApplicationRecord {
+            id: "test".into(),
+            name: "test".into(),
+            hostname: "test.home.lan".into(),
+            aliases: vec![],
+            image: "nginx".into(),
+            status: apps::STATUS_RUNNING.into(),
+            source: "image".into(),
+            last_error: None,
+            compose: None,
+            web_service: None,
+            web_port: None,
+            web_target_port: Some(port),
+            development: None,
+        }
+    }
+
+    fn service() -> apps::ServiceState {
+        apps::ServiceState {
+            service: "app".into(),
+            container: "test".into(),
+            state: "running".into(),
+            exit_code: Some(0),
+            restarts: Some(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_web_target_responds_despite_an_exited_sidecar() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _): (tokio::net::TcpStream, SocketAddr) =
+                listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let mut record = app(port);
+        record.source = apps::SOURCE_COMPOSE.into();
+        record.web_service = Some("web".into());
+        let mut web = service();
+        web.service = "web".into();
+        let mut sidecar = service();
+        sidecar.service = "setup".into();
+        sidecar.state = "exited".into();
+        assert_eq!(
+            http_readiness(&record, &[web, sidecar]).await,
+            HttpReadiness::Responding
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_is_not_followed_and_host_header_identifies_application() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 1024];
+            let size = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("host: test.home.lan\r\n")
+            );
+            socket
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: /login\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        assert_eq!(
+            http_readiness(&app(port), &[service()]).await,
+            HttpReadiness::Responding
+        );
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_error_is_reported_separately() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        assert_eq!(
+            http_readiness(&app(port), &[service()]).await,
+            HttpReadiness::Error
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_failure_is_unreachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert_eq!(
+            http_readiness(&app(port), &[service()]).await,
+            HttpReadiness::Unreachable
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_does_not_answer_is_unreachable_after_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        });
+        assert_eq!(
+            http_readiness(&app(port), &[service()]).await,
+            HttpReadiness::Unreachable
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_container_is_unknown_without_a_probe() {
+        let mut stopped = service();
+        stopped.state = "exited".into();
+        assert_eq!(
+            http_readiness(&app(1), &[stopped]).await,
+            HttpReadiness::Unknown
+        );
     }
 }
 
@@ -721,7 +932,7 @@ async fn validate_development_image<S: StateStore>(
 async fn list_apps<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
     match apps::list_applications(&state.store).await {
         Ok(apps) => {
-            let mut body: Vec<ApplicationResponse> = Vec::with_capacity(apps.len());
+            let mut body = Vec::with_capacity(apps.len());
             for app in apps {
                 body.push(observed(&state, app).await);
             }
@@ -828,6 +1039,30 @@ async fn list_app_containers<S: StateStore>(
         },
         Ok(None) => logs_error_response(&apps::LogsError::NotFound(id)),
         Err(err) => logs_error_response(&apps::LogsError::Store(err)),
+    }
+}
+
+#[derive(Serialize)]
+struct HttpStatusResponse {
+    readiness: String,
+}
+
+async fn http_status<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match apps::get_application(&state.store, &id).await {
+        Ok(app) => {
+            let services = apps::service_states(state.docker.as_ref(), &app).await;
+            (
+                StatusCode::OK,
+                Json(HttpStatusResponse {
+                    readiness: http_readiness(&app, &services).await.into(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => deploy_error_response(err),
     }
 }
 
@@ -1132,6 +1367,20 @@ mod tests {
             to_bytes(response.into_body(), 1024).await.unwrap(),
             "public ca"
         );
+    }
+
+    #[tokio::test]
+    async fn http_status_requires_authentication() {
+        let (app, _store) = setup_initialized_app("test-key", "home.lan").await;
+        let response = send(&app, "/apps/id/example/http-status", None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn http_status_returns_not_found_for_unknown_application() {
+        let (app, _store) = setup_initialized_app("test-key", "home.lan").await;
+        let response = send(&app, "/apps/id/example/http-status", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     async fn post_json(app: &Router, uri: &str, api_key: Option<&str>, body: Value) -> Response {

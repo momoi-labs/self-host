@@ -34,7 +34,7 @@ export function usePlatform(): Platform {
         if (known.current[app.id] !== "pending" || app.status === "pending") continue;
         if (app.status === "running") {
           notify("success", "Application deployed", {
-            error: `${app.name} is reachable at ${app.hostname}.`,
+            error: `${app.name} is running at ${app.hostname}.`,
             caused_by: [],
           });
         } else {

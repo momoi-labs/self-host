@@ -27,7 +27,10 @@ export type App = {
   web_port?: number;
   development?: DevelopmentApplication;
   services?: ServiceState[];
+  /** HTTP server readiness of the configured Web Target, separate from status. */
 };
+
+export type HttpReadiness = "responding" | "error" | "unreachable" | "unknown";
 
 export type DevelopmentApplication = {
   image_id: string;
