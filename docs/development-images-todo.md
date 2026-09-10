@@ -50,10 +50,10 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 
 ## Application editing and image updates
 
-- [ ] Show immediate feedback after confirming Application removal. The screen
-  currently appears idle until the success notification arrives. Evaluate a
-  visible pending state or background removal with failure recovery. Track the
-  interaction and acceptance criteria in [#97](https://github.com/momoi-labs/self-host/issues/97).
+- [x] Show a toast immediately after confirming Application removal. Disable
+  Remove, Save and lifecycle actions while it runs. Show success only after
+  confirmation; show failures in a toast and allow another removal attempt.
+  Tracked in [#97](https://github.com/momoi-labs/self-host/issues/97).
 - [x] Preserve the Development image form when editing an Application. Keep
   the image selector, start command, web port and persistence control available
   after creation instead of converting the Application to a plain Compose editor.
@@ -83,10 +83,10 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 
 ## Build checks and local testing
 
-- [ ] Replace the Build checks textarea with a code editor that has line
-  numbers, a monospace font and shell syntax highlighting. Preserve one
-  command per logical line. Make wrapped lines distinguishable from separate
-  commands and follow the console's light and dark themes.
+- [x] Give Build checks line numbers, a monospace font and shell syntax
+  highlighting. Preserve one command per logical line with horizontal
+  scrolling for long commands. Support light and dark themes and readable
+  native editing when the highlighting script is unavailable.
 - [x] Speed up dependency search. Cache the complete, paginated catalog for the
   server's lifetime and filter it in the browser. The live check loaded 1,091
   tools in four seconds, then answered a cached search in about one millisecond.
@@ -116,7 +116,10 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [ ] Verify browser certificate trust and terminal paste after local setup.
   HTTP on a container IP does not provide the Clipboard API. HTTPS must have a
   trusted certificate; bypassing a certificate warning is not the setup.
-- [ ] Distinguish a running container from a server ready to accept HTTP.
+- [x] Distinguish a running container from a responding HTTP server. The
+  Application detail checks the Web Target independently of the list, with
+  bounded requests every five seconds. Show server errors and unreachable
+  targets separately. A response is not a full application health check.
 - [ ] Decide whether pairing-token creation should be available in the console.
   Document the current command until then. Image updates must preserve T3 state
   so they do not require pairing again unnecessarily.
@@ -217,3 +220,25 @@ To test the template, create a development image and select T3 Code. Save and
 build, then select that image when creating an Application. Review the filled
 start command, port and persistence checkbox before deploying. Agent login
 still happens in the running environment; templates contain no credentials.
+
+## Fourth-wave validation
+
+User testing confirmed the shell editor, removal feedback and HTTP status.
+The console build, two console tests, 222 Rust tests,
+formatting, clippy and the all-targets check passed.
+
+Browser checks covered removal delay, duplicate prevention, failure and retry,
+with progress and results in toasts. Editor checks covered both themes, long
+commands, line numbers, scroll alignment and editing without Prism. HTTP
+polling changed the badge without resetting form edits and stopped when leaving
+the detail. Backend tests covered authentication, missing Applications,
+redirects, the Host header, server errors, connection failures and timeouts.
+
+To validate this wave, edit Build checks, remove a disposable Application and
+check its immediate toast, and inspect the separate container and HTTP statuses
+on an Application detail page.
+
+Remaining work includes the Bash warnings and old `/root` paths in T3, first-boot
+SSH and permission choices from PR #92, advanced Compose editing, pairing-token
+access, the unreproduced required-field tooltip, and certificate, paste and
+phone checks listed above.
