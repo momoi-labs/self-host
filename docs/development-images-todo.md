@@ -13,6 +13,11 @@ console, including an authenticated Claude response through T3.
 
 ## Runtime and persistence
 
+- [ ] Fix Bash job-control warnings during T3 environment capture. The installed
+  T3 `bin.mjs` calls `execFile(shell, ["-ilc", ...])` without a PTY. Review
+  interactive shell requirements in T3 while preserving environment loading.
+  The Application start command itself is `t3 serve`, not interactive Bash.
+
 Bring the runtime setup from [PR #92](https://github.com/momoi-labs/self-host/pull/92)
 into the generated images. Keep the prototype's configurable mise dependencies.
 
@@ -61,6 +66,13 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [x] Verify deletion stays disabled while an Application uses any tag of a
   development image, including an older build or a stopped Application.
 
+## Templates
+
+- [ ] Add template selection to prefill development image and Application
+  settings while keeping them editable.
+- [ ] Provide a T3 Code template with mise dependencies, explicit build
+  permissions and checks, start command, web port and persistence settings.
+
 ## Build checks and local testing
 
 - [x] Speed up dependency search. Cache the complete, paginated catalog for the
@@ -77,12 +89,14 @@ into the generated images. Keep the prototype's configurable mise dependencies.
   `npm:t3` with Enter and Tab, with both a working and failing catalog, without
   submitting or triggering validation. Only an explicit Save and build with an
   empty image name triggered the expected required-field validation.
-- [ ] Define explicit build checks for installed tools and required native
-  modules. Report failures in the build log before marking an image ready.
-  The `node-pty` failure showed that a successful install is insufficient.
-  Keep `allow_builds` explicit and avoid silently adding tool dependencies.
-- [ ] Validate checks under the runtime user and environment. Cover executable
-  discovery, native module loading and writable persistent directories.
+- [x] Add explicit build checks for installed tools and required native
+  modules. The optional Build checks field saves one command per line in
+  `tasks.check.run`. A nonzero exit or timeout fails the Docker build before
+  the image can become ready. No package checks or dependencies are inferred.
+- [x] Run checks as `dev`, with the runtime PATH, no network and a 60-second
+  limit per command. Check installed mise tools, `ps` and writable data
+  directories first. Use temporary `/data` during the build so check output
+  does not become personal state in the image.
 - [x] Use the normal Platform DNS, HTTPS and console for local testing. The
   temporary preview runner has been retired. Applications use
   `https://<application>.prototype.lan`, and the console uses
@@ -94,15 +108,16 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [ ] Decide whether pairing-token creation should be available in the console.
   Document the current command until then. Image updates must preserve T3 state
   so they do not require pairing again unnecessarily.
-- [ ] Fix QR code rendering in the console logs. The current font appears to
-  distort the block characters in T3's pairing QR code. Check the monospace
-  font, glyph fallback, line height and character spacing, then verify that a
-  phone can scan the rendered code.
+- [x] Preserve whitespace in logs and use adjoining monospace rows for QR
+  block characters. A browser screenshot decodes successfully with the fix;
+  the same fixture does not decode with the previous CSS. SSE comments such
+  as `: keepalive` no longer appear as application output.
+- [ ] Confirm a phone can scan the pairing QR code in the console logs.
 - [x] Complete an authenticated Claude exchange through T3. User validation
   confirmed a response with the runtime running as `dev`.
 - [ ] Complete an authenticated Codex task through T3.
-- [ ] Investigate the missing `ps` executable reported by T3's terminal process
-  checks. Determine the required image package and validate it as `dev`.
+- [x] Include Debian's `procps` package for T3's terminal process checks.
+  Every image build runs `ps -eo pid,ppid,args` as `dev`.
 - [ ] Recreate the Application and verify projects, files, agent logins and T3
   state survive. Confirm the terminal can still find the installed tools.
 - [ ] Finish the device checks from PR #92. Access the environment from a phone
@@ -139,3 +154,30 @@ User validation also confirmed the `dev` user, Application hostname, and an
 authenticated Claude response through the normal HTTPS endpoint. Codex tasks,
 SSH provisioning, Git signing, sudo, advanced Compose conversion and generic
 build checks remain open decisions or follow-up work.
+
+## Second-wave validation
+
+The image now includes `procps` and checks its runtime before Docker tags the
+build. A real Node and T3 image passed checks as `dev` without network access,
+including opening a PTY. Removing `pty.node` in a disposable build made that
+same check fail, and Docker did not publish its tag.
+
+The console preserves QR whitespace and hides SSE comments. A QR decoder read
+the browser screenshot after the CSS fix and failed on the previous rendering.
+The two stream-parser tests cover split events, blank lines and notice levels.
+The Rust suite passed 213 tests; the console build, clippy and all-targets check
+also passed.
+
+To validate in the UI:
+
+1. Open a development image and add installed commands to Build checks, such
+   as `node --version` and `t3 --help`. Save and build, then confirm the log
+   contains `Build checks passed.` The checks appear in the mise.toml preview
+   and remain available when reopening the image.
+2. In a disposable recipe, use `false` as a check. The image must show Failed.
+   Version or help checks alone do not prove native modules work; use a command
+   that exercises the module when that behavior matters.
+3. Select the rebuilt image in the Application and Save and redeploy. Confirm
+   `ps -eo pid,ppid,args` works in its terminal.
+4. Generate a fresh pairing QR code and scan it with a phone. Confirm spaces
+   remain aligned and `: keepalive` does not appear as a log line.
