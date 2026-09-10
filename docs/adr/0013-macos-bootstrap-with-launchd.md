@@ -10,9 +10,14 @@ Putting s6 between launchd and self-host adds installation and lifecycle work
 without meeting an additional MVP requirement. Use launchd directly for the
 Platform, while keeping future native Application supervision a separate concern.
 
-The Docker runtime and pre-login access to storage and credentials still require
-validation on the Mac. This decision selects the Platform supervisor; it does
-not claim unattended startup of the complete stack has been demonstrated.
+The Docker runtime and pre-login access to storage and credentials were
+observed working on the real Mac on 2026-09-08: launchd started the Platform
+and the Colima VM before any login, and the stack answered on the LAN
+([docs/macos-host.md](../macos-host.md)). The decision stands. It delivers
+what it claims only under Host conditions it does not itself provide: a
+wired network, because the Wi-Fi password sits in a login keychain nobody
+has unlocked at boot; FileVault off; and a Host that can power itself on,
+which a laptop cannot, because `autorestart` is a desktop capability.
 
 **Status:** accepted for implementation
 

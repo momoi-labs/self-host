@@ -24,20 +24,34 @@ them not obvious. They are in the prerequisites now, and in
 - A user account for the Operator with administrator rights. The installer
   runs as that user and asks for `sudo` where it writes to `/Library` and
   `/etc`.
-- A fixed LAN address for the Mac, by DHCP reservation on the router or a
-  manual address. The Platform answers every Hostname with it, and the other
-  machines point at it as their DNS server.
+- **A wired LAN connection.** The Wi-Fi password lives in the Operator's
+  login keychain, and at the login window there is no user, so a Mac set up
+  for Wi-Fi is off the network after a reboot with nobody logged in: no
+  SSH, no DNS, no console. System-scope Wi-Fi profiles and 802.1X
+  certificates are the Apple answer, aimed at managed fleets; for a home
+  network the answer is the cable. This condition outranks FileVault: a Mac
+  that boots unattended onto no network serves nothing. A fixed LAN address
+  is still required, by DHCP reservation on the wired adapter's MAC or a
+  manual address. The Platform answers every Hostname with it, and the
+  other machines point at it as their DNS server.
 - **FileVault off**, or the disk otherwise unlocked at boot. With FileVault
   on, the Mac stops at the pre-boot unlock screen and nothing below starts
   until someone types a password. Apple's remote unlock over SSH still needs
   a person. This is a Host condition, not something the Platform can work
-  around.
+  around. With FileVault off on Apple silicon the volume stays encrypted:
+  the key is protected by the hardware UID in the Secure Enclave and
+  available at boot, so the tradeoff is "anyone who can power on the Mac
+  reads the data", not "the disk is in the clear". Turning it back on later
+  is immediate.
 - Energy settings that keep the Mac awake and bring it back after a power
   cut: in System Settings, Energy, enable "Start up automatically after a
   power failure" and "Prevent automatic sleeping when the display is off",
-  or `sudo pmset -a sleep 0 autorestart 1`. A closed-lid MacBook on power
-  stays awake only with an external display attached or with
-  `sudo pmset -a disablesleep 1`.
+  or `sudo pmset -a sleep 0 autorestart 1`. `autorestart` is a desktop
+  capability; a laptop does not list it in `pmset -g cap` and cannot power
+  itself on, so its battery covers a power cut but a full discharge or a
+  deliberate shutdown needs someone to press the button. A closed-lid
+  MacBook on power stays awake only with an external display attached or
+  with `sudo pmset -a disablesleep 1`.
 - Automatic login is **not** required and is not what this relies on.
 
 ## What the installer does
