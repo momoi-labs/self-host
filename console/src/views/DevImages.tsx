@@ -20,6 +20,7 @@ type DevImage = {
   id: string;
   name: string;
   dependencies: Dependency[];
+  build_checks?: string[];
   image: string;
   status: "building" | "ready" | "failed";
   last_error: Report | null;
@@ -207,6 +208,7 @@ export function DevImages({ listing, selected, onOpen }: {
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState("");
   const [dependencies, setDependencies] = useState<Dependency[]>([]);
+  const [buildChecks, setBuildChecks] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<Report | null>(null);
   const [loadFailure, setLoadFailure] = useState<Report | null>(null);
@@ -218,11 +220,14 @@ export function DevImages({ listing, selected, onOpen }: {
   const building = images.some((image) => image.status === "building");
   const current = images.find((image) => image.id === selected);
   const editingDisabled = submitting || current?.status === "building";
-  const mise = `[tools]\n${dependencies.map(({ tool, version, allow_builds }) => `${JSON.stringify(tool)} = ${allow_builds?.length ? `{ version = ${JSON.stringify(version)}, allow_builds = ${JSON.stringify(allow_builds)} }` : JSON.stringify(version)}`).join("\n")}\n`;
+  const checks = buildChecks.split("\n").map((command) => command.trim()).filter(Boolean);
+  const mise = `[tools]\n${dependencies.map(({ tool, version, allow_builds }) => `${JSON.stringify(tool)} = ${allow_builds?.length ? `{ version = ${JSON.stringify(version)}, allow_builds = ${JSON.stringify(allow_builds)} }` : JSON.stringify(version)}`).join("\n")}\n`
+    + (checks.length ? `\n[tasks.check]\nrun = ${JSON.stringify(checks)}\n` : "");
 
   useEffect(() => {
     setName(current?.name ?? "");
     setDependencies(current?.dependencies ?? []);
+    setBuildChecks((current?.build_checks ?? []).join("\n"));
     setFailure(null);
     setEditorKey((value) => value + 1);
     // Load the recipe when opening it; log polls must not overwrite edits.
@@ -258,7 +263,7 @@ export function DevImages({ listing, selected, onOpen }: {
     setFailure(null);
     try {
       const response = await api("/dev-images", {
-        method: "POST", body: JSON.stringify({ id: selected, name: name.trim(), dependencies }),
+        method: "POST", body: JSON.stringify({ id: selected, name: name.trim(), dependencies, build_checks: checks }),
       });
       if (!response.ok) throw await failureOf(response);
       const image = await response.json() as DevImage;
@@ -410,6 +415,12 @@ export function DevImages({ listing, selected, onOpen }: {
                     setDependencies((current) => current.map((item) => item.tool === dep.tool ? { ...item, allow_builds } : item));
                   }} />
               ))}
+              <FormField id="build-checks" label="Build checks (optional)"
+                hint="One command per line, saved as tasks.check.run. Runs as dev without network access, with a 60-second limit per command. Any failure stops the build.">
+                <textarea id="build-checks" className="input mono" rows={4}
+                  value={buildChecks} onChange={(event) => setBuildChecks(event.target.value)}
+                  disabled={editingDisabled} maxLength={65536} placeholder={"t3 --help\nclaude --version\ncodex --version"} />
+              </FormField>
               <details className="disclosure">
                 <summary>mise.toml</summary>
                 <pre className="dev-image-code">{mise}</pre>

@@ -27,12 +27,13 @@ fn valid_tool(tool: &str) -> bool {
 
 const ENTRYPOINT: &str = include_str!("dev_images/entrypoint.sh");
 const PROFILE: &str = include_str!("dev_images/profile.sh");
+const BUILD_CHECKS: &str = include_str!("dev_images/check.py");
 
 // The image carries tools only. Personal state lives in the optional /data
 // volume, and the entrypoint starts the configured Application command as dev.
 pub const DOCKERFILE: &str = r#"FROM debian:13-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git gosu build-essential python3 unzip xz-utils \
+    ca-certificates curl git gosu procps build-essential python3 unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 ARG USERNAME=dev
 ARG USER_UID=1000
@@ -62,6 +63,9 @@ COPY runtime-profile.sh /etc/profile.d/self-host-development-image.sh
 COPY runtime-entrypoint.sh /usr/local/bin/self-host-development-image-entrypoint
 RUN chmod 0755 /usr/local/bin/self-host-development-image-entrypoint
 WORKDIR /data/repos
+COPY build-checks.py /usr/local/lib/self-host-build-checks.py
+RUN --mount=type=tmpfs,target=/data --network=none \
+    /usr/local/bin/self-host-development-image-entrypoint python3 /usr/local/lib/self-host-build-checks.py
 ENTRYPOINT ["/usr/local/bin/self-host-development-image-entrypoint"]
 CMD ["sleep", "infinity"]
 "#;
@@ -78,10 +82,23 @@ pub struct Dependency {
 pub struct Recipe {
     pub name: String,
     pub dependencies: Vec<Dependency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_checks: Vec<String>,
 }
 
 impl Recipe {
     fn validate(&self) -> Result<(), String> {
+        if self.build_checks.len() > 16
+            || self.build_checks.iter().any(|command| {
+                command.trim().is_empty()
+                    || command.len() > 4096
+                    || command.chars().any(char::is_control)
+            })
+        {
+            return Err(
+                "Use at most 16 build checks, each a single command of 1 to 4096 bytes.".into(),
+            );
+        }
         if self.name.trim().is_empty() || self.name.chars().count() > 128 {
             return Err("Use an image name of 1 to 128 characters.".into());
         }
@@ -138,6 +155,12 @@ impl Recipe {
                         serde_json::to_string(&dep.allow_builds).unwrap()
                     )
                 }
+            ));
+        }
+        if !self.build_checks.is_empty() {
+            config.push_str(&format!(
+                "\n[tasks.check]\nrun = {}\n",
+                serde_json::to_string(&self.build_checks).unwrap()
             ));
         }
         config
@@ -593,6 +616,7 @@ fn write_build_context(path: &std::path::Path, image: &Image) -> std::io::Result
     std::fs::write(path.join("mise.toml"), image.recipe.mise_toml())?;
     std::fs::write(path.join("runtime-entrypoint.sh"), ENTRYPOINT)?;
     std::fs::write(path.join("runtime-profile.sh"), PROFILE)?;
+    std::fs::write(path.join("build-checks.py"), BUILD_CHECKS)?;
     Ok(())
 }
 
@@ -684,6 +708,7 @@ mod tests {
     #[test]
     fn image_tag_uses_the_md5_of_the_exact_mise_file() {
         let mut recipe = Recipe {
+            build_checks: vec![],
             name: "Minha Imagem de Ação".into(),
             dependencies: vec![Dependency {
                 tool: "node".into(),
@@ -704,6 +729,7 @@ mod tests {
     #[test]
     fn npm_recipe_is_passed_to_mise_without_adding_a_runtime() {
         let recipe = Recipe {
+            build_checks: vec![],
             name: "coding".into(),
             dependencies: vec![Dependency {
                 tool: "npm:@openai/codex".into(),
@@ -742,6 +768,7 @@ mod tests {
     #[test]
     fn validates_recipes_before_rendering_config() {
         let mut recipe = Recipe {
+            build_checks: vec![],
             name: "web-dev".into(),
             dependencies: vec![Dependency {
                 tool: "node".into(),
@@ -776,6 +803,32 @@ mod tests {
     }
 
     #[test]
+    fn build_checks_preserve_shell_commands_and_change_the_mise_digest() {
+        let mut recipe: Recipe = serde_json::from_str(
+            r#"{"name":"checks","dependencies":[{"tool":"node","version":"24"}]}"#,
+        )
+        .unwrap();
+        let original = recipe.image_tag("test");
+        recipe.build_checks = vec![r#"node -e 'console.log("installed")'"#.into()];
+        assert!(recipe.validate().is_ok());
+        assert!(
+            recipe.mise_toml().ends_with(
+                "\n[tasks.check]\nrun = [\"node -e 'console.log(\\\"installed\\\")'\"]\n"
+            )
+        );
+        assert_ne!(recipe.image_tag("test"), original);
+        let restored: Recipe =
+            serde_json::from_str(&serde_json::to_string(&recipe).unwrap()).unwrap();
+        assert_eq!(restored.mise_toml(), recipe.mise_toml());
+        for invalid in ["", " \t", "true\nfalse", "echo\0bad"] {
+            recipe.build_checks = vec![invalid.into()];
+            assert!(recipe.validate().is_err());
+        }
+        recipe.build_checks = vec!["true".into(); 17];
+        assert!(recipe.validate().is_err());
+    }
+
+    #[test]
     fn generated_context_includes_every_runtime_asset_referenced_by_dockerfile() {
         let path = std::env::temp_dir().join(format!(
             "self-host-dev-image-context-{}-{}",
@@ -786,6 +839,7 @@ mod tests {
         let image = Image {
             id: "test".into(),
             recipe: Recipe {
+                build_checks: vec![],
                 name: "test".into(),
                 dependencies: vec![Dependency {
                     tool: "node".into(),
