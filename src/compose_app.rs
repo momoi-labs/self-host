@@ -27,6 +27,7 @@ const SERVICE_KEYS: &[&str] = &[
     "environment",
     "ports",
     "volumes",
+    "extra_hosts",
     "restart",
     "depends_on",
     "deploy",
@@ -524,6 +525,27 @@ fn parse_service(name: String, body: Mapping) -> Result<ServiceDefinition, Compo
         Some(_) => return Err(invalid("volumes must be a list".into())),
     }
 
+    match body.get("extra_hosts") {
+        None | Some(Value::Null) => {}
+        Some(Value::Sequence(items)) => {
+            for item in items {
+                let Value::String(spec) = item else {
+                    return Err(invalid(
+                        "extra_hosts must use the short syntax, e.g. \"unifi.local:192.168.1.1\""
+                            .into(),
+                    ));
+                };
+                let Some((name, address)) = spec.split_once(':') else {
+                    return Err(invalid(format!("extra host '{spec}' is not HOST:ADDRESS")));
+                };
+                if name.trim().is_empty() || address.trim().is_empty() {
+                    return Err(invalid(format!("extra host '{spec}' is not HOST:ADDRESS")));
+                }
+            }
+        }
+        Some(_) => return Err(invalid("extra_hosts must be a list".into())),
+    }
+
     match body.get("environment") {
         None | Some(Value::Null) | Some(Value::Mapping(_)) => {}
         Some(Value::Sequence(items)) => {
@@ -775,6 +797,50 @@ services:
         assert_eq!(doc["networks"][APP_NETWORK]["external"], Value::Bool(true));
         // Off the Platform Infra bridge (ADR-0012).
         assert!(!project.yaml.contains("sf-system"));
+    }
+
+    #[test]
+    fn extra_hosts_is_carried_into_the_rendered_project() {
+        let def = ComposeDefinition::parse(
+            "services:\n  web:\n    image: nginx\n    extra_hosts:\n      - \"unifi.local:192.168.1.1\"\n      - \"host.docker.internal:host-gateway\"\n",
+        )
+        .expect("extra_hosts parses");
+        let project = render(&def);
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        let hosts = &doc["services"]["web"]["extra_hosts"];
+        assert_eq!(hosts[0], "unifi.local:192.168.1.1");
+        assert_eq!(hosts[1], "host.docker.internal:host-gateway");
+    }
+
+    #[test]
+    fn extra_hosts_refuses_the_mapping_form() {
+        let err = ComposeDefinition::parse(
+            "services:\n  web:\n    image: nginx\n    extra_hosts:\n      unifi.local: 192.168.1.1\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("extra_hosts must be a list"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn extra_hosts_refuses_an_entry_without_an_address() {
+        let err = ComposeDefinition::parse(
+            "services:\n  web:\n    image: nginx\n    extra_hosts:\n      - unifi.local\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("is not HOST:ADDRESS"), "{}", err);
+    }
+
+    #[test]
+    fn extra_hosts_refuses_an_entry_without_a_name() {
+        let err = ComposeDefinition::parse(
+            "services:\n  web:\n    image: nginx\n    extra_hosts:\n      - \":192.168.1.1\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("is not HOST:ADDRESS"), "{}", err);
     }
 
     #[test]
