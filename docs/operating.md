@@ -10,7 +10,7 @@ Everything the Operator configured lives in one directory on the Host:
 │   └── applications/<application-id>/
 │       ├── application.json
 │       └── compose-<digest>.yaml
-├── dns.json               # what DNS serves, derived from state
+├── dns.json               # what DNS serves, under the address policy
 ├── config.json            # this machine's CLI credentials
 ├── certs/                 # the Platform CA and its certificates
 └── apps/<application-id>/ # generated Compose projects and Application data
@@ -18,9 +18,13 @@ Everything the Operator configured lives in one directory on the Host:
 
 Only `state/` and `certs/` are authoritative. Everything else is rebuilt from
 them: routing on every deploy, and every running Application's route again on
-`self-host serve`. `dns.json` is written by `self-host init` from the DNS Suffix
-and Host IP it commits, and the daemon reads it before the store so DNS answers
-first — change the DNS Suffix through `init`, not by editing the file.
+`self-host serve`. `dns.json` is written by `self-host init` and carries the
+DNS Suffix plus the address policy — which addresses to `include` and which to
+`exclude`. The addresses themselves are not stored: the daemon scans the Host's
+interfaces every 30 seconds and publishes every LAN address that is actually
+up, so a restore onto a Host with a different address needs no edit at all.
+`--host-ip` on `init` pins a candidate into `include`; it is still served only
+while an interface has it.
 
 The daemon is the only writer. `state/platform.lock` is held for as long as it
 runs, and a second `self-host serve` against the same directory is refused
@@ -64,8 +68,10 @@ containers keep their names, Consumers keep trusting the CA and the CLI keeps
 its key. Routing and rendered Compose projects are rebuilt on start; a restore
 onto a Host with no Docker still gives you a readable console.
 
-Restoring onto a Host with a different LAN address needs `dns.json` and the
-saved Host IP updated — re-run `self-host init` with `--host-ip`.
+Restoring onto a Host with a different LAN address needs nothing special: the
+daemon scans and publishes what the interfaces have. If an address you pinned
+with `--host-ip` is gone for good, re-run `self-host init` or remove it from
+`include` in `dns.json`.
 
 ## Upgrading from a Platform that used PostgreSQL
 

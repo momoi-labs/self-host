@@ -48,14 +48,25 @@ function Steps({ platform, hostIp }: { platform: string; hostIp: string }) {
 }
 
 function Setup() {
-  const [settings, setSettings] = useState<{ dns_suffix?: string | null; host_ip?: string | null } | null>();
+  const [settings, setSettings] = useState<{
+    dns_suffix?: string | null;
+    host_ip?: string | null;
+    host_addresses?: string[] | null;
+  } | null>();
   const suffix = settings?.dns_suffix;
   const hostIp = settings?.host_ip;
+  const hostAddresses = settings?.host_addresses ?? [];
 
   useEffect(() => {
     if (!requireKey()) return;
     void (async () => {
-      setSettings(await getJson<{ dns_suffix?: string | null; host_ip?: string | null }>("/bootstrap/status"));
+      setSettings(
+        await getJson<{
+          dns_suffix?: string | null;
+          host_ip?: string | null;
+          host_addresses?: string[] | null;
+        }>("/bootstrap/status"),
+      );
     })();
   }, []);
 
@@ -78,6 +89,12 @@ function Setup() {
           <KV>
             <KVKey>Host IP</KVKey>
             <KVValue>{hostIp || (settings === undefined ? "Loading…" : "Unavailable")}</KVValue>
+            {hostAddresses.length > 1 ? (
+              <>
+                <KVKey>All host addresses</KVKey>
+                <KVValue>{hostAddresses.join(", ")}</KVValue>
+              </>
+            ) : null}
             <KVKey>DNS suffix</KVKey>
             <KVValue>{suffix || (settings === undefined ? "Loading…" : "Unavailable")}</KVValue>
           </KV>

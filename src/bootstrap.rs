@@ -4,7 +4,6 @@ use crate::paths;
 use crate::store::{StateStore, StoreError};
 use crate::tls;
 use rand::Rng;
-use std::net::UdpSocket;
 use tracing::info;
 
 /// The container an older Platform ran Traefik in. Nothing starts it any
@@ -26,7 +25,12 @@ pub struct BootstrapResult {
     pub dns_suffix: String,
     pub api_key: String,
     pub api_listen_addr: String,
+    /// The address the default route leaves through: the one Host-local
+    /// consumers such as the resolver setup keep using.
     pub host_ip: String,
+    /// Every address the Platform publishes, as the interfaces had them at
+    /// `init` time. `serve` keeps scanning and may publish more or fewer.
+    pub host_addresses: Vec<std::net::Ipv4Addr>,
     /// Why the Platform Infra could not be started, when Docker was missing or
     /// unreachable. Configuration and Platform state are complete either way;
     /// only Application execution and HTTPS have to wait for Docker.
@@ -58,23 +62,38 @@ pub fn validate_dns_suffix(suffix: &str) -> Result<(), String> {
 pub async fn run_bootstrap(
     docker: &impl DockerRuntime,
     dns_suffix: &str,
-    host_ip: Option<&str>,
+    pinned: Option<&str>,
 ) -> Result<BootstrapResult, BootstrapError> {
     validate_dns_suffix(dns_suffix).map_err(BootstrapError::InvalidDnsSuffix)?;
 
     let api_key = generate_api_key();
-    // Detection picks the interface the default route leaves through, which
-    // is the LAN one. `--host-ip` is for the Host where that guess is wrong:
-    // a Mac on a VPN, or one with a second interface.
-    let host_ip = match host_ip {
-        Some(ip) => ip
-            .parse::<std::net::IpAddr>()
-            .map_err(|_| BootstrapError::InvalidHostIp(ip.to_string()))?
-            .to_string(),
-        None => detect_host_ip()?,
+    // `--host-ip` pins a candidate into the policy: the Platform still
+    // publishes it only when an interface actually has it, so a Mac that
+    // names its Wi-Fi no longer serves that address from an unattended boot.
+    let pinned = match pinned {
+        Some(ip) => Some(
+            ip.parse::<std::net::Ipv4Addr>()
+                .map_err(|_| BootstrapError::InvalidHostIp(ip.to_string()))?,
+        ),
+        None => None,
     };
+    let policy = crate::host_addresses::AddressPolicy {
+        include: pinned.into_iter().collect(),
+        exclude: Vec::new(),
+    };
+    // Detection picks the interface the default route leaves through, which
+    // is the LAN one. It anchors the subnet the policy publishes and stays
+    // the address Host-local consumers use.
+    let primary = match pinned {
+        Some(address) => address,
+        None => crate::host_addresses::default_source()
+            .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?,
+    };
+    let interfaces = crate::host_addresses::interfaces()
+        .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?;
+    let host_addresses = crate::host_addresses::select(&policy, primary, &interfaces);
 
-    let dns_config = crate::dns::Config::new(dns_suffix, &host_ip)
+    let dns_config = crate::dns::Config::new(dns_suffix, policy.include)
         .map_err(|e| BootstrapError::ConfigWrite(e.to_string()))?;
 
     tls::generate_certificates(dns_suffix)?;
@@ -105,7 +124,8 @@ pub async fn run_bootstrap(
         dns_suffix: dns_suffix.to_string(),
         api_key,
         api_listen_addr,
-        host_ip,
+        host_ip: primary.to_string(),
+        host_addresses,
         execution_unavailable,
     })
 }
@@ -163,6 +183,17 @@ pub async fn persist_bootstrap_state(
     store.store_state("api_key", &result.api_key).await?;
     store.store_state("dns_suffix", &result.dns_suffix).await?;
     store.store_state("host_ip", &result.host_ip).await?;
+    store
+        .store_state(
+            "host_addresses",
+            &result
+                .host_addresses
+                .iter()
+                .map(|address| address.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+        .await?;
 
     Ok(())
 }
@@ -184,24 +215,6 @@ fn generate_api_key() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn detect_host_ip() -> Result<String, BootstrapError> {
-    let socket =
-        UdpSocket::bind("0.0.0.0:0").map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?;
-    socket
-        .connect("1.1.1.1:80")
-        .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?;
-    let address = socket
-        .local_addr()
-        .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?
-        .ip();
-    if address.is_loopback() || address.is_unspecified() {
-        return Err(BootstrapError::HostIpDetection(
-            "no LAN address was found; connect the Host to the LAN and retry".into(),
-        ));
-    }
-    Ok(address.to_string())
-}
-
 pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!();
     println!("=== Bootstrap complete ===");
@@ -221,7 +234,9 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
 
     println!("--- Consumer DNS Setup ---");
     println!("Point your LAN devices (or router) to use this Host as DNS server:");
-    println!("  DNS server: {} (port 53)", result.host_ip);
+    for address in &result.host_addresses {
+        println!("  DNS server: {address} (port 53)");
+    }
     println!("  Start 'self-host serve' before configuring or checking DNS.");
     println!();
     println!("Applications will be reachable at:");
@@ -342,7 +357,9 @@ impl std::fmt::Display for BootstrapError {
             BootstrapError::Docker(e) => write!(f, "{e}"),
             BootstrapError::Store(e) => write!(f, "{e}"),
             BootstrapError::InvalidDnsSuffix(msg) => write!(f, "invalid DNS suffix: {msg}"),
-            BootstrapError::InvalidHostIp(ip) => write!(f, "'{ip}' is not an IP address"),
+            BootstrapError::InvalidHostIp(ip) => {
+                write!(f, "'{ip}' is not an IPv4 address")
+            }
             BootstrapError::AlreadyInitialized => {
                 write!(
                     f,

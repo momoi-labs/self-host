@@ -25,6 +25,7 @@ pub mod dns;
 pub mod docker;
 pub mod error;
 pub mod file_store;
+pub mod host_addresses;
 pub mod host_dns;
 pub mod paths;
 pub mod ports;
@@ -117,6 +118,10 @@ async fn health() -> Json<HealthResponse> {
 struct BootstrapStatusResponse {
     initialized: bool,
     host_ip: Option<String>,
+    /// What the interfaces have right now, under the policy in `dns.json`.
+    /// Empty when nothing is up or the scan fails: an address that is not
+    /// there must not be advertised (#61).
+    host_addresses: Vec<String>,
     dns_suffix: Option<String>,
 }
 
@@ -137,11 +142,33 @@ async fn bootstrap_status<S: StateStore>(
         None
     };
 
+    let host_addresses = if initialized {
+        scan_for_status().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     Json(BootstrapStatusResponse {
         initialized,
         host_ip,
+        host_addresses,
         dns_suffix,
     })
+}
+
+/// The policy lives in `dns.json`; the addresses live on the interfaces.
+/// Either being unreadable means "nothing to advertise", not an error page.
+fn scan_for_status() -> Option<Vec<String>> {
+    let config = crate::dns::Config::load().ok()?;
+    let source = crate::host_addresses::default_source().ok()?;
+    let interfaces = crate::host_addresses::interfaces().ok()?;
+    let addresses = crate::host_addresses::select(&config.host_addresses, source, &interfaces);
+    Some(
+        addresses
+            .iter()
+            .map(|address| address.to_string())
+            .collect(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -1602,6 +1629,7 @@ mod tests {
             api_key: "generated-key".into(),
             api_listen_addr: "192.168.1.100:3721".into(),
             host_ip: "192.168.1.100".into(),
+            host_addresses: vec!["192.168.1.100".parse().unwrap()],
             execution_unavailable: None,
         };
 
@@ -1631,6 +1659,7 @@ mod tests {
             api_key: "key1".into(),
             api_listen_addr: "127.0.0.1:3721".into(),
             host_ip: "127.0.0.1".into(),
+            host_addresses: vec![],
             execution_unavailable: None,
         };
 
@@ -1643,6 +1672,7 @@ mod tests {
             api_key: "key2".into(),
             api_listen_addr: "127.0.0.1:3721".into(),
             host_ip: "127.0.0.1".into(),
+            host_addresses: vec![],
             execution_unavailable: None,
         };
 
@@ -2177,7 +2207,11 @@ mod bootstrap_tests {
         assert_eq!(result.host_ip, "192.168.1.10");
         let dns = crate::dns::Config::load().expect("Bootstrap saves DNS configuration");
         assert_eq!(dns.dns_suffix, result.dns_suffix);
-        assert_eq!(dns.host_ip.to_string(), result.host_ip);
+        assert!(
+            dns.host_addresses
+                .include
+                .contains(&"192.168.1.10".parse().unwrap())
+        );
         assert!(result.api_key.len() >= 64); // 32 bytes = 64 hex chars
         assert!(result.api_listen_addr.contains(":3721"));
     }
