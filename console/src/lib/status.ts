@@ -1,4 +1,4 @@
-import type { App } from "./types.js";
+import type { App, HttpReadiness } from "./types.js";
 
 export type Tone = "success" | "danger" | "neutral";
 
@@ -19,6 +19,19 @@ export function serviceTone(state: string): Tone {
     return "danger";
   }
   return "neutral";
+}
+
+export function readinessTone(readiness: HttpReadiness | undefined): Tone {
+  if (readiness === "responding") return "success";
+  if (readiness === "unreachable" || readiness === "error") return "danger";
+  return "neutral";
+}
+
+export function readinessLabel(readiness: HttpReadiness | undefined): string {
+  if (readiness === "responding") return "HTTP responding";
+  if (readiness === "error") return "HTTP error";
+  if (readiness === "unreachable") return "HTTP not responding";
+  return "HTTP unknown";
 }
 
 export function isCompose(app: App): boolean {

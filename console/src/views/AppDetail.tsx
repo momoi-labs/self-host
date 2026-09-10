@@ -21,6 +21,7 @@ import {
 import { AppForm, type Submission } from "../components/AppForm.js";
 import { AppLogPane } from "../components/LogPane.js";
 import { Failure } from "../components/Failure.js";
+import { HttpStatus } from "../components/HttpStatus.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
@@ -150,6 +151,7 @@ export function AppDetail({
         </PageHeader>
         <div className="lifecycle">
           <StatusBadge tone={statusTone(app.status)}>{app.status}</StatusBadge>
+          <HttpStatus id={app.id} status={app.status} />
           <Button size="sm" disabled={removing || !canStart} onClick={() => void lifecycle("start")}>
             Start
           </Button>
