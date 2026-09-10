@@ -1,5 +1,8 @@
 # Deferred work
 
+Track the development image prototype in the
+[development images TODO](docs/development-images-todo.md).
+
 The macOS MVP will use launchd (a LaunchDaemon) to supervise self-host.
 Host-level s6 support is outside the MVP.
 

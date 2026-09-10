@@ -24,7 +24,7 @@ export default defineConfig({
     // `npm run dev` talks to a `self-host serve` on the default port, so the
     // console can be developed against real applications.
     proxy: Object.fromEntries(
-      ["/health", "/apps", "/system", "/bootstrap", "/compose", "/api-keys"].map((path) => [
+      ["/health", "/apps", "/system", "/bootstrap", "/compose", "/api-keys", "/dev-images"].map((path) => [
         path,
         { target: "http://127.0.0.1:3721", changeOrigin: true },
       ]),

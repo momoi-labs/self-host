@@ -16,6 +16,7 @@ hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server-auto", "http1", "http2"] }
 indexmap = { version = "2", features = ["serde"] }
 libc = "0.2"
+md-5 = "0.10"
 mime_guess = "2"
 pem = "3"
 rand = "0.9"

@@ -6,6 +6,7 @@ import { useView } from "./lib/useView.js";
 import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
+import { DevImages } from "./views/DevImages.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
@@ -26,7 +27,11 @@ export function App() {
       ? (app?.name ?? "Application")
       : view.view === "new"
         ? "New application"
-        : "Overview";
+        : view.view === "dev-images"
+          ? "Development images"
+          : view.view === "dev-image"
+            ? view.id ? "Development image" : "New image"
+            : "Overview";
 
   return (
     <Shell
@@ -44,6 +49,11 @@ export function App() {
         active: view.view === "new",
         onClick: () => go({ view: "new", id: null }),
       }}
+      devImages={{
+        href: "/console/#dev-images",
+        active: view.view === "dev-images" || view.view === "dev-image",
+        onClick: () => go({ view: "dev-images", id: null }),
+      }}
       application={(candidate) => ({
         href: `/console/#app-${candidate.id}`,
         active: view.view === "app" && view.id === candidate.id,
@@ -53,7 +63,10 @@ export function App() {
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
       <section className="page" id="detail" aria-live="polite">
-        {view.view === "new" ? (
+        {view.view === "dev-images" || view.view === "dev-image" ? (
+          <DevImages listing={view.view === "dev-images"} selected={view.id}
+            onOpen={(id) => go({ view: "dev-image", id })} />
+        ) : view.view === "new" ? (
           <NewApp
             dnsSuffix={dnsSuffix}
             reload={reload}

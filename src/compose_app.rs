@@ -161,6 +161,24 @@ pub struct PublishedTarget {
     pub host_port: u16,
 }
 
+/// Values the Platform adds to selected services while rendering. The
+/// Operator's Compose definition remains unchanged; callers use these only
+/// for Application types with Platform-owned runtime settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderOverrides {
+    /// Docker hostnames by service name. An entry replaces the service's
+    /// rendered `hostname` value.
+    pub service_hostnames: IndexMap<String, String>,
+}
+
+impl RenderOverrides {
+    pub fn service_hostname(service: impl Into<String>, hostname: impl Into<String>) -> Self {
+        Self {
+            service_hostnames: [(service.into(), hostname.into())].into_iter().collect(),
+        }
+    }
+}
+
 /// The rendered project, ready for `docker compose`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposeProject {
@@ -295,6 +313,31 @@ impl ComposeDefinition {
         env: &[(String, String)],
         published: Option<&PublishedTarget>,
     ) -> ComposeProject {
+        self.render_with_overrides(
+            name,
+            dir,
+            labels,
+            env,
+            published,
+            &RenderOverrides::default(),
+        )
+    }
+
+    /// Renders a Platform-owned runtime variant of this definition.
+    ///
+    /// Normal Compose Applications use [`Self::render`]. Callers that own a
+    /// generated Application definition can add a small, explicit set of
+    /// service overrides without writing those values back into the
+    /// Operator-facing Compose text.
+    pub fn render_with_overrides(
+        &self,
+        name: &str,
+        dir: &Path,
+        labels: &[(String, String)],
+        env: &[(String, String)],
+        published: Option<&PublishedTarget>,
+        overrides: &RenderOverrides,
+    ) -> ComposeProject {
         let data_dir = dir.join("data");
         let mut services = Mapping::new();
         let mut volumes: IndexMap<String, Value> = self
@@ -311,6 +354,9 @@ impl ComposeDefinition {
             containers.push((service.name.clone(), container.clone()));
 
             body.insert("container_name".into(), container.into());
+            if let Some(hostname) = overrides.service_hostnames.get(&service.name) {
+                body.insert("hostname".into(), hostname.clone().into());
+            }
             if !body.contains_key("restart") {
                 body.insert("restart".into(), "unless-stopped".into());
             }
@@ -755,6 +801,32 @@ services:
                 .contains("container_name: sf-app-k3n8qz4v2x1p-hermes")
         );
         assert!(!project.yaml.contains("container_name: hermes\n"));
+    }
+
+    #[test]
+    fn a_runtime_hostname_override_changes_only_the_selected_service() {
+        let project = hermes().render_with_overrides(
+            "sf-app-k3n8qz4v2x1p",
+            Path::new("/cfg/apps/k3n8qz4v2x1p"),
+            &[("sf.app.id".into(), "k3n8qz4v2x1p".into())],
+            &[],
+            None,
+            &RenderOverrides::service_hostname("hermes", "t3"),
+        );
+
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        assert_eq!(doc["services"]["hermes"]["hostname"], "t3");
+        assert_eq!(
+            doc["services"]["hermes"]["container_name"],
+            "sf-app-k3n8qz4v2x1p-hermes"
+        );
+    }
+
+    #[test]
+    fn ordinary_compose_rendering_has_no_runtime_hostname_override() {
+        let project = render(&hermes());
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        assert!(doc["services"]["hermes"]["hostname"].is_null());
     }
 
     #[test]

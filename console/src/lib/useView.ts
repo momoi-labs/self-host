@@ -3,7 +3,9 @@ import { useCallback, useEffect, useState } from "react";
 export type View =
   | { view: "overview"; id: null }
   | { view: "app"; id: string }
-  | { view: "new"; id: null };
+  | { view: "new"; id: null }
+  | { view: "dev-image"; id: string | null }
+  | { view: "dev-images"; id: null };
 
 const overview: View = { view: "overview", id: null };
 
@@ -15,6 +17,9 @@ const overview: View = { view: "overview", id: null };
 function fromHash(): View | null {
   const hash = location.hash;
   if (hash === "#new") return { view: "new", id: null };
+  if (hash === "#dev-images") return { view: "dev-images", id: null };
+  if (hash === "#new-dev-image") return { view: "dev-image", id: null };
+  if (hash.startsWith("#dev-image-")) return { view: "dev-image", id: hash.slice(11) };
   if (hash.startsWith("#app-")) return { view: "app", id: hash.slice(5) };
   return null;
 }
@@ -23,6 +28,8 @@ function fromHistory(): View {
   const state = history.state as View | null;
   if (state?.view === "app") return state;
   if (state?.view === "new") return { view: "new", id: null };
+  if (state?.view === "dev-images") return { view: "dev-images", id: null };
+  if (state?.view === "dev-image") return state;
   return fromHash() ?? overview;
 }
 

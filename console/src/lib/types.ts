@@ -25,7 +25,16 @@ export type App = {
   compose?: string;
   web_service?: string;
   web_port?: number;
+  development?: DevelopmentApplication;
   services?: ServiceState[];
+};
+
+export type DevelopmentApplication = {
+  image_id: string;
+  tag: string;
+  command: string;
+  web_port: number;
+  persist_data: boolean;
 };
 
 export type ComposePort = { container: number | string };

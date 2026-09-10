@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Button,
+  Checkbox,
   FormField,
   Input,
+  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -25,7 +27,16 @@ export type Submission = {
   web_service?: string;
   web_port?: number;
   image?: string;
+  development?: {
+    image_id: string;
+    tag: string;
+    command: string;
+    web_port: number;
+    persist_data: boolean;
+  };
 };
+
+type DevImage = { id: string; name: string; image: string; status: string };
 
 type Errors = {
   hostname?: string;
@@ -52,9 +63,17 @@ export function AppForm({
   onRemove?: () => void;
 }) {
   const creating = !app;
-  const [source, setSource] = useState(creating ? "image" : isCompose(app) ? "compose" : "image");
+  const [source, setSource] = useState(creating ? "image" : app?.development ? "dev-image" : isCompose(app) ? "compose" : "image");
   const [name, setName] = useState(app?.name ?? "");
   const [image, setImage] = useState(app?.image ?? "");
+  const [devImageId, setDevImageId] = useState(app?.development?.image_id ?? "");
+  const [devImageTag, setDevImageTag] = useState(app?.development?.tag ?? "");
+  const [startCommand, setStartCommand] = useState(app?.development?.command ?? "");
+  const [devPort, setDevPort] = useState(app?.development ? String(app.development.web_port) : "");
+  const [persistData, setPersistData] = useState(app?.development?.persist_data ?? false);
+  const [devImages, setDevImages] = useState<DevImage[]>([]);
+  const [devImagesLoading, setDevImagesLoading] = useState(false);
+  const [devImagesFailure, setDevImagesFailure] = useState<Report | null>(null);
   const [compose, setCompose] = useState(app?.compose ?? "");
   const [hostname, setHostname] = useState(app?.hostname ?? "");
   const [aliases, setAliases] = useState((app?.aliases ?? []).join(", "));
@@ -70,6 +89,29 @@ export function AppForm({
   const services = inspected?.services ?? [];
   const chosen: ComposeService | undefined = services.find((s) => s.name === webService);
   const ports = chosen ? [...new Set(chosen.ports.map((p) => String(p.container)))] : [];
+
+  useEffect(() => {
+    if (source !== "dev-image") return;
+    const controller = new AbortController();
+    setDevImagesLoading(true);
+    setDevImagesFailure(null);
+    void (async () => {
+      try {
+        const response = await api("/dev-images", { signal: controller.signal });
+        if (!response.ok) throw await failureOf(response);
+        const images = await response.json() as typeof devImages;
+        if (!controller.signal.aborted) {
+          const ready = images.filter((image) => image.status === "ready");
+          setDevImages(ready);
+        }
+      } catch (cause) {
+        if (!controller.signal.aborted) setDevImagesFailure(asReport(cause));
+      } finally {
+        if (!controller.signal.aborted) setDevImagesLoading(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [source]);
 
   /*
    * What the pasted file declares, as the Platform reads it. Asked for as the
@@ -172,7 +214,16 @@ export function AppForm({
     // Editing always sends the Hostname: an empty one is a mistake here, not
     // a request for the default.
     if (hostname.trim() || !creating) body.hostname = hostname.trim();
-    if (source === "compose") {
+    if (source === "dev-image") {
+      if (!devImageId || !devImageTag || devImagesLoading || devImagesFailure || !startCommand.trim() || !devPort) return;
+      body.development = {
+        image_id: devImageId,
+        tag: devImageTag,
+        command: startCommand.trim(),
+        web_port: Number(devPort),
+        persist_data: persistData,
+      };
+    } else if (source === "compose") {
       body.compose = compose;
       body.web_service = webService.trim();
       if (port.trim()) body.web_port = Number(port.trim());
@@ -258,6 +309,7 @@ export function AppForm({
               placeholder="9119"
               value={port}
               onChange={(event) => setPort(event.target.value)}
+              onWheel={(event) => event.currentTarget.blur()}
             />
           ) : null}
         </div>
@@ -304,6 +356,7 @@ export function AppForm({
           <legend>Definition</legend>
           {[
             ["image", "Container image"],
+            ["dev-image", "Development image"],
             ["compose", "Compose file"],
           ].map(([value, label]) => (
             <label className="row" key={value}>
@@ -320,7 +373,54 @@ export function AppForm({
         </fieldset>
       ) : null}
 
-      {source === "image" ? imageField : composeFields}
+      {source === "compose" ? composeFields : source === "dev-image" ? (
+        <>
+          <FormField id="f-dev-image" label="Development image">
+            <select id="f-dev-image" className="input" required value={devImageTag}
+              disabled={devImagesLoading || !!devImagesFailure || (!devImages.length && !devImageTag)}
+              onChange={(event) => {
+                const selected = devImages.find((image) => image.image === event.target.value);
+                if (selected) {
+                  setDevImageId(selected.id);
+                  setDevImageTag(selected.image);
+                }
+              }}>
+              <option value="">{devImagesLoading ? "Loading images..." : "Select a saved image"}</option>
+              {devImageTag && !devImages.some((image) => image.image === devImageTag) ? (
+                <option value={devImageTag}>Deployed build: {devImageTag}</option>
+              ) : null}
+              {devImages.map((image) => <option key={image.image} value={image.image}>{image.name}</option>)}
+            </select>
+          </FormField>
+          {devImageTag ? <code className="dev-image-tag">{devImageTag}</code> : null}
+          {devImageId && devImages.some((image) => image.id === devImageId && image.image !== devImageTag) ? (
+            <p className="muted t-label">A newer successful build is available. Select it and save to redeploy.</p>
+          ) : null}
+          <FormField id="f-start-command" label="Start command" className="mono"
+            value={startCommand} onChange={(event) => setStartCommand(event.target.value)} required
+            placeholder="t3 serve --host 0.0.0.0 --port 3000"
+            hint="Call installed tools directly, e.g. t3. The server must listen on 0.0.0.0 and the web port below." />
+          <FormField id="f-dev-port" label="Web port" type="number" min={1} max={65535}
+            value={devPort} onChange={(event) => setDevPort(event.target.value)} required placeholder="3000"
+            onWheel={(event) => event.currentTarget.blur()}
+            hint="The port your server listens on inside the container." />
+          <div className="field">
+            <div className="check">
+              <Checkbox id="f-persist-data" checked={persistData}
+                onCheckedChange={(checked) => setPersistData(checked === true)}
+                aria-describedby="f-persist-data-hint" />
+              <Label htmlFor="f-persist-data">Persist data</Label>
+            </div>
+            <p id="f-persist-data-hint" className="muted t-label">
+              Keep files in /data when the container is recreated. Configure your server to store its data there.
+            </p>
+          </div>
+          {devImagesFailure ? <Failure failure={devImagesFailure} /> : null}
+          {!devImagesLoading && !devImagesFailure && !devImages.length && !devImageTag ? (
+            <p className="muted t-label">No development images are ready. <a href="/console/#dev-images">Save and build an image first.</a></p>
+          ) : null}
+        </>
+      ) : imageField}
 
       <FormField
         id="f-hostname"
@@ -371,7 +471,8 @@ export function AppForm({
             <Button size="sm" onClick={onCancel}>
               Cancel
             </Button>
-            <Button size="sm" variant="primary" type="submit">
+            <Button size="sm" variant="primary" type="submit"
+              disabled={source === "dev-image" && (!devImageId || !devImageTag || devImagesLoading || !!devImagesFailure)}>
               Deploy
             </Button>
           </>

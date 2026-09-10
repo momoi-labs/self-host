@@ -12,8 +12,7 @@ import { getJson } from "../lib/api.js";
 import { Logs } from "./Logs.js";
 
 /**
- * The log pane of an Application. One container needs no choosing, so it says
- * which one instead; several get a picker, and switching replaces the stream.
+ * Multiple containers get a picker; switching replaces the stream.
  */
 export function AppLogPane({ id }: { id: string }) {
   const [containers, setContainers] = useState<string[] | null>(null);
@@ -71,7 +70,7 @@ export function AppLogPane({ id }: { id: string }) {
           </SelectContent>
         </Select>
       ) : (
-        <p className="t-caps">{chosen ? `Logs from ${chosen}` : "Logs"}</p>
+        <p className="t-caps">Logs</p>
       )}
 
       <Logs

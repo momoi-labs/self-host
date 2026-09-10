@@ -3,7 +3,7 @@ use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntim
 use crate::error::ErrorReport;
 use crate::ports;
 use crate::routes::RouteStore;
-use crate::store::{StateStore, StoreError};
+use crate::store::{DevelopmentApplication, StateStore, StoreError};
 
 pub const APP_CONTAINER_PORT: u16 = 80;
 
@@ -58,6 +58,7 @@ pub enum DeployError {
     MissingImage,
     MissingPath,
     MissingCompose,
+    InvalidDevelopment(String),
     InvalidCompose(ComposeDefinitionError),
     Docker(DockerError),
     /// No Host port left for the Application's Web Target to answer on.
@@ -82,6 +83,9 @@ impl std::fmt::Display for DeployError {
             DeployError::MissingImage => write!(f, "image is required"),
             DeployError::MissingPath => write!(f, "path is required"),
             DeployError::MissingCompose => write!(f, "a Compose definition is required"),
+            DeployError::InvalidDevelopment(message) => {
+                write!(f, "invalid development image: {message}")
+            }
             DeployError::InvalidCompose(_) => write!(f, "invalid Compose definition"),
             DeployError::Docker(_) => write!(f, "failed to deploy the Application"),
             DeployError::NoWebTargetPort(_) => {
@@ -320,11 +324,62 @@ async fn pending_record(
         web_service: definition.as_ref().and_then(|d| d.web_service.clone()),
         web_port: definition.as_ref().and_then(|d| d.web_port),
         web_target_port: Some(web_target_port),
+        development: None,
     };
 
     validate_routing(store, &record).await?;
 
     Ok(record)
+}
+
+/// The generated Compose file for a development Application. It is stored for
+/// deployment, while `DevelopmentApplication` retains the form settings.
+pub fn development_compose(settings: &DevelopmentApplication) -> String {
+    let command = settings.command.replace('$', "$$");
+    [
+        "services:".to_string(),
+        "  web:".to_string(),
+        format!(
+            "    image: {}",
+            serde_json::to_string(&settings.tag).unwrap()
+        ),
+        format!(
+            "    command: [\"sh\", \"-c\", {}]",
+            serde_json::to_string(&command).unwrap()
+        ),
+        format!("    expose: [{}]", settings.web_port),
+        if settings.persist_data {
+            "    volumes:\n      - data:/data\nvolumes:\n  data: {}".to_string()
+        } else {
+            String::new()
+        },
+        String::new(),
+    ]
+    .join("\n")
+}
+
+fn validate_development(settings: &DevelopmentApplication) -> Result<(), DeployError> {
+    if settings.image_id.is_empty() || settings.image_id.len() > 128 {
+        return Err(DeployError::InvalidDevelopment(
+            "image ID is required".into(),
+        ));
+    }
+    if settings.tag.is_empty() || settings.tag.len() > 512 {
+        return Err(DeployError::InvalidDevelopment(
+            "image tag is required".into(),
+        ));
+    }
+    if settings.command.trim().is_empty() || settings.command.len() > 16 * 1024 {
+        return Err(DeployError::InvalidDevelopment(
+            "start command is required".into(),
+        ));
+    }
+    if settings.web_port == 0 {
+        return Err(DeployError::InvalidDevelopment(
+            "web port must be between 1 and 65535".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// A Host port for this Application's Web Target, avoiding every port
@@ -504,6 +559,45 @@ pub async fn prepare_deploy_from_compose(
     })
 }
 
+/// Records a development Application as generated Compose plus explicit form
+/// metadata. This path is the only one that attaches that metadata.
+pub async fn prepare_deploy_from_development(
+    store: &impl StateStore,
+    name: &str,
+    development: DevelopmentApplication,
+    hostname_override: Option<&str>,
+    aliases: Option<&[String]>,
+) -> Result<PendingDeploy, DeployError> {
+    validate_app_name(name)?;
+    validate_development(&development)?;
+    let compose = development_compose(&development);
+    let spec = check_compose(&compose, Some("web"), Some(development.web_port))?;
+    if spec.image != development.tag {
+        return Err(DeployError::InvalidDevelopment(
+            "the image tag does not match its generated Compose definition".into(),
+        ));
+    }
+    if !store.is_initialized().await? {
+        return Err(DeployError::NotInitialized);
+    }
+    let mut record = pending_record(
+        store,
+        name,
+        spec.image.clone(),
+        SOURCE_COMPOSE,
+        hostname_override,
+        aliases,
+        Some(spec),
+    )
+    .await?;
+    record.development = Some(development);
+    store.insert_application(&record).await?;
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::ComposeUp,
+    })
+}
+
 /// The Compose project name doubles as the container prefix, so `docker ps`
 /// reads `sf-app-<id>-<service>` for every service of the Application.
 pub fn project_name_for(app_id: &str) -> String {
@@ -536,12 +630,18 @@ pub async fn project_for(
         }),
         None => None,
     };
-    Ok(definition.render(
+    let overrides = record
+        .development
+        .as_ref()
+        .map(|_| compose_app::RenderOverrides::service_hostname("web", &record.name))
+        .unwrap_or_default();
+    Ok(definition.render_with_overrides(
         &project_name_for(&record.id),
         &project_dir_for(&record.id),
         &identity_labels(&record.id, &record.name),
         &env,
         published.as_ref(),
+        &overrides,
     ))
 }
 
@@ -744,6 +844,9 @@ pub struct ApplicationUpdate {
     /// the field.
     pub web_service: Option<String>,
     pub web_port: Option<u16>,
+    /// Explicit development metadata. Omitted values preserve existing
+    /// development Applications, while ordinary Compose stays ordinary.
+    pub development: Option<DevelopmentApplication>,
 }
 
 /// Saves the change and redeploys.
@@ -774,6 +877,33 @@ pub async fn prepare_update(
     }
 
     let current = get_application(store, id).await?;
+    let development = update
+        .development
+        .clone()
+        .or_else(|| current.development.clone());
+    if let Some(settings) = &development {
+        validate_development(settings)?;
+        if update.image.is_some()
+            || update.compose.is_some()
+            || update.web_service.is_some()
+            || update.web_port.is_some()
+        {
+            return Err(DeployError::InvalidDevelopment(
+                "development settings include the image and web target; do not send image, Compose, web service, or web port separately".into(),
+            ));
+        }
+    }
+    let (web_service, web_port) = match &development {
+        Some(settings) => (Some("web".into()), Some(settings.web_port)),
+        None => (
+            match update.web_service.clone() {
+                Some(s) if s.trim().is_empty() => None,
+                Some(s) => Some(s),
+                None => current.web_service.clone(),
+            },
+            update.web_port.or(current.web_port),
+        ),
+    };
     let mut record = ApplicationRecord {
         name: update.name.clone().unwrap_or_else(|| current.name.clone()),
         image: update
@@ -788,13 +918,13 @@ pub async fn prepare_update(
             .aliases
             .clone()
             .unwrap_or_else(|| current.aliases.clone()),
-        compose: update.compose.clone().or_else(|| current.compose.clone()),
-        web_service: match update.web_service.clone() {
-            Some(s) if s.trim().is_empty() => None,
-            Some(s) => Some(s),
-            None => current.web_service.clone(),
-        },
-        web_port: update.web_port.or(current.web_port),
+        compose: development
+            .as_ref()
+            .map(development_compose)
+            .or_else(|| update.compose.clone().or_else(|| current.compose.clone())),
+        web_service,
+        web_port,
+        development,
         status: STATUS_PENDING.into(),
         last_error: None,
         ..current.clone()
@@ -833,7 +963,7 @@ pub async fn prepare_update(
     // added alias and a new web target are all a route rewrite, which costs
     // no downtime.
     let needs_docker = if current.source == SOURCE_COMPOSE {
-        file_changed
+        file_changed || (record.development.is_some() && record.name != current.name)
     } else {
         image_changed
     };
@@ -1823,6 +1953,111 @@ services:
                 [127, 0, 0, 1],
                 app.web_target_port.unwrap()
             )))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_development_application_rename_recreates_its_hostname() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let settings = DevelopmentApplication {
+            image_id: "dev-image".into(),
+            tag: "sf-img-dev-image:old".into(),
+            command: "t3 serve --host 0.0.0.0 --port 3000".into(),
+            web_port: 3000,
+            persist_data: true,
+        };
+
+        let app = finish_deploy(
+            &store,
+            &docker,
+            &routes,
+            prepare_deploy_from_development(&store, "t3", settings.clone(), None, None)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let before = docker.project(&project_name_for(&app.id)).unwrap();
+        let before_yaml: serde_yaml::Value = serde_yaml::from_str(&before.yaml).unwrap();
+        assert_eq!(before_yaml["services"]["web"]["hostname"], "t3");
+
+        let pending = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                name: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            !pending.is_settled(),
+            "renaming must recreate the development container"
+        );
+        let renamed = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+        assert_eq!(renamed.id, app.id);
+        assert_eq!(renamed.development, Some(settings));
+        let after = docker.project(&project_name_for(&app.id)).unwrap();
+        let after_yaml: serde_yaml::Value = serde_yaml::from_str(&after.yaml).unwrap();
+        assert_eq!(after_yaml["services"]["web"]["hostname"], "renamed");
+    }
+
+    #[tokio::test]
+    async fn changing_a_development_port_updates_its_web_target() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let settings = DevelopmentApplication {
+            image_id: "dev-image".into(),
+            tag: "sf-img-dev-image:old".into(),
+            command: "t3 serve --host 0.0.0.0 --port 3000".into(),
+            web_port: 3000,
+            persist_data: true,
+        };
+        let app = finish_deploy(
+            &store,
+            &docker,
+            &routes,
+            prepare_deploy_from_development(&store, "t3", settings, None, None)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let updated_settings = DevelopmentApplication {
+            web_port: 4000,
+            ..app.development.clone().unwrap()
+        };
+
+        let updated = update_application(
+            &store,
+            &docker,
+            &routes,
+            &app.id,
+            ApplicationUpdate {
+                development: Some(updated_settings.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.web_service.as_deref(), Some("web"));
+        assert_eq!(updated.web_port, Some(4000));
+        assert_eq!(updated.development, Some(updated_settings));
+        let project = docker.project(&project_name_for(&app.id)).unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&project.yaml).unwrap();
+        let expected = crate::ports::publication(app.web_target_port.unwrap(), 4000);
+        assert!(
+            yaml["services"]["web"]["ports"]
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .any(|port| port.as_str() == Some(expected.as_str()))
         );
     }
 

@@ -13,6 +13,21 @@ use tokio::sync::RwLock;
 
 use crate::error::ErrorReport;
 
+/// The explicit settings that make an Application a development environment.
+///
+/// The generated Compose definition remains the deploy input, but this record
+/// is authoritative for returning to the development form. Applications that
+/// only happen to have similar Compose text never receive this metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentApplication {
+    pub image_id: String,
+    /// The exact development image tag deployed by this Application.
+    pub tag: String,
+    pub command: String,
+    pub web_port: u16,
+    pub persist_data: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationRecord {
     /// Stable identity. The container and the route are keyed on this, never
@@ -44,6 +59,9 @@ pub struct ApplicationRecord {
     /// the proxy reads it back after a restart instead of asking Docker.
     /// `None` for an Application deployed before the proxy moved in-process.
     pub web_target_port: Option<u16>,
+    /// Present only for Applications created or explicitly converted through
+    /// the development-image API.
+    pub development: Option<DevelopmentApplication>,
 }
 
 #[derive(Debug)]

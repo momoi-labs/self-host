@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
 use crate::error::ErrorReport;
-use crate::store::StoreError;
+use crate::store::{DevelopmentApplication, StoreError};
 use rand::Rng;
 
 pub mod apps;
@@ -21,6 +21,7 @@ pub mod bootstrap;
 pub mod compose_app;
 pub mod config;
 pub mod console;
+pub mod dev_images;
 pub mod dns;
 pub mod docker;
 pub mod error;
@@ -44,6 +45,7 @@ struct AppState<S: StateStore> {
     store: S,
     docker: Arc<dyn DockerRuntime>,
     routes: Arc<dyn RouteStore>,
+    dev_images: Arc<dev_images::Builds>,
 }
 
 pub fn build_app<S: StateStore>(
@@ -55,6 +57,7 @@ pub fn build_app<S: StateStore>(
         store,
         docker,
         routes,
+        dev_images: Arc::new(dev_images::Builds::default()),
     };
 
     let api_routes = Router::new()
@@ -62,6 +65,12 @@ pub fn build_app<S: StateStore>(
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .route("/compose/inspect", post(inspect_compose))
+        .route(
+            "/dev-images",
+            get(dev_images::list::<S>).post(dev_images::create::<S>),
+        )
+        .route("/dev-images/tools", get(dev_images::catalog))
+        .route("/dev-images/{id}", delete(dev_images::remove::<S>))
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
         .route("/apps/id/{id}/start", post(start_app::<S>))
@@ -192,6 +201,30 @@ struct DeployApplicationRequest {
     /// Extra Hostnames the Application also answers on.
     #[serde(default)]
     aliases: Option<Vec<String>>,
+    #[serde(default)]
+    development: Option<DevelopmentApplicationRequest>,
+}
+
+#[derive(Clone, Deserialize)]
+struct DevelopmentApplicationRequest {
+    image_id: String,
+    tag: String,
+    command: String,
+    web_port: u16,
+    #[serde(default)]
+    persist_data: bool,
+}
+
+impl From<&DevelopmentApplicationRequest> for DevelopmentApplication {
+    fn from(value: &DevelopmentApplicationRequest) -> Self {
+        Self {
+            image_id: value.image_id.clone(),
+            tag: value.tag.clone(),
+            command: value.command.clone(),
+            web_port: value.web_port,
+            persist_data: value.persist_data,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -210,6 +243,8 @@ struct UpdateApplicationRequest {
     web_service: Option<String>,
     #[serde(default)]
     web_port: Option<u16>,
+    #[serde(default)]
+    development: Option<DevelopmentApplicationRequest>,
 }
 
 /// One container of an Application, as Docker sees it right now.
@@ -260,10 +295,33 @@ struct ApplicationResponse {
     web_service: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     web_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    development: Option<DevelopmentApplicationResponse>,
     /// Every container of the Application and its state. Empty until Docker
     /// has been asked.
     #[serde(default)]
     services: Vec<ServiceStateResponse>,
+}
+
+#[derive(Serialize)]
+struct DevelopmentApplicationResponse {
+    image_id: String,
+    tag: String,
+    command: String,
+    web_port: u16,
+    persist_data: bool,
+}
+
+impl From<DevelopmentApplication> for DevelopmentApplicationResponse {
+    fn from(value: DevelopmentApplication) -> Self {
+        Self {
+            image_id: value.image_id,
+            tag: value.tag,
+            command: value.command,
+            web_port: value.web_port,
+            persist_data: value.persist_data,
+        }
+    }
 }
 
 impl From<apps::ApplicationRecord> for ApplicationResponse {
@@ -281,6 +339,7 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             compose: app.compose,
             web_service: app.web_service,
             web_port: app.web_port,
+            development: app.development.map(Into::into),
             services: Vec::new(),
         }
     }
@@ -404,6 +463,37 @@ async fn update_app<S: StateStore>(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<UpdateApplicationRequest>,
 ) -> Response {
+    let current = match apps::get_application(&state.store, &id).await {
+        Ok(app) => app,
+        Err(error) => return deploy_error_response(error),
+    };
+    if body.development.is_some()
+        && current.development.is_none()
+        && (current.source != apps::SOURCE_COMPOSE || body.compose.is_some())
+    {
+        return deploy_error_response(apps::DeployError::InvalidDevelopment(
+            "explicit conversion is available only for an existing Compose application without a Compose file in this request".into(),
+        ));
+    }
+    if current.development.is_some()
+        && (body.image.is_some()
+            || body.compose.is_some()
+            || body.web_service.is_some()
+            || body.web_port.is_some())
+    {
+        return deploy_error_response(apps::DeployError::InvalidDevelopment(
+            "development settings include the image and web target; do not send image, Compose, web service, or web port separately".into(),
+        ));
+    }
+    let development = match body.development.as_ref() {
+        Some(request) => {
+            match validate_development_image(&state, request, current.development.as_ref()).await {
+                Ok(settings) => Some(settings),
+                Err(error) => return deploy_error_response(error),
+            }
+        }
+        None => None,
+    };
     match apps::prepare_update(
         &state.store,
         &id,
@@ -415,6 +505,7 @@ async fn update_app<S: StateStore>(
             compose: body.compose,
             web_service: body.web_service,
             web_port: body.web_port,
+            development,
         },
     )
     .await
@@ -549,16 +640,38 @@ async fn deploy_app<S: StateStore>(
     let hostname = body.hostname.as_deref();
     let aliases = body.aliases.as_deref();
 
-    let prepared = match (&body.image[..], &body.path[..], &body.compose[..]) {
-        ("", "", "") => Err(apps::DeployError::MissingImage),
-        (image, "", "") => {
+    let development = match body.development.as_ref() {
+        Some(request) => match validate_development_image(&state, request, None).await {
+            Ok(settings) => Some(settings),
+            Err(error) => return deploy_error_response(error),
+        },
+        None => None,
+    };
+    let prepared = match (
+        &body.image[..],
+        &body.path[..],
+        &body.compose[..],
+        development,
+    ) {
+        ("", "", "", Some(settings)) => {
+            apps::prepare_deploy_from_development(
+                &state.store,
+                &body.name,
+                settings,
+                hostname,
+                aliases,
+            )
+            .await
+        }
+        ("", "", "", None) => Err(apps::DeployError::MissingImage),
+        (image, "", "", None) => {
             apps::prepare_deploy_from_image(&state.store, &body.name, image, hostname, aliases)
                 .await
         }
-        ("", path, "") => {
+        ("", path, "", None) => {
             apps::prepare_deploy_from_path(&state.store, &body.name, path, hostname, aliases).await
         }
-        ("", "", compose) => {
+        ("", "", compose, None) => {
             apps::prepare_deploy_from_compose(
                 &state.store,
                 &body.name,
@@ -570,12 +683,38 @@ async fn deploy_app<S: StateStore>(
             )
             .await
         }
-        _ => Err(apps::DeployError::MissingImage),
+        _ => Err(apps::DeployError::InvalidDevelopment(
+            "send either development settings or an image, path, or Compose definition".into(),
+        )),
     };
 
     match prepared {
         Ok(pending) => accept_deploy(&state, pending).await,
         Err(err) => deploy_error_response(err),
+    }
+}
+
+/// A saved Application may keep an older tag after a later build changes the
+/// image record. Reusing that exact persisted tag remains valid; selecting any
+/// other tag must name a currently successful build.
+async fn validate_development_image<S: StateStore>(
+    state: &AppState<S>,
+    request: &DevelopmentApplicationRequest,
+    current: Option<&DevelopmentApplication>,
+) -> Result<DevelopmentApplication, apps::DeployError> {
+    let settings = DevelopmentApplication::from(request);
+    if current.is_some_and(|saved| saved.image_id == settings.image_id && saved.tag == settings.tag)
+    {
+        return Ok(settings);
+    }
+    match dev_images::ready_image(state, &settings.image_id, &settings.tag).await {
+        Ok(Some(_)) => Ok(settings),
+        Ok(None) => Err(apps::DeployError::InvalidDevelopment(
+            "select a successful development image build".into(),
+        )),
+        Err(error) => Err(apps::DeployError::InvalidDevelopment(format!(
+            "could not read development images: {error}"
+        ))),
     }
 }
 
@@ -894,6 +1033,7 @@ fn deploy_error_response(err: DeployError) -> Response {
         | DeployError::MissingImage
         | DeployError::MissingPath
         | DeployError::MissingCompose
+        | DeployError::InvalidDevelopment(_)
         | DeployError::InvalidCompose(_) => StatusCode::BAD_REQUEST,
         DeployError::NotFound(_) => StatusCode::NOT_FOUND,
         DeployError::NotInitialized => StatusCode::PRECONDITION_FAILED,
@@ -1389,6 +1529,7 @@ mod tests {
             web_service: None,
             web_port: None,
             web_target_port: None,
+            development: None,
         };
         store.insert_application(&record).await.unwrap();
         let docker = FakeDocker::new();

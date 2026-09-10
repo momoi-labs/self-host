@@ -93,6 +93,7 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
 pub fn console_router() -> Router {
     Router::new()
         .route("/", get(root_redirect))
+        .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .route("/console", get(login_page))
         .route("/console/", get(index_page))
         .route("/console/{*path}", get(static_asset))
