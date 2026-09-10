@@ -28,10 +28,11 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [x] Declare `/data/home` as the user's home in `/etc/passwd`. Keep agent
   credentials, shell configuration and history inside the persistent volume.
   Keep T3 state in `/data/t3home` and repositories in `/data/repos`.
-- [ ] Restore the image's PATH and mise configuration in login shells as well
+- [x] Restore the image's PATH and mise configuration in login shells as well
   as directly launched processes. Verify installed tools from the T3 terminal
   and from an agent session. Login-shell checks passed for Node, T3, Rust,
-  Codex and Claude; the interactive workflow still needs user validation.
+  Codex and Claude. Both agents completed file-writing tasks through T3 in
+  the template validation environment.
 - [x] Make the image's mise configuration trusted and its tools usable by
   `dev`. Fix ownership of writable directories on startup, including when an
   existing volume is attached.
@@ -49,6 +50,10 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 
 ## Application editing and image updates
 
+- [ ] Show immediate feedback after confirming Application removal. The screen
+  currently appears idle until the success notification arrives. Evaluate a
+  visible pending state or background removal with failure recovery. Track the
+  interaction and acceptance criteria in [#97](https://github.com/momoi-labs/self-host/issues/97).
 - [x] Preserve the Development image form when editing an Application. Keep
   the image selector, start command, web port and persistence control available
   after creation instead of converting the Application to a plain Compose editor.
@@ -68,13 +73,20 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 
 ## Templates
 
-- [ ] Add template selection to prefill development image and Application
-  settings while keeping them editable.
-- [ ] Provide a T3 Code template with mise dependencies, explicit build
-  permissions and checks, start command, web port and persistence settings.
+- [x] Add template selection when creating a development image. Preserve the
+  template association when saving and editing the recipe. Selecting that
+  image in a new Application fills runtime defaults; later image changes
+  preserve the Operator's command, port and persistence settings.
+- [x] Provide a T3 Code template with Node 24, T3, Claude Code and Codex,
+  explicit `node-pty` build permission and a native PTY check. Default to
+  port 3000, persistent `/data` and `t3 serve` with `/data/t3home`.
 
 ## Build checks and local testing
 
+- [ ] Replace the Build checks textarea with a code editor that has line
+  numbers, a monospace font and shell syntax highlighting. Preserve one
+  command per logical line. Make wrapped lines distinguishable from separate
+  commands and follow the console's light and dark themes.
 - [x] Speed up dependency search. Cache the complete, paginated catalog for the
   server's lifetime and filter it in the browser. The live check loaded 1,091
   tools in four seconds, then answered a cached search in about one millisecond.
@@ -115,11 +127,13 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [ ] Confirm a phone can scan the pairing QR code in the console logs.
 - [x] Complete an authenticated Claude exchange through T3. User validation
   confirmed a response with the runtime running as `dev`.
-- [ ] Complete an authenticated Codex task through T3.
+- [x] Complete an authenticated Codex task through T3.
 - [x] Include Debian's `procps` package for T3's terminal process checks.
   Every image build runs `ps -eo pid,ppid,args` as `dev`.
-- [ ] Recreate the Application and verify projects, files, agent logins and T3
-  state survive. Confirm the terminal can still find the installed tools.
+- [x] Recreate the development container with an updated image and the same
+  volume. Verify project files, agent credentials and T3 conversations survive,
+  and both agent logins remain valid without pairing the browser again.
+- [x] Confirm an agent task survives closing the browser and reconnecting.
 - [ ] Finish the device checks from PR #92. Access the environment from a phone
   and confirm an agent task survives closing and reconnecting the client.
 
@@ -181,3 +195,25 @@ To validate in the UI:
    `ps -eo pid,ppid,args` works in its terminal.
 4. Generate a fresh pairing QR code and scan it with a phone. Confirm spaces
    remain aligned and `: keepalive` does not appear as a log line.
+
+## Third-wave validation
+
+The T3 Code template passed a real image build with all five package checks.
+Browser checks covered template selection, editing image names and checks,
+preserving the template association, and filling new Application defaults.
+Changing the selected image preserved manually edited runtime settings.
+The Rust suite passed 214 tests, including template persistence across restart.
+User testing also confirmed the template flow works in the console.
+
+In an isolated volume, Claude and Codex each wrote a requested file through T3.
+The Codex task completed after the browser closed. Recreating the container
+with a second image that added `just` preserved both files and the agent login
+files byte for byte. Both agents remained authenticated, and both conversations
+reopened using the existing browser session. Claude updated its own runtime
+metadata in `.claude.json` during startup. The active user Application was not
+recreated or modified, and the disposable container and volume were removed.
+
+To test the template, create a development image and select T3 Code. Save and
+build, then select that image when creating an Application. Review the filled
+start command, port and persistence checkbox before deploying. Agent login
+still happens in the running environment; templates contain no credentials.

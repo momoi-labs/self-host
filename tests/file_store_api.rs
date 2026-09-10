@@ -329,7 +329,7 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
         "/dev-images",
         Some(json!({
             "id": id, "name": "Renamed image", "dependencies": [{"tool": "node", "version": "22"}],
-            "build_checks": ["node --version"]
+            "build_checks": ["node --version"], "template_id": "t3-code"
         })),
     )
     .await;
@@ -337,6 +337,7 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     assert_eq!(rebuilt["id"], first["id"]);
     assert_ne!(rebuilt["image"], first["image"]);
     assert_eq!(rebuilt["build_checks"], json!(["node --version"]));
+    assert_eq!(rebuilt["template_id"], "t3-code");
     let saved = settled_image(&app).await;
     drop(app);
     drop(store);
