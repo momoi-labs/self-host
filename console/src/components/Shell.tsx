@@ -40,7 +40,6 @@ export function Shell({
   overview,
   deploy,
   application,
-  onHealthClick,
   children,
 }: {
   crumb: string;
@@ -50,7 +49,6 @@ export function Shell({
   overview: Destination;
   deploy: Destination;
   application: (app: App) => Destination;
-  onHealthClick?: () => void;
   children: ReactNode;
 }) {
   const [theme, setTheme] = useTheme();
@@ -140,17 +138,10 @@ export function Shell({
           </Breadcrumb>
           <span className="grow" />
           <span className="row t-label">
-            {/* The health indicator doubles as the way to show platform services. */}
-            <button
-              type="button"
-              className="health-link"
-              title="Platform Infra"
-              onClick={onHealthClick}
-              {...(onHealthClick ? {} : { disabled: true })}
-            >
+            <span className="health-link" title="The daemon answering on this Host">
               <Dot variant={healthy ? "success" : "neutral"} />
               <span className="muted">{healthy ? "Healthy" : "Checking health…"}</span>
-            </button>
+            </span>
           </span>
         </>
       }

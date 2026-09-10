@@ -18,7 +18,6 @@ use rand::Rng;
 
 pub mod apps;
 pub mod bootstrap;
-pub mod compose;
 pub mod compose_app;
 pub mod config;
 pub mod console;
@@ -27,6 +26,7 @@ pub mod docker;
 pub mod error;
 pub mod file_store;
 pub mod host_dns;
+pub mod paths;
 pub mod ports;
 pub mod proxy;
 pub mod routes;
@@ -73,8 +73,6 @@ pub fn build_app<S: StateStore>(
         .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
-        .route("/system", get(list_system::<S>))
-        .route("/system/{role}/logs", get(stream_system_logs::<S>))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
@@ -566,106 +564,6 @@ async fn list_apps<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
         Err(err) => deploy_error_response(err),
     }
 }
-
-/// One Platform Infra component as the console sees it: addressed by role,
-/// named after it, with the same status vocabulary as an Application.
-#[derive(Serialize)]
-struct SystemContainerResponse {
-    role: String,
-    name: String,
-    image: String,
-    status: String,
-    restarts: Option<u32>,
-}
-
-/// Lists the Platform Infra, derived from the runtime rather than from any
-/// stored row: nothing records it, so the console asks Docker what is actually
-/// running and reports `failed` when a component is missing.
-async fn list_system<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
-    let mut body: Vec<SystemContainerResponse> =
-        Vec::with_capacity(bootstrap::SYSTEM_CONTAINERS.len());
-
-    for &(role, image) in bootstrap::SYSTEM_CONTAINERS {
-        let name = apps::system_container_name(role);
-        // A runtime that cannot answer must not take the list down with it:
-        // the component just reads as failed.
-        let running = state.docker.container_running(&name).await.unwrap_or(false);
-        let restarts = state.docker.restart_count(&name).await.unwrap_or(None);
-        body.push(SystemContainerResponse {
-            role: role.to_string(),
-            name,
-            image: image.to_string(),
-            status: if running {
-                apps::STATUS_RUNNING.into()
-            } else {
-                apps::STATUS_FAILED.into()
-            },
-            restarts,
-        });
-    }
-
-    (StatusCode::OK, Json(body)).into_response()
-}
-
-/// Logs for a Platform Infra component, addressed by role. The role is resolved
-/// to a container name here, so an arbitrary container name never has to be
-/// accepted in the URL.
-async fn stream_system_logs<S: StateStore>(
-    state: axum::extract::State<AppState<S>>,
-    axum::extract::Path(role): axum::extract::Path<String>,
-) -> Response {
-    if !bootstrap::SYSTEM_CONTAINERS
-        .iter()
-        .any(|(known, _)| *known == role)
-    {
-        return error_response(StatusCode::NOT_FOUND, &UnknownSystemRole(role.to_string()));
-    }
-
-    let container_name = apps::system_container_name(&role);
-
-    if !state
-        .docker
-        .container_running(&container_name)
-        .await
-        .unwrap_or(false)
-    {
-        let stream = tokio_stream::once(Ok::<_, std::convert::Infallible>(
-            sse::Event::default().event("notice").data(
-                "This Platform Infra container is not running, so there are no logs to stream.",
-            ),
-        ));
-        return sse::Sse::new(stream).into_response();
-    }
-
-    match state.docker.stream_logs(&container_name).await {
-        Ok(rx) => {
-            let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|line| {
-                Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(line))
-            });
-            sse::Sse::new(stream)
-                .keep_alive(
-                    sse::KeepAlive::new()
-                        .interval(std::time::Duration::from_secs(15))
-                        .text("keepalive"),
-                )
-                .into_response()
-        }
-        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &err),
-    }
-}
-
-/// A role the Platform does not know, so a log stream can say 404 instead of
-/// guessing at a container name.
-#[derive(Debug)]
-struct UnknownSystemRole(String);
-
-impl std::fmt::Display for UnknownSystemRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Platform Infra role '{}' not found", self.0)
-    }
-}
-
-impl std::error::Error for UnknownSystemRole {}
 
 async fn remove_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
@@ -1568,33 +1466,16 @@ mod tests {
     }
 
     /// The Platform ran its state store and then its proxy in containers, and
-    /// the console listed them here. It runs neither now, so the list is
-    /// empty and every role is unknown — the endpoint stays because clients
-    /// still ask it.
+    /// the console listed them here. It runs neither now; the endpoints that
+    /// served that list are gone with it.
     #[tokio::test]
     async fn nothing_of_the_platform_runs_in_a_container_any_more() {
-        let store = FakeStateStore::new();
-        store.store_state("api_key", "test-key").await.unwrap();
-        let app = build_app(
-            store,
-            Arc::new(FakeDocker::new()),
-            Arc::new(routes::FakeRoutes::new()),
-        );
-
-        let response = send(&app, "/system", Some("test-key")).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), 4096).await.unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), json!([]));
-
-        let response = send(&app, "/system/proxy/logs", Some("test-key")).await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn system_logs_reject_an_unknown_role() {
         let (app, _) = setup_initialized_app("test-key", "home.lan").await;
 
-        let response = send(&app, "/system/not-a-role/logs", Some("test-key")).await;
+        let response = send(&app, "/system", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = send(&app, "/system/proxy/logs", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 

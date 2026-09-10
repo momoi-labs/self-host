@@ -8,7 +8,7 @@ pub struct CliConfig {
 
 impl CliConfig {
     pub fn config_path() -> std::path::PathBuf {
-        crate::compose::platform_config_dir().join("config.json")
+        crate::paths::platform_config_dir().join("config.json")
     }
 
     pub fn load() -> Result<Option<Self>, CliConfigError> {

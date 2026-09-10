@@ -81,7 +81,7 @@ impl Config {
 }
 
 pub fn config_path() -> PathBuf {
-    crate::compose::platform_config_dir().join("dns.json")
+    crate::paths::platform_config_dir().join("dns.json")
 }
 
 fn cloudflare() -> ForwardConfig {
@@ -464,7 +464,7 @@ mod tests {
                 answer
                     .answers
                     .iter()
-                    .any(|r| &r.data == &RData::A(A(Ipv4Addr::new(203, 0, 113, 7))))
+                    .any(|r| r.data == RData::A(A(Ipv4Addr::new(203, 0, 113, 7))))
             );
             let missing = exchange(
                 address,

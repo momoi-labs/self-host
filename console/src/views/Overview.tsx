@@ -1,13 +1,11 @@
 import {
   Button,
   Card,
-  Checkbox,
   EmptyState,
   EmptyStateActions,
   EmptyStateDescription,
   EmptyStateIcon,
   EmptyStateTitle,
-  Label,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
@@ -26,66 +24,44 @@ import {
 import { Icon } from "../components/Icon.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { statusTone } from "../lib/status.js";
-import type { App, SystemContainer } from "../lib/types.js";
+import type { App } from "../lib/types.js";
 
 type Row = {
   key: string;
+  id: string;
   name: string;
   hostname?: string;
   aliases: number;
   image: string;
   status: string;
   restarts?: number | null;
-  role?: string;
-  id?: string;
 };
 
 export function Overview({
   apps,
-  system,
   dnsSuffix,
   query,
   onQuery,
-  showPlatform,
-  onShowPlatform,
   onOpenApp,
-  onOpenSystem,
   onDeploy,
 }: {
   apps: App[];
-  system: SystemContainer[];
   dnsSuffix: string;
   query: string;
   onQuery: (query: string) => void;
-  showPlatform: boolean;
-  onShowPlatform: (show: boolean) => void;
   onOpenApp: (id: string) => void;
-  onOpenSystem: (role: string) => void;
   onDeploy: () => void;
 }) {
-  const rows: Row[] = [
-    ...apps.map((app) => ({
-      key: app.id,
-      id: app.id,
-      name: app.name,
-      hostname: app.hostname,
-      aliases: (app.aliases ?? []).length,
-      image: app.image,
-      status: app.status,
-      restarts: app.restarts,
-    })),
-    ...(showPlatform
-      ? system.map((container) => ({
-          key: container.role,
-          role: container.role,
-          name: container.name,
-          aliases: 0,
-          image: container.image,
-          status: container.status,
-          restarts: container.restarts,
-        }))
-      : []),
-  ];
+  const rows: Row[] = apps.map((app) => ({
+    key: app.id,
+    id: app.id,
+    name: app.name,
+    hostname: app.hostname,
+    aliases: (app.aliases ?? []).length,
+    image: app.image,
+    status: app.status,
+    restarts: app.restarts,
+  }));
 
   const needle = query.trim().toLowerCase();
   const visible = rows.filter((row) => row.name.toLowerCase().includes(needle));
@@ -93,7 +69,7 @@ export function Overview({
   const running = apps.filter((app) => app.status === "running").length;
   const failed = apps.filter((app) => app.status === "failed").length;
 
-  const open = (row: Row) => (row.role ? onOpenSystem(row.role) : onOpenApp(row.id!));
+  const open = (row: Row) => onOpenApp(row.id);
 
   return (
     <>
@@ -113,20 +89,11 @@ export function Overview({
           value={query}
           onChange={(event) => onQuery(event.target.value)}
         />
-        <div className="check">
-          <Checkbox
-            id="show-platform"
-            checked={showPlatform}
-            onCheckedChange={(checked) => onShowPlatform(checked === true)}
-          />
-          <Label htmlFor="show-platform">Show platform services</Label>
-        </div>
         <Button
           size="sm"
           variant="ghost"
           onClick={() => {
             onQuery("");
-            onShowPlatform(false);
           }}
         >
           Clear filters
@@ -193,7 +160,7 @@ export function Overview({
                   {visible.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={5} className="muted">
-                        No services match your filters.
+                        No applications match your filters.
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -210,12 +177,9 @@ export function Overview({
                           open(row);
                         }}
                       >
-                        <TableCell>
-                          {row.name}
-                          {row.role ? <> <span className="badge">Platform</span></> : null}
-                        </TableCell>
+                        <TableCell>{row.name}</TableCell>
                         <TableCell className="mono">
-                          {row.role ? <span className="muted">—</span> : row.hostname}
+                          {row.hostname}
                           {row.aliases ? (
                             <span className="t-metadata muted"> +{row.aliases}</span>
                           ) : null}
@@ -238,7 +202,7 @@ export function Overview({
               </Table>
             </div>
             <p className="table-footer">
-              {visible.length} of {rows.length} {showPlatform ? "services" : "applications"}
+              {visible.length} of {rows.length} applications
             </p>
           </div>
         </div>

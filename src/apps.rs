@@ -512,7 +512,7 @@ pub fn project_name_for(app_id: &str) -> String {
 
 /// Where a Compose Application keeps its file and its data.
 pub fn project_dir_for(app_id: &str) -> std::path::PathBuf {
-    crate::compose::platform_config_dir()
+    crate::paths::platform_config_dir()
         .join("apps")
         .join(app_id)
 }

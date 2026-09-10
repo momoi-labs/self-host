@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use self_host::bootstrap::{self, BootstrapResult, OPERATOR_API_PORT};
 use self_host::build_app;
 use self_host::config::CliConfig;
-use self_host::docker::{ComposeDocker, DockerRuntime};
+use self_host::docker::{CliDocker, DockerRuntime};
 use self_host::error::ErrorReport;
 use self_host::file_store::{self, FileStateStore};
 use self_host::store::StateStore;
@@ -252,7 +252,7 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
 async fn run_init_command(dns_suffix: &str, host_ip: Option<&str>) -> anyhow::Result<()> {
     info!("bootstrapping with DNS suffix: {dns_suffix}");
 
-    let docker = ComposeDocker::new();
+    let docker = CliDocker::new();
 
     refuse_legacy_state(&docker).await?;
 
@@ -1007,7 +1007,7 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     let _ = remove_cmd.output();
     println!("Networks removed.");
 
-    let config_dir = self_host::compose::platform_config_dir();
+    let config_dir = self_host::paths::platform_config_dir();
     if config_dir.exists() {
         println!("Removing configuration directory...");
         std::fs::remove_dir_all(&config_dir)?;
@@ -1024,7 +1024,7 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
 /// PostgreSQL. The Platform cannot read that database any more, and silently
 /// starting an empty installation next to it would strand every Application
 /// the Operator deployed.
-async fn refuse_legacy_state(docker: &ComposeDocker) -> anyhow::Result<()> {
+async fn refuse_legacy_state(docker: &CliDocker) -> anyhow::Result<()> {
     if file_store::state_dir().join("platform.json").exists() {
         return Ok(());
     }
@@ -1121,7 +1121,7 @@ async fn run_api_server() {
 
     // Nothing here talks to Docker yet, and nothing needs to: DNS, the
     // console and the API are served whether or not it ever answers.
-    let docker: Arc<dyn DockerRuntime> = Arc::new(ComposeDocker::new());
+    let docker: Arc<dyn DockerRuntime> = Arc::new(CliDocker::new());
 
     // Where every Application answers, as the proxy in this process reads it
     // (ADR-0019).
@@ -1152,6 +1152,7 @@ async fn run_api_server() {
     // to take the ports back from the container that used to hold them
     // before anything tries to bind.
     release_ports_from_legacy_proxy(docker.as_ref()).await;
+    remove_legacy_system_network(docker.as_ref()).await;
 
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
         let proxy = serve_proxy(dns_suffix, app.clone(), table);
@@ -1254,10 +1255,30 @@ async fn release_ports_from_legacy_proxy(docker: &dyn DockerRuntime) {
 /// longer runs. None of it is Application data, and none of it is state — all
 /// of it was generated from the records the Platform still has.
 fn discard_generated_proxy_files() {
-    let config = self_host::compose::platform_config_dir();
+    let config = self_host::paths::platform_config_dir();
     let _ = std::fs::remove_file(config.join("docker-compose.yml"));
     let _ = std::fs::remove_file(config.join("traefik.yml"));
     let _ = std::fs::remove_dir_all(config.join("traefik-dynamic"));
+}
+
+/// Clears the `sf-system` bridge an upgrade leaves behind with no members.
+///
+/// The operating guide used to ask the Operator for `docker network rm
+/// sf-system`; that is the daemon's job now, on the same startup pass that
+/// takes the ports back from the legacy proxy. Docker refuses to remove a
+/// network with members, so a bridge that is somehow still in use is left
+/// alone and the warning says so.
+async fn remove_legacy_system_network(docker: &dyn DockerRuntime) {
+    match docker.remove_network_if_exists("sf-system").await {
+        Ok(true) => info!("removed the leftover 'sf-system' bridge"),
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(
+                "could not remove the leftover 'sf-system' bridge: {}. Remove it by hand with 'docker network rm sf-system'",
+                ErrorReport::new(&e)
+            )
+        }
+    }
 }
 
 async fn resolve_server_config() -> (String, String) {

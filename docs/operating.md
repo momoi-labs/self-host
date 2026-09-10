@@ -116,8 +116,10 @@ that — it is a recreate of the workload, not a redeploy. A Host whose Docker
 cannot be reached migrates nothing, says so, and answers those Applications
 with a 503 until Docker is back and the daemon restarts.
 
-The `sf-system` bridge is left behind with no members. `docker network rm
-sf-system` clears it.
+The `sf-system` bridge is left behind with no members. The daemon removes it
+on its next start, on the same pass that takes the ports back from the
+`sf-system-proxy` container; on a Host whose Docker cannot be reached it
+stays until the daemon is back.
 
 ## Failure and recovery
 

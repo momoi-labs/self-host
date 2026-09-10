@@ -47,7 +47,7 @@ const FILE_MODE: u32 = 0o600;
 /// Where the authoritative state lives, under the Platform configuration
 /// directory it shares with generated files.
 pub fn state_dir() -> PathBuf {
-    crate::compose::platform_config_dir().join("state")
+    crate::paths::platform_config_dir().join("state")
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

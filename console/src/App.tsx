@@ -6,34 +6,27 @@ import { useView } from "./lib/useView.js";
 import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
-import { SystemDetail } from "./views/SystemDetail.js";
 
 export function App() {
-  const { apps, system, dnsSuffix, healthy, ready, reload } = usePlatform();
+  const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
   const [view, go] = useView();
   const [query, setQuery] = useState("");
-  const [showPlatform, setShowPlatform] = useState(false);
 
   const app = view.view === "app" ? apps.find((candidate) => candidate.id === view.id) : undefined;
-  const container =
-    view.view === "system" ? system.find((candidate) => candidate.role === view.id) : undefined;
 
   // A view whose subject is gone — an Application removed here or in another
   // tab — falls back to the Overview rather than rendering nothing.
   useEffect(() => {
     if (!ready) return;
     if (view.view === "app" && !app) go({ view: "overview", id: null });
-    if (view.view === "system" && !container) go({ view: "overview", id: null });
-  }, [ready, view, app, container, go]);
+  }, [ready, view, app, go]);
 
   const crumb =
     view.view === "app"
       ? (app?.name ?? "Application")
-      : view.view === "system"
-        ? "Platform"
-        : view.view === "new"
-          ? "New application"
-          : "Overview";
+      : view.view === "new"
+        ? "New application"
+        : "Overview";
 
   return (
     <Shell
@@ -56,11 +49,6 @@ export function App() {
         active: view.view === "app" && view.id === candidate.id,
         onClick: () => go({ view: "app", id: candidate.id }),
       })}
-      onHealthClick={() => {
-        setShowPlatform(true);
-        setQuery("");
-        go({ view: "overview", id: null });
-      }}
     >
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
@@ -84,19 +72,13 @@ export function App() {
             reload={reload}
             onRemoved={() => go({ view: "overview", id: null })}
           />
-        ) : container ? (
-          <SystemDetail container={container} />
         ) : (
           <Overview
             apps={apps}
-            system={system}
             dnsSuffix={dnsSuffix}
             query={query}
             onQuery={setQuery}
-            showPlatform={showPlatform}
-            onShowPlatform={setShowPlatform}
             onOpenApp={(id) => go({ view: "app", id })}
-            onOpenSystem={(role) => go({ view: "system", id: role })}
             onDeploy={() => go({ view: "new", id: null })}
           />
         )}
