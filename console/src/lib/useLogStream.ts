@@ -1,11 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { authHeaders } from "./api.js";
-
-export type LogLine = {
-  text: string;
-  level?: "info" | "error";
-};
+import { logEventParser, type LogLine } from "./logEvents.js";
 
 /**
  * Container output, as the Platform streams it. Opening a stream replaces the
@@ -31,30 +27,13 @@ export function useLogStream(url: string | null): LogLine[] {
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = "";
-        let event = "message";
+        const parse = logEventParser();
 
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const chunk = buffer.split("\n");
-          buffer = chunk.pop() ?? "";
-
-          const batch: LogLine[] = [];
-          for (const line of chunk) {
-            // SSE format: "event: <name>" followed by "data: <content>".
-            if (line.startsWith("event: ")) {
-              event = line.slice(7);
-              continue;
-            }
-            if (line === "") continue;
-            const data = line.startsWith("data: ") ? line.slice(6) : line;
-            if (data === "keepalive" || data === "") continue;
-            batch.push({ text: data, level: event === "notice" ? "info" : undefined });
-            event = "message";
-          }
+          const batch = parse(decoder.decode(value, { stream: true }));
           if (batch.length) setLines((current) => [...current, ...batch]);
         }
       } catch (cause) {
