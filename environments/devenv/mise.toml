@@ -1,0 +1,10 @@
+# What the base image does not already carry.
+#
+# Rust and Node come from jdxcode/mise itself, at the versions pg-probe's
+# rust-toolchain.toml and this repository's mise.toml ask for. Zig and
+# cargo-zigbuild are what pg-probe's musl release builds go through.
+[tools]
+zig = "0.15.2"
+goreleaser = "2.17.1"
+gh = "2.100.0"
+"github:rust-cross/cargo-zigbuild" = "0.23.0"

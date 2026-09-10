@@ -1,0 +1,32 @@
+# One person's development environment, as a Compose Application.
+#
+# `image` refers to a tag built on the Host: the Platform refuses `build:`,
+# and would have nowhere to run it anyway. Build it first, see README.md.
+services:
+  devenv:
+    image: momoi/devenv:0.1.0
+    restart: unless-stopped
+    # The agent CLIs leave children behind. Something has to reap them, and a
+    # container has no systemd.
+    init: true
+    # The Hostname route publishes the Web Target on loopback only, so a
+    # stopped Platform would take the environment out of reach at exactly the
+    # moment someone needs to get in and fix it. This is the way in.
+    ports:
+      - "3773:3773"
+    # A named volume, never a bind mount into the Operator's home: T3 Code
+    # keeps state in SQLite with a write ahead log, and the Host mounts that
+    # home into the VM over virtiofs.
+    volumes:
+      - data:/data
+    # Containers have no limits by default, and a Rust build will take the
+    # whole VM if allowed. The VM has 8 CPUs and 24 GiB; what is left over
+    # here is what the Operator's other Applications get.
+    deploy:
+      resources:
+        limits:
+          cpus: "6.0"
+          memory: 12G
+
+volumes:
+  data:
