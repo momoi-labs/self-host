@@ -11,6 +11,7 @@ import {
 
 import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
+import { ShellEditor } from "../components/ShellEditor.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import type { Report } from "../lib/types.js";
@@ -441,9 +442,9 @@ export function DevImages({ listing, selected, onOpen }: {
               ))}
               <FormField id="build-checks" label="Build checks (optional)"
                 hint="One command per line, saved as tasks.check.run. Runs as dev without network access, with a 60-second limit per command. Any failure stops the build.">
-                <textarea id="build-checks" className="input mono" rows={4}
-                  value={buildChecks} onChange={(event) => setBuildChecks(event.target.value)}
-                  disabled={editingDisabled} maxLength={65536} placeholder={"t3 --help\nclaude --version\ncodex --version"} />
+                <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
+                  disabled={editingDisabled} maxLength={65536}
+                  placeholder={"t3 --help\nclaude --version\ncodex --version"} />
               </FormField>
               <details className="disclosure">
                 <summary>mise.toml</summary>
