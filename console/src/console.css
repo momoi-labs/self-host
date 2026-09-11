@@ -294,6 +294,7 @@
 
 .container-terminal { position: relative; height: 100%; min-height: 320px; }
 .terminal-screen { position: absolute; inset: 0; min-width: 0; overflow: hidden; padding: 12px; background: #121116; }
+.terminal-loading { position: absolute; inset: 0; }
 .terminal-screen .xterm { height: 100%; }
 .terminal-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--spacing-md); position: absolute; inset: 0; height: 100%; overflow: auto; border: 0; border-radius: 0; --corner-mark: 0; }
 .terminal-picker { width: min(100%, 320px); text-align: start; }
