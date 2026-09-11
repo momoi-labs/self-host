@@ -1,7 +1,9 @@
-import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@momoi-labs/kiso-react";
+import {
+  Sparkline,
+  Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow,
+} from "@momoi-labs/kiso-react";
 
 import { Meters } from "./Meters.js";
-import { Sparkline } from "./Sparkline.js";
 import { StatusBadge } from "./StatusBadge.js";
 import { formatBytes, formatWindow } from "../lib/format.js";
 import { serviceTone } from "../lib/status.js";
@@ -62,6 +64,10 @@ export function ContainerResources({
   ];
 
   const window = rows.reduce((most, row) => Math.max(most, row.samples?.length ?? 0), 0);
+  // The trend lines sit in one column to be compared, so they share a domain.
+  // Scaled to themselves, an idle container and a busy one draw the same shape.
+  const cpu = rows.flatMap((row) => row.samples?.map((sample) => sample.cpu_percent) ?? []);
+  const ceiling = cpu.length ? Math.max(...cpu) : undefined;
 
   if (!totals && rows.length === 0) {
     return <p className="muted">No samples yet. The first lands one tick after the deploy.</p>;
@@ -92,7 +98,7 @@ export function ContainerResources({
                     <TableHead scope="col" className="num">
                       Memory
                     </TableHead>
-                    <TableHead scope="col" className="num">
+                    <TableHead scope="col" className="num trend">
                       {window ? formatWindow(window * intervalSeconds) : "Trend"}
                     </TableHead>
                   </TableRow>
@@ -121,13 +127,13 @@ export function ContainerResources({
                         <TableCell className="num">
                           {latest ? formatBytes(latest.memory_bytes) : <span className="muted">—</span>}
                         </TableCell>
-                        <TableCell className="num">
+                        <TableCell className="num trend">
                           {row.samples ? (
                             <Sparkline
                               values={row.samples.map((sample) => sample.cpu_percent)}
-                              width={70}
-                              height={20}
-                              label={`CPU of ${row.name} over the collected window`}
+                              height={18}
+                              min={0}
+                              max={ceiling}
                             />
                           ) : null}
                         </TableCell>

@@ -1,4 +1,5 @@
-import { Sparkline } from "./Sparkline.js";
+import { Sparkline } from "@momoi-labs/kiso-react";
+
 import { formatBytes } from "../lib/format.js";
 import type { Totals } from "../lib/useMetrics.js";
 
@@ -29,13 +30,7 @@ export function Meters({ totals, network }: { totals: Totals; network: number[] 
       <div className="meter-row">
         <dt className="meter-label">Network</dt>
         <dd className="meter-plot">
-          <Sparkline
-            values={network}
-            width={240}
-            height={22}
-            stretch
-            label="Network throughput over the collected window"
-          />
+          <Sparkline values={network} height={24} />
         </dd>
         <dd className="meter-value">
           ↓ {formatBytes(totals.rx)}

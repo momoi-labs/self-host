@@ -14,6 +14,7 @@ import {
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
+  Sparkline,
   Split,
   Splitter,
   Tabs,
@@ -27,7 +28,6 @@ import { ContainerResources } from "../components/ContainerResources.js";
 import { AppLogPane } from "../components/LogPane.js";
 import { Failure } from "../components/Failure.js";
 import { HttpStatus } from "../components/HttpStatus.js";
-import { Sparkline } from "../components/Sparkline.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
@@ -272,12 +272,12 @@ function Glance({ samples }: { samples: AppSample[] }) {
       <span>
         <span className="k">CPU</span> <b>{latest.cpu_percent.toFixed(2)}%</b>
       </span>
-      <Sparkline values={values} width={44} height={14} label="CPU over the collected window" />
+      <Sparkline values={values} height={18} />
       <span className="sep">·</span>
       <span>
         <span className="k">Memory</span> <b>{formatBytes(latest.memory_bytes)}</b>
       </span>
-      <Sparkline values={memory} width={44} height={14} label="Memory over the collected window" />
+      <Sparkline values={memory} height={18} />
       <span className="sep">·</span>
       <span>
         <span className="k">Net</span>{" "}

@@ -10,6 +10,7 @@ import {
   PageHeaderDescription,
   PageHeaderTitle,
   Search,
+  Sparkline,
   Stat,
   StatLabel,
   StatValue,
@@ -23,7 +24,6 @@ import {
 
 import { Icon } from "../components/Icon.js";
 import { Meters } from "../components/Meters.js";
-import { Sparkline } from "../components/Sparkline.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { Traffic } from "../components/Traffic.js";
 import { formatBytes } from "../lib/format.js";
@@ -220,15 +220,11 @@ export function Overview({
                         </TableCell>
                         <Usage
                           samples={row.samples}
-                          name={row.name}
-                          metric="CPU"
                           value={(sample) => sample.cpu_percent}
                           render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
                         />
                         <Usage
                           samples={row.samples}
-                          name={row.name}
-                          metric="Memory"
                           value={(sample) => sample.memory_bytes}
                           render={(sample) => formatBytes(sample.memory_bytes)}
                         />
@@ -255,14 +251,10 @@ export function Overview({
  */
 function Usage({
   samples,
-  name,
-  metric,
   value,
   render,
 }: {
   samples: AppSample[] | null;
-  name: string;
-  metric: string;
   value: (sample: AppSample) => number;
   render: (sample: AppSample) => string;
 }) {
@@ -274,12 +266,7 @@ function Usage({
   return (
     <TableCell className="usage">
       <span className="usage-value">{render(samples[samples.length - 1])}</span>
-      <Sparkline
-        values={samples.map(value)}
-        width={72}
-        height={18}
-        label={`${metric} of ${name} over the collected window`}
-      />
+      <Sparkline values={samples.map(value)} height={18} />
     </TableCell>
   );
 }
