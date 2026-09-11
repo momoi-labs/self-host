@@ -9,19 +9,17 @@ plane anywhere else.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.2
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash
 ```
 
-Name the version. This README describes the `v0.2.0-beta.2` pre-release; the
-plain `latest` the installer resolves on its own is still `v0.1.0` from August,
-which predates Compose Applications, the console and the macOS daemons.
+The installer resolves `latest` on its own. Naming a version, as in
+`bash -s -- v0.2.0`, pins the install.
 
 Supported platforms: macOS (Intel / Apple Silicon) and Linux (amd64 / arm64).
 
 On macOS the installer also prepares a Docker runtime and installs the
 Platform as a launchd LaunchDaemon, so it starts at boot without a login.
-That part is the reason the release is a beta: nobody has yet watched a real
-Mac come back from a reboot on its own. [docs/macos-host.md](docs/macos-host.md)
+[docs/macos-host.md](docs/macos-host.md)
 lists the prerequisites and holds the record to fill in.
 
 ## Quick start
@@ -114,7 +112,7 @@ On another machine, first configure its DNS, then install the public CA directly
 from the Host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash -s -- v0.2.0-beta.2
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash
 self-host trust-ca --from admin.home.lan --fingerprint <sha256-from-host>
 ```
 
