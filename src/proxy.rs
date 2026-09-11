@@ -126,6 +126,7 @@ struct Context {
     admin_router: Router,
     table: RouteTable,
     client: Client<HttpConnector, ProxyBody>,
+    metrics: crate::metrics::Metrics,
 }
 
 /// Both listeners, bound but not yet serving. Bind before serving so a port
@@ -145,6 +146,7 @@ pub async fn bind(
     config: ProxyConfig,
     admin_router: Router,
     table: RouteTable,
+    metrics: crate::metrics::Metrics,
 ) -> anyhow::Result<Bound> {
     let tls_config = load_tls_config(&config.cert_path, &config.key_path)?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
@@ -178,6 +180,7 @@ pub async fn bind(
             admin_router,
             table,
             client,
+            metrics,
         }),
     })
 }
@@ -196,8 +199,12 @@ pub async fn serve(
     config: ProxyConfig,
     admin_router: Router,
     table: RouteTable,
+    metrics: crate::metrics::Metrics,
 ) -> anyhow::Result<()> {
-    bind(config, admin_router, table).await?.run().await
+    bind(config, admin_router, table, metrics)
+        .await?
+        .run()
+        .await
 }
 
 async fn serve_https(
@@ -331,10 +338,23 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
         return serve_router(&ctx.admin_router, req).await;
     }
 
+    // Only Hostnames the Platform published are counted as Application
+    // traffic: a scanner guessing names must not grow the map, and the
+    // admin hop is the console, not an Application.
     match ctx.table.target_for(&host) {
         None => not_found(),
-        Some(None) => service_unavailable(),
-        Some(Some(target)) => proxy_to(&ctx.client, req, &host, target, peer_ip).await,
+        Some(None) => {
+            ctx.metrics.count_proxy_request(&host, true);
+            service_unavailable()
+        }
+        Some(Some(target)) => {
+            let response = proxy_to(&ctx.client, req, &host, target, peer_ip).await;
+            // A `5xx` counts whichever side produced it: the Consumer asked
+            // for an Application and did not get one.
+            ctx.metrics
+                .count_proxy_request(&host, response.status().is_server_error());
+            response
+        }
     }
 }
 
@@ -774,6 +794,7 @@ mod integration {
         SocketAddr,
         SocketAddr,
         rustls::pki_types::CertificateDer<'static>,
+        crate::metrics::Metrics,
     ) {
         let dir = std::env::temp_dir().join(format!(
             "self-host-proxy-test-{}-{}",
@@ -784,6 +805,7 @@ mod integration {
         let cert_der = generate_test_cert(&dir);
         std::fs::copy(dir.join("cert.pem"), dir.join("ca.pem")).unwrap();
 
+        let metrics = crate::metrics::Metrics::new();
         let bound = bind(
             ProxyConfig {
                 cert_path: dir.join("cert.pem"),
@@ -795,17 +817,18 @@ mod integration {
             },
             admin_router,
             table,
+            metrics.clone(),
         )
         .await
         .unwrap();
         let (https_addr, http_addr) = (bound.https_addr, bound.http_addr);
         tokio::spawn(bound.run());
-        (https_addr, http_addr, cert_der)
+        (https_addr, http_addr, cert_der, metrics)
     }
 
     #[tokio::test]
     async fn an_unknown_hostname_is_not_found() {
-        let (https_addr, _, cert) = spawn_proxy(Router::new(), RouteTable::new()).await;
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), RouteTable::new()).await;
         let (status, _, _) = request(
             https_addr,
             client_config(cert),
@@ -821,7 +844,7 @@ mod integration {
     #[tokio::test]
     async fn admin_is_served_in_process_with_no_backend_at_all() {
         let admin = Router::new().route("/", axum::routing::get(|| async { "admin console" }));
-        let (https_addr, _, cert) = spawn_proxy(admin, RouteTable::new()).await;
+        let (https_addr, _, cert, _) = spawn_proxy(admin, RouteTable::new()).await;
         let (status, _, body) = request(
             https_addr,
             client_config(cert),
@@ -839,7 +862,7 @@ mod integration {
     async fn a_known_application_with_no_target_is_unavailable() {
         let table = RouteTable::new();
         table.publish("abc", &["blog.home.lan".into()], None);
-        let (https_addr, _, cert) = spawn_proxy(Router::new(), table).await;
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
         let (status, _, _) = request(
             https_addr,
             client_config(cert),
@@ -852,12 +875,75 @@ mod integration {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    /// Only Hostnames the Platform published count, and a `5xx` — ours or
+    /// the Application's — is an error against that Hostname (ADR-0020).
+    #[tokio::test]
+    async fn proxied_traffic_is_counted_per_hostname() {
+        let backend = spawn_backend().await;
+        let table = RouteTable::new();
+        table.publish("abc", &["blog.home.lan".into()], Some(backend));
+        table.publish("down", &["down.home.lan".into()], None);
+        let (https_addr, _, cert, metrics) = spawn_proxy(Router::new(), table).await;
+
+        for _ in 0..2 {
+            let (status, _, _) = request(
+                https_addr,
+                client_config(cert.clone()),
+                "blog.home.lan",
+                "/reflect",
+                &[],
+                vec![],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let (status, _, _) = request(
+            https_addr,
+            client_config(cert.clone()),
+            "down.home.lan",
+            "/",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let (status, _, _) = request(
+            https_addr,
+            client_config(cert),
+            "nobody.home.lan",
+            "/",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot.proxy.len(),
+            2,
+            "the unknown Hostname is not counted"
+        );
+        let blog = snapshot
+            .proxy
+            .iter()
+            .find(|h| h.hostname == "blog.home.lan")
+            .unwrap();
+        assert_eq!((blog.requests, blog.errors), (2, 0));
+        let down = snapshot
+            .proxy
+            .iter()
+            .find(|h| h.hostname == "down.home.lan")
+            .unwrap();
+        assert_eq!((down.requests, down.errors), (1, 1));
+    }
+
     #[tokio::test]
     async fn a_known_application_proxies_and_headers_carry_a_trustworthy_identity() {
         let backend = spawn_backend().await;
         let table = RouteTable::new();
         table.publish("abc", &["blog.home.lan".into()], Some(backend));
-        let (https_addr, _, cert) = spawn_proxy(Router::new(), table).await;
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
 
         let (status, _, body) = request(
             https_addr,
@@ -888,7 +974,7 @@ mod integration {
         let backend = spawn_backend().await;
         let table = RouteTable::new();
         table.publish("abc", &["blog.home.lan".into()], Some(backend));
-        let (https_addr, _, cert) = spawn_proxy(Router::new(), table).await;
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
 
         let tcp = TcpStream::connect(https_addr).await.unwrap();
         let connector = tokio_rustls::TlsConnector::from(client_config_for(cert, b"h2"));
@@ -931,7 +1017,7 @@ mod integration {
         let backend = spawn_backend().await;
         let table = RouteTable::new();
         table.publish("abc", &["blog.home.lan".into()], Some(backend));
-        let (https_addr, _, cert) = spawn_proxy(Router::new(), table).await;
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
 
         let payload = vec![7u8; 4 * 1024 * 1024];
         let (status, _, body) = request(
@@ -951,7 +1037,7 @@ mod integration {
     #[tokio::test]
     async fn setup_is_public_over_http_by_ip_without_exposing_the_console() {
         let admin = Router::new().route("/apps", axum::routing::get(|| async { "private" }));
-        let (https_addr, http_addr, cert) = spawn_proxy(admin, RouteTable::new()).await;
+        let (https_addr, http_addr, cert, _) = spawn_proxy(admin, RouteTable::new()).await;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
@@ -1045,7 +1131,7 @@ mod integration {
 
     #[tokio::test]
     async fn a_plain_http_request_redirects_to_https() {
-        let (_, http_addr, _) = spawn_proxy(Router::new(), RouteTable::new()).await;
+        let (_, http_addr, _, _) = spawn_proxy(Router::new(), RouteTable::new()).await;
         let tcp = TcpStream::connect(http_addr).await.unwrap();
         let (mut sender, conn) = client_http1::handshake(TokioIo::new(tcp)).await.unwrap();
         tokio::spawn(conn.with_upgrades());
@@ -1067,7 +1153,7 @@ mod integration {
         let backend = spawn_backend().await;
         let table = RouteTable::new();
         table.publish("abc", &["blog.home.lan".into()], Some(backend));
-        let (https_addr, _, cert) = spawn_proxy(Router::new(), table).await;
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
 
         let tcp = TcpStream::connect(https_addr).await.unwrap();
         let connector = tokio_rustls::TlsConnector::from(client_config(cert));

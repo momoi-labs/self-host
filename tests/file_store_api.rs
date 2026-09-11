@@ -53,6 +53,7 @@ async fn boot(state: &Path) -> (Router, FileStateStore) {
         store.clone(),
         Arc::new(FakeDocker::new()),
         Arc::new(FakeRoutes::new()),
+        self_host::metrics::Metrics::new(),
     );
     (app, store)
 }
@@ -140,6 +141,7 @@ async fn a_host_with_no_database_keeps_what_the_operator_deployed_across_a_resta
         store,
         Arc::new(FakeDocker::new()),
         Arc::new(routes::FakeRoutes::new()),
+        self_host::metrics::Metrics::new(),
     );
 
     let (status, reread) = call(&app, "GET", &format!("/apps/id/{blog_id}"), None).await;

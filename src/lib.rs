@@ -28,6 +28,7 @@ pub mod error;
 pub mod file_store;
 pub mod host_addresses;
 pub mod host_dns;
+pub mod metrics;
 pub mod paths;
 pub mod ports;
 pub mod proxy;
@@ -46,18 +47,21 @@ struct AppState<S: StateStore> {
     docker: Arc<dyn DockerRuntime>,
     routes: Arc<dyn RouteStore>,
     dev_images: Arc<dev_images::Builds>,
+    metrics: metrics::Metrics,
 }
 
 pub fn build_app<S: StateStore>(
     store: S,
     docker: Arc<dyn DockerRuntime>,
     routes: Arc<dyn RouteStore>,
+    metrics: metrics::Metrics,
 ) -> Router {
     let state = AppState {
         store,
         docker,
         routes,
         dev_images: Arc::new(dev_images::Builds::default()),
+        metrics,
     };
 
     let api_routes = Router::new()
@@ -82,6 +86,7 @@ pub fn build_app<S: StateStore>(
         .route("/apps/id/{id}/logs", get(stream_logs_by_id::<S>))
         .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
         .route("/apps/id/{id}/http-status", get(http_status::<S>))
+        .route("/metrics", get(get_metrics::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
         .layer(middleware::from_fn_with_state(
@@ -122,6 +127,16 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".into(),
     })
+}
+
+/// The metrics the daemon holds in memory (ADR-0020): per-Application
+/// resource series, and what the Platform's own proxy and DNS have been
+/// doing. Read-only, never an error: an Application with no sample yet
+/// simply has an empty series.
+async fn get_metrics<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+) -> Json<metrics::MetricsSnapshot> {
+    Json(state.metrics.snapshot())
 }
 
 #[derive(Serialize)]
@@ -1441,6 +1456,7 @@ mod tests {
             store.clone(),
             Arc::new(docker.clone()),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
         (app, store, docker)
     }
@@ -1454,6 +1470,7 @@ mod tests {
             store.clone(),
             Arc::new(docker),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
         (app, store)
     }
@@ -1493,6 +1510,67 @@ mod tests {
             json!(format!("sf-app-{}-hermes", record.id))
         );
         assert_eq!(parsed["services"][0]["state"], json!("running"));
+    }
+
+    /// The daemon samples Docker and folds its own counters on a minute
+    /// (ADR-0020); the API answers what it holds. One tick here stands in
+    /// for the collector's timer.
+    #[tokio::test]
+    async fn metrics_serve_application_samples_and_platform_counters() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let metrics = metrics::Metrics::new();
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            Arc::new(routes::FakeRoutes::new()),
+            metrics.clone(),
+        );
+
+        post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": HERMES}),
+        )
+        .await;
+        let record = settle(&store, "hermes").await;
+
+        metrics::collect_once(&store, &docker, &metrics).await;
+
+        let response = send(&app, "/metrics", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed["interval_seconds"],
+            json!(metrics::DEFAULT_INTERVAL.as_secs())
+        );
+        assert_eq!(parsed["proxy"], json!([]));
+        let series = &parsed["applications"][0];
+        assert_eq!(series["id"], json!(record.id));
+        let sample = &series["samples"][0];
+        assert_eq!(sample["cpu_percent"], json!(1.25));
+        assert_eq!(sample["memory_bytes"], json!(32 * 1024 * 1024));
+        assert_eq!(sample["rx_bytes"], json!(1024));
+        // Every container of the Application is charted on its own, keyed by
+        // the name the Services table shows.
+        let containers = series["containers"].as_array().unwrap();
+        assert!(!containers.is_empty());
+        assert!(containers.iter().all(|container| {
+            container["container"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty())
+                && container["samples"]
+                    .as_array()
+                    .is_some_and(|s| s.len() == 1)
+        }));
+        assert_eq!(parsed["platform"].as_array().map(Vec::len), Some(1));
+
+        let response = send(&app, "/metrics", None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1613,6 +1691,7 @@ mod tests {
             store.clone(),
             Arc::new(docker.clone()),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
         post_json(
             &app,
@@ -1663,6 +1742,7 @@ mod tests {
             store.clone(),
             Arc::new(docker),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         let response = post_json(
@@ -1697,6 +1777,7 @@ mod tests {
             store.clone(),
             Arc::new(docker),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         post_json(
@@ -1804,7 +1885,12 @@ mod tests {
             other.labels = apps::identity_labels("other", "other");
             containers.push(other);
         }
-        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
+        let app = build_app(
+            store,
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
+        );
         let response = send(&app, "/apps/id/compose-app/containers", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
@@ -1847,6 +1933,7 @@ mod tests {
             store.clone(),
             Arc::new(docker),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         let _ = post_json(
@@ -1965,6 +2052,7 @@ mod tests {
             store.clone(),
             Arc::new(docker),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         // Store an API key so auth passes
@@ -1987,7 +2075,12 @@ mod tests {
         store.store_state("dns_suffix", "home.lan").await.unwrap();
 
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
+        let app = build_app(
+            store,
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
+        );
 
         let response = send(&app, "/bootstrap/status", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -2004,7 +2097,12 @@ mod tests {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
+        let app = build_app(
+            store,
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
+        );
 
         let response = send(&app, "/bootstrap/status", None).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -2028,7 +2126,12 @@ mod tests {
             .expect("persist should succeed");
 
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
+        let app = build_app(
+            store,
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
+        );
 
         let response = send(&app, "/bootstrap/status", Some("generated-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -2251,7 +2354,12 @@ mod tests {
         store.store_state("dns_suffix", "home.lan").await.unwrap();
         let docker = FakeDocker::new();
         let route_store = Arc::new(routes::FakeRoutes::new());
-        let app = build_app(store.clone(), Arc::new(docker.clone()), route_store.clone());
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            route_store.clone(),
+            metrics::Metrics::new(),
+        );
 
         let response = post_json(
             &app,
@@ -2382,6 +2490,7 @@ mod tests {
             store.clone(),
             Arc::new(docker.clone()),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         // Deploy two apps
@@ -2437,6 +2546,7 @@ mod tests {
             store.clone(),
             Arc::new(docker.clone()),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         let deploy = post_json(
@@ -2516,6 +2626,7 @@ mod tests {
             store.clone(),
             Arc::new(docker.clone()),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         let _ = post_json(
@@ -2542,7 +2653,12 @@ mod tests {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         let docker = FakeDocker::new();
-        let app = build_app(store, Arc::new(docker), Arc::new(routes::FakeRoutes::new()));
+        let app = build_app(
+            store,
+            Arc::new(docker),
+            Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
+        );
 
         let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
@@ -2676,6 +2792,7 @@ mod deploy_path_tests {
             store.clone(),
             Arc::new(docker.clone()),
             Arc::new(routes::FakeRoutes::new()),
+            metrics::Metrics::new(),
         );
 
         let response = post_json(
