@@ -17,7 +17,6 @@ import { isCompose, parseAliases } from "../lib/status.js";
 import type { App, ComposeService, Inspection, Report } from "../lib/types.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
-import { Services } from "./Services.js";
 import { devImageTemplate } from "../lib/devImageTemplates.js";
 
 export type Submission = {
@@ -472,8 +471,6 @@ export function AppForm({
       </FormField>
 
       {failure ? <Failure failure={failure} /> : null}
-
-      {app ? <Services services={app.services ?? []} /> : null}
 
       <div className="form-actions">
         {creating ? (

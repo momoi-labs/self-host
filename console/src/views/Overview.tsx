@@ -22,9 +22,14 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../components/Icon.js";
+import { Meters } from "../components/Meters.js";
+import { Sparkline } from "../components/Sparkline.js";
 import { StatusBadge } from "../components/StatusBadge.js";
+import { Traffic } from "../components/Traffic.js";
+import { formatBytes } from "../lib/format.js";
 import { statusTone } from "../lib/status.js";
-import type { App } from "../lib/types.js";
+import { hostNetworkSeries, hostTotals, seriesFor } from "../lib/useMetrics.js";
+import type { App, AppSample, Metrics } from "../lib/types.js";
 
 type Row = {
   key: string;
@@ -35,11 +40,14 @@ type Row = {
   image: string;
   status: string;
   restarts?: number | null;
+  /** Absent until the collector's first tick names this Application. */
+  samples: AppSample[] | null;
 };
 
 export function Overview({
   apps,
   dnsSuffix,
+  metrics,
   query,
   onQuery,
   onOpenApp,
@@ -47,6 +55,7 @@ export function Overview({
 }: {
   apps: App[];
   dnsSuffix: string;
+  metrics: Metrics | null;
   query: string;
   onQuery: (query: string) => void;
   onOpenApp: (id: string) => void;
@@ -61,13 +70,14 @@ export function Overview({
     image: app.image,
     status: app.status,
     restarts: app.restarts,
+    samples: seriesFor(metrics, app.id),
   }));
 
   const needle = query.trim().toLowerCase();
   const visible = rows.filter((row) => row.name.toLowerCase().includes(needle));
   const empty = rows.length === 0 && !needle;
   const running = apps.filter((app) => app.status === "running").length;
-  const failed = apps.filter((app) => app.status === "failed").length;
+  const totals = hostTotals(metrics);
 
   const open = (row: Row) => onOpenApp(row.id);
 
@@ -121,26 +131,37 @@ export function Overview({
         </Card>
       ) : (
         <div className="stack">
-          <div className="stat-grid">
+          {/* How many are up, and the load that produces, side by side. */}
+          <div className="summary-row">
             <Card>
               <Stat>
-                <StatLabel>Applications</StatLabel>
-                <StatValue>{apps.length}</StatValue>
+                <StatLabel>Applications running</StatLabel>
+                <StatValue>
+                  {running}
+                  <span className="of-total">/{apps.length}</span>
+                </StatValue>
               </Stat>
             </Card>
-            <Card>
-              <Stat>
-                <StatLabel>Running</StatLabel>
-                <StatValue>{running}</StatValue>
-              </Stat>
-            </Card>
-            <Card>
-              <Stat>
-                <StatLabel>Failed</StatLabel>
-                <StatValue className={failed ? "danger" : undefined}>{failed}</StatValue>
-              </Stat>
+            <Card className="host-load">
+              <div className="card-body">
+                <p className="t-caps">Host load</p>
+                {totals ? (
+                  <Meters totals={totals} network={hostNetworkSeries(metrics)} />
+                ) : (
+                  <p className="muted">Collecting.</p>
+                )}
+              </div>
             </Card>
           </div>
+
+          <Card>
+            <div className="card-body">
+              <Traffic
+                platform={metrics?.platform ?? []}
+                intervalSeconds={metrics?.interval_seconds ?? 10}
+              />
+            </div>
+          </Card>
 
           <div className="table-wrap">
             <div className="table-scroll">
@@ -154,12 +175,14 @@ export function Overview({
                     <TableHead scope="col" className="num">
                       Restarts
                     </TableHead>
+                    <TableHead scope="col">CPU</TableHead>
+                    <TableHead scope="col">Memory</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {visible.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="muted">
+                      <TableCell colSpan={7} className="muted">
                         No applications match your filters.
                       </TableCell>
                     </TableRow>
@@ -195,6 +218,20 @@ export function Overview({
                             row.restarts
                           )}
                         </TableCell>
+                        <Usage
+                          samples={row.samples}
+                          name={row.name}
+                          metric="CPU"
+                          value={(sample) => sample.cpu_percent}
+                          render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
+                        />
+                        <Usage
+                          samples={row.samples}
+                          name={row.name}
+                          metric="Memory"
+                          value={(sample) => sample.memory_bytes}
+                          render={(sample) => formatBytes(sample.memory_bytes)}
+                        />
                       </TableRow>
                     ))
                   )}
@@ -208,5 +245,41 @@ export function Overview({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * One Application's usage in a table cell: the last reading, with the shape
+ * of the window under it. A dash until the collector's first tick, which is
+ * up to a minute after the Application starts.
+ */
+function Usage({
+  samples,
+  name,
+  metric,
+  value,
+  render,
+}: {
+  samples: AppSample[] | null;
+  name: string;
+  metric: string;
+  value: (sample: AppSample) => number;
+  render: (sample: AppSample) => string;
+}) {
+  if (!samples) {
+    return (
+      <TableCell className="muted">—</TableCell>
+    );
+  }
+  return (
+    <TableCell className="usage">
+      <span className="usage-value">{render(samples[samples.length - 1])}</span>
+      <Sparkline
+        values={samples.map(value)}
+        width={72}
+        height={18}
+        label={`${metric} of ${name} over the collected window`}
+      />
+    </TableCell>
   );
 }
