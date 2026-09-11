@@ -1,7 +1,15 @@
 # Deferred work
 
-Track the development image prototype in the
-[development images TODO](docs/development-images-todo.md).
+Open work is tracked in issues. The ones in flight:
+
+- [#89](https://github.com/momoi-labs/self-host/issues/89): run the first
+  development environment on the Host.
+- [#90](https://github.com/momoi-labs/self-host/issues/90): enrol credentials
+  in a development environment without a browser.
+
+The [development images TODO](docs/development-images-todo.md) keeps the test
+history of the image prototype; items left unchecked there are superseded by
+those two issues.
 
 The macOS MVP will use launchd (a LaunchDaemon) to supervise self-host.
 Host-level s6 support is outside the MVP.
