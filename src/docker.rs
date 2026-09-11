@@ -146,6 +146,22 @@ impl ContainerState {
     }
 }
 
+/// One Application container's resource usage, as `docker stats` reports it.
+/// Cumulative where Docker counts cumulatively: network I/O is since the
+/// container started, and a collector reading two ticks apart derives the
+/// rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerStats {
+    pub container: String,
+    /// The Application the container belongs to, from its `sf.app.id` label.
+    pub application: String,
+    pub cpu_percent: f64,
+    pub memory_bytes: u64,
+    pub memory_limit_bytes: u64,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
 #[async_trait]
 pub trait DockerRuntime: Send + Sync {
     async fn ping(&self) -> Result<(), DockerError>;
@@ -181,6 +197,10 @@ pub trait DockerRuntime: Send + Sync {
 
     /// The container's state, or `None` when there is no such container.
     async fn container_state(&self, name: &str) -> Result<Option<ContainerState>, DockerError>;
+    /// Resource usage of every running Application container, joined to its
+    /// Application by label. Containers the Platform does not own are not
+    /// the Platform's to report.
+    async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError>;
     async fn start_container(&self, name: &str) -> Result<(), DockerError>;
     async fn stop_container(&self, name: &str) -> Result<(), DockerError>;
     async fn restart_container(&self, name: &str) -> Result<(), DockerError>;
@@ -650,6 +670,61 @@ impl DockerRuntime for CliDocker {
         }))
     }
 
+    async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError> {
+        // Two calls, not one: `docker stats` does not print labels, and the
+        // join key is the container name both outputs share.
+        let stats = std::process::Command::new("docker")
+            .args(["stats", "--no-stream", "--format", "{{json .}}"])
+            .output()
+            .map_err(|e| DockerError::spawn("failed to sample Application stats", e))?;
+        if !stats.status.success() {
+            return Err(DockerError::refused(
+                "failed to sample Application stats",
+                &stats,
+            ));
+        }
+        let owners = std::process::Command::new("docker")
+            .args([
+                "ps",
+                "--filter",
+                "label=sf.app.id",
+                "--format",
+                "{{.Names}}\t{{.Label \"sf.app.id\"}}",
+            ])
+            .output()
+            .map_err(|e| DockerError::spawn("failed to list Application containers", e))?;
+        if !owners.status.success() {
+            return Err(DockerError::refused(
+                "failed to list Application containers",
+                &owners,
+            ));
+        }
+        let owners: Vec<(String, String)> = String::from_utf8_lossy(&owners.stdout)
+            .lines()
+            .filter_map(|line| line.split_once('\t').map(|(n, id)| (n.into(), id.into())))
+            .collect();
+
+        let mut result = Vec::new();
+        for line in String::from_utf8_lossy(&stats.stdout).lines() {
+            let Some(raw) = parse_stats_line(line) else {
+                continue;
+            };
+            let Some(application) = owners.iter().find(|(name, _)| *name == raw.name) else {
+                continue;
+            };
+            result.push(ContainerStats {
+                container: raw.name,
+                application: application.1.clone(),
+                cpu_percent: raw.cpu_percent,
+                memory_bytes: raw.memory_bytes,
+                memory_limit_bytes: raw.memory_limit_bytes,
+                rx_bytes: raw.rx_bytes,
+                tx_bytes: raw.tx_bytes,
+            });
+        }
+        Ok(result)
+    }
+
     async fn start_container(&self, name: &str) -> Result<(), DockerError> {
         docker(
             &["start", name],
@@ -728,6 +803,71 @@ fn docker(args: &[&str], step: String) -> Result<(), DockerError> {
         return Err(DockerError::refused(step, &output));
     }
     Ok(())
+}
+
+/// One line of `docker stats --format '{{json .}}'`, taken apart. The values
+/// arrive as strings with units, the way Docker prints them for people.
+struct RawStats {
+    name: String,
+    cpu_percent: f64,
+    memory_bytes: u64,
+    memory_limit_bytes: u64,
+    rx_bytes: u64,
+    tx_bytes: u64,
+}
+
+fn parse_stats_line(line: &str) -> Option<RawStats> {
+    #[derive(serde::Deserialize)]
+    struct StatsLine {
+        #[serde(rename = "Name", default)]
+        name: String,
+        #[serde(rename = "CPUPerc", default)]
+        cpu_percent: String,
+        #[serde(rename = "MemUsage", default)]
+        mem_usage: String,
+        #[serde(rename = "NetIO", default)]
+        net_io: String,
+    }
+    let parsed: StatsLine = serde_json::from_str(line).ok()?;
+    if parsed.name.is_empty() {
+        return None;
+    }
+    let (memory, limit) = parsed.mem_usage.split_once(" / ")?;
+    let (rx, tx) = parsed.net_io.split_once(" / ")?;
+    Some(RawStats {
+        name: parsed.name,
+        cpu_percent: parsed
+            .cpu_percent
+            .trim_end_matches('%')
+            .trim()
+            .parse()
+            .ok()?,
+        memory_bytes: parse_size(memory)?,
+        memory_limit_bytes: parse_size(limit)?,
+        rx_bytes: parse_size(rx)?,
+        tx_bytes: parse_size(tx)?,
+    })
+}
+
+/// A size as `docker stats` prints it: `58.3MiB`, `1.2kB`, `648B`. The units
+/// with an `i` are 1024-based (memory); the others are 1000-based (network).
+/// A value that does not read is absent, not zero: zero is an answer about a
+/// container, and unreadable is an answer about the output.
+fn parse_size(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let split = text.find(|c: char| !(c.is_ascii_digit() || c == '.'))?;
+    let (number, unit) = text.split_at(split);
+    let value: f64 = number.parse().ok()?;
+    let base: f64 = if unit.contains('i') { 1024.0 } else { 1000.0 };
+    let multiplier = match unit.trim_end_matches("iB").trim_end_matches('B') {
+        "" => 1.0,
+        "K" | "k" => base,
+        "M" => base.powi(2),
+        "G" => base.powi(3),
+        "T" => base.powi(4),
+        _ => return None,
+    };
+    Some((value * multiplier) as u64)
 }
 
 fn project_file(project: &ComposeProject) -> std::path::PathBuf {
@@ -848,6 +988,20 @@ fn spawn_log_stream(program: &str, args: Vec<String>) -> mpsc::Receiver<String> 
     });
 
     rx
+}
+
+/// The stats of a running Application container, for a runtime with nothing
+/// to measure: fixed values an aggregation can be asserted against.
+fn fake_stats(container: &str, application: &str) -> ContainerStats {
+    ContainerStats {
+        container: container.into(),
+        application: application.into(),
+        cpu_percent: 1.25,
+        memory_bytes: 32 * 1024 * 1024,
+        memory_limit_bytes: 4 * 1024 * 1024 * 1024,
+        rx_bytes: 1024,
+        tx_bytes: 2048,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -1092,6 +1246,33 @@ impl DockerRuntime for FakeDocker {
         }))
     }
 
+    async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError> {
+        let stopped = self.stopped.lock().unwrap();
+        let mut stats = Vec::new();
+        for container in self.apps.lock().unwrap().iter() {
+            if stopped.contains(&container.name) {
+                continue;
+            }
+            if let Some((_, application)) =
+                container.labels.iter().find(|(key, _)| key == "sf.app.id")
+            {
+                stats.push(fake_stats(&container.name, application));
+            }
+        }
+        for project in self.projects.lock().unwrap().iter() {
+            // The project name is the container prefix: `sf-app-<id>`.
+            let Some(application) = project.name.strip_prefix(crate::apps::APP_PREFIX) else {
+                continue;
+            };
+            for (_, container) in &project.containers {
+                if !stopped.contains(container) {
+                    stats.push(fake_stats(container, application));
+                }
+            }
+        }
+        Ok(stats)
+    }
+
     async fn start_container(&self, name: &str) -> Result<(), DockerError> {
         self.stopped.lock().unwrap().remove(name);
         Ok(())
@@ -1237,6 +1418,10 @@ where
         (**self).container_state(name).await
     }
 
+    async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError> {
+        (**self).container_stats().await
+    }
+
     async fn start_container(&self, name: &str) -> Result<(), DockerError> {
         (**self).start_container(name).await
     }
@@ -1354,5 +1539,34 @@ mod tests {
 
         assert_eq!(report.error, "failed to pull image 'b'");
         assert_eq!(report.caused_by.len(), 1);
+    }
+
+    #[test]
+    fn sizes_read_the_way_docker_prints_them() {
+        // Memory is 1024-based with the `i`, network is 1000-based without.
+        assert_eq!(parse_size("58.3MiB"), Some(61_131_980));
+        assert_eq!(parse_size("3.842GiB"), Some(4_125_316_087));
+        assert_eq!(parse_size("1.2kB"), Some(1_200));
+        assert_eq!(parse_size("648B"), Some(648));
+        assert_eq!(parse_size("0B"), Some(0));
+        // A value that does not read is absent, not zero.
+        assert_eq!(parse_size("--"), None);
+        assert_eq!(parse_size(""), None);
+    }
+
+    #[test]
+    fn a_stats_line_comes_apart_into_numbers() {
+        let line = r#"{"BlockIO":"0B / 0B","CPUPerc":"0.07%","Container":"x","ID":"x","MemPec":"1.42%","MemUsage":"58.3MiB / 3.842GiB","Name":"sf-app-k3n8qz4v2x1p-web-1","NetIO":"1.2kB / 648B","PIDs":"5"}"#;
+        let raw = parse_stats_line(line).unwrap();
+        assert_eq!(raw.name, "sf-app-k3n8qz4v2x1p-web-1");
+        assert_eq!(raw.cpu_percent, 0.07);
+        assert_eq!(raw.memory_bytes, 61_131_980);
+        assert_eq!(raw.memory_limit_bytes, 4_125_316_087);
+        assert_eq!(raw.rx_bytes, 1_200);
+        assert_eq!(raw.tx_bytes, 648);
+
+        // Not JSON, or JSON without a name: nothing to read.
+        assert!(parse_stats_line("not json").is_none());
+        assert!(parse_stats_line(r#"{"CPUPerc":"1%"}"#).is_none());
     }
 }

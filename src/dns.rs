@@ -24,6 +24,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Mutex;
 
 use crate::host_addresses::{self, AddressPolicy};
+use crate::metrics::Metrics;
 
 /// What DNS serves for the local zone, written by `init`. The addresses are a
 /// policy, not a list: the Platform publishes what the interfaces actually
@@ -148,6 +149,7 @@ fn catalog(
     config: &Config,
     addresses: &[Ipv4Addr],
     upstream: ForwardConfig,
+    metrics: &Metrics,
 ) -> anyhow::Result<(Catalog, Arc<WildcardZone>, Name)> {
     config.validate()?;
     anyhow::ensure!(
@@ -192,9 +194,15 @@ fn catalog(
     let forward = ForwardZoneHandler::builder_tokio(upstream)
         .build()
         .map_err(anyhow::Error::msg)?;
+    let forward = CountingForward {
+        origin: Name::root().into(),
+        inner: forward,
+        metrics: metrics.clone(),
+    };
     let zone = Arc::new(WildcardZone {
         origin: origin.clone().into(),
         handler: Mutex::new(local),
+        metrics: metrics.clone(),
     });
     let mut catalog = Catalog::new();
     catalog.upsert(origin.into(), vec![zone.clone()]);
@@ -212,6 +220,8 @@ fn catalog(
 struct WildcardZone {
     origin: LowerName,
     handler: Mutex<InMemoryZoneHandler>,
+    /// Local-zone queries counted where they are answered (ADR-0020).
+    metrics: Metrics,
 }
 
 impl WildcardZone {
@@ -263,6 +273,12 @@ impl ZoneHandler for WildcardZone {
         request: &Request,
         options: LookupOptions,
     ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
+        // The name the client asked for, without the wire format's trailing
+        // dot: what the console would print, not what DNS encodes.
+        if let Ok(info) = request.request_info() {
+            self.metrics
+                .count_dns_query(info.query.name().to_string().trim_end_matches('.'));
+        }
         let (lookup, signature) = self.handler.lock().await.search(request, options).await;
         (lookup.map_err(wildcard_error), signature)
     }
@@ -284,13 +300,65 @@ fn wildcard_error(error: LookupError) -> LookupError {
     }
 }
 
+/// The forwarder with a counter on it. Every query the local zone does not
+/// own lands here, and the Platform counts its own DNS traffic (ADR-0020)
+/// without knowing, or keeping, which outside names the LAN asked for.
+struct CountingForward {
+    origin: LowerName,
+    inner: ForwardZoneHandler,
+    metrics: Metrics,
+}
+
+#[async_trait::async_trait]
+impl ZoneHandler for CountingForward {
+    fn zone_type(&self) -> ZoneType {
+        self.inner.zone_type()
+    }
+
+    fn axfr_policy(&self) -> AxfrPolicy {
+        self.inner.axfr_policy()
+    }
+
+    fn origin(&self) -> &LowerName {
+        &self.origin
+    }
+
+    async fn lookup(
+        &self,
+        name: &LowerName,
+        rtype: RecordType,
+        request_info: Option<&RequestInfo<'_>>,
+        options: LookupOptions,
+    ) -> LookupControlFlow<AuthLookup> {
+        self.inner.lookup(name, rtype, request_info, options).await
+    }
+
+    async fn search(
+        &self,
+        request: &Request,
+        options: LookupOptions,
+    ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
+        self.metrics.count_dns_forwarded();
+        self.inner.search(request, options).await
+    }
+
+    async fn nsec_records(
+        &self,
+        name: &LowerName,
+        options: LookupOptions,
+    ) -> LookupControlFlow<AuthLookup> {
+        self.inner.nsec_records(name, options).await
+    }
+}
+
 async fn bind(
     config: &Config,
     addresses: &[Ipv4Addr],
     address: SocketAddr,
     upstream: ForwardConfig,
+    metrics: &Metrics,
 ) -> anyhow::Result<(Server<Catalog>, SocketAddr)> {
-    let (catalog, zone, wildcard) = catalog(config, addresses, upstream)?;
+    let (catalog, zone, wildcard) = catalog(config, addresses, upstream, metrics)?;
     // Bind both transports before spawning either listener.
     let udp = UdpSocket::bind(address)
         .await
@@ -370,7 +438,7 @@ const BIND_HINT: &str = "Find what already holds port 53 with 'lsof -nP -iTCP:53
 #[cfg(not(target_os = "macos"))]
 const BIND_HINT: &str = "Check port 53 conflicts; grant CAP_NET_BIND_SERVICE to the Platform";
 
-pub async fn start(config: &Config) -> anyhow::Result<Server<Catalog>> {
+pub async fn start(config: &Config, metrics: &Metrics) -> anyhow::Result<Server<Catalog>> {
     // An unattended boot may reach DNS before any interface is up, so the
     // scan is retried until there is something to serve and something to
     // listen on. Publishing an address that is not there is what #61 forbids.
@@ -389,6 +457,7 @@ pub async fn start(config: &Config) -> anyhow::Result<Server<Catalog>> {
             &addresses,
             listen_address(IpAddr::from(primary)),
             cloudflare(),
+            metrics,
         )
         .await
         {
@@ -492,9 +561,46 @@ mod tests {
             &[Ipv4Addr::new(192, 0, 2, 10)],
             "127.0.0.1:0".parse().unwrap(),
             upstream,
+            &Metrics::new(),
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn queries_are_counted_local_named_and_forwarded() {
+        // Bound but never read: any accidental forwarding times out.
+        let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let metrics = Metrics::new();
+        let (mut server, address) = bind(
+            &Config::new("home.lan", vec![]).unwrap(),
+            &[Ipv4Addr::new(192, 0, 2, 10)],
+            "127.0.0.1:0".parse().unwrap(),
+            upstream(&[unavailable.local_addr().unwrap()]),
+            &metrics,
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let response =
+                exchange(address, &query("app.home.lan.", RecordType::A, None), false).await;
+            assert_eq!(response.response_code, ResponseCode::NoError);
+        }
+        // Outside the local zone: ServFail counts the query anyway.
+        let failed = exchange(address, &query("example.", RecordType::A, None), false).await;
+        assert_eq!(failed.response_code, ResponseCode::ServFail);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.dns.queries_total, 3);
+        assert_eq!(
+            snapshot.dns.by_name.len(),
+            1,
+            "forwarded names are not kept"
+        );
+        assert_eq!(snapshot.dns.by_name[0].name, "app.home.lan");
+        assert_eq!(snapshot.dns.by_name[0].queries, 2);
+        server.shutdown_gracefully().await.unwrap();
     }
 
     #[tokio::test]
@@ -682,6 +788,7 @@ mod tests {
             &[Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(192, 0, 2, 11)],
             "127.0.0.1:0".parse().unwrap(),
             upstream(&[unavailable.local_addr().unwrap()]),
+            &Metrics::new(),
         )
         .await
         .unwrap();
@@ -709,6 +816,7 @@ mod tests {
             &config,
             addresses,
             upstream(&[("127.0.0.1:1".parse().unwrap())]),
+            &Metrics::new(),
         )
         .unwrap();
         (zone, wildcard)
@@ -758,6 +866,7 @@ mod tests {
             &[Ipv4Addr::new(192, 0, 2, 10)],
             address,
             cloudflare(),
+            &Metrics::new(),
         )
         .await
         .err()
@@ -774,6 +883,7 @@ mod tests {
             &[Ipv4Addr::new(192, 0, 2, 10)],
             address,
             cloudflare(),
+            &Metrics::new(),
         )
         .await
         .err()

@@ -39,7 +39,17 @@ enum Command {
     /// Configure persistent Host DNS on Linux with systemd-resolved
     SetupDns,
     /// Start the platform daemon
-    Serve,
+    Serve {
+        /// How often the daemon samples Docker and folds its own counters,
+        /// as `10s`, `1m` or `2h` (default: 10s)
+        #[arg(long, value_parser = self_host::metrics::parse_duration, default_value = "10s")]
+        monitoring_collect_interval: std::time::Duration,
+        /// How much monitoring history to keep in memory, as `30s`, `5m` or
+        /// `2h` (default: 5m). It is held in the daemon and never written to
+        /// disk, so a longer window costs RAM and nothing else.
+        #[arg(long, value_parser = self_host::metrics::parse_duration, default_value = "5m")]
+        monitoring_max_age: std::time::Duration,
+    },
     /// Manage Applications
     Apps {
         #[command(subcommand)]
@@ -231,8 +241,22 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Command::Serve) | None => {
-            run_server().await;
+        Some(Command::Serve {
+            monitoring_collect_interval,
+            monitoring_max_age,
+        }) => {
+            // The two flags only mean something together, so they are checked
+            // against each other here rather than one value at a time.
+            match self_host::metrics::Window::new(monitoring_collect_interval, monitoring_max_age) {
+                Ok(window) => run_server(window).await,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        None => {
+            run_server(self_host::metrics::Window::default()).await;
         }
     }
 }
@@ -1116,16 +1140,19 @@ fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
 /// runtime is still coming up and the Platform Infra with it. Nothing here
 /// gives up: each dependency is waited for, out loud, for as long as it
 /// takes. Exiting would only make launchd start us again with less context.
-async fn run_server() {
+async fn run_server(window: self_host::metrics::Window) {
+    // One set of metrics for the whole daemon: DNS, the proxy, the collector
+    // and the API all count and read from the same place (ADR-0020).
+    let metrics = self_host::metrics::Metrics::with_window(window);
     let result = async {
         let config = self_host::dns::Config::load()?;
-        let mut dns = self_host::dns::start(&config).await?;
+        let mut dns = self_host::dns::start(&config, &metrics).await?;
         tokio::select! {
             result = dns.block_until_done() => {
                 result?;
                 anyhow::bail!("DNS server stopped unexpectedly");
             }
-            () = run_api_server() => Ok::<(), anyhow::Error>(()),
+            () = run_api_server(metrics.clone()) => Ok::<(), anyhow::Error>(()),
         }
     }
     .await;
@@ -1135,7 +1162,7 @@ async fn run_server() {
     }
 }
 
-async fn run_api_server() {
+async fn run_api_server(metrics: self_host::metrics::Metrics) {
     let (api_key, listen_addr) = resolve_server_config().await;
 
     // The state comes first, and from files. The console, the configuration
@@ -1174,6 +1201,10 @@ async fn run_api_server() {
         tracing::warn!("failed to reconcile Applications: {e}");
     }
 
+    // Samples Applications and folds the proxy and DNS counters, one tick at
+    // a time (ADR-0020).
+    self_host::metrics::spawn_collector(store.clone(), docker.clone(), metrics.clone());
+
     // Log the admin dashboard URL if we know the DNS suffix.
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
         info!("admin dashboard: https://admin.{dns_suffix}");
@@ -1185,7 +1216,7 @@ async fn run_api_server() {
         }
     }
 
-    let app = build_app(store.clone(), docker.clone(), routes);
+    let app = build_app(store.clone(), docker.clone(), routes, metrics.clone());
 
     // Consumer traffic is the Platform's own listener now, so an upgrade has
     // to take the ports back from the container that used to hold them
@@ -1194,7 +1225,7 @@ async fn run_api_server() {
     remove_legacy_system_network(docker.as_ref()).await;
 
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
-        let proxy = serve_proxy(dns_suffix, app.clone(), table);
+        let proxy = serve_proxy(dns_suffix, app.clone(), table, metrics.clone());
         tokio::spawn(async move {
             if let Err(error) = proxy.await {
                 // Without this listener there is no console, no API over
@@ -1227,6 +1258,7 @@ async fn serve_proxy(
     dns_suffix: String,
     admin_router: axum::Router,
     table: self_host::proxy::RouteTable,
+    metrics: self_host::metrics::Metrics,
 ) -> anyhow::Result<()> {
     let config = self_host::proxy::ProxyConfig {
         cert_path: self_host::tls::cert_path(),
@@ -1238,7 +1270,7 @@ async fn serve_proxy(
     };
     let ports = format!("{} and {}", config.https_port, config.http_port);
 
-    self_host::proxy::serve(config, admin_router, table)
+    self_host::proxy::serve(config, admin_router, table, metrics)
         .await
         .with_context(|| format!("cannot serve Consumer traffic on {ports}. {}", bind_hint()))
 }
