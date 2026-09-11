@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   FormField,
+  LogView,
+  LogViewLine,
   Select,
   SelectContent,
   SelectItem,
@@ -43,11 +45,11 @@ export function AppLogPane({ id }: { id: string }) {
     return (
       <>
         <p className="t-caps">Logs</p>
-        <div className="logview">
-          <div className="log-scroll log-error">
+        <LogView>
+          <LogViewLine className="log-error">
             Could not load containers. Reopen the application to retry.
-          </div>
-        </div>
+          </LogViewLine>
+        </LogView>
       </>
     );
   }
