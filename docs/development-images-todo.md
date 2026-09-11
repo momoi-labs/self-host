@@ -66,8 +66,12 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [x] Show when a saved image has a newer successful build. Keep the deployed
   tag until the Operator applies the update. A failed build must leave the
   running Application usable.
-- [ ] Decide how advanced Compose editing works alongside the form. Preserve
-  custom Compose settings and make any conversion explicit.
+- [x] Decide how advanced Compose editing works alongside the form. Preserve
+  custom Compose settings and make any conversion explicit. Decided in
+  [ADR-0021](adr/0021-development-applications-convert-to-compose-once.md):
+  the generated file is read-only until an explicit one-way conversion hands
+  it to the Operator. Implementation is tracked in
+  [#100](https://github.com/momoi-labs/self-host/issues/100).
 - [x] Verify deletion stays disabled while an Application uses any tag of a
   development image, including an older build or a stopped Application.
 
@@ -96,11 +100,15 @@ into the generated images. Keep the prototype's configurable mise dependencies.
   "Search unavailable." Both registry names and explicit backend keys can now
   be entered while the catalog loads or is unavailable. A failed catalog load
   can be retried by reopening the page; a successful load remains cached.
-- [ ] Reproduce the reported "Please fill out this field" tooltip during
-  dependency selection. Browser checks added `node`, `just`, `claude-code` and
-  `npm:t3` with Enter and Tab, with both a working and failing catalog, without
-  submitting or triggering validation. Only an explicit Save and build with an
-  empty image name triggered the expected required-field validation.
+- [x] Reproduce the reported "Please fill out this field" tooltip during
+  dependency selection. Not reproduced. Browser checks added `node`, `just`,
+  `claude-code` and `npm:t3` with Enter and Tab, with both a working and
+  failing catalog, without submitting or triggering validation. Only an
+  explicit Save and build with an empty image name triggered the expected
+  required-field validation. The one path that could show that tooltip without
+  a submit was `reportValidity()` on the draft version input, which the chip
+  field removed along with the `required` attribute it checked. Recorded in
+  [#101](https://github.com/momoi-labs/self-host/issues/101).
 - [x] Add explicit build checks for installed tools and required native
   modules. The optional Build checks field saves one command per line in
   `tasks.check.run`. A nonzero exit or timeout fails the Docker build before
