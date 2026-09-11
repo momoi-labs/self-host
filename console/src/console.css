@@ -214,24 +214,6 @@
    readable measure is only longer lines in the Compose editor. */
 .form-page { max-width: 720px; }
 
-.dependency-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-sm); min-height: 64px; padding: var(--spacing-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); }
-.dependency-chips:focus-within { outline: 2px solid var(--color-primary); outline-offset: 2px; }
-.dependency-chip { display: inline-flex; align-items: stretch; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-secondary); max-width: 100%; }
-.dependency-chip button { color: inherit; background: transparent; border: 0; cursor: pointer; }
-.dependency-chip-edit { display: inline-flex; padding: 0; min-width: 0; }
-.dependency-chip-edit span { padding: var(--spacing-xs) var(--spacing-sm); overflow-wrap: anywhere; }
-.dependency-chip-edit span + span { border-inline-start: 1px solid var(--color-border); color: var(--color-primary); }
-.dependency-chip-remove { padding-inline: var(--spacing-sm); }
-.dependency-chip button:hover { background: var(--color-card); }
-.dependency-completion { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-sm); min-width: 0; max-width: 100%; }
-.dependency-search { min-width: 2ch; max-width: 100%; color: inherit; background: transparent; border: 0; outline: none; padding: var(--spacing-xs); font: inherit; }
-.dependency-suggestion { min-width: 0; }
-.dependency-inline-option { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--spacing-sm); padding: var(--spacing-xs); border: 0; background: transparent; color: var(--color-muted-foreground); cursor: pointer; text-align: start; overflow-wrap: anywhere; }
-.dependency-inline-option:hover { color: var(--color-primary); }
-.dependency-inline-option kbd { border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 0 var(--spacing-xs); font: inherit; font-size: var(--type-size-label); }
-.dependency-chip-draft { outline: 1px solid var(--color-primary); flex-wrap: wrap; align-items: center; }
-.dependency-chip-key { padding: var(--spacing-xs) var(--spacing-sm); overflow-wrap: anywhere; }
-.dependency-version-input { box-sizing: content-box; min-width: 6ch; padding: var(--spacing-xs) var(--spacing-sm); border: 0; border-inline-start: 1px solid var(--color-border); outline: none; color: var(--color-primary); background: transparent; font: inherit; }
 .dev-build-actions { flex-wrap: wrap; }
 .dev-image-list { min-width: 0; }
 .dev-image-list > .table-wrap { min-width: 0; }
