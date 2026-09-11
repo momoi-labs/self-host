@@ -34,13 +34,52 @@ SIGHUP to container processes carrying that marker, without stopping other exec
 sessions or the Application. Processes that deliberately ignore SIGHUP can
 continue running. Restarting the Platform abruptly cannot guarantee cleanup.
 
+## Access review
+
+Nothing starts before the request proves who it is and what it owns.
+
+The route sits outside the API key middleware because a browser cannot set a
+Bearer header on a WebSocket upgrade. The handler takes its place: the first
+text frame must arrive within five seconds and carry a key that matches the
+stored one in constant time. A Host with no key stored refuses every request,
+so an uninitialised Platform cannot be opened. The key is never in the URL, so
+it stays out of access logs and `Referer` headers.
+
+The upgrade does not check `Origin`, and WebSockets are not covered by the
+same-origin policy, so any page can open this socket. None can authenticate:
+the key lives in `sessionStorage` on the console's origin, which a cross-origin
+page cannot read. The exposure is one unauthenticated socket held for at most
+five seconds. Add an `Origin` check if the console ever keeps its key somewhere
+a cross-origin page can reach.
+
+After the key, the handler resolves the Application and requires the container
+to be one of its own and to be running. A container belonging to another
+Application is refused by name, before `docker exec` runs. The user is the
+Platform's to choose, not the request's: `dev` for a development image, the
+image's configured user otherwise. There is no field that asks for root.
+
+Frames are capped at 64 KiB, an input payload at 16 KiB, columns at 2 to 500
+and rows at 1 to 300. Anything else closes the socket. A ping every fifteen
+seconds and a forty-five second idle limit close abandoned ones, and dropping
+the session kills its PTY.
+
+What the review does not remove: a terminal is exactly as privileged as the
+container user, and an API key is now enough to reach a shell inside every
+Application. An Operator who can reach the console could already deploy an
+Application, so this grants no new reach on the Host, but it does change what
+handing out an API key means. Worth saying where keys are created.
+
 ## Validation
 
-User testing confirmed the terminal and its empty-state layout. Browser checks
-covered starting on click, container selection, paste, Ctrl+C, tab switching,
-closing and reopening. A real development container kept shell state, resized
-its PTY and ran as `dev`. Disconnecting ended its shell.
+User testing on the original branch confirmed the terminal and its empty-state
+layout. Browser checks covered starting on click, container selection, paste,
+Ctrl+C, tab switching, closing and reopening. A real development container kept
+shell state, resized its PTY and ran as `dev`. Disconnecting ended its shell.
 
-The console build, two console tests, 224 Rust tests, formatting, clippy and
-the all-targets check passed. WebSocket tests cover authentication, container
-ownership, stopped containers, dimensions and user selection.
+After the transplant onto current main: 239 Rust tests, 12 console tests, the
+console build, formatting, clippy and the all-targets check passed. The
+WebSocket tests cover authentication, container ownership, stopped containers,
+dimensions and user selection. Browser checks against a stand-in PTY bridge
+covered the connect frame, the ready and output frames, typing, resizing and
+closing without a spurious failure. The Docker exec path itself has not been
+re-run against a real container since the transplant.
