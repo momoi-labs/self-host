@@ -35,6 +35,90 @@
    the page's call. */
 .stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 
+/* The series colour is not --color-primary. That token is tuned for text and
+   UI contrast; as a data mark on the dark surface it measures L 0.83 with
+   chroma 0.082, which fails both the lightness band and the chroma floor for
+   a mark — it reads gray. --color-accent-600 is the nearest step on kiso's
+   own ramp that passes against the dark card. */
+.sparkline { color: light-dark(var(--color-accent-base), var(--color-accent-600)); display: block; }
+
+/* Meters (ADR-0020). CPU and memory are fractions of what the Host has, so
+   they get a track; network has no ceiling to measure against and keeps its
+   shape instead. */
+.meters { display: grid; gap: var(--spacing-md); margin: 0; }
+.meter-row { display: grid; grid-template-columns: 6rem minmax(0, 1fr) auto; align-items: center; gap: var(--spacing-md); }
+.meter-label { color: var(--color-muted-foreground); font-size: var(--type-size-label); }
+.meter-track {
+  margin: 0; height: 8px; overflow: hidden;
+  border-radius: var(--radius-xs);
+  background: var(--color-accent-surface);
+}
+.meter-fill { height: 100%; border-radius: var(--radius-xs); background: light-dark(var(--color-accent-base), var(--color-accent-600)); }
+.meter-plot { margin: 0; min-width: 0; }
+.meter-value { margin: 0; font-size: var(--type-size-label); font-variant-numeric: tabular-nums; }
+
+/* The Overview's "running of total": the total is context for the number
+   that matters, so it is sized and coloured as context. */
+.of-total { color: var(--color-muted-foreground); font-size: 0.6em; font-weight: var(--type-weight-regular); }
+
+/* The count and the load it produces, on one line. The count needs a tile's
+   width; the meters need whatever is left, which is why this is not the
+   auto-fit grid the KPI row uses. */
+.summary-row { display: grid; gap: var(--spacing-lg); grid-template-columns: minmax(180px, 15rem) minmax(0, 1fr); }
+@media (max-width: 720px) { .summary-row { grid-template-columns: minmax(0, 1fr); } }
+.host-load .t-caps { margin: 0 0 var(--spacing-md); }
+
+/* Platform traffic: two series on one axis, because both count events over
+   the same interval. The proxy carries the colour and DNS the de-emphasis
+   gray — kiso's ramp seats one step inside the dark surface's lightness
+   band, so two hues is not something this palette can do. The legend gives
+   each series its current value, so identity is never colour alone. */
+.traffic .t-caps { margin: 0 0 var(--spacing-sm); }
+.traffic .plot { display: block; margin-block-start: var(--spacing-sm); overflow: visible; }
+.traffic .plot .grid { stroke: var(--color-border); stroke-width: 1; }
+.traffic .plot polyline { fill: none; stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.series-proxy { stroke: light-dark(var(--color-accent-base), var(--color-accent-600)); }
+.series-dns { stroke: var(--color-neutral-500); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--spacing-xs) var(--spacing-lg); font-size: var(--type-size-label); }
+.legend-item { display: inline-flex; align-items: center; gap: var(--spacing-2xs); }
+.legend-item b { font-weight: var(--type-weight-medium); font-variant-numeric: tabular-nums; }
+.legend-item.danger { color: var(--color-danger); }
+.legend-dot { width: 8px; height: 8px; border-radius: var(--radius-full); }
+.legend-dot.series-proxy { background: light-dark(var(--color-accent-base), var(--color-accent-600)); }
+.legend-dot.series-dns { background: var(--color-neutral-500); }
+
+/* The glance under an Application's hostname. Numbers and their shapes on one
+   line, because the detail screen's job is configuration and logs. */
+.glance {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--spacing-2xs) var(--spacing-md);
+  margin-block-start: var(--spacing-sm);
+  font-size: var(--type-size-label);
+}
+.glance b { font-weight: var(--type-weight-regular); font-variant-numeric: tabular-nums; }
+.glance .k { color: var(--color-muted-foreground); }
+.glance .sep { color: var(--color-border-strong); }
+
+/* The per-container breakdown under the Application's meters. */
+.container-metrics { margin-block-start: var(--spacing-xl); }
+.container-metrics .t-caps { margin-block-end: var(--spacing-sm); }
+
+/* A usage cell on the Overview: the reading, and the window's shape under
+   it. The line is decoration for the number, so it never sets the row's
+   height on its own. */
+.usage { line-height: 1.2; }
+.usage-value { display: block; font-variant-numeric: tabular-nums; }
+
+/* The KPI tiles that carry a line. kiso's .stat owns the tile's padding —
+   .card itself has none — so the chart goes inside the stat and is only
+   spaced against the value here. */
+.stat .sparkline { margin-block-start: var(--spacing-sm); }
+
+/* Tabs inside the form pane. The pane already scrolls, so the tab bar stays
+   put and only the panel under it moves. */
+.pane-tabs { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--spacing-lg); min-height: 0; }
+.pane-tabs > [role="tabpanel"] { min-height: 0; }
+
 /* Split panes carry their own inset — kiso leaves .pane bare so a pane can
    also hold something full-bleed. The log pane is one element tall, so it
    fills rather than scrolls twice. */
@@ -58,13 +142,20 @@
 /* The detail is the one screen that fills the window instead of growing it.
    kiso's .app-shell asks for min-height: 100vh, which leaves every height in
    the chain content-driven — so a long log would stretch the split, the panel
-   and the page with it. A definite height here, and minmax(0, …) rather than a
-   bare 1fr (which keeps a content-based minimum), is what lets each pane
-   scroll on its own. */
+   and the page with it. A definite height here is what lets each pane scroll
+   on its own. */
 @media (min-width: 1024px) {
   .app-shell:has(.detail-panel) { height: 100vh; }
 }
-#detail:has(.detail-panel) { flex: 1; min-height: 0; grid-template-rows: auto minmax(0, 1fr); align-content: stretch; }
+/* A column, not a two-row grid: the panel takes whatever the header and the
+   blocks above it leave, and how many of those there are is the screen's
+   business — a failure, a resources strip, both, or neither. The grid this
+   replaces sized row two at minmax(0, 1fr) and squashed whichever child
+   happened to land there. min-height: 0 on the panel is the same defence the
+   template's minmax(0, …) was: without it a long log sets the floor. */
+#detail:has(.detail-panel) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#detail:has(.detail-panel) > * { flex: none; }
+#detail:has(.detail-panel) > .detail-panel { flex: 1; min-height: 0; }
 .detail-panel { display: grid; }
 .detail-panel .split { overflow: hidden; border-radius: inherit; }
 /* kiso's Splitter owns flex-basis (it writes a percentage), so the readable
@@ -158,8 +249,6 @@
    do about it, in one glance. */
 .lifecycle { display: flex; align-items: center; gap: var(--spacing-sm); }
 
-/* One row per service; the state column uses the same badge as the status. */
-.services { display: grid; gap: var(--spacing-md); margin-block-start: var(--spacing-md); }
 
 /* The storage summary under the Compose editor: one line per mount. */
 .storage-list { margin: 0; padding-inline-start: var(--spacing-lg); color: var(--color-muted-foreground); font-size: var(--type-size-label); }

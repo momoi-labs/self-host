@@ -65,3 +65,48 @@ export type ApiKey = {
   label: string;
   created_at: string;
 };
+
+/** One minute of one scope: an Application, or one of its containers
+ * (ADR-0020). */
+export type AppSample = {
+  at: number;
+  cpu_percent: number;
+  memory_bytes: number;
+  memory_limit_bytes: number;
+  rx_bytes: number;
+  tx_bytes: number;
+};
+
+/** What the Platform's own proxy and DNS did during one interval. */
+export type PlatformSample = {
+  at: number;
+  proxy_requests: number;
+  proxy_errors: number;
+  dns_queries: number;
+};
+
+export type HostTraffic = {
+  hostname: string;
+  requests: number;
+  errors: number;
+};
+
+export type ContainerSeries = {
+  container: string;
+  samples: AppSample[];
+};
+
+export type AppSeries = {
+  id: string;
+  samples: AppSample[];
+  containers: ContainerSeries[];
+};
+
+export type Metrics = {
+  interval_seconds: number;
+  host_cpus: number;
+  applications: AppSeries[];
+  platform: PlatformSample[];
+  proxy: HostTraffic[];
+  dns: { queries_total: number; by_name: { name: string; queries: number }[] };
+};

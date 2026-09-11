@@ -16,26 +16,36 @@ import {
   PageHeaderTitle,
   Split,
   Splitter,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
 } from "@momoi-labs/kiso-react";
 
 import { AppForm, type Submission } from "../components/AppForm.js";
+import { ContainerResources } from "../components/ContainerResources.js";
 import { AppLogPane } from "../components/LogPane.js";
 import { Failure } from "../components/Failure.js";
 import { HttpStatus } from "../components/HttpStatus.js";
+import { Sparkline } from "../components/Sparkline.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
+import { formatBytes } from "../lib/format.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
-import type { App, Report } from "../lib/types.js";
+import type { App, AppSample, Metrics, Report } from "../lib/types.js";
+import { appTotals, containersFor, seriesFor } from "../lib/useMetrics.js";
 
 export function AppDetail({
   app,
   dnsSuffix,
+  metrics,
   reload,
   onRemoved,
 }: {
   app: App;
   dnsSuffix: string;
+  metrics: Metrics | null;
   reload: () => Promise<App[]>;
   onRemoved: () => void;
 }) {
@@ -43,6 +53,9 @@ export function AppDetail({
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const removalInFlight = useRef(false);
+  const samples = seriesFor(metrics, app.id);
+  const containers = containersFor(metrics, app.id);
+  const totals = appTotals(metrics, app.id);
 
   const canStop = app.status === "running" || app.status === "failed";
   const canStart = app.status === "stopped" || app.status === "failed";
@@ -148,6 +161,7 @@ export function AppDetail({
               </span>
             ))}
           </PageHeaderDescription>
+          {samples ? <Glance samples={samples} /> : null}
         </PageHeader>
         <div className="lifecycle">
           <StatusBadge tone={statusTone(app.status)}>{app.status}</StatusBadge>
@@ -181,17 +195,34 @@ export function AppDetail({
       <Card className="detail-panel">
         <Split>
           <Pane>
-            <AppForm
-              app={app}
-              dnsSuffix={dnsSuffix}
-              onSubmit={save}
-              removing={removing}
-              onRemove={() => {
-                if (!removing && !removalInFlight.current) {
-                  setConfirming(true);
-                }
-              }}
-            />
+            <Tabs defaultValue="configuration" className="pane-tabs">
+              <TabsList className="tabs">
+                <TabsTrigger value="configuration">Configuration</TabsTrigger>
+                <TabsTrigger value="resources">Resources</TabsTrigger>
+              </TabsList>
+              <TabsContent value="configuration">
+                <AppForm
+                  app={app}
+                  dnsSuffix={dnsSuffix}
+                  onSubmit={save}
+                  removing={removing}
+                  onRemove={() => {
+                    if (!removing && !removalInFlight.current) {
+                      setConfirming(true);
+                    }
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="resources">
+                <ContainerResources
+                  samples={samples}
+                  services={app.services ?? []}
+                  containers={containers}
+                  totals={totals}
+                  intervalSeconds={metrics?.interval_seconds ?? 10}
+                />
+              </TabsContent>
+            </Tabs>
           </Pane>
           <Splitter defaultSize={42} min={25} max={70} aria-label="Resize the form and the logs" />
           <Pane className="pane-logs">
@@ -224,5 +255,36 @@ export function AppDetail({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+/**
+ * One line of numbers under the hostname: the glance. The detail screen is
+ * for configuration and logs, so the history lives in the Resources tab
+ * rather than in a card that pushes the panel down (ADR-0020).
+ */
+function Glance({ samples }: { samples: AppSample[] }) {
+  const latest = samples[samples.length - 1];
+  const values = samples.map((sample) => sample.cpu_percent);
+  const memory = samples.map((sample) => sample.memory_bytes);
+  return (
+    <div className="glance">
+      <span>
+        <span className="k">CPU</span> <b>{latest.cpu_percent.toFixed(2)}%</b>
+      </span>
+      <Sparkline values={values} width={44} height={14} label="CPU over the collected window" />
+      <span className="sep">·</span>
+      <span>
+        <span className="k">Memory</span> <b>{formatBytes(latest.memory_bytes)}</b>
+      </span>
+      <Sparkline values={memory} width={44} height={14} label="Memory over the collected window" />
+      <span className="sep">·</span>
+      <span>
+        <span className="k">Net</span>{" "}
+        <b>
+          ↓ {formatBytes(latest.rx_bytes)} · ↑ {formatBytes(latest.tx_bytes)}
+        </b>
+      </span>
+    </div>
   );
 }

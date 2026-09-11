@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { Shell } from "./components/Shell.js";
+import { useMetrics } from "./lib/useMetrics.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
 import { AppDetail } from "./views/AppDetail.js";
@@ -10,6 +11,7 @@ import { DevImages } from "./views/DevImages.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
+  const metrics = useMetrics();
   const [view, go] = useView();
   const [query, setQuery] = useState("");
 
@@ -82,6 +84,7 @@ export function App() {
             key={`${app.id}|${signature(app)}`}
             app={app}
             dnsSuffix={dnsSuffix}
+            metrics={metrics}
             reload={reload}
             onRemoved={() => go({ view: "overview", id: null })}
           />
@@ -89,6 +92,7 @@ export function App() {
           <Overview
             apps={apps}
             dnsSuffix={dnsSuffix}
+            metrics={metrics}
             query={query}
             onQuery={setQuery}
             onOpenApp={(id) => go({ view: "app", id })}
