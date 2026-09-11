@@ -35,12 +35,12 @@
    the page's call. */
 .stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 
-/* The series colour is not --color-primary. That token is tuned for text and
-   UI contrast; as a data mark on the dark surface it measures L 0.83 with
-   chroma 0.082, which fails both the lightness band and the chroma floor for
-   a mark — it reads gray. --color-accent-600 is the nearest step on kiso's
-   own ramp that passes against the dark card. */
-.sparkline { color: light-dark(var(--color-accent-base), var(--color-accent-600)); display: block; }
+/* The series colour is neither of kiso's tones. --color-primary is tuned for
+   text and UI contrast; as a data mark on the dark surface it measures L 0.83
+   with chroma 0.082, which fails both the lightness band and the chroma floor
+   for a mark — it reads gray. --color-accent-600 is the nearest step on
+   kiso's own ramp that passes against the dark card. */
+.sparkline { color: light-dark(var(--color-accent-base), var(--color-accent-600)); }
 
 /* Meters (ADR-0020). CPU and memory are fractions of what the Host has, so
    they get a track; network has no ceiling to measure against and keeps its
@@ -95,6 +95,9 @@
   margin-block-start: var(--spacing-sm);
   font-size: var(--type-size-label);
 }
+/* The glance is a line of text, so its lines take a fixed slot in it rather
+   than the row's remaining width. */
+.glance .sparkline { flex: none; width: 44px; }
 .glance b { font-weight: var(--type-weight-regular); font-variant-numeric: tabular-nums; }
 .glance .k { color: var(--color-muted-foreground); }
 .glance .sep { color: var(--color-border-strong); }
@@ -107,6 +110,9 @@
    it. The line is decoration for the number, so it never sets the row's
    height on its own. */
 .usage { line-height: 1.2; }
+/* A trend cell holds nothing but the line, so the column has no text to size
+   it and the line would collapse with it. */
+.trend { min-width: 5rem; }
 .usage-value { display: block; font-variant-numeric: tabular-nums; }
 
 /* The KPI tiles that carry a line. kiso's .stat owns the tile's padding —
