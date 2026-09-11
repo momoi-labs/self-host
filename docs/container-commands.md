@@ -81,5 +81,9 @@ console build, formatting, clippy and the all-targets check passed. The
 WebSocket tests cover authentication, container ownership, stopped containers,
 dimensions and user selection. Browser checks against a stand-in PTY bridge
 covered the connect frame, the ready and output frames, typing, resizing and
-closing without a spurious failure. The Docker exec path itself has not been
-re-run against a real container since the transplant.
+closing without a spurious failure.
+
+The Docker exec path was then re-run against a real development container on
+the transplanted branch. `whoami` answered `dev`, `export` and `echo` kept
+shell state across commands, and `/etc/os-release` read Debian 13 from inside
+the Application rather than from the Host.
