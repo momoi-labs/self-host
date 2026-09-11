@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
-  Button, Card, FormField, Pane, Split, Splitter,
+  Button, Card, FormField, Label, Pane, Split, Splitter,
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
+  Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
+  ChipName, ChipOption, ChipOptionAdd, ChipRemove, ChipScope, ChipValue,
   EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   LogView, LogViewLine, Search,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  ValidationMessage,
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "../components/Failure.js";
@@ -16,6 +19,9 @@ import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import type { Report } from "../lib/types.js";
 import { devImageTemplate, devImageTemplates, type ImageDependency } from "../lib/devImageTemplates.js";
+import {
+  ALLOW_BUILDS, isKey, isVersion, miseToml, readOption, splitKey, suggest, takesAllowBuilds,
+} from "../lib/dependencies.js";
 
 type Dependency = ImageDependency;
 type DevImage = {
@@ -54,6 +60,12 @@ function loadToolCatalog(): Promise<MiseTool[]> {
   return toolCatalog;
 }
 
+/**
+ * Every dependency as one chip in one field: what installs it, what it is,
+ * which version, and the options mise reads on it. The component owns the
+ * box, the suggestions and the keyboard; what a mise key looks like and which
+ * options a tool accepts stay here.
+ */
 function Dependencies({ value, onChange, disabled }: {
   value: Dependency[];
   onChange: (value: Dependency[]) => void;
@@ -64,23 +76,15 @@ function Dependencies({ value, onChange, disabled }: {
   const [searchFailed, setSearchFailed] = useState(false);
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
-  const [active, setActive] = useState(0);
-  const [chosen, setChosen] = useState<string | null>(null);
-  const [version, setVersion] = useState("latest");
-  const search = useRef<HTMLInputElement>(null);
-  const versionInput = useRef<HTMLInputElement>(null);
-  const returnToSearch = useRef(false);
-  const term = query.toLowerCase().trim();
-  const matches = [...new Set(tools.flatMap((tool) => [tool.name, ...tool.backends.filter((key) => key.includes(":"))]))]
-    .filter((tool) => tool.toLowerCase().includes(term) && !value.some((dep) => dep.tool === tool))
-    .sort((a, b) => {
-      const rank = (key: string) => key.toLowerCase() === term ? 0 : key.toLowerCase().startsWith(term) ? 1 : 2;
-      return rank(a) - rank(b) || a.localeCompare(b);
-    }).slice(0, 20);
-  // A valid mise key can be entered even when the remote catalog is unavailable.
-  const direct = /^[a-zA-Z0-9][a-zA-Z0-9._:/@-]{0,159}$/.test(query.trim()) ? query.trim() : null;
-  if (direct && (direct.includes(":") || !matches.length) && !matches.includes(direct) && !value.some((dep) => dep.tool === direct)) matches.unshift(direct);
-  const suggestion = focused && term ? matches[active % Math.max(matches.length, 1)] : undefined;
+  const typed = query.trim();
+  const matches = suggest(tools, query, value.map((dep) => dep.tool));
+  // The catalog is a thousand tools; marking the typed entry must not rebuild
+  // that set on every keystroke.
+  const known = useMemo(
+    () => new Set(tools.flatMap((tool) => [tool.name, ...tool.backends])),
+    [tools],
+  );
+  const unversioned = value.filter((dep) => !isVersion(dep.version));
 
   useEffect(() => {
     let active = true;
@@ -92,112 +96,122 @@ function Dependencies({ value, onChange, disabled }: {
     return () => { active = false; };
   }, []);
 
-  useEffect(() => {
-    if (chosen) {
-      versionInput.current?.focus();
-      versionInput.current?.select();
-    } else if (returnToSearch.current) {
-      returnToSearch.current = false;
-      search.current?.focus();
-    }
-  }, [chosen]);
-
-  function choose(tool: string, selectedVersion = "latest") {
-    setChosen(tool);
-    setVersion(selectedVersion);
-  }
-
-  function finish() {
-    returnToSearch.current = true;
-    setChosen(null);
+  // A new dependency starts at latest because that is what most recipes want,
+  // and the version is one press away in the chip itself.
+  function add(tool: string) {
     setQuery("");
-    setActive(0);
+    if (value.some((dep) => dep.tool === tool)) return;
+    onChange([...value, { tool, version: "latest" }]);
   }
 
-  function add() {
-    if (!chosen || !version.trim() || !versionInput.current?.reportValidity()) return;
-    const dependency = { tool: chosen, version: version.trim() };
-    onChange(value.some((dep) => dep.tool === chosen)
-      ? value.map((dep) => dep.tool === chosen ? { ...dep, ...dependency } : dep)
-      : [...value, dependency]);
-    finish();
+  function update(tool: string, change: Partial<Dependency>) {
+    onChange(value.map((dep) => dep.tool === tool ? { ...dep, ...change } : dep));
   }
 
-  function editor(tool: string) {
-    return (
-      <span className="dependency-chip dependency-chip-draft" key={tool}>
-        <label className="dependency-chip-key mono" htmlFor="dependency-version">{tool}</label>
-        <input ref={versionInput} id="dependency-version" aria-label={`${tool} version`}
-          className="dependency-version-input mono" value={version} maxLength={64} required disabled={disabled}
-          style={{ width: `${Math.max(6, Math.min(version.length + 1, 18))}ch` }}
-          pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]*" onChange={(event) => setVersion(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); add(); }
-            if (event.key === "Escape") { event.preventDefault(); finish(); }
-          }}
-        />
-        <button type="button" className="dependency-chip-remove" disabled={disabled} aria-label={`Confirm ${tool}`} onClick={add}>✓</button>
-        <button type="button" className="dependency-chip-remove" disabled={disabled} aria-label={`Cancel ${tool} edit`} onClick={finish}>×</button>
-      </span>
-    );
+  // allow_builds is the only option mise reads here, so an entry naming
+  // anything else is left alone rather than written into the recipe.
+  function setOption(tool: string, text: string) {
+    const option = readOption(text);
+    if (!option || option.name !== ALLOW_BUILDS) return;
+    update(tool, { allow_builds: option.values.length ? option.values : undefined });
   }
 
   return (
-    <div className="stack">
-      <div>
-        <label className="t-label" htmlFor="dependency-search">Dependencies</label>
-        <p className="muted t-label" id="dependency-help">Type a mise key or search. Tab or Enter selects a tool and confirms its version. Arrow keys cycle suggestions.</p>
-      </div>
-      <div className="dependency-chips" onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
-      }}>
-        {value.map((dep) => chosen === dep.tool ? editor(dep.tool) : (
-          <span className="dependency-chip" key={dep.tool}>
-            <button type="button" className="dependency-chip-edit mono" disabled={disabled}
-              aria-label={`Edit ${dep.tool} version`} onClick={() => choose(dep.tool, dep.version)}>
-              <span>{dep.tool}</span><span>{dep.version}</span>
-            </button>
-            <button type="button" className="dependency-chip-remove" disabled={disabled}
-              aria-label={`Remove ${dep.tool}`} onClick={() => onChange(value.filter((item) => item.tool !== dep.tool))}>×</button>
-          </span>
-        ))}
-        {chosen && !value.some((dep) => dep.tool === chosen) ? editor(chosen) : null}
-        {!chosen ? (
-          <span className="dependency-completion">
-            <input ref={search} id="dependency-search" className="dependency-search mono"
-              aria-autocomplete="inline" aria-describedby="dependency-help dependency-suggestion"
-              style={{ width: `${Math.max(query ? 2 : 20, Math.min(query.length + 1, 40))}ch` }}
-              placeholder="node, claude, npm:t3..." autoComplete="off"
-              disabled={disabled} value={query}
-              onFocus={() => setFocused(true)}
-              onChange={(event) => { setQuery(event.target.value); setActive(0); setFocused(true); }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") { event.preventDefault(); setQuery(""); }
-                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setActive((index) => (index + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % Math.max(matches.length, 1));
-                }
-                if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey && suggestion)) {
-                  event.preventDefault();
-                  if (suggestion) choose(suggestion);
-                }
-              }}
-            />
-            <span id="dependency-suggestion" className="dependency-suggestion" aria-live="polite">
-              {suggestion ? (
-                <button type="button" className="dependency-inline-option mono" disabled={disabled}
-                  aria-label={`Select ${suggestion}`} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(suggestion)}>
-                  <span>{suggestion}</span><kbd>Tab</kbd>
-                  {matches.length > 1 ? <small>{active % matches.length + 1}/{matches.length}</small> : null}
-                </button>
-              ) : focused && term ? <span className="muted t-label">{loading ? "Searching mise..." : searchFailed ? "Catalog unavailable. Enter a mise key, e.g. just or npm:t3." : "No match. Try a backend key, e.g. npm:t3."}</span> : null}
-              {focused && term && suggestion && (loading || searchFailed) ? (
-                <small className="muted">{loading ? "Loading suggestions..." : "Catalog unavailable. Using the entered mise key."}</small>
-              ) : null}
-            </span>
-          </span>
+    <div className="field">
+      <Label htmlFor="dependency-search">Dependencies</Label>
+      <ChipInput>
+        <ChipInputBox
+          disabled={disabled}
+          onFocus={() => setFocused(true)}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
+          }}
+        >
+          {value.map((dep) => {
+            const { scope, name } = splitKey(dep.tool);
+            return (
+              <Chip key={dep.tool} invalid={!isVersion(dep.version)}>
+                {scope ? <ChipScope>{scope}</ChipScope> : null}
+                <ChipName>{name}</ChipName>
+                <ChipValue
+                  value={dep.version}
+                  editable={!disabled}
+                  editLabel={`Edit ${dep.tool} version, currently ${dep.version}`}
+                  confirmLabel={`Confirm ${dep.tool} version`}
+                  onCommit={(version) => update(dep.tool, { version })}
+                />
+                {dep.allow_builds?.length ? (
+                  <ChipOption
+                    name={ALLOW_BUILDS}
+                    value={dep.allow_builds}
+                    label={dep.tool}
+                    editable={!disabled}
+                    onCommit={(text) => setOption(dep.tool, text)}
+                  />
+                ) : takesAllowBuilds(dep.tool) && !disabled ? (
+                  <ChipOptionAdd label={dep.tool} onCommit={(text) => setOption(dep.tool, text)} />
+                ) : null}
+                <ChipRemove
+                  aria-label={`Remove ${dep.tool}`}
+                  disabled={disabled}
+                  onClick={() => onChange(value.filter((item) => item.tool !== dep.tool))}
+                />
+              </Chip>
+            );
+          })}
+          <ChipInputField
+            id="dependency-search"
+            aria-describedby="dependency-help"
+            placeholder="node, claude, npm:t3..."
+            disabled={disabled}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onRemoveLast={() => onChange(value.slice(0, -1))}
+            onKeyDown={(event) => {
+              // ChipInput has already taken the key when a suggestion was
+              // highlighted, and taking it twice would add the tool twice.
+              if (event.defaultPrevented) return;
+              if (event.key === "Enter") {
+                // This field collects values; the recipe is saved by its own
+                // button. Enter here never reaches the form.
+                event.preventDefault();
+                if (isKey(typed)) add(typed);
+              }
+              if (event.key === "Escape") { event.preventDefault(); setQuery(""); }
+            }}
+          />
+        </ChipInputBox>
+        {focused && typed ? (
+          <ChipInputList aria-label="Tool suggestions">
+            {matches.map((tool) => (
+              <ChipInputOption key={tool} onSelect={() => add(tool)}>
+                <span className="mono">{tool}</span>
+                {known.has(tool) ? null : <span className="muted">as typed</span>}
+              </ChipInputOption>
+            ))}
+            {matches.length ? null : (
+              <ChipInputEmpty>
+                {loading
+                  ? "Searching mise..."
+                  : searchFailed
+                    ? "Catalog unavailable. Type a mise key, such as just or npm:t3."
+                    : "No match. Try a backend key, such as npm:t3."}
+              </ChipInputEmpty>
+            )}
+          </ChipInputList>
         ) : null}
-      </div>
+      </ChipInput>
+      <small className="field-hint" id="dependency-help">
+        Type a mise key or search for one. Enter and Tab take a suggestion, Backspace removes the
+        last chip. Press a version to change it. npm tools take{" "}
+        <code>allow_builds=name, name</code> on their <code>+</code>.
+      </small>
+      {unversioned.length ? (
+        <ValidationMessage>
+          A version is letters, digits, dots and dashes:{" "}
+          {unversioned.map((dep) => dep.tool).join(", ")}.
+        </ValidationMessage>
+      ) : null}
     </div>
   );
 }
@@ -225,8 +239,8 @@ export function DevImages({ listing, selected, onOpen }: {
   const current = images.find((image) => image.id === selected);
   const editingDisabled = submitting || current?.status === "building";
   const checks = buildChecks.split("\n").map((command) => command.trim()).filter(Boolean);
-  const mise = `[tools]\n${dependencies.map(({ tool, version, allow_builds }) => `${JSON.stringify(tool)} = ${allow_builds?.length ? `{ version = ${JSON.stringify(version)}, allow_builds = ${JSON.stringify(allow_builds)} }` : JSON.stringify(version)}`).join("\n")}\n`
-    + (checks.length ? `\n[tasks.check]\nrun = ${JSON.stringify(checks)}\n` : "");
+  const mise = miseToml(dependencies, checks);
+  const ready = dependencies.length > 0 && dependencies.every((dep) => isVersion(dep.version));
 
   useEffect(() => {
     setName(current?.name ?? "");
@@ -431,15 +445,6 @@ export function DevImages({ listing, selected, onOpen }: {
                 required maxLength={128} disabled={editingDisabled}
               />
               <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
-              {dependencies.filter((dep) => dep.tool.startsWith("npm:")).map((dep, index) => (
-                <FormField key={`${editorKey}-${dep.tool}`} id={`allow-builds-${index}`} label={`${dep.tool} allow_builds`}
-                  defaultValue={(dep.allow_builds ?? []).join(", ")} disabled={editingDisabled}
-                  hint="Package names whose install scripts may run, comma separated. Leave empty to use mise defaults."
-                  onChange={(event) => {
-                    const allow_builds = event.target.value.split(",").map((name) => name.trim()).filter(Boolean);
-                    setDependencies((current) => current.map((item) => item.tool === dep.tool ? { ...item, allow_builds } : item));
-                  }} />
-              ))}
               <FormField id="build-checks" label="Build checks (optional)"
                 hint="One command per line, saved as tasks.check.run. Runs as dev without network access, with a 60-second limit per command. Any failure stops the build.">
                 <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
@@ -454,7 +459,7 @@ export function DevImages({ listing, selected, onOpen }: {
               {current?.last_error ? <Failure failure={current.last_error} /> : null}
               <p className="muted t-label">{building ? "A build is running on this Host." : "Debian 13 with mise and Git. Save and build to apply your changes."}</p>
               <div className="form-actions">
-                <Button type="submit" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !dependencies.length || (!!selected && !current)}>
+                <Button type="submit" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
                   {submitting ? "Saving..." : current?.status === "building" ? "Building..." : "Save and build"}
                 </Button>
               </div>
