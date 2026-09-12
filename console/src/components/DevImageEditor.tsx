@@ -196,6 +196,10 @@ function Dependencies({ value, onChange, disabled }: {
         ) : null}
       </ChipInput>
       <small className="field-hint" id="dependency-help">
+        The packages mise installs into the image, one chip per tool with the version to install.
+        They end up on the <code>PATH</code> inside the container, so they are what it can run.
+        Anything mise has no package for goes in Setup below.
+        <br />
         Type a mise key or search for one. Enter and Tab take a suggestion, Backspace removes the
         last chip. Press a version to change it. npm tools take{" "}
         <code>allow_builds=name, name</code> on their <code>+</code>.
@@ -377,7 +381,6 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
                     </FormField>
                   ) : null}
                   <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
-                    hint="Debian 13 with mise and Git. The name becomes the local tag."
                     value={name} onChange={(event) => setName(event.target.value)}
                     required maxLength={128} disabled={editingDisabled}
                   />
@@ -386,7 +389,7 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
                   <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
                 </Step>
                 <Step title="Setup">
-                  <FormField id="dev-image-setup" label="Setup commands (optional)"
+                  <FormField id="dev-image-setup" label="Setup commands"
                     hint="One command per line, each its own build step. Runs as root, with network, after the dependencies. This is where a shell installer or an apt package goes.">
                     <ShellEditor id="dev-image-setup" value={setup} onChange={setSetup}
                       disabled={editingDisabled} maxLength={65536}
@@ -394,7 +397,7 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
                   </FormField>
                 </Step>
                 <Step title="Build checks">
-                  <FormField id="build-checks" label="Build checks (optional)"
+                  <FormField id="build-checks" label="Build checks"
                     hint="One command per line, saved as tasks.check.run. Runs as dev without network access, after the setup, with a 60-second limit per command. Any failure stops the build.">
                     <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
                       disabled={editingDisabled} maxLength={65536}
