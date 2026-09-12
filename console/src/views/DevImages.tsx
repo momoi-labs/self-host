@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
-  Button, Card, FormField, Label,
+  Badge, Button, Card, FormField, Label,
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
   Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
@@ -19,6 +19,7 @@ import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import type { Report } from "../lib/types.js";
 import { devImageTemplate, devImageTemplates, type ImageDependency } from "../lib/devImageTemplates.js";
+import { recipeBody } from "../lib/devImageRecipe.js";
 import {
   ALLOW_BUILDS, isKey, isVersion, readOption, splitKey, suggest, takesAllowBuilds,
 } from "../lib/dependencies.js";
@@ -31,6 +32,7 @@ type DevImage = {
   dependencies: Dependency[];
   setup?: string[];
   build_checks?: string[];
+  dockerfile?: string | null;
   image: string;
   status: "building" | "ready" | "failed";
   last_error: Report | null;
@@ -42,11 +44,6 @@ type MiseTool = { name: string; description?: string; backends: string[] };
 
 /** How much of the card the build log takes: none, the lower half, or all. */
 type Dock = "closed" | "half" | "full";
-
-/** A shell editor holds one command per line; blank lines are not commands. */
-function commands(text: string): string[] {
-  return text.split("\n").map((command) => command.trim()).filter(Boolean);
-}
 
 function statusTone(image: DevImage) {
   return image.status === "ready" ? "success" : image.status === "failed" ? "danger" : "neutral";
@@ -258,6 +255,10 @@ export function DevImages({ listing, selected, onOpen }: {
   const [dependencies, setDependencies] = useState<Dependency[]>([]);
   const [setup, setSetup] = useState("");
   const [buildChecks, setBuildChecks] = useState("");
+  // A string is the file the Operator took over; null leaves it to the Host.
+  const [dockerfile, setDockerfile] = useState<string | null>(null);
+  const [takingOver, setTakingOver] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [dock, setDock] = useState<Dock>("closed");
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<Report | null>(null);
@@ -270,8 +271,9 @@ export function DevImages({ listing, selected, onOpen }: {
   const building = images.some((image) => image.status === "building");
   const current = images.find((image) => image.id === selected);
   const editingDisabled = submitting || current?.status === "building";
-  const checks = commands(buildChecks);
-  const ready = dependencies.length > 0 && dependencies.every((dep) => isVersion(dep.version));
+  const manual = dockerfile !== null;
+  const buildable = dependencies.length > 0 && dependencies.every((dep) => isVersion(dep.version));
+  const ready = manual ? !!dockerfile.trim() : buildable;
   const lastLine = current?.log.trimEnd().split("\n").at(-1) ?? "No build yet.";
 
   useEffect(() => {
@@ -280,6 +282,8 @@ export function DevImages({ listing, selected, onOpen }: {
     setDependencies(current?.dependencies ?? []);
     setSetup((current?.setup ?? []).join("\n"));
     setBuildChecks((current?.build_checks ?? []).join("\n"));
+    setDockerfile(current?.dockerfile ?? null);
+    setDiscarding(false);
     setFailure(null);
     setEditorKey((value) => value + 1);
     // Load the recipe when opening it; log polls must not overwrite edits.
@@ -326,6 +330,31 @@ export function DevImages({ listing, selected, onOpen }: {
     return () => { active = false; controller.abort(); clearTimeout(timer); };
   }, [refresh]);
 
+  function fields() {
+    return recipeBody({ name, templateId, dependencies, setup, buildChecks, dockerfile });
+  }
+
+  /**
+   * The Host renders the file, so the console never carries a copy of the
+   * template. A failure leaves the builder exactly as it was.
+   */
+  async function takeOver() {
+    setTakingOver(true);
+    setFailure(null);
+    try {
+      const response = await api("/dev-images/dockerfile", {
+        method: "POST",
+        body: JSON.stringify(recipeBody({ name, templateId, dependencies, setup, buildChecks, dockerfile: null })),
+      });
+      if (!response.ok) throw await failureOf(response);
+      setDockerfile(await response.text());
+    } catch (cause) {
+      setFailure(asReport(cause));
+    } finally {
+      setTakingOver(false);
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -333,10 +362,7 @@ export function DevImages({ listing, selected, onOpen }: {
     try {
       const response = await api("/dev-images", {
         method: "POST",
-        body: JSON.stringify({
-          id: selected, name: name.trim(), template_id: templateId || null,
-          dependencies, setup: commands(setup), build_checks: checks,
-        }),
+        body: JSON.stringify({ id: selected, ...fields() }),
       });
       if (!response.ok) throw await failureOf(response);
       const image = await response.json() as DevImage;
@@ -420,7 +446,10 @@ export function DevImages({ listing, selected, onOpen }: {
                         onOpen(image.id);
                       }}>
                       <TableCell>{image.name}</TableCell>
-                      <TableCell className="mono">{image.dependencies.map((dep) => `${dep.tool}@${dep.version}`).join(", ")}</TableCell>
+                      <TableCell className="mono">
+                        {image.dockerfile ? <span className="muted">Custom Dockerfile</span>
+                          : image.dependencies.map((dep) => `${dep.tool}@${dep.version}`).join(", ")}
+                      </TableCell>
                       <TableCell className="mono">{image.image}</TableCell>
                       <TableCell><StatusBadge tone={statusTone(image)}>{statusLabel(image)}</StatusBadge></TableCell>
                       <TableCell onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
@@ -465,9 +494,42 @@ export function DevImages({ listing, selected, onOpen }: {
       <Card className="dev-images-panel" data-dock={dock}>
         <form className="dev-image-form" onSubmit={submit}>
           <div className="row">
-            <p className="t-caps grow">Configuration</p>
+            <p className="t-caps grow">{manual ? "Dockerfile" : "Configuration"}</p>
+            {manual ? <Badge variant="warning">Edited by hand</Badge> : null}
             {current ? <StatusBadge tone={statusTone(current)}>{statusLabel(current)}</StatusBadge> : null}
           </div>
+          {manual ? (
+            <>
+              <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
+                value={name} onChange={(event) => setName(event.target.value)}
+                required maxLength={128} disabled={editingDisabled}
+              />
+              <FormField id="dev-image-dockerfile" label="Dockerfile"
+                hint="The Host builds this file as is. Keep the dev user and the entrypoint, or the container will not start. Build checks only run if you keep their RUN --network=none step.">
+                <ShellEditor id="dev-image-dockerfile" value={dockerfile} onChange={setDockerfile}
+                  disabled={editingDisabled} maxLength={65536} />
+              </FormField>
+              <div className="dev-image-takeover">
+                {discarding ? (
+                  <>
+                    <p className="grow t-label">Discard this file and go back to the builder? It is written again from the fields, which still hold what they held before.</p>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setDiscarding(false)}>Keep editing</Button>
+                    <Button type="button" size="sm" className="btn-danger"
+                      onClick={() => { setDiscarding(false); setDockerfile(null); }}>Discard edits</Button>
+                  </>
+                ) : (
+                  <>
+                    <p className="grow muted t-label">
+                      {dockerfile.split("\n").length} lines. Going back to the builder discards them.
+                    </p>
+                    <Button type="button" size="sm" variant="ghost" disabled={editingDisabled}
+                      onClick={() => setDiscarding(true)}>Back to builder</Button>
+                  </>
+                )}
+              </div>
+            </>
+          ) : (
+          <>
           <ol className="dev-image-steps">
             <Step title="Image">
               {!selected ? (
@@ -506,6 +568,18 @@ export function DevImages({ listing, selected, onOpen }: {
               </FormField>
             </Step>
           </ol>
+          <div className="dev-image-takeover">
+            <div className="grow">
+              <p className="t-label">Need more than these fields?</p>
+              <p className="muted t-label">Open the generated Dockerfile and edit it directly. The builder switches off for this image, and the Host builds exactly what you write.</p>
+            </div>
+            <Button type="button" size="sm" disabled={editingDisabled || takingOver || !buildable}
+              onClick={() => void takeOver()}>
+              {takingOver ? "Opening..." : "Edit Dockerfile"}
+            </Button>
+          </div>
+          </>
+          )}
           {failure ? <Failure failure={failure} /> : null}
           {current?.last_error ? <Failure failure={current.last_error} /> : null}
           {building ? <p className="muted t-label">A build is running on this Host.</p> : null}
