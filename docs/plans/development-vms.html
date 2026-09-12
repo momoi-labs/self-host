@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Development environments implementation plan</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f7f7f4; --card:#fff; --text:#232a32; --muted:#536171; --line:#d9dfe4; --accent:#215fa5; }
+    @media(prefers-color-scheme:dark) { :root { --bg:#161a20; --card:#20262e; --text:#e9edf2; --muted:#b1bdcb; --line:#414b59; --accent:#92c3ff; } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:17px/1.55 system-ui,sans-serif; }
+    main { max-width:1000px; margin:auto; padding:40px 24px 72px; } h1 { font-size:34px; line-height:1.2; margin:8px 0 16px; } h2 { font-size:25px; margin:0 0 14px; } h3 { font-size:18px; margin:22px 0 8px; }
+    p { margin:10px 0; } a { color:var(--accent); } .meta { color:var(--muted); font-size:14px; } .lead { max-width:760px; font-size:20px; } nav { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:28px 0; } nav a { padding:14px; background:var(--card); border:1px solid var(--line); border-radius:8px; text-decoration:none; }
+    section { scroll-margin-top:20px; padding:26px; margin:20px 0; background:var(--card); border:1px solid var(--line); border-radius:10px; } ul,ol { padding-left:22px; } li { margin:8px 0; } .gate { border-left:4px solid var(--accent); padding:10px 16px; margin-top:20px; } code { font-size:.9em; overflow-wrap:anywhere; } table { width:100%; border-collapse:collapse; font-size:16px; } th,td { text-align:left; vertical-align:top; padding:12px 8px; border-bottom:1px solid var(--line); } .table { overflow:auto; }
+    @media(max-width:650px) { nav { grid-template-columns:1fr 1fr; } section { padding:20px; } h1 { font-size:28px; } }
+    @media print { :root { --bg:white; --card:white; --text:black; --muted:#444; --line:#ccc; --accent:#17477e; } main { padding:0; } nav { display:none; } section { break-inside:avoid; } }
+  </style>
+</head>
+<body><main>
+  <p class="meta">Implementation plan · September 11, 2026 · Updated after Incus validation</p>
+  <h1>Development environments</h1>
+  <p class="lead">Create an Ubuntu system container from the console, install the selected tools with mise, and run T3 and agents as native processes. Keep SSH access available when the Platform is stopped.</p>
+  <nav aria-label="Implementation stages"><a href="#console">1. Console prototype</a><a href="#create">2. Create environments</a><a href="#bootstrap">3. Bootstrap</a><a href="#maintenance">4. Maintenance</a></nav>
+
+  <section>
+    <h2>Starting decisions</h2>
+    <ul>
+      <li>Use one Ubuntu LTS base image, with the resolved Incus image fingerprint recorded. Install tools after boot. No custom disk-image builder or OS catalog in this iteration.</li>
+      <li>Use Incus system containers. Colima hosts Incus on macOS; Linux can run Incus directly. The Operator accepted the shared Linux kernel boundary. See <a href="../research/incus-development-environments.md">the feasibility tests</a> and <a href="../adr/0022-development-environments-use-incus.md">ADR-0022</a>.</li>
+      <li>Reuse development recipe fields and tool selection. An environment is a separate managed resource, with its own lifecycle. It does not become a Compose Application.</li>
+      <li>Keep the existing development images usable. Copy their recipe settings into an environment configuration; do not migrate containers, credentials or volumes automatically.</li>
+      <li>UI term: <strong>Development environments</strong>. Each environment owns one system container and one saved recipe. The term is recorded in the domain glossary.</li>
+    </ul>
+    <p>The Colima experiment proved DNS, HTTPS and SSH recovery for a Linux test Host. It did not test native T3 provisioning or a instance without Docker. Those remain acceptance checks below.</p>
+  </section>
+
+  <section id="console">
+    <p class="meta">Stage 1 · Simulated state only</p>
+    <h2>Prototype the console</h2>
+    <p>Build a temporary route inside the existing React console, using its components and styles. Start with the form and lifecycle interactions before connecting a backend.</p>
+    <ul>
+      <li>List environments with name, instance state, T3 readiness and current operation. Show an empty state and a clear Create action.</li>
+      <li>Creation form: name, CPU, memory, disk, Ubuntu version shown read-only, public SSH key, tools and versions, verification commands, and T3 service command and port. Use the existing T3 template with guest paths adapted.</li>
+      <li>Detail view: configuration, installed versions, operation progress, logs, Open T3 and copyable SSH/tunnel instructions.</li>
+      <li>Simulate creation, bootstrap failure, retry, running instance with unavailable T3, stop/start, restart, update failure and deletion. Show errors at the failed step.</li>
+      <li>Saving configuration does not apply an update. Show pending changes and require an explicit Apply update action.</li>
+    </ul>
+    <p class="gate"><strong>Acceptance:</strong> walk through creation and all maintenance actions, including failure states, without creating an environment. Review the prototype with the Operator before connecting it to live actions. Run the required console build.</p>
+  </section>
+
+  <section id="create">
+    <p class="meta">Stage 2 · Real environment, SSH and durable operation state</p>
+    <h2>Create environments</h2>
+    <ul>
+      <li>Validate a disposable Ubuntu system container through Incus on the Mac and a Linux Host. Check SSH, network access, storage quotas and restart behavior. The Mac feasibility tests passed; native Linux execution remains a coverage gap.</li>
+      <li>Add one runtime module that owns create, inspect, start, stop, restart and delete operations. Keep runner commands inside it. Implement one real runner; do not build a provider registry.</li>
+      <li>Persist a stable environment ID, runner instance name, configuration, observed instance state and last operation in Platform State. Use a dedicated instance prefix and never adopt unrelated instances.</li>
+      <li>Execute as the Host's Operator account. Validate the daemon's access to the runner, files and virtualization tools in its actual service context.</li>
+      <li>Run long operations outside HTTP requests. Save the operation before launching it, allow one mutation per environment, retain progress and detect interrupted work after a Platform restart. Inspect existing resources before retrying creation.</li>
+      <li>Give the guest its own writable disk. Configure SSH with host-key verification and retain private keys outside API responses and logs. Do not mount the Host's home directory by default.</li>
+      <li>Provide a reachable SSH endpoint through the Host. Use SSH tunnels for initial web access. Do not require household DNS changes or a public router port per instance.</li>
+    </ul>
+    <p class="gate"><strong>Acceptance:</strong> Create in the console produces one real instance and working SSH. Repeating a request or restarting the Platform does not create a duplicate. SSH remains usable with the Platform stopped.</p>
+  </section>
+
+  <section id="bootstrap">
+    <p class="meta">Stage 3 · Native tools and a supervised T3 process</p>
+    <h2>Bootstrap the environment</h2>
+    <ol>
+      <li>Wait for base OS initialization through Incus exec, then install and enable SSH. Record failures separately from instance creation.</li>
+      <li>Prepare the development user and directories for repositories, T3 state and credentials in the guest home. Install OS prerequisites such as Git, CA certificates, build tools, Python and process utilities.</li>
+      <li>Install mise, write the saved tool configuration, install dependencies as the development user, and record resolved versions. Configure the same executable paths for SSH shells, T3 and agent subprocesses.</li>
+      <li>Run verification commands as the development user, with bounded runtime and visible output. Include the native PTY check used by the T3 recipe.</li>
+      <li>Install a systemd unit with an explicit user, home, working directory and command. Start T3 and check its HTTP response separately from instance state.</li>
+      <li>Show the access instructions and remaining agent authentication steps. Credentials stay in the instance. Logs must not expose credentials or pairing tokens; pairing output needs an explicit authenticated action.</li>
+    </ol>
+    <p>Make bootstrap safe to repeat on the same instance. Preserve repositories, credentials and T3 state. Record the last completed step and allow retry after a package or network failure.</p>
+    <p>Validate browser access through SSH using the chosen hostname and certificate trust. This must work without the Platform proxy, including on the Operator's Teleport connection. A future integrated Hostname shortcut must not replace the independent access path.</p>
+    <p class="gate"><strong>Acceptance:</strong> T3 and one authenticated agent run as native guest processes. Closing the client preserves an active task. Repeating bootstrap preserves personal state. After a instance reboot, T3 starts and saved conversations remain accessible; active task survival across a reboot is not promised.</p>
+  </section>
+
+  <section id="maintenance">
+    <p class="meta">Stage 4 · Wire the lifecycle actions already reviewed in stage 1</p>
+    <h2>Maintenance</h2>
+    <div class="table"><table>
+      <thead><tr><th>Action</th><th>Behavior</th><th>Required check</th></tr></thead>
+      <tbody>
+        <tr><td>Stop</td><td>Gracefully stop the instance. Preserve its disk and configuration. Explain that running tasks will be interrupted.</td><td>instance is stopped; Start remains available.</td></tr>
+        <tr><td>Start</td><td>Boot the existing instance and let systemd restore T3. Do not rerun the full installer on every boot.</td><td>Same disk, SSH works, T3 readiness checked.</td></tr>
+        <tr><td>Restart</td><td>Restart the instance with the same identity and disk. Explain the interruption to active sessions.</td><td>Repositories, credentials and T3 history remain.</td></tr>
+        <tr><td>Update</td><td>Apply an explicit recipe change to a running instance. Install the selected tool versions, run checks, then restart T3 when needed. Record desired and successfully applied configurations separately.</td><td>Failure is visible and is not recorded as success. Preserve user data and the previous service configuration; report partial tool changes honestly.</td></tr>
+        <tr><td>Delete / drop</td><td>Show that deletion removes the instance and its owned disks, including projects and credentials. Require the environment name. Stop and delete only its identified resources.</td><td>Keep a failed deletion record for retry. Remove the environment record only after deletion is verified.</td></tr>
+      </tbody>
+    </table></div>
+    <p>For this iteration, Update means tools and service settings. OS upgrades, instance recreation, resource resizing and automatic rollback are separate work. Removing a tool from a recipe stops managing it; do not automatically uninstall dependencies during the first update implementation.</p>
+    <p class="gate"><strong>Acceptance:</strong> run the full lifecycle against a disposable instance, including an interrupted update and a failed delete retry. Check real state after every action. Restarting the Platform must not lose progress or apply the same destructive action to another instance.</p>
+  </section>
+
+  <section>
+    <h2>Reuse and implementation boundaries</h2>
+    <div class="table"><table>
+      <thead><tr><th>Existing code</th><th>Reuse</th></tr></thead>
+      <tbody>
+        <tr><td><code>console/src/views/DevImages.tsx</code></td><td>Extract the dependency editor when the real second caller needs it. Reuse catalog search, validation, checks editor and logs.</td></tr>
+        <tr><td><code>console/src/lib/devImageTemplates.ts</code></td><td>Reuse tool defaults and PTY checks. Adapt the service command and paths for the guest user.</td></tr>
+        <tr><td><code>src/dev_images.rs</code></td><td>Share recipe validation and mise configuration rendering. Dockerfile generation and image tags remain specific to container images.</td></tr>
+        <tr><td>Platform State and API patterns</td><td>Add environment records and authenticated lifecycle operations. Keep instance state separate from service health and operation progress.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Implement the stages in order. Stage 4 can land as two changes: start/stop/restart/delete first, then update. Add tests for duplicate requests, interrupted operations, data preservation and deletion ownership. Use real instance smoke tests for SSH, boot and native service behavior.</p>
+    <p>This plan does not change the existing Compose ownership rule in <a href="../adr/0021-development-applications-convert-to-compose-once.md">ADR-0021</a>. Supporting instance resources extends the current product scope. Record that decision before merging the live backend.</p>
+    <p class="meta">Deferred: arbitrary OS images, multiple runner implementations, automatic container migration, OS upgrades, snapshots, backups and automatic rollback. No existing environment needs to be migrated to validate this plan.</p>
+  </section>
+</main></body>
+</html>

@@ -5,7 +5,9 @@ export type View =
   | { view: "app"; id: string }
   | { view: "new"; id: null }
   | { view: "dev-image"; id: string | null }
-  | { view: "dev-images"; id: null };
+  | { view: "dev-images"; id: null }
+  | { view: "environments"; id: string | null }
+  | { view: "environment-new"; id: null };
 
 const overview: View = { view: "overview", id: null };
 
@@ -19,7 +21,12 @@ function fromHash(): View | null {
   if (hash === "#new") return { view: "new", id: null };
   if (hash === "#dev-images") return { view: "dev-images", id: null };
   if (hash === "#new-dev-image") return { view: "dev-image", id: null };
-  if (hash.startsWith("#dev-image-")) return { view: "dev-image", id: hash.slice(11) };
+  if (hash.startsWith("#dev-image-"))
+    return { view: "dev-image", id: hash.slice(11) };
+  if (hash === "#environments") return { view: "environments", id: null };
+  if (hash === "#new-environment") return { view: "environment-new", id: null };
+  if (hash.startsWith("#environment-"))
+    return { view: "environments", id: hash.slice(13) };
   if (hash.startsWith("#app-")) return { view: "app", id: hash.slice(5) };
   return null;
 }
@@ -30,7 +37,14 @@ function fromHistory(): View {
   if (state?.view === "new") return { view: "new", id: null };
   if (state?.view === "dev-images") return { view: "dev-images", id: null };
   if (state?.view === "dev-image") return state;
-  return fromHash() ?? overview;
+  if (state?.view === "environments") return state;
+  if (state?.view === "environment-new") return state;
+  return (
+    fromHash() ??
+    (new URLSearchParams(location.search).get("demo") === "environments"
+      ? { view: "environments", id: null }
+      : overview)
+  );
 }
 
 /**
@@ -56,7 +70,8 @@ export function useView(): [View, (next: View) => void] {
   const go = useCallback((next: View) => {
     const state = history.state as View | null;
     if (!state) history.replaceState(next, "");
-    else if (state.view !== next.view || state.id !== next.id) history.pushState(next, "");
+    else if (state.view !== next.view || state.id !== next.id)
+      history.pushState(next, "");
     setCurrent(next);
   }, []);
 
