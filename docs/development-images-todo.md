@@ -148,6 +148,52 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [ ] Finish the device checks from PR #92. Access the environment from a phone
   and confirm an agent task survives closing and reconnecting the client.
 
+## Setup commands and the Dockerfile hand-off
+
+Tracked in [#107](https://github.com/momoi-labs/self-host/issues/107).
+
+- [x] Install what mise cannot. A recipe carries a `setup` list of shell
+  commands that run as root, with network, after `mise install` and before the
+  build checks, one `RUN` each so the log names the step that failed. The
+  layer restores ownership of `/opt/mise` afterwards.
+- [x] Section the image form in Dockerfile order: Image, Dependencies, Setup,
+  Build checks. The build log moves to a dock at the bottom of the card that
+  opens when a build starts.
+- [x] Let the Operator own the Dockerfile. "Edit Dockerfile" asks the Host to
+  render the current fields and hands the text over; the Host then builds it as
+  is, with no user, entrypoint or checks injected. Going back discards the text
+  after a confirmation and regenerates from the fields, which are untouched.
+  Decided in
+  [ADR-0022](adr/0022-development-images-hand-over-their-dockerfile.md).
+- [x] Make the mise config part of the file the Operator reads. It travels as
+  a heredoc inside the Dockerfile instead of a `COPY mise.toml`, so an edited
+  file is self-contained.
+- [x] Hash the rendered Dockerfile for the image tag instead of `mise.toml`, so
+  a setup command or a hand edit triggers a rebuild like a dependency does.
+  Every existing image gets a new tag on its next save and rebuilds once;
+  Applications keep their deployed tag until they are redeployed.
+- [ ] Confirm a Hermes image. `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`
+  as a setup command with `hermes --version` as a build check, which is the
+  case that opened the issue.
+- [ ] Decide whether an edited file should be able to regenerate and show a
+  diff. Deliberately out of scope until an Operator misses it.
+
+To validate this wave:
+
+1. Build an image with a setup command that installs something mise cannot,
+   and a build check that runs it. The log must show the `RUN` for that command
+   on its own, before the checks.
+2. Save the same image again without changing anything. The tag must not move.
+   Change one setup command and confirm the tag does.
+3. Press Edit Dockerfile on a recipe with dependencies and setup. The file must
+   arrive with the mise heredoc and the setup lines already in it. Save and
+   build it unchanged; the container must still start.
+4. Edit that file, go back to the builder and discard. The four sections must
+   hold exactly what they held before the hand-off.
+5. Reopen a saved manual image. It must open in the Dockerfile view with the
+   badge, and the listing must show "Custom Dockerfile" in its Dependencies
+   column.
+
 ## Already verified in the prototype
 
 - [x] Prevent scrolling over a focused web-port field from changing its value.
