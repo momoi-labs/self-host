@@ -40,6 +40,24 @@ export type DevelopmentApplication = {
   persist_data: boolean;
 };
 
+/** A saved development image recipe and its latest build on this Host. A
+ * `dockerfile` means the Operator owns the file and the builder is off
+ * (ADR-0022). */
+export type DevImage = {
+  id: string;
+  name: string;
+  template_id?: string | null;
+  dependencies: { tool: string; version: string; allow_builds?: string[] }[];
+  setup?: string[];
+  build_checks?: string[];
+  dockerfile?: string | null;
+  image: string;
+  status: "building" | "ready" | "failed";
+  last_error: Report | null;
+  log: string;
+  in_use?: boolean | null;
+};
+
 export type ComposePort = { container: number | string };
 
 export type ComposeVolume = {
