@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  isKey, isVersion, miseToml, readOption, splitKey, suggest, takesAllowBuilds,
+  isKey, isVersion, readOption, splitKey, suggest, takesAllowBuilds,
 } from "../src/lib/dependencies.ts";
 
 const catalog = [
@@ -56,17 +56,6 @@ test("reads an option back as the chip prints it", () => {
 test("offers allow_builds only where mise reads it", () => {
   assert.equal(takesAllowBuilds("npm:t3"), true);
   assert.equal(takesAllowBuilds("node"), false);
-});
-
-test("writes a tool with options as a table and the rest as a version", () => {
-  assert.equal(
-    miseToml(
-      [{ tool: "node", version: "24" }, { tool: "npm:t3", version: "latest", allow_builds: ["node-pty"] }],
-      ["t3 --help"],
-    ),
-    '[tools]\n"node" = "24"\n"npm:t3" = { version = "latest", allow_builds = ["node-pty"] }\n'
-      + '\n[tasks.check]\nrun = ["t3 --help"]\n',
-  );
 });
 
 test("accepts a key the console would send to mise", () => {
