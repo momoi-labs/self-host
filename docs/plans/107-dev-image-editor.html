@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan: development image editor (#107)</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1c1c1c; --muted: #666; --bg: #fff; --card: #f6f6f6; --border: #ddd; --accent: #6b4de6; --warn: #b26a00; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8e8; --muted: #9a9a9a; --bg: #161616; --card: #1f1f1f; --border: #333; --accent: #a58cff; --warn: #e0a34a; } }
+  body { margin: 0 auto; max-width: 900px; padding: 32px 20px 80px; font: 15px/1.55 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 40px 0 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  h3 { font-size: 15px; margin: 22px 0 6px; }
+  p, li { max-width: 72ch; }
+  .lead { color: var(--muted); margin: 0 0 20px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  code { background: var(--card); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+  .box.warn { border-color: var(--warn); }
+  .box.warn strong { color: var(--warn); }
+  .tag { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); margin-left: 6px; }
+  ol.steps > li { margin-bottom: 10px; }
+  ul.tight li { margin: 2px 0; }
+  .commit { font-family: ui-monospace, monospace; font-size: 13px; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>Development image editor</h1>
+<p class="lead">Implementation plan for <a href="https://github.com/momoi-labs/self-host/issues/107">#107</a>, extended with the decision from the prototype: variant A (sectioned form, log dock) and model 1 (builder generates, "Edit Dockerfile" takes over the file).</p>
+
+<h2>1. Goal</h2>
+<p>An Operator can install anything mise cannot, in two ways:</p>
+<ol>
+  <li><strong>Setup</strong>: a list of shell commands that run as root, with network, after <code>mise install</code> and before the build checks. This is what #107 asks for.</li>
+  <li><strong>Edit Dockerfile</strong>: take the generated file and own it. The Host builds exactly that text. Going back to the builder discards the edits and regenerates.</li>
+</ol>
+<p>The form gains sections in Dockerfile order and the build log moves to a dock at the bottom of the panel, so a taller form does not fight a side-by-side split.</p>
+
+<h2>2. Decisions</h2>
+<table>
+  <tr><th>Decision</th><th>Why</th></tr>
+  <tr><td>A recipe holds <code>dependencies + setup + build_checks</code> <em>or</em> <code>dockerfile</code>. <code>dockerfile: Some(_)</code> is the mode switch.</td><td>One field, one rule. No parser reads text back into chips.</td></tr>
+  <tr><td>In manual mode the Host runs <code>docker build</code> on the text as is. It does not inject the user, the entrypoint or the checks.</td><td>"Edited, it's yours." Matches ADR-0021 (one owner per file). The editor carries a fixed warning.</td></tr>
+  <tr><td>"Back to builder" discards the text after a confirmation.</td><td>Same reason. A regenerate-and-diff flow can come later if it is missed.</td></tr>
+  <tr><td>The Dockerfile is rendered by the Host, not the console. A new <code>POST /dev-images/dockerfile</code> returns it for a recipe.</td><td>Single source of truth. The console never carries a copy of the template.</td></tr>
+  <tr><td>The mise config moves from <code>COPY mise.toml</code> to a heredoc inside the Dockerfile.</td><td>A hand-edited Dockerfile must be self-contained: the dependencies are in the text the Operator sees and edits. The support scripts (entrypoint, profile, build-checks.py) stay as COPY from the context in both modes.</td></tr>
+  <tr><td>The image tag hashes the rendered Dockerfile instead of <code>mise.toml</code>.</td><td>Setup and manual edits must trigger a rebuild like dependencies do today.</td></tr>
+</table>
+
+<div class="box warn"><strong>Consequence.</strong> Every existing image gets a new tag on its next save (different hash input). The Host rebuilds it once. Applications keep their deployed tag until they are redeployed, as today.</div>
+
+<h2>3. Backend (Rust)</h2>
+
+<h3>3.1 Recipe</h3>
+<pre><code>pub struct Recipe {
+    pub name: String,
+    pub template_id: Option&lt;String&gt;,
+    pub dependencies: Vec&lt;Dependency&gt;,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec&lt;String&gt;,                 // new
+    pub build_checks: Vec&lt;String&gt;,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option&lt;String&gt;,         // new; Some = manual mode
+}</code></pre>
+<p>Old records deserialize unchanged: both fields default to empty.</p>
+
+<h3>3.2 Validation</h3>
+<table>
+  <tr><th>Mode</th><th>Rules</th></tr>
+  <tr><td>Builder (<code>dockerfile: None</code>)</td><td>Existing rules. <code>setup</code> follows the build-check rule: at most 16 commands, 1 to 4096 bytes each, no control characters. Message: <em>"Use at most 16 setup commands, each a single command of 1 to 4096 bytes."</em></td></tr>
+  <tr><td>Manual (<code>dockerfile: Some</code>)</td><td>Text is 1 to 65536 bytes, no control characters other than newline and tab, contains a <code>FROM</code> instruction. <code>dependencies</code>, <code>setup</code> and <code>build_checks</code> must be empty; the console sends them empty. Name rule as today. Template id is kept for the listing but not validated against anything new.</td></tr>
+</table>
+
+<h3>3.3 Rendering</h3>
+<p><code>DOCKERFILE</code> becomes a template with two holes. <code>Recipe::dockerfile_text()</code> fills them; in manual mode it returns the stored text.</p>
+<pre><code># ... base, user, env, mise install (unchanged) ...
+
+# --- dependencies (mise) ---
+COPY &lt;&lt;'EOF' /opt/mise/config/config.toml
+[tools]
+"node" = "24"
+
+[tasks.check]
+run = ["node --version"]
+EOF
+RUN mkdir -p /data/home /tmp/mise-home /opt/mise/cargo \
+    &amp;&amp; HOME=/tmp/mise-home CARGO_HOME=/opt/mise/cargo mise install --yes \
+    ... (unchanged)
+
+# --- setup (root, with network) ---
+RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+RUN chown -R "${USERNAME}:${USERNAME}" /opt/mise
+
+# --- runtime and build checks (unchanged) ---
+COPY runtime-profile.sh ...
+...</code></pre>
+<ul class="tight">
+  <li>Each setup command is its own <code>RUN</code> line so the log points at the failing step. The trailing <code>chown</code> is emitted only when there is at least one command.</li>
+  <li>Without setup commands the section is a single comment line, so the file still reads in order.</li>
+  <li>The heredoc uses a quoted delimiter so <code>$</code> in versions is not expanded. TOML content is already JSON-escaped by <code>mise_toml()</code>; keep that function, it feeds the heredoc.</li>
+  <li><code>image_tag()</code> hashes <code>dockerfile_text()</code>.</li>
+  <li><code>write_build_context()</code> writes <code>dockerfile_text()</code> as <code>Dockerfile</code> and no longer writes <code>mise.toml</code>. The three support files are written in both modes.</li>
+</ul>
+
+<h3>3.4 API</h3>
+<table>
+  <tr><th>Route</th><th>Change</th></tr>
+  <tr><td><code>POST /dev-images</code></td><td>Accepts the two new fields. Validation above.</td></tr>
+  <tr><td><code>POST /dev-images/dockerfile</code> <span class="tag">new</span></td><td>Body: a <code>Recipe</code> in builder mode. Validates with the builder rules (name may be empty here; the render does not need it). Returns <code>text/plain</code> with the rendered file. No state is touched. The console calls it on "Edit Dockerfile".</td></tr>
+  <tr><td><code>GET /dev-images</code></td><td>Unchanged; records now carry <code>setup</code> and <code>dockerfile</code> when set.</td></tr>
+</table>
+
+<h3>3.5 Tests</h3>
+<ul class="tight">
+  <li>Unit: setup rules reject 17 commands, an empty command, a control character. Manual mode rejects a file without <code>FROM</code>, a file over 64 KiB, and a request that still carries dependencies.</li>
+  <li>Unit: the rendered file places setup after <code>mise install</code> and before <code>runtime-profile.sh</code>; no setup, no <code>chown</code>; manual text comes back verbatim.</li>
+  <li>Unit: tag changes when setup changes, when the manual text changes, and stays when only <code>name</code> or <code>template_id</code> change (update the existing <code>image_tag_uses_the_md5_of_the_exact_mise_file</code> test to hash the Dockerfile).</li>
+  <li>Integration (<code>tests/file_store_api.rs</code>): update the expected tag in <code>development_image_identity_survives_renaming_rebuilding_and_restart</code>; add a save in manual mode that survives a restart and returns the same <code>dockerfile</code>; add a <code>POST /dev-images/dockerfile</code> call and assert the setup line is in the body.</li>
+</ul>
+
+<h2>4. Console (React)</h2>
+
+<h3>4.1 Layout: variant A</h3>
+<p><code>DevImages.tsx</code> keeps its data flow (poll, submit, delete). The rendering of the editor changes:</p>
+<ul class="tight">
+  <li>The <code>Split</code>/<code>Splitter</code> goes. The card becomes a two-row grid: a scrolling form and a log dock (<code>closed</code> / <code>half</code> / <code>full</code>). The dock opens to <code>half</code> when a build starts, as in the prototype.</li>
+  <li>The form is an ordered list of four sections in Dockerfile order: <strong>Image</strong> (template, name), <strong>Dependencies</strong> (chips, unchanged component), <strong>Setup</strong> (new <code>ShellEditor</code>, one command per line, hint: runs as root, with network, after dependencies), <strong>Build checks</strong> (unchanged, hint gains "after setup").</li>
+  <li>After the sections, a dashed box: "Need more than these fields?" with the <strong>Edit Dockerfile</strong> button.</li>
+  <li>The <code>mise.toml</code> disclosure is removed; the Dockerfile view supersedes it.</li>
+  <li>CSS moves from <code>prototype.css</code> into <code>console.css</code> under <code>.dev-image-*</code> names. The <code>&lt;1024px</code> rules for the old split are replaced by the dock at 60vh.</li>
+</ul>
+
+<h3>4.2 Manual mode</h3>
+<ul class="tight">
+  <li><strong>Edit Dockerfile</strong> posts the current fields to <code>/dev-images/dockerfile</code>, puts the response in the editor and sets <code>dockerfile</code> state. Failure shows the usual <code>Failure</code> block and stays in builder mode.</li>
+  <li>The manual view shows: name field, the editor (<code>ShellEditor</code> reused; bash highlighting is close enough for a Dockerfile), a "Edited by hand" badge, and the fixed hint: <em>"The Host builds this file as is. Keep the dev user and the entrypoint, or the container will not start. Build checks only run if you keep their RUN --network=none step."</em></li>
+  <li><strong>Back to builder</strong> asks "Keep editing / Discard edits" inline. Discard clears <code>dockerfile</code>; the fields still hold their last values, so the builder shows what it showed before the takeover.</li>
+  <li>Save sends <code>{ dockerfile, dependencies: [], setup: [], build_checks: [] }</code> in manual mode and the fields with <code>dockerfile</code> omitted otherwise.</li>
+  <li>Opening a saved image whose record has <code>dockerfile</code> opens in manual mode.</li>
+  <li>Listing: the Dependencies column shows <em>Custom Dockerfile</em> for manual images.</li>
+</ul>
+
+<h3>4.3 Small pieces</h3>
+<ul class="tight">
+  <li><code>devImageTemplates.ts</code>: templates gain <code>setup: []</code>. <code>chooseTemplate</code> fills it.</li>
+  <li>A pure helper <code>recipeBody(state)</code> in <code>lib/dependencies.ts</code> (or a new <code>lib/devImageRecipe.ts</code>) returns the POST body for both modes, with one node test in <code>console/tests/</code>.</li>
+  <li>The listing's status badge and the delete rules are untouched.</li>
+</ul>
+
+<h2>5. Docs</h2>
+<ul class="tight">
+  <li><strong>ADR-0022</strong>: "A development image recipe can hand its Dockerfile to the Operator". Records the two modes, the one-owner rule (with ADR-0021 as precedent), the heredoc, and the tag hash change.</li>
+  <li><code>docs/development-images-todo.md</code>: tick or add the setup and takeover items.</li>
+  <li>Issue #107: after merge, a comment pointing at the ADR and the prototype branch.</li>
+</ul>
+
+<h2>6. Order of work and commits</h2>
+<ol class="steps">
+  <li><span class="commit">chore: keep the dev image editor prototype</span> on a throwaway branch <code>prototype/107-dev-image-editor</code> (the current uncommitted files). The feature branch starts clean without them.</li>
+  <li><span class="commit">feat(dev-images): run setup commands during the build</span><br>Recipe field, validation, heredoc template, render, tag on the Dockerfile, context without <code>mise.toml</code>, unit + integration tests.</li>
+  <li><span class="commit">feat(dev-images): let a recipe carry its own Dockerfile</span><br><code>dockerfile</code> field, manual validation, render endpoint, tests, ADR-0022.</li>
+  <li><span class="commit">feat(console): section the image form and dock the logs</span><br>Layout A with the Setup section, CSS, template field, hints.</li>
+  <li><span class="commit">feat(console): edit the generated Dockerfile by hand</span><br>Takeover box, manual view, discard flow, body helper + test, listing label.</li>
+  <li><span class="commit">docs: record the setup and takeover work</span><br>todo file, and the issue comment after review.</li>
+</ol>
+<p>Each step leaves <code>cargo test</code> and <code>npm test</code> green; the console is rebuilt (<code>npm run build</code>) before <code>cargo test</code> in steps 4 and 5.</p>
+
+<h2>7. Risks</h2>
+<table>
+  <tr><th>Risk</th><th>Handling</th></tr>
+  <tr><td>Heredoc in <code>COPY</code> needs BuildKit with the Dockerfile 1.4 frontend.</td><td>The template already uses <code>RUN --mount</code>, which needs BuildKit; Docker 23+ ships the frontend by default. Verified on the workstation (29.x). The macOS Host runs Docker Desktop, which is newer. If a build fails on the Mac with "unknown instruction", fall back to writing <code>mise.toml</code> into the context in builder mode and keep the heredoc only in manual mode.</td></tr>
+  <tr><td>Existing images rebuild once.</td><td>Expected; noted in the ADR and the release notes.</td></tr>
+  <tr><td>A pasted Dockerfile can do anything the build user can.</td><td>Same trust as setup commands and as Compose files today. The Operator is the only user. Out of scope: secrets, non-root setup (as the issue states).</td></tr>
+  <tr><td><code>DevImages.tsx</code> grows past comfort.</td><td>Move the editor panel into <code>components/DevImageEditor.tsx</code> during step 4 if the file passes ~600 lines; no other refactor.</td></tr>
+</table>
+
+<h2>8. Out of scope</h2>
+<ul class="tight">
+  <li>Merging hand edits back into the builder, or regenerating with a diff.</li>
+  <li>Build secrets, running setup as <code>dev</code>, a Hermes template.</li>
+  <li>Dockerfile syntax highlighting beyond the bash grammar already loaded.</li>
+  <li>Variants B to E of the prototype.</li>
+</ul>
+
+</body>
+</html>
