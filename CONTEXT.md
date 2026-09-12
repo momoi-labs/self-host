@@ -28,6 +28,12 @@ _Avoid_: end user, client, visitor
 The LAN machine where the Platform, Platform Infra and Applications run.
 _Avoid_: node, server, VPS (VPS is not the primary MVP environment)
 
+**Virtual machine**:
+A persistent workspace owned by the Operator, with selected development tools,
+repositories and independent access. Its lifecycle is separate from published
+Applications.
+_Avoid_: development environment (previous UI name), development image (a build artifact), Application (a published workload)
+
 **Deploy**:
 The Operator action that makes an Application available on the LAN from its definition and configuration.
 _Avoid_: release, publish, ship (as official synonyms)

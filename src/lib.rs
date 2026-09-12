@@ -24,6 +24,7 @@ pub mod console;
 pub mod dev_images;
 pub mod dns;
 pub mod docker;
+pub mod environments;
 pub mod error;
 pub mod file_store;
 pub mod host_addresses;
@@ -36,9 +37,11 @@ pub mod routes;
 pub mod store;
 pub mod terminal;
 pub mod tls;
+pub mod vms;
 
 use apps::{DeployError, RemoveError};
 use docker::DockerRuntime;
+use environments::{Environments, VmRuntime};
 use routes::RouteStore;
 use store::StateStore;
 
@@ -48,6 +51,8 @@ struct AppState<S: StateStore> {
     docker: Arc<dyn DockerRuntime>,
     routes: Arc<dyn RouteStore>,
     dev_images: Arc<dev_images::Builds>,
+    environments: Arc<Environments>,
+    vm_runtime: Arc<dyn VmRuntime>,
     metrics: metrics::Metrics,
 }
 
@@ -57,11 +62,30 @@ pub fn build_app<S: StateStore>(
     routes: Arc<dyn RouteStore>,
     metrics: metrics::Metrics,
 ) -> Router {
+    build_app_with_vm_runtime(
+        store,
+        docker,
+        routes,
+        metrics,
+        Arc::new(vms::IncusRuntime::default()),
+    )
+}
+
+/// Builds the API with an injected environment runtime for isolated testing.
+pub fn build_app_with_vm_runtime<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
+    metrics: metrics::Metrics,
+    vm_runtime: Arc<dyn VmRuntime>,
+) -> Router {
     let state = AppState {
         store,
         docker,
         routes,
         dev_images: Arc::new(dev_images::Builds::default()),
+        environments: Arc::new(Environments::default()),
+        vm_runtime,
         metrics,
     };
 
@@ -73,6 +97,18 @@ pub fn build_app<S: StateStore>(
         .route(
             "/dev-images",
             get(dev_images::list::<S>).post(dev_images::create::<S>),
+        )
+        .route(
+            "/environments",
+            get(environments::list::<S>).post(environments::create::<S>),
+        )
+        .route(
+            "/environments/{id}",
+            get(environments::get::<S>).put(environments::update::<S>),
+        )
+        .route(
+            "/environments/{id}/actions",
+            post(environments::action::<S>),
         )
         .route("/dev-images/tools", get(dev_images::catalog))
         .route("/dev-images/{id}", delete(dev_images::remove::<S>))

@@ -22,7 +22,11 @@ import type { App } from "../lib/types.js";
 import { Icon } from "./Icon.js";
 
 /** Where a sidebar entry points, and how it knows it is the current one. */
-export type Destination = { href: string; active: boolean; onClick?: () => void };
+export type Destination = {
+  href: string;
+  active: boolean;
+  onClick?: () => void;
+};
 
 /**
  * The console's frame: the sidebar, the breadcrumb and the health indicator.
@@ -40,6 +44,7 @@ export function Shell({
   overview,
   deploy,
   devImages = { href: "/console/#dev-images", active: false },
+  environments = { href: "/console/#environments", active: false },
   application,
   children,
 }: {
@@ -50,6 +55,7 @@ export function Shell({
   overview: Destination;
   deploy: Destination;
   devImages?: Destination;
+  environments?: Destination;
   application: (app: App) => Destination;
   children: ReactNode;
 }) {
@@ -86,7 +92,16 @@ export function Shell({
         {
           destinations: [
             { ...overview, label: "Overview", leading: <Icon name="chart" /> },
-            { ...devImages, label: "Development images", leading: <Icon name="box" /> },
+            {
+              ...devImages,
+              label: "Development images",
+              leading: <Icon name="box" />,
+            },
+            {
+              ...environments,
+              label: "Virtual machines",
+              leading: <Icon name="box" />,
+            },
           ],
         },
         {
@@ -97,7 +112,12 @@ export function Shell({
             return {
               ...application(candidate),
               label: candidate.name,
-              leading: <Dot variant={tone} className={tone === "neutral" ? "subtle" : undefined} />,
+              leading: (
+                <Dot
+                  variant={tone}
+                  className={tone === "neutral" ? "subtle" : undefined}
+                />
+              ),
             };
           }),
         },
@@ -143,9 +163,14 @@ export function Shell({
           </Breadcrumb>
           <span className="grow" />
           <span className="row t-label">
-            <span className="health-link" title="The daemon answering on this Host">
+            <span
+              className="health-link"
+              title="The daemon answering on this Host"
+            >
               <Dot variant={healthy ? "success" : "neutral"} />
-              <span className="muted">{healthy ? "Healthy" : "Checking health…"}</span>
+              <span className="muted">
+                {healthy ? "Healthy" : "Checking health…"}
+              </span>
             </span>
           </span>
         </>

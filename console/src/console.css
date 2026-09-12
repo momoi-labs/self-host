@@ -233,6 +233,14 @@
 .dev-image-code { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--type-family-mono); font-size: var(--type-size-label); }
 .dev-image-tag { overflow-wrap: anywhere; user-select: all; }
 
+.environment-page { display: flex; flex-direction: column; gap: var(--spacing-lg); min-width: 0; }
+.environment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spacing-sm); }
+.environment-editor { max-width: 760px; }
+.environment-editor .field-row { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.environment-editor textarea.input { resize: vertical; }
+.environment-subheading { margin-block-start: var(--spacing-xl); }
+.demo-banner { margin: 0; padding: var(--spacing-md) var(--spacing-lg); border: 1px solid var(--color-warning); border-radius: var(--radius-md); background: var(--color-warning-surface); }
+
 /* Lifecycle actions sit with the status badge: what it is, and what you can
    do about it, in one glance. */
 .lifecycle { display: flex; align-items: center; gap: var(--spacing-sm); }
@@ -300,3 +308,8 @@
 .terminal-picker { width: min(100%, 320px); text-align: start; }
 .terminal-session-controls { position: absolute; inset-block-start: 4px; inset-inline-end: 4px; display: flex; align-items: center; gap: var(--spacing-sm); color: #dedbd7; background: #121116; border-radius: var(--radius-md); }
 .terminal-session-controls button { color: inherit; padding: var(--spacing-xs); }
+.environment-tabs { min-width: 0; padding: var(--spacing-xl); }
+.environment-tabs [role="tablist"] { max-width: 100%; overflow-x: auto; }
+.environment-tabs [role="tabpanel"] { min-width: 0; padding-block-start: var(--spacing-lg); }
+.environment-tabs li { overflow-wrap: anywhere; }
+@media (max-width: 720px) { .environment-tabs { padding: var(--spacing-lg); } }

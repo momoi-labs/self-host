@@ -8,6 +8,7 @@ import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
 import { DevImages } from "./views/DevImages.js";
+import { Environments } from "./views/Environments.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
@@ -15,7 +16,10 @@ export function App() {
   const [view, go] = useView();
   const [query, setQuery] = useState("");
 
-  const app = view.view === "app" ? apps.find((candidate) => candidate.id === view.id) : undefined;
+  const app =
+    view.view === "app"
+      ? apps.find((candidate) => candidate.id === view.id)
+      : undefined;
 
   // A view whose subject is gone — an Application removed here or in another
   // tab — falls back to the Overview rather than rendering nothing.
@@ -32,8 +36,16 @@ export function App() {
         : view.view === "dev-images"
           ? "Development images"
           : view.view === "dev-image"
-            ? view.id ? "Development image" : "New image"
-            : "Overview";
+            ? view.id
+              ? "Development image"
+              : "New image"
+            : view.view === "environments"
+              ? view.id
+                ? "Virtual machine"
+                : "Virtual machines"
+              : view.view === "environment-new"
+                ? "New virtual machine"
+                : "Overview";
 
   return (
     <Shell
@@ -56,6 +68,11 @@ export function App() {
         active: view.view === "dev-images" || view.view === "dev-image",
         onClick: () => go({ view: "dev-images", id: null }),
       }}
+      environments={{
+        href: "/console/#environments",
+        active: view.view === "environments" || view.view === "environment-new",
+        onClick: () => go({ view: "environments", id: null }),
+      }}
       application={(candidate) => ({
         href: `/console/#app-${candidate.id}`,
         active: view.view === "app" && view.id === candidate.id,
@@ -65,16 +82,42 @@ export function App() {
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
       <section className="page" id="detail" aria-live="polite">
-        {view.view === "dev-images" || view.view === "dev-image" ? (
-          <DevImages listing={view.view === "dev-images"} selected={view.id}
-            onOpen={(id) => go({ view: "dev-image", id })} />
+        {view.view === "environments" || view.view === "environment-new" ? (
+          <Environments
+            mode={
+              view.view === "environment-new"
+                ? "new"
+                : view.id
+                  ? "detail"
+                  : "list"
+            }
+            selected={view.id}
+            onNew={() => go({ view: "environment-new", id: null })}
+            onOpen={(id) =>
+              go(
+                id
+                  ? { view: "environments", id }
+                  : { view: "environments", id: null },
+              )
+            }
+          />
+        ) : view.view === "dev-images" || view.view === "dev-image" ? (
+          <DevImages
+            listing={view.view === "dev-images"}
+            selected={view.id}
+            onOpen={(id) => go({ view: "dev-image", id })}
+          />
         ) : view.view === "new" ? (
           <NewApp
             dnsSuffix={dnsSuffix}
             reload={reload}
             onCancel={() => go({ view: "overview", id: null })}
             onCreated={(created) =>
-              go(created ? { view: "app", id: created.id } : { view: "overview", id: null })
+              go(
+                created
+                  ? { view: "app", id: created.id }
+                  : { view: "overview", id: null },
+              )
             }
           />
         ) : app ? (
@@ -116,6 +159,8 @@ function signature(app: import("./lib/types.js").App): string {
     app.compose ?? "",
     app.web_service ?? "",
     app.web_port ?? "",
-    (app.services ?? []).map((service) => `${service.service}:${service.state}`).join(","),
+    (app.services ?? [])
+      .map((service) => `${service.service}:${service.state}`)
+      .join(","),
   ].join("|");
 }

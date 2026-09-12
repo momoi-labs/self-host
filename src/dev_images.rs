@@ -89,7 +89,7 @@ pub struct Recipe {
 }
 
 impl Recipe {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self
             .template_id
             .as_deref()

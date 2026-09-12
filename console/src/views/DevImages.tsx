@@ -1,27 +1,23 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
-  Button, Card, FormField, Label, Pane, Split, Splitter,
+  Button, Card, FormField, Pane, Split, Splitter,
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
-  Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
-  ChipName, ChipOption, ChipOptionAdd, ChipRemove, ChipScope, ChipValue,
   EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   LogView, LogViewLine, Search,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-  ValidationMessage,
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "../components/Failure.js";
+import { Dependencies } from "../components/Dependencies.js";
 import { Icon } from "../components/Icon.js";
 import { ShellEditor } from "../components/ShellEditor.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import type { Report } from "../lib/types.js";
 import { devImageTemplate, devImageTemplates, type ImageDependency } from "../lib/devImageTemplates.js";
-import {
-  ALLOW_BUILDS, isKey, isVersion, miseToml, readOption, splitKey, suggest, takesAllowBuilds,
-} from "../lib/dependencies.js";
+import { isVersion, miseToml } from "../lib/dependencies.js";
 
 type Dependency = ImageDependency;
 type DevImage = {
@@ -36,185 +32,6 @@ type DevImage = {
   log: string;
   in_use?: boolean | null;
 };
-
-type MiseTool = { name: string; description?: string; backends: string[] };
-
-let toolCatalog: Promise<MiseTool[]> | null = null;
-
-function loadToolCatalog(): Promise<MiseTool[]> {
-  if (!toolCatalog) toolCatalog = (async () => {
-    const response = await api("/dev-images/tools");
-    if (!response.ok) throw await failureOf(response);
-    const payload: unknown = await response.json();
-    if (!Array.isArray(payload)) throw new Error("Invalid tool search response");
-    return payload.flatMap((entry: unknown): MiseTool[] => {
-      if (typeof entry === "string") return [{ name: entry, backends: [] }];
-      if (!entry || typeof entry !== "object" || !("name" in entry) || typeof entry.name !== "string") return [];
-      return [{
-        name: entry.name,
-        backends: "backends" in entry && Array.isArray(entry.backends)
-          ? entry.backends.filter((key): key is string => typeof key === "string") : [],
-      }];
-    });
-  })().catch((error) => { toolCatalog = null; throw error; });
-  return toolCatalog;
-}
-
-/**
- * Every dependency as one chip in one field: what installs it, what it is,
- * which version, and the options mise reads on it. The component owns the
- * box, the suggestions and the keyboard; what a mise key looks like and which
- * options a tool accepts stay here.
- */
-function Dependencies({ value, onChange, disabled }: {
-  value: Dependency[];
-  onChange: (value: Dependency[]) => void;
-  disabled: boolean;
-}) {
-  const [tools, setTools] = useState<MiseTool[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [searchFailed, setSearchFailed] = useState(false);
-  const [query, setQuery] = useState("");
-  const [focused, setFocused] = useState(false);
-  const typed = query.trim();
-  const matches = suggest(tools, query, value.map((dep) => dep.tool));
-  // The catalog is a thousand tools; marking the typed entry must not rebuild
-  // that set on every keystroke.
-  const known = useMemo(
-    () => new Set(tools.flatMap((tool) => [tool.name, ...tool.backends])),
-    [tools],
-  );
-  const unversioned = value.filter((dep) => !isVersion(dep.version));
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    void loadToolCatalog()
-      .then((results) => { if (active) setTools(results); })
-      .catch(() => { if (active) setSearchFailed(true); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  // A new dependency starts at latest because that is what most recipes want,
-  // and the version is one press away in the chip itself.
-  function add(tool: string) {
-    setQuery("");
-    if (value.some((dep) => dep.tool === tool)) return;
-    onChange([...value, { tool, version: "latest" }]);
-  }
-
-  function update(tool: string, change: Partial<Dependency>) {
-    onChange(value.map((dep) => dep.tool === tool ? { ...dep, ...change } : dep));
-  }
-
-  // allow_builds is the only option mise reads here, so an entry naming
-  // anything else is left alone rather than written into the recipe.
-  function setOption(tool: string, text: string) {
-    const option = readOption(text);
-    if (!option || option.name !== ALLOW_BUILDS) return;
-    update(tool, { allow_builds: option.values.length ? option.values : undefined });
-  }
-
-  return (
-    <div className="field">
-      <Label htmlFor="dependency-search">Dependencies</Label>
-      <ChipInput>
-        <ChipInputBox
-          disabled={disabled}
-          onFocus={() => setFocused(true)}
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
-          }}
-        >
-          {value.map((dep) => {
-            const { scope, name } = splitKey(dep.tool);
-            return (
-              <Chip key={dep.tool} invalid={!isVersion(dep.version)}>
-                {scope ? <ChipScope>{scope}</ChipScope> : null}
-                <ChipName>{name}</ChipName>
-                <ChipValue
-                  value={dep.version}
-                  editable={!disabled}
-                  editLabel={`Edit ${dep.tool} version, currently ${dep.version}`}
-                  confirmLabel={`Confirm ${dep.tool} version`}
-                  onCommit={(version) => update(dep.tool, { version })}
-                />
-                {dep.allow_builds?.length ? (
-                  <ChipOption
-                    name={ALLOW_BUILDS}
-                    value={dep.allow_builds}
-                    label={dep.tool}
-                    editable={!disabled}
-                    onCommit={(text) => setOption(dep.tool, text)}
-                  />
-                ) : takesAllowBuilds(dep.tool) && !disabled ? (
-                  <ChipOptionAdd label={dep.tool} onCommit={(text) => setOption(dep.tool, text)} />
-                ) : null}
-                <ChipRemove
-                  aria-label={`Remove ${dep.tool}`}
-                  disabled={disabled}
-                  onClick={() => onChange(value.filter((item) => item.tool !== dep.tool))}
-                />
-              </Chip>
-            );
-          })}
-          <ChipInputField
-            id="dependency-search"
-            aria-describedby="dependency-help"
-            placeholder="node, claude, npm:t3..."
-            disabled={disabled}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onRemoveLast={() => onChange(value.slice(0, -1))}
-            onKeyDown={(event) => {
-              // ChipInput has already taken the key when a suggestion was
-              // highlighted, and taking it twice would add the tool twice.
-              if (event.defaultPrevented) return;
-              if (event.key === "Enter") {
-                // This field collects values; the recipe is saved by its own
-                // button. Enter here never reaches the form.
-                event.preventDefault();
-                if (isKey(typed)) add(typed);
-              }
-              if (event.key === "Escape") { event.preventDefault(); setQuery(""); }
-            }}
-          />
-        </ChipInputBox>
-        {focused && typed ? (
-          <ChipInputList aria-label="Tool suggestions">
-            {matches.map((tool) => (
-              <ChipInputOption key={tool} onSelect={() => add(tool)}>
-                <span className="mono">{tool}</span>
-                {known.has(tool) ? null : <span className="muted">as typed</span>}
-              </ChipInputOption>
-            ))}
-            {matches.length ? null : (
-              <ChipInputEmpty>
-                {loading
-                  ? "Searching mise..."
-                  : searchFailed
-                    ? "Catalog unavailable. Type a mise key, such as just or npm:t3."
-                    : "No match. Try a backend key, such as npm:t3."}
-              </ChipInputEmpty>
-            )}
-          </ChipInputList>
-        ) : null}
-      </ChipInput>
-      <small className="field-hint" id="dependency-help">
-        Type a mise key or search for one. Enter and Tab take a suggestion, Backspace removes the
-        last chip. Press a version to change it. npm tools take{" "}
-        <code>allow_builds=name, name</code> on their <code>+</code>.
-      </small>
-      {unversioned.length ? (
-        <ValidationMessage>
-          A version is letters, digits, dots and dashes:{" "}
-          {unversioned.map((dep) => dep.tool).join(", ")}.
-        </ValidationMessage>
-      ) : null}
-    </div>
-  );
-}
 
 export function DevImages({ listing, selected, onOpen }: {
   listing: boolean;
