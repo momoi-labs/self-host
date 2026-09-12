@@ -1,4 +1,4 @@
-import type { App, HttpReadiness } from "./types.js";
+import type { App, DevImage, HttpReadiness } from "./types.js";
 
 export type Tone = "success" | "danger" | "neutral";
 
@@ -10,6 +10,19 @@ export function statusTone(status: string): Tone {
   if (status === "running") return "success";
   if (status === "failed") return "danger";
   return "neutral";
+}
+
+/** A development image's status is its latest build, so it reads as one. */
+export function buildTone(image: DevImage): Tone {
+  if (image.status === "ready") return "success";
+  if (image.status === "failed") return "danger";
+  return "neutral";
+}
+
+export function buildLabel(image: DevImage): string {
+  if (image.status === "ready") return "Built";
+  if (image.status === "failed") return "Failed";
+  return "Building";
 }
 
 /** Docker's word for a container, in the Application's vocabulary. */
