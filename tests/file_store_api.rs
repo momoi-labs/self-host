@@ -307,7 +307,7 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     assert_eq!(first["name"], name);
     assert_eq!(
         first["image"],
-        format!("sf-img-{id}:309722a26f8643d88330cb249886243b")
+        format!("sf-img-{id}:4690d7e2969a411e85e7bc2840fb697f")
     );
     settled_image(&app).await;
 
@@ -340,6 +340,25 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     assert_ne!(rebuilt["image"], first["image"]);
     assert_eq!(rebuilt["build_checks"], json!(["node --version"]));
     assert_eq!(rebuilt["template_id"], "t3-code");
+
+    settled_image(&app).await;
+    let (status, with_setup) = call(
+        &app,
+        "POST",
+        "/dev-images",
+        Some(json!({
+            "id": id, "name": "Renamed image", "dependencies": [{"tool": "node", "version": "22"}],
+            "setup": ["curl -fsSL https://example.test/install.sh | bash"],
+            "build_checks": ["node --version"], "template_id": "t3-code"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_ne!(with_setup["image"], rebuilt["image"]);
+    assert_eq!(
+        with_setup["setup"],
+        json!(["curl -fsSL https://example.test/install.sh | bash"])
+    );
     let saved = settled_image(&app).await;
     drop(app);
     drop(store);

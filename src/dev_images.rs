@@ -29,6 +29,11 @@ const ENTRYPOINT: &str = include_str!("dev_images/entrypoint.sh");
 const PROFILE: &str = include_str!("dev_images/profile.sh");
 const BUILD_CHECKS: &str = include_str!("dev_images/check.py");
 
+// The two holes the recipe fills. They sit on their own line, so the value
+// replaces the line and brings its own trailing newline.
+const MISE_HOLE: &str = "{mise_config}\n";
+const SETUP_HOLE: &str = "{setup}\n";
+
 // The image carries tools only. Personal state lives in the optional /data
 // volume, and the entrypoint starts the configured Application command as dev.
 pub const DOCKERFILE: &str = r#"FROM debian:13-slim
@@ -51,7 +56,10 @@ ENV MISE_INSTALL_PATH=/usr/local/bin/mise \
     PATH=/data/home/.cargo/bin:/opt/mise/cargo/bin:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 RUN curl --proto '=https' --proto-redir '=https' -fsSL https://mise.run -o /tmp/install-mise.sh \
     && sh /tmp/install-mise.sh && rm /tmp/install-mise.sh
-COPY mise.toml /opt/mise/config/config.toml
+# --- dependencies (mise) ---
+COPY <<'MISE_CONFIG_EOF' /opt/mise/config/config.toml
+{mise_config}
+MISE_CONFIG_EOF
 # Keep rustup's toolchains and CLI in the image. The runtime CARGO_HOME stays
 # under /data for a developer's own cache and cargo-installed programs.
 RUN mkdir -p /data/home /tmp/mise-home /opt/mise/cargo \
@@ -59,6 +67,8 @@ RUN mkdir -p /data/home /tmp/mise-home /opt/mise/cargo \
     && HOME=/tmp/mise-home CARGO_HOME=/opt/mise/cargo mise reshim \
     && rm -rf /tmp/mise-home /opt/mise/cache \
     && chown -R "${USERNAME}:${USERNAME}" /opt/mise
+# --- setup (root, with network) ---
+{setup}
 COPY runtime-profile.sh /etc/profile.d/self-host-development-image.sh
 COPY runtime-entrypoint.sh /usr/local/bin/self-host-development-image-entrypoint
 RUN chmod 0755 /usr/local/bin/self-host-development-image-entrypoint
@@ -85,7 +95,20 @@ pub struct Recipe {
     pub template_id: Option<String>,
     pub dependencies: Vec<Dependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub build_checks: Vec<String>,
+}
+
+/// A list of shell commands the build runs one per line: at most 16, each a
+/// single command of 1 to 4096 bytes.
+fn valid_commands(commands: &[String]) -> bool {
+    commands.len() <= 16
+        && !commands.iter().any(|command| {
+            command.trim().is_empty()
+                || command.len() > 4096
+                || command.chars().any(char::is_control)
+        })
 }
 
 impl Recipe {
@@ -97,15 +120,14 @@ impl Recipe {
         {
             return Err("Unknown development image template.".into());
         }
-        if self.build_checks.len() > 16
-            || self.build_checks.iter().any(|command| {
-                command.trim().is_empty()
-                    || command.len() > 4096
-                    || command.chars().any(char::is_control)
-            })
-        {
+        if !valid_commands(&self.build_checks) {
             return Err(
                 "Use at most 16 build checks, each a single command of 1 to 4096 bytes.".into(),
+            );
+        }
+        if !valid_commands(&self.setup) {
+            return Err(
+                "Use at most 16 setup commands, each a single command of 1 to 4096 bytes.".into(),
             );
         }
         if self.name.trim().is_empty() || self.name.chars().count() > 128 {
@@ -175,11 +197,32 @@ impl Recipe {
         config
     }
 
+    /// The file the Host builds. The mise config travels inside it as a
+    /// heredoc so the text an Operator reads carries its own dependencies.
+    pub fn dockerfile_text(&self) -> String {
+        let (head, rest) = DOCKERFILE
+            .split_once(MISE_HOLE)
+            .expect("the Dockerfile template keeps its mise hole");
+        let (body, tail) = rest
+            .split_once(SETUP_HOLE)
+            .expect("the Dockerfile template keeps its setup hole");
+        let mut setup = String::new();
+        for command in &self.setup {
+            setup.push_str(&format!("RUN {command}\n"));
+        }
+        // mise install leaves /opt/mise owned by dev; a setup command running
+        // as root can undo that, so the section restores it when it ran.
+        if !setup.is_empty() {
+            setup.push_str("RUN chown -R \"${USERNAME}:${USERNAME}\" /opt/mise\n");
+        }
+        format!("{head}{}{body}{setup}{tail}", self.mise_toml())
+    }
+
     fn image_tag(&self, id: &str) -> String {
         format!(
             "sf-img-{}:{:x}",
             id,
-            Md5::digest(self.mise_toml().as_bytes())
+            Md5::digest(self.dockerfile_text().as_bytes())
         )
     }
 }
@@ -621,8 +664,7 @@ async fn build<S: StateStore>(state: &AppState<S>, image: &Image) -> anyhow::Res
 }
 
 fn write_build_context(path: &std::path::Path, image: &Image) -> std::io::Result<()> {
-    std::fs::write(path.join("Dockerfile"), DOCKERFILE)?;
-    std::fs::write(path.join("mise.toml"), image.recipe.mise_toml())?;
+    std::fs::write(path.join("Dockerfile"), image.recipe.dockerfile_text())?;
     std::fs::write(path.join("runtime-entrypoint.sh"), ENTRYPOINT)?;
     std::fs::write(path.join("runtime-profile.sh"), PROFILE)?;
     std::fs::write(path.join("build-checks.py"), BUILD_CHECKS)?;
@@ -715,9 +757,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_tag_uses_the_md5_of_the_exact_mise_file() {
+    fn image_tag_uses_the_md5_of_the_exact_dockerfile() {
         let mut recipe = Recipe {
             build_checks: vec![],
+            setup: vec![],
             template_id: None,
             name: "Minha Imagem de Ação".into(),
             dependencies: vec![Dependency {
@@ -728,7 +771,7 @@ mod tests {
         };
         let id = crate::apps::generate_app_id();
         let tag = recipe.image_tag(&id);
-        assert_eq!(tag, format!("sf-img-{id}:309722a26f8643d88330cb249886243b"));
+        assert_eq!(tag, format!("sf-img-{id}:4690d7e2969a411e85e7bc2840fb697f"));
         recipe.name = "A different display name".repeat(4);
         assert!(recipe.validate().is_ok());
         assert_eq!(recipe.image_tag(&id), tag);
@@ -740,6 +783,7 @@ mod tests {
     fn npm_recipe_is_passed_to_mise_without_adding_a_runtime() {
         let recipe = Recipe {
             build_checks: vec![],
+            setup: vec![],
             template_id: None,
             name: "coding".into(),
             dependencies: vec![Dependency {
@@ -780,6 +824,7 @@ mod tests {
     fn validates_recipes_before_rendering_config() {
         let mut recipe = Recipe {
             build_checks: vec![],
+            setup: vec![],
             template_id: None,
             name: "web-dev".into(),
             dependencies: vec![Dependency {
@@ -857,6 +902,76 @@ mod tests {
     }
 
     #[test]
+    fn setup_commands_run_as_their_own_layers_between_mise_and_the_checks() {
+        let mut recipe: Recipe = serde_json::from_str(
+            r#"{"name":"hermes","dependencies":[{"tool":"node","version":"24"}]}"#,
+        )
+        .unwrap();
+        let plain = recipe.dockerfile_text();
+        assert!(plain.contains("# --- setup (root, with network) ---\nCOPY runtime-profile.sh"));
+        assert!(!plain.contains("RUN chown -R \"${USERNAME}:${USERNAME}\" /opt/mise\nCOPY"));
+
+        let original = recipe.image_tag("test");
+        recipe.setup = vec![
+            "curl -fsSL https://example.test/install.sh | bash".into(),
+            "uv tool install ruff".into(),
+        ];
+        assert!(recipe.validate().is_ok());
+        let rendered = recipe.dockerfile_text();
+        let setup = rendered
+            .split_once("# --- setup (root, with network) ---\n")
+            .unwrap()
+            .1;
+        assert_eq!(
+            setup.lines().take(3).collect::<Vec<_>>(),
+            [
+                "RUN curl -fsSL https://example.test/install.sh | bash",
+                "RUN uv tool install ruff",
+                "RUN chown -R \"${USERNAME}:${USERNAME}\" /opt/mise",
+            ]
+        );
+        assert!(setup.starts_with("RUN curl"));
+        assert!(setup.contains("COPY runtime-profile.sh"));
+        // The checks still run after setup, and still without a network.
+        assert!(
+            rendered.find("RUN uv tool install ruff").unwrap()
+                < rendered.find("--network=none").unwrap()
+        );
+        assert_ne!(recipe.image_tag("test"), original);
+
+        let restored: Recipe =
+            serde_json::from_str(&serde_json::to_string(&recipe).unwrap()).unwrap();
+        assert_eq!(restored.dockerfile_text(), rendered);
+        for invalid in ["", " \t", "true\nfalse", "echo\0bad"] {
+            recipe.setup = vec![invalid.into()];
+            assert!(recipe.validate().is_err(), "{invalid}");
+        }
+        recipe.setup = vec!["true".into(); 17];
+        assert!(recipe.validate().is_err());
+    }
+
+    #[test]
+    fn the_mise_config_travels_inside_the_dockerfile_as_a_heredoc() {
+        let recipe: Recipe = serde_json::from_str(
+            r#"{"name":"heredoc","dependencies":[{"tool":"npm:t3","version":"latest"}],
+                "build_checks":["t3 --help"]}"#,
+        )
+        .unwrap();
+        let rendered = recipe.dockerfile_text();
+        let body = rendered
+            .split_once("COPY <<'MISE_CONFIG_EOF' /opt/mise/config/config.toml\n")
+            .unwrap()
+            .1
+            .split_once("MISE_CONFIG_EOF\n")
+            .unwrap()
+            .0;
+        assert_eq!(body, recipe.mise_toml());
+        assert!(body.contains("[tasks.check]"));
+        // A quoted delimiter, so a $ in a version is not expanded by the build.
+        assert!(rendered.contains("<<'MISE_CONFIG_EOF'"));
+    }
+
+    #[test]
     fn generated_context_includes_every_runtime_asset_referenced_by_dockerfile() {
         let path = std::env::temp_dir().join(format!(
             "self-host-dev-image-context-{}-{}",
@@ -868,6 +983,7 @@ mod tests {
             id: "test".into(),
             recipe: Recipe {
                 build_checks: vec![],
+                setup: vec![],
                 template_id: None,
                 name: "test".into(),
                 dependencies: vec![Dependency {
@@ -884,16 +1000,16 @@ mod tests {
 
         write_build_context(&path, &image).unwrap();
 
-        for source in DOCKERFILE.lines().filter_map(|line| {
+        let dockerfile = std::fs::read_to_string(path.join("Dockerfile")).unwrap();
+        assert_eq!(dockerfile, image.recipe.dockerfile_text());
+        for source in dockerfile.lines().filter_map(|line| {
             line.strip_prefix("COPY ")
                 .and_then(|line| line.split_whitespace().next())
+                .filter(|source| !source.starts_with("<<"))
         }) {
             assert!(path.join(source).is_file(), "missing COPY source: {source}");
         }
-        assert_eq!(
-            std::fs::read_to_string(path.join("mise.toml")).unwrap(),
-            image.recipe.mise_toml()
-        );
+        assert!(!path.join("mise.toml").exists());
         std::fs::remove_dir_all(path).unwrap();
     }
 }
