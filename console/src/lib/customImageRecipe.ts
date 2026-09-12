@@ -1,4 +1,4 @@
-import type { ImageDependency } from "./devImageTemplates.js";
+import type { ImageDependency } from "./customImageTemplates.js";
 
 /** The editor's fields. `dockerfile` is the mode: a string means the Operator
  * took the file over, `null` means the Host still generates it. */

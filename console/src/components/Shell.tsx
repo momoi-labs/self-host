@@ -39,7 +39,7 @@ export function Shell({
   healthy,
   overview,
   deploy,
-  devImages = { href: "/console/#dev-images", active: false },
+  customImages = { href: "/console/#custom-images", active: false },
   application,
   children,
 }: {
@@ -49,7 +49,7 @@ export function Shell({
   healthy: boolean;
   overview: Destination;
   deploy: Destination;
-  devImages?: Destination;
+  customImages?: Destination;
   application: (app: App) => Destination;
   children: ReactNode;
 }) {
@@ -86,7 +86,7 @@ export function Shell({
         {
           destinations: [
             { ...overview, label: "Overview", leading: <Icon name="chart" /> },
-            { ...devImages, label: "Development images", leading: <Icon name="box" /> },
+            { ...customImages, label: "Custom images", leading: <Icon name="box" /> },
           ],
         },
         {

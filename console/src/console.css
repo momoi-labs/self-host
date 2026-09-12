@@ -214,30 +214,29 @@
    readable measure is only longer lines in the Compose editor. */
 .form-page { max-width: 720px; }
 
-.dev-build-actions { flex-wrap: wrap; }
-.dev-image-list { min-width: 0; }
-.dev-image-list > .table-wrap { min-width: 0; }
-.dev-images-page { display: flex; flex-direction: column; gap: var(--spacing-lg); min-height: 0; min-width: 0; flex: 1; }
+.custom-image-list { min-width: 0; }
+.custom-image-list > .table-wrap { min-width: 0; }
+.custom-images-page { display: flex; flex-direction: column; gap: var(--spacing-lg); min-height: 0; min-width: 0; flex: 1; }
 /* The editor is one scrolling column of sections in Dockerfile order, with
    the build log docked at the bottom of the card: closed until a build
    starts, then half the card, then all of it. A form this tall has no room
    left for a side-by-side split. */
-.dev-images-panel { display: grid; grid-template-rows: minmax(0, 1fr) auto; flex: 1; min-height: 0; overflow: hidden; }
-.dev-images-panel[data-dock="half"] { grid-template-rows: minmax(0, 1fr) 40%; }
-.dev-images-panel[data-dock="full"] { grid-template-rows: 0 minmax(0, 1fr); }
-.dev-image-form { overflow: auto; padding: var(--spacing-lg); display: grid; gap: var(--spacing-lg); align-content: start; }
-.dev-image-steps { counter-reset: dev-image-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
-.dev-image-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
-.dev-image-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
+.custom-images-panel { display: grid; grid-template-rows: minmax(0, 1fr) auto; flex: 1; min-height: 0; overflow: hidden; }
+.custom-images-panel[data-dock="half"] { grid-template-rows: minmax(0, 1fr) 40%; }
+.custom-images-panel[data-dock="full"] { grid-template-rows: 0 minmax(0, 1fr); }
+.custom-image-form { overflow: auto; padding: var(--spacing-lg); display: grid; gap: var(--spacing-lg); align-content: start; }
+.custom-image-steps { counter-reset: custom-image-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
+.custom-image-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
+.custom-image-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
 /* The number hangs in the gutter the fields are indented by, on the title's
    own line so the two stay centred on each other. */
-.dev-image-steps > li > .t-caps {
-  counter-increment: dev-image-step; margin: 0;
+.custom-image-steps > li > .t-caps {
+  counter-increment: custom-image-step; margin: 0;
   margin-inline-start: calc(-1.5rem - var(--spacing-sm));
   display: flex; align-items: center; gap: var(--spacing-sm);
 }
-.dev-image-steps > li > .t-caps::before {
-  content: counter(dev-image-step);
+.custom-image-steps > li > .t-caps::before {
+  content: counter(custom-image-step);
   flex: none; display: grid; place-items: center;
   width: 1.5rem; height: 1.5rem; border-radius: var(--radius-full);
   background: var(--color-secondary); color: var(--color-secondary-foreground);
@@ -245,22 +244,22 @@
 }
 /* The way out of the builder, and the way back into it. A dashed box reads
    as an escape hatch rather than one more field. */
-.dev-image-takeover { display: flex; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); }
-.dev-image-takeover p { margin: 0; }
-#dev-image-dockerfile { min-height: calc(24 * 1lh + var(--spacing-md)); }
-.dev-image-dock { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-block-start: 1px solid var(--color-border); }
-.dev-image-dock-head { display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--spacing-xs) var(--spacing-md); }
-.dev-image-dock .logview { border: 0; border-radius: 0; min-height: 0; height: 100%; }
-.dev-image-lastline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.custom-image-takeover { display: flex; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); }
+.custom-image-takeover p { margin: 0; }
+#custom-image-dockerfile { min-height: calc(24 * 1lh + var(--spacing-md)); }
+.custom-image-dock { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-block-start: 1px solid var(--color-border); }
+.custom-image-dock-head { display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--spacing-xs) var(--spacing-md); }
+.custom-image-dock .logview { border: 0; border-radius: 0; min-height: 0; height: 100%; }
+.custom-image-lastline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (min-width: 1024px) {
-  .app-shell:has(.dev-images-page) { height: 100vh; }
-  #detail:has(.dev-images-page) { display: flex; flex: 1; min-height: 0; }
+  .app-shell:has(.custom-images-page) { height: 100vh; }
+  #detail:has(.custom-images-page) { display: flex; flex: 1; min-height: 0; }
 }
 @media (max-width: 1023px) {
-  .dev-images-panel[data-dock="half"], .dev-images-panel[data-dock="full"] { grid-template-rows: minmax(0, 1fr) 60vh; }
+  .custom-images-panel[data-dock="half"], .custom-images-panel[data-dock="full"] { grid-template-rows: minmax(0, 1fr) 60vh; }
 }
-.dev-image-code { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--type-family-mono); font-size: var(--type-size-label); }
-.dev-image-tag { overflow-wrap: anywhere; user-select: all; }
+.custom-image-code { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--type-family-mono); font-size: var(--type-size-label); }
+.custom-image-tag { overflow-wrap: anywhere; user-select: all; }
 
 /* Lifecycle actions sit with the status badge: what it is, and what you can
    do about it, in one glance. */

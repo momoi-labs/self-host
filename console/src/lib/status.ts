@@ -1,4 +1,4 @@
-import type { App, DevImage, HttpReadiness } from "./types.js";
+import type { App, CustomImage, HttpReadiness } from "./types.js";
 
 export type Tone = "success" | "danger" | "neutral";
 
@@ -12,14 +12,14 @@ export function statusTone(status: string): Tone {
   return "neutral";
 }
 
-/** A development image's status is its latest build, so it reads as one. */
-export function buildTone(image: DevImage): Tone {
+/** A custom image's status is its latest build, so it reads as one. */
+export function buildTone(image: CustomImage): Tone {
   if (image.status === "ready") return "success";
   if (image.status === "failed") return "danger";
   return "neutral";
 }
 
-export function buildLabel(image: DevImage): string {
+export function buildLabel(image: CustomImage): string {
   if (image.status === "ready") return "Built";
   if (image.status === "failed") return "Failed";
   return "Building";

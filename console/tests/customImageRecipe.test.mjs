@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commands, recipeBody } from "../src/lib/devImageRecipe.ts";
+import { commands, recipeBody } from "../src/lib/customImageRecipe.ts";
 
 const fields = {
   name: "  web-dev  ",
