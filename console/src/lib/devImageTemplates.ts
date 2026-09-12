@@ -5,6 +5,7 @@ export type DevImageTemplate = {
   name: string;
   imageName: string;
   dependencies: ImageDependency[];
+  setup: string[];
   buildChecks: string[];
   application: { command: string; web_port: number; persist_data: boolean };
 };
@@ -19,6 +20,7 @@ export const devImageTemplates: DevImageTemplate[] = [{
     { tool: "claude-code", version: "latest" },
     { tool: "npm:@openai/codex", version: "latest" },
   ],
+  setup: [],
   buildChecks: [
     "node --version",
     "t3 --help",

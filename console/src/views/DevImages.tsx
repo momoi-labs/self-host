@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
-  Button, Card, FormField, Label, Pane, Split, Splitter,
+  Button, Card, FormField, Label,
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
   Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
@@ -20,7 +20,7 @@ import { api, asReport, failureOf } from "../lib/api.js";
 import type { Report } from "../lib/types.js";
 import { devImageTemplate, devImageTemplates, type ImageDependency } from "../lib/devImageTemplates.js";
 import {
-  ALLOW_BUILDS, isKey, isVersion, miseToml, readOption, splitKey, suggest, takesAllowBuilds,
+  ALLOW_BUILDS, isKey, isVersion, readOption, splitKey, suggest, takesAllowBuilds,
 } from "../lib/dependencies.js";
 
 type Dependency = ImageDependency;
@@ -29,6 +29,7 @@ type DevImage = {
   name: string;
   template_id?: string | null;
   dependencies: Dependency[];
+  setup?: string[];
   build_checks?: string[];
   image: string;
   status: "building" | "ready" | "failed";
@@ -38,6 +39,35 @@ type DevImage = {
 };
 
 type MiseTool = { name: string; description?: string; backends: string[] };
+
+/** How much of the card the build log takes: none, the lower half, or all. */
+type Dock = "closed" | "half" | "full";
+
+/** A shell editor holds one command per line; blank lines are not commands. */
+function commands(text: string): string[] {
+  return text.split("\n").map((command) => command.trim()).filter(Boolean);
+}
+
+function statusTone(image: DevImage) {
+  return image.status === "ready" ? "success" : image.status === "failed" ? "danger" : "neutral";
+}
+
+function statusLabel(image: DevImage) {
+  return image.status === "ready" ? "Built" : image.status === "failed" ? "Failed" : "Building";
+}
+
+/**
+ * One numbered section of the form. The four of them run in the order the
+ * Dockerfile does, so the Operator reads the build by scrolling the form.
+ */
+function Step({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <li>
+      <p className="t-caps">{title}</p>
+      {children}
+    </li>
+  );
+}
 
 let toolCatalog: Promise<MiseTool[]> | null = null;
 
@@ -226,7 +256,9 @@ export function DevImages({ listing, selected, onOpen }: {
   const [name, setName] = useState("");
   const [templateId, setTemplateId] = useState("");
   const [dependencies, setDependencies] = useState<Dependency[]>([]);
+  const [setup, setSetup] = useState("");
   const [buildChecks, setBuildChecks] = useState("");
+  const [dock, setDock] = useState<Dock>("closed");
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<Report | null>(null);
   const [loadFailure, setLoadFailure] = useState<Report | null>(null);
@@ -238,14 +270,15 @@ export function DevImages({ listing, selected, onOpen }: {
   const building = images.some((image) => image.status === "building");
   const current = images.find((image) => image.id === selected);
   const editingDisabled = submitting || current?.status === "building";
-  const checks = buildChecks.split("\n").map((command) => command.trim()).filter(Boolean);
-  const mise = miseToml(dependencies, checks);
+  const checks = commands(buildChecks);
   const ready = dependencies.length > 0 && dependencies.every((dep) => isVersion(dep.version));
+  const lastLine = current?.log.trimEnd().split("\n").at(-1) ?? "No build yet.";
 
   useEffect(() => {
     setName(current?.name ?? "");
     setTemplateId(current?.template_id ?? "");
     setDependencies(current?.dependencies ?? []);
+    setSetup((current?.setup ?? []).join("\n"));
     setBuildChecks((current?.build_checks ?? []).join("\n"));
     setFailure(null);
     setEditorKey((value) => value + 1);
@@ -259,9 +292,16 @@ export function DevImages({ listing, selected, onOpen }: {
     setTemplateId(id);
     setName((name) => !name || name === previous?.imageName ? template?.imageName ?? "" : name);
     setDependencies(structuredClone(template?.dependencies ?? []));
+    setSetup((template?.setup ?? []).join("\n"));
     setBuildChecks((template?.buildChecks ?? []).join("\n"));
     setEditorKey((value) => value + 1);
   }
+
+  // A build the Operator just started is the one thing worth interrupting the
+  // form for. A dock they closed since stays closed.
+  useEffect(() => {
+    if (current?.status === "building") setDock((dock) => dock === "closed" ? "half" : dock);
+  }, [current?.status]);
 
   useEffect(() => {
     let active = true;
@@ -292,7 +332,11 @@ export function DevImages({ listing, selected, onOpen }: {
     setFailure(null);
     try {
       const response = await api("/dev-images", {
-        method: "POST", body: JSON.stringify({ id: selected, name: name.trim(), template_id: templateId || null, dependencies, build_checks: checks }),
+        method: "POST",
+        body: JSON.stringify({
+          id: selected, name: name.trim(), template_id: templateId || null,
+          dependencies, setup: commands(setup), build_checks: checks,
+        }),
       });
       if (!response.ok) throw await failureOf(response);
       const image = await response.json() as DevImage;
@@ -378,9 +422,7 @@ export function DevImages({ listing, selected, onOpen }: {
                       <TableCell>{image.name}</TableCell>
                       <TableCell className="mono">{image.dependencies.map((dep) => `${dep.tool}@${dep.version}`).join(", ")}</TableCell>
                       <TableCell className="mono">{image.image}</TableCell>
-                      <TableCell><StatusBadge tone={image.status === "ready" ? "success" : image.status === "failed" ? "danger" : "neutral"}>
-                        {image.status === "ready" ? "Built" : image.status === "failed" ? "Failed" : "Building"}
-                      </StatusBadge></TableCell>
+                      <TableCell><StatusBadge tone={statusTone(image)}>{statusLabel(image)}</StatusBadge></TableCell>
                       <TableCell onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
                         <Button type="button" size="sm" variant="ghost" className="btn-danger-ghost"
                           aria-label={`Delete ${image.name}`} disabled={!!deleting || !!deleteReason(image)}
@@ -420,16 +462,14 @@ export function DevImages({ listing, selected, onOpen }: {
         <PageHeaderDescription>Save your image's dependencies and build it on this Host.</PageHeaderDescription>
       </PageHeader>
       {loadFailure ? <Failure failure={loadFailure} /> : null}
-      <Card className="dev-images-panel">
-        <Split>
-          <Pane>
-            <form className="stack" onSubmit={submit}>
-              <div className="row">
-                <p className="t-caps grow">Configuration</p>
-                {current ? <StatusBadge tone={current.status === "ready" ? "success" : current.status === "failed" ? "danger" : "neutral"}>
-                  {current.status === "ready" ? "Built" : current.status === "failed" ? "Failed" : "Building"}
-                </StatusBadge> : null}
-              </div>
+      <Card className="dev-images-panel" data-dock={dock}>
+        <form className="dev-image-form" onSubmit={submit}>
+          <div className="row">
+            <p className="t-caps grow">Configuration</p>
+            {current ? <StatusBadge tone={statusTone(current)}>{statusLabel(current)}</StatusBadge> : null}
+          </div>
+          <ol className="dev-image-steps">
+            <Step title="Image">
               {!selected ? (
                 <FormField id="dev-image-template" label="Template"
                   hint="Start with a template, then edit any field before building.">
@@ -441,40 +481,61 @@ export function DevImages({ listing, selected, onOpen }: {
                 </FormField>
               ) : null}
               <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
+                hint="Debian 13 with mise and Git. The name becomes the local tag."
                 value={name} onChange={(event) => setName(event.target.value)}
                 required maxLength={128} disabled={editingDisabled}
               />
+            </Step>
+            <Step title="Dependencies">
               <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
+            </Step>
+            <Step title="Setup">
+              <FormField id="dev-image-setup" label="Setup commands (optional)"
+                hint="One command per line, each its own build step. Runs as root, with network, after the dependencies. This is where a shell installer or an apt package goes.">
+                <ShellEditor id="dev-image-setup" value={setup} onChange={setSetup}
+                  disabled={editingDisabled} maxLength={65536}
+                  placeholder={"curl -fsSL https://example.com/install.sh | bash\napt-get install -y --no-install-recommends ripgrep"} />
+              </FormField>
+            </Step>
+            <Step title="Build checks">
               <FormField id="build-checks" label="Build checks (optional)"
-                hint="One command per line, saved as tasks.check.run. Runs as dev without network access, with a 60-second limit per command. Any failure stops the build.">
+                hint="One command per line, saved as tasks.check.run. Runs as dev without network access, after the setup, with a 60-second limit per command. Any failure stops the build.">
                 <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
                   disabled={editingDisabled} maxLength={65536}
                   placeholder={"t3 --help\nclaude --version\ncodex --version"} />
               </FormField>
-              <details className="disclosure">
-                <summary>mise.toml</summary>
-                <pre className="dev-image-code">{mise}</pre>
-              </details>
-              {failure ? <Failure failure={failure} /> : null}
-              {current?.last_error ? <Failure failure={current.last_error} /> : null}
-              <p className="muted t-label">{building ? "A build is running on this Host." : "Debian 13 with mise and Git. Save and build to apply your changes."}</p>
-              <div className="form-actions">
-                <Button type="submit" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
-                  {submitting ? "Saving..." : current?.status === "building" ? "Building..." : "Save and build"}
-                </Button>
-              </div>
-            </form>
-          </Pane>
-          <Splitter defaultSize={48} min={30} max={65} aria-label="Resize the image editor and build log" />
-          <Pane className="pane-logs dev-image-output">
-            <p className="t-caps">Logs</p>
+            </Step>
+          </ol>
+          {failure ? <Failure failure={failure} /> : null}
+          {current?.last_error ? <Failure failure={current.last_error} /> : null}
+          {building ? <p className="muted t-label">A build is running on this Host.</p> : null}
+          <div className="form-actions">
+            <Button type="submit" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
+              {submitting ? "Saving..." : current?.status === "building" ? "Building..." : "Save and build"}
+            </Button>
+          </div>
+        </form>
+        <div className="dev-image-dock" role="region" aria-label="Build logs">
+          <div className="dev-image-dock-head">
+            <Button type="button" size="sm" variant="ghost" aria-expanded={dock !== "closed"}
+              onClick={() => setDock(dock === "closed" ? "half" : "closed")}>Logs</Button>
+            {current ? <StatusBadge tone={statusTone(current)}>{statusLabel(current)}</StatusBadge> : null}
+            <span className="grow mono muted t-label dev-image-lastline">{lastLine}</span>
+            {dock !== "closed" ? (
+              <Button type="button" size="sm" variant="ghost"
+                onClick={() => setDock(dock === "full" ? "half" : "full")}>
+                {dock === "full" ? "Restore" : "Expand"}
+              </Button>
+            ) : null}
+          </div>
+          {dock !== "closed" ? (
             <LogView key={current?.id ?? "new"} role="log" aria-live="polite" tabIndex={0} aria-label="Build logs">
               {(current?.log || "Save and build to see the output here.").split("\n").map((line, index) => (
                 <LogViewLine key={index}>{line || " "}</LogViewLine>
               ))}
             </LogView>
-          </Pane>
-        </Split>
+          ) : null}
+        </div>
       </Card>
     </div>
   );

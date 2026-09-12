@@ -1,5 +1,3 @@
-import type { ImageDependency } from "./devImageTemplates.js";
-
 /** What mise resolves a tool by: a short name, or `backend:name`. */
 const KEY = /^[a-zA-Z0-9][a-zA-Z0-9._:/@-]{0,159}$/;
 
@@ -79,17 +77,4 @@ export function readOption(text: string): { name: string; values: string[] } | n
   if (!name) return null;
   const body = text.slice(equals + 1).trim().replace(/^\[/, "").replace(/\]$/, "");
   return { name, values: body.split(",").map((value) => value.trim()).filter(Boolean) };
-}
-
-/** The recipe as mise reads it. A tool with options is a table rather than a
- * bare version string. */
-export function miseToml(dependencies: ImageDependency[], checks: string[]): string {
-  const tools = dependencies.map(({ tool, version, allow_builds }) => {
-    const value = allow_builds?.length
-      ? `{ version = ${JSON.stringify(version)}, allow_builds = ${JSON.stringify(allow_builds)} }`
-      : JSON.stringify(version);
-    return `${JSON.stringify(tool)} = ${value}`;
-  });
-  return `[tools]\n${tools.join("\n")}\n`
-    + (checks.length ? `\n[tasks.check]\nrun = ${JSON.stringify(checks)}\n` : "");
 }
