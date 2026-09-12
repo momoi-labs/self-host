@@ -198,7 +198,7 @@ function Dependencies({ value, onChange, disabled }: {
       <small className="field-hint" id="dependency-help">
         The packages mise installs into the image, one chip per tool with the version to install.
         They end up on the <code>PATH</code> inside the container, so they are what it can run.
-        Anything mise has no package for goes in Setup below.
+        Anything mise has no package for goes in Custom commands below.
         <br />
         Type a mise key or search for one. Enter and Tab take a suggestion, Backspace removes the
         last chip. Press a version to change it. npm tools take{" "}
@@ -388,8 +388,8 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
                 <Step title="mise packages and dependencies">
                   <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
                 </Step>
-                <Step title="Setup">
-                  <FormField id="dev-image-setup" label="Setup commands"
+                <Step title="Custom commands">
+                  <FormField id="dev-image-setup" label="Custom commands"
                     hint="One command per line, each its own build step. Runs as root, with network, after the dependencies. This is where a shell installer or an apt package goes.">
                     <ShellEditor id="dev-image-setup" value={setup} onChange={setSetup}
                       disabled={editingDisabled} maxLength={65536}
@@ -398,7 +398,7 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
                 </Step>
                 <Step title="Build checks">
                   <FormField id="build-checks" label="Build checks"
-                    hint="One command per line, saved as tasks.check.run. Runs as dev without network access, after the setup, with a 60-second limit per command. Any failure stops the build.">
+                    hint="One command per line, saved as tasks.check.run. Runs as dev without network access, after the custom commands, with a 60-second limit per command. Any failure stops the build.">
                     <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
                       disabled={editingDisabled} maxLength={65536}
                       placeholder={"t3 --help\nclaude --version\ncodex --version"} />
