@@ -529,56 +529,56 @@ export function DevImages({ listing, selected, onOpen }: {
               </div>
             </>
           ) : (
-          <>
-          <ol className="dev-image-steps">
-            <Step title="Image">
-              {!selected ? (
-                <FormField id="dev-image-template" label="Template"
-                  hint="Start with a template, then edit any field before building.">
-                  <select id="dev-image-template" className="input" value={templateId}
-                    disabled={editingDisabled} onChange={(event) => chooseTemplate(event.target.value)}>
-                    <option value="">Custom image</option>
-                    {devImageTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                  </select>
-                </FormField>
-              ) : null}
-              <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
-                hint="Debian 13 with mise and Git. The name becomes the local tag."
-                value={name} onChange={(event) => setName(event.target.value)}
-                required maxLength={128} disabled={editingDisabled}
-              />
-            </Step>
-            <Step title="Dependencies">
-              <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
-            </Step>
-            <Step title="Setup">
-              <FormField id="dev-image-setup" label="Setup commands (optional)"
-                hint="One command per line, each its own build step. Runs as root, with network, after the dependencies. This is where a shell installer or an apt package goes.">
-                <ShellEditor id="dev-image-setup" value={setup} onChange={setSetup}
-                  disabled={editingDisabled} maxLength={65536}
-                  placeholder={"curl -fsSL https://example.com/install.sh | bash\napt-get install -y --no-install-recommends ripgrep"} />
-              </FormField>
-            </Step>
-            <Step title="Build checks">
-              <FormField id="build-checks" label="Build checks (optional)"
-                hint="One command per line, saved as tasks.check.run. Runs as dev without network access, after the setup, with a 60-second limit per command. Any failure stops the build.">
-                <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
-                  disabled={editingDisabled} maxLength={65536}
-                  placeholder={"t3 --help\nclaude --version\ncodex --version"} />
-              </FormField>
-            </Step>
-          </ol>
-          <div className="dev-image-takeover">
-            <div className="grow">
-              <p className="t-label">Need more than these fields?</p>
-              <p className="muted t-label">Open the generated Dockerfile and edit it directly. The builder switches off for this image, and the Host builds exactly what you write.</p>
-            </div>
-            <Button type="button" size="sm" disabled={editingDisabled || takingOver || !buildable}
-              onClick={() => void takeOver()}>
-              {takingOver ? "Opening..." : "Edit Dockerfile"}
-            </Button>
-          </div>
-          </>
+            <>
+              <ol className="dev-image-steps">
+                <Step title="Image">
+                  {!selected ? (
+                    <FormField id="dev-image-template" label="Template"
+                      hint="Start with a template, then edit any field before building.">
+                      <select id="dev-image-template" className="input" value={templateId}
+                        disabled={editingDisabled} onChange={(event) => chooseTemplate(event.target.value)}>
+                        <option value="">Custom image</option>
+                        {devImageTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                      </select>
+                    </FormField>
+                  ) : null}
+                  <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
+                    hint="Debian 13 with mise and Git. The name becomes the local tag."
+                    value={name} onChange={(event) => setName(event.target.value)}
+                    required maxLength={128} disabled={editingDisabled}
+                  />
+                </Step>
+                <Step title="Dependencies">
+                  <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
+                </Step>
+                <Step title="Setup">
+                  <FormField id="dev-image-setup" label="Setup commands (optional)"
+                    hint="One command per line, each its own build step. Runs as root, with network, after the dependencies. This is where a shell installer or an apt package goes.">
+                    <ShellEditor id="dev-image-setup" value={setup} onChange={setSetup}
+                      disabled={editingDisabled} maxLength={65536}
+                      placeholder={"curl -fsSL https://example.com/install.sh | bash\napt-get install -y --no-install-recommends ripgrep"} />
+                  </FormField>
+                </Step>
+                <Step title="Build checks">
+                  <FormField id="build-checks" label="Build checks (optional)"
+                    hint="One command per line, saved as tasks.check.run. Runs as dev without network access, after the setup, with a 60-second limit per command. Any failure stops the build.">
+                    <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
+                      disabled={editingDisabled} maxLength={65536}
+                      placeholder={"t3 --help\nclaude --version\ncodex --version"} />
+                  </FormField>
+                </Step>
+              </ol>
+              <div className="dev-image-takeover">
+                <div className="grow">
+                  <p className="t-label">Need more than these fields?</p>
+                  <p className="muted t-label">Open the generated Dockerfile and edit it directly. The builder switches off for this image, and the Host builds exactly what you write.</p>
+                </div>
+                <Button type="button" size="sm" disabled={editingDisabled || takingOver || !buildable}
+                  onClick={() => void takeOver()}>
+                  {takingOver ? "Opening..." : "Edit Dockerfile"}
+                </Button>
+              </div>
+            </>
           )}
           {failure ? <Failure failure={failure} /> : null}
           {current?.last_error ? <Failure failure={current.last_error} /> : null}
