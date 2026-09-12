@@ -21,7 +21,7 @@ pub mod bootstrap;
 pub mod compose_app;
 pub mod config;
 pub mod console;
-pub mod dev_images;
+pub mod custom_images;
 pub mod dns;
 pub mod docker;
 pub mod error;
@@ -47,7 +47,7 @@ struct AppState<S: StateStore> {
     store: S,
     docker: Arc<dyn DockerRuntime>,
     routes: Arc<dyn RouteStore>,
-    dev_images: Arc<dev_images::Builds>,
+    custom_images: Arc<custom_images::Builds>,
     metrics: metrics::Metrics,
 }
 
@@ -61,7 +61,7 @@ pub fn build_app<S: StateStore>(
         store,
         docker,
         routes,
-        dev_images: Arc::new(dev_images::Builds::default()),
+        custom_images: Arc::new(custom_images::Builds::default()),
         metrics,
     };
 
@@ -71,15 +71,15 @@ pub fn build_app<S: StateStore>(
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .route("/compose/inspect", post(inspect_compose))
         .route(
-            "/dev-images",
-            get(dev_images::list::<S>).post(dev_images::create::<S>),
+            "/custom-images",
+            get(custom_images::list::<S>).post(custom_images::create::<S>),
         )
-        .route("/dev-images/tools", get(dev_images::catalog))
+        .route("/custom-images/tools", get(custom_images::catalog))
         .route(
-            "/dev-images/dockerfile",
-            post(dev_images::render_dockerfile),
+            "/custom-images/dockerfile",
+            post(custom_images::render_dockerfile),
         )
-        .route("/dev-images/{id}", delete(dev_images::remove::<S>))
+        .route("/custom-images/{id}", delete(custom_images::remove::<S>))
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
         .route("/apps/id/{id}/start", post(start_app::<S>))
@@ -940,13 +940,13 @@ async fn validate_development_image<S: StateStore>(
     {
         return Ok(settings);
     }
-    match dev_images::ready_image(state, &settings.image_id, &settings.tag).await {
+    match custom_images::ready_image(state, &settings.image_id, &settings.tag).await {
         Ok(Some(_)) => Ok(settings),
         Ok(None) => Err(apps::DeployError::InvalidDevelopment(
-            "select a successful development image build".into(),
+            "select a successful custom image build".into(),
         )),
         Err(error) => Err(apps::DeployError::InvalidDevelopment(format!(
-            "could not read development images: {error}"
+            "could not read custom images: {error}"
         ))),
     }
 }

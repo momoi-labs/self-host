@@ -84,7 +84,7 @@ impl std::fmt::Display for DeployError {
             DeployError::MissingPath => write!(f, "path is required"),
             DeployError::MissingCompose => write!(f, "a Compose definition is required"),
             DeployError::InvalidDevelopment(message) => {
-                write!(f, "invalid development image: {message}")
+                write!(f, "invalid custom image: {message}")
             }
             DeployError::InvalidCompose(_) => write!(f, "invalid Compose definition"),
             DeployError::Docker(_) => write!(f, "failed to deploy the Application"),

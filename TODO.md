@@ -7,7 +7,7 @@ Open work is tracked in issues. The ones in flight:
 - [#90](https://github.com/momoi-labs/self-host/issues/90): enrol credentials
   in a development environment without a browser.
 
-The [development images TODO](docs/development-images-todo.md) keeps the test
+The [custom images TODO](docs/custom-images-todo.md) keeps the test
 history of the image prototype; items left unchecked there are superseded by
 those two issues.
 

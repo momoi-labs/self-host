@@ -100,7 +100,7 @@ export function AppForm({
     setCustomImagesFailure(null);
     void (async () => {
       try {
-        const response = await api("/dev-images", { signal: controller.signal });
+        const response = await api("/custom-images", { signal: controller.signal });
         if (!response.ok) throw await failureOf(response);
         const images = await response.json() as typeof customImages;
         if (!controller.signal.aborted) {

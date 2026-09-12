@@ -31,7 +31,7 @@ export default defineConfig({
         "/bootstrap",
         "/compose",
         "/api-keys",
-        "/dev-images",
+        "/custom-images",
         "/metrics",
       ].map((path) => [
         path,

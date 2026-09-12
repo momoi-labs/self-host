@@ -46,7 +46,7 @@ than refusing.
 The console says this before converting, not after. The dialog names what
 stops working: the image selector, the "a newer build is available" notice,
 and the start-command and persistence fields. The image association goes with
-them. An Operator who rebuilds their development image afterwards pastes the
+them. An Operator who rebuilds their custom image afterwards pastes the
 new tag into the file, the same as any other Compose Application.
 
 ## What stays out of scope

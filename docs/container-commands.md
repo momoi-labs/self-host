@@ -14,7 +14,7 @@ Click **Close terminal**, run `exit`, or leave the Application page to end the
 session. A lost connection ends the session too. Start another terminal to
 reconnect. Closing the terminal does not stop the Application.
 
-Development images use `dev`, with the image's HOME and mise PATH. Other images
+Custom images use `dev`, with the image's HOME and mise PATH. Other images
 use their configured container user. The terminal does not install packages or
 change the Application's start command.
 
@@ -55,7 +55,7 @@ a cross-origin page can reach.
 After the key, the handler resolves the Application and requires the container
 to be one of its own and to be running. A container belonging to another
 Application is refused by name, before `docker exec` runs. The user is the
-Platform's to choose, not the request's: `dev` for a development image, the
+Platform's to choose, not the request's: `dev` for a custom image, the
 image's configured user otherwise. There is no field that asks for root.
 
 Frames are capped at 64 KiB, an input payload at 16 KiB, columns at 2 to 500

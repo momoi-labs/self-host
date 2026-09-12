@@ -1,4 +1,4 @@
-# Development images TODO
+# Custom images TODO
 
 Track the remaining prototype work here. The first wave has been tested in the
 console, including an authenticated Claude response through T3.
@@ -54,10 +54,10 @@ into the generated images. Keep the prototype's configurable mise dependencies.
   Remove, Save and lifecycle actions while it runs. Show success only after
   confirmation; show failures in a toast and allow another removal attempt.
   Tracked in [#97](https://github.com/momoi-labs/self-host/issues/97).
-- [x] Preserve the Development image form when editing an Application. Keep
+- [x] Preserve the Custom image form when editing an Application. Keep
   the image selector, start command, web port and persistence control available
   after creation instead of converting the Application to a plain Compose editor.
-- [x] Store the selected development image ID and deployed tag with the
+- [x] Store the selected custom image ID and deployed tag with the
   Application's runtime settings. Reopen the form without guessing these
   values from arbitrary Compose text.
 - [x] Replace an image through Save and redeploy. Preserve the Application ID,
@@ -73,11 +73,11 @@ into the generated images. Keep the prototype's configurable mise dependencies.
   it to the Operator. Implementation is tracked in
   [#100](https://github.com/momoi-labs/self-host/issues/100).
 - [x] Verify deletion stays disabled while an Application uses any tag of a
-  development image, including an older build or a stopped Application.
+  custom image, including an older build or a stopped Application.
 
 ## Templates
 
-- [x] Add template selection when creating a development image. Preserve the
+- [x] Add template selection when creating a custom image. Preserve the
   template association when saving and editing the recipe. Selecting that
   image in a new Application fills runtime defaults; later image changes
   preserve the Operator's command, port and persistence settings.
@@ -148,7 +148,7 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [ ] Finish the device checks from PR #92. Access the environment from a phone
   and confirm an agent task survives closing and reconnecting the client.
 
-## Setup commands and the Dockerfile hand-off
+## Custom commands and the Dockerfile hand-off
 
 Tracked in [#107](https://github.com/momoi-labs/self-host/issues/107).
 
@@ -156,15 +156,15 @@ Tracked in [#107](https://github.com/momoi-labs/self-host/issues/107).
   commands that run as root, with network, after `mise install` and before the
   build checks, one `RUN` each so the log names the step that failed. The
   layer restores ownership of `/opt/mise` afterwards.
-- [x] Section the image form in Dockerfile order: Image, Dependencies, Setup,
-  Build checks. The build log moves to a dock at the bottom of the card that
-  opens when a build starts.
+- [x] Section the image form in Dockerfile order: Image, mise packages and
+  dependencies, Custom commands, Build checks. The build log moves to a dock at
+  the bottom of the card that opens when a build starts.
 - [x] Let the Operator own the Dockerfile. "Edit Dockerfile" asks the Host to
   render the current fields and hands the text over; the Host then builds it as
   is, with no user, entrypoint or checks injected. Going back discards the text
   after a confirmation and regenerates from the fields, which are untouched.
   Decided in
-  [ADR-0022](adr/0022-development-images-hand-over-their-dockerfile.md).
+  [ADR-0022](adr/0022-custom-images-hand-over-their-dockerfile.md).
 - [x] Make the mise config part of the file the Operator reads. It travels as
   a heredoc inside the Dockerfile instead of a `COPY mise.toml`, so an edited
   file is self-contained.
@@ -173,21 +173,21 @@ Tracked in [#107](https://github.com/momoi-labs/self-host/issues/107).
   Every existing image gets a new tag on its next save and rebuilds once;
   Applications keep their deployed tag until they are redeployed.
 - [ ] Confirm a Hermes image. `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`
-  as a setup command with `hermes --version` as a build check, which is the
+  as a custom command with `hermes --version` as a build check, which is the
   case that opened the issue.
 - [ ] Decide whether an edited file should be able to regenerate and show a
   diff. Deliberately out of scope until an Operator misses it.
 
 To validate this wave:
 
-1. Build an image with a setup command that installs something mise cannot,
+1. Build an image with a custom command that installs something mise cannot,
    and a build check that runs it. The log must show the `RUN` for that command
    on its own, before the checks.
 2. Save the same image again without changing anything. The tag must not move.
-   Change one setup command and confirm the tag does.
-3. Press Edit Dockerfile on a recipe with dependencies and setup. The file must
-   arrive with the mise heredoc and the setup lines already in it. Save and
-   build it unchanged; the container must still start.
+   Change one custom command and confirm the tag does.
+3. Press Edit Dockerfile on a recipe with dependencies and custom commands. The
+   file must arrive with the mise heredoc and those lines already in it. Save
+   and build it unchanged; the container must still start.
 4. Edit that file, go back to the builder and discard. The four sections must
    hold exactly what they held before the hand-off.
 5. Reopen a saved manual image. It must open in the Dockerfile view with the
@@ -241,7 +241,7 @@ also passed.
 
 To validate in the UI:
 
-1. Open a development image and add installed commands to Build checks, such
+1. Open a custom image and add installed commands to Build checks, such
    as `node --version` and `t3 --help`. Save and build, then confirm the log
    contains `Build checks passed.` The checks appear in the mise.toml preview
    and remain available when reopening the image.
@@ -270,7 +270,7 @@ reopened using the existing browser session. Claude updated its own runtime
 metadata in `.claude.json` during startup. The active user Application was not
 recreated or modified, and the disposable container and volume were removed.
 
-To test the template, create a development image and select T3 Code. Save and
+To test the template, create a custom image and select T3 Code. Save and
 build, then select that image when creating an Application. Review the filled
 start command, port and persistence checkbox before deploying. Agent login
 still happens in the running environment; templates contain no credentials.
