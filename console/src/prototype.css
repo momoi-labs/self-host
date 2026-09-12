@@ -1,0 +1,101 @@
+/* PROTOTYPE styles for DevImages.prototype.tsx. Delete with it. */
+
+.proto-page { position: relative; }
+.proto-page > .card { flex: 1; }
+.proto-toolbar { flex-wrap: wrap; }
+.proto-toolbar .t-caps { margin: 0; }
+.proto-pre { margin: 0; padding: var(--spacing-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-muted); font-family: var(--font-mono); font-size: var(--type-size-label); line-height: var(--type-line-height-normal); white-space: pre; overflow: auto; }
+.proto-plain { border: 0; background: none; font: inherit; color: inherit; cursor: pointer; padding: var(--spacing-xs) var(--spacing-sm); border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: var(--spacing-sm); }
+.proto-plain:hover { background: var(--color-accent-surface); }
+.proto-clip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proto-lastline { font-size: var(--type-size-label); }
+.proto-section { display: grid; gap: var(--spacing-md); }
+.proto-fieldset { display: grid; gap: var(--spacing-md); padding-block-start: var(--spacing-lg); border-block-start: 1px solid var(--color-border); }
+.proto-fieldset:first-child { border: 0; padding-block-start: 0; }
+.proto-fieldset .t-caps { margin: 0; }
+.proto-step-num { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: var(--radius-full); background: var(--color-secondary); color: var(--color-secondary-foreground); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
+.proto-dockerfile-field .shell-editor-input { min-height: calc(var(--rows, 24) * 1lh + var(--spacing-md)); }
+.proto-log { display: grid; min-height: 0; }
+.proto-log .logview { min-height: 0; height: 100%; }
+.proto-tab-badge { margin-inline-start: var(--spacing-xs); }
+.field:has(> label:empty) > label { display: none; }
+
+/* A: one column of numbered sections; the log is a dock pinned to the
+   bottom of the card, collapsed until a build starts. */
+.proto-a { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; overflow: hidden; }
+.proto-a[data-dock="half"] { grid-template-rows: minmax(0, 1fr) 40%; }
+.proto-a[data-dock="full"] { grid-template-rows: 0 minmax(0, 1fr); }
+.proto-a-form { overflow: auto; padding: var(--spacing-lg); display: grid; gap: var(--spacing-lg); align-content: start; }
+.proto-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
+.proto-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: 2.25rem; position: relative; }
+.proto-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
+.proto-step-head { display: flex; align-items: center; gap: var(--spacing-sm); }
+.proto-step-head .proto-step-num { position: absolute; left: 0; }
+.proto-step-head .t-caps { margin: 0; }
+.proto-a-takeover { display: flex; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); }
+.proto-a-takeover p { margin: 0; }
+.proto-a-dock { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-block-start: 1px solid var(--color-border); background: var(--color-card); }
+.proto-a-dock-head { display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--spacing-xs) var(--spacing-md); }
+.proto-a-dock .proto-log .logview { border: 0; border-radius: 0; }
+
+/* B: everything is a tab; the footer carries the status and the action. */
+.proto-b { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; overflow: hidden; }
+.proto-b-tabs { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; padding: var(--spacing-lg) var(--spacing-lg) 0; }
+.proto-b-panel { overflow: auto; padding-block: var(--spacing-lg); min-height: 0; }
+.proto-b-panel[data-state="inactive"] { display: none; }
+.proto-b-logs { display: grid; }
+.proto-b-footer { display: flex; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); border-block-start: 1px solid var(--color-border); }
+
+/* C: three cards. Form and preview side by side, the log full width below
+   at a fixed height that grows on demand. */
+.proto-c { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr); grid-template-rows: minmax(0, 1fr) 220px; gap: var(--spacing-lg); min-height: 0; flex: 1; }
+.proto-c[data-tall="true"] { grid-template-rows: minmax(0, 1fr) 45%; }
+.proto-c > .card { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: var(--spacing-md); padding: var(--spacing-lg); min-height: 0; overflow: hidden; }
+.proto-c-form > .stack, .proto-c-preview > .proto-pre, .proto-c-preview > .proto-dockerfile-field { overflow: auto; min-height: 0; }
+.proto-c-logs { grid-column: 1 / -1; }
+.proto-c-blocks .proto-block { display: block; border-inline-start: 3px solid transparent; padding-inline-start: var(--spacing-sm); margin-inline-start: calc(-1 * var(--spacing-sm) - 3px); transition: background var(--motion-duration-fast); }
+.proto-c-blocks .proto-block[data-active="true"] { border-color: var(--color-primary); background: var(--color-accent-surface); }
+@media (max-width: 1023px) {
+  .proto-c { display: flex; flex-direction: column; }
+  .proto-c-logs .proto-log { height: 40vh; }
+}
+
+/* D: a step rail beside one step at a time; the build replaces the wizard. */
+.proto-d { display: grid; grid-template-columns: 200px minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.proto-d-rail { list-style: none; margin: 0; padding: var(--spacing-lg) var(--spacing-md); border-inline-end: 1px solid var(--color-border); display: grid; gap: var(--spacing-xs); align-content: start; }
+.proto-d-rail li[data-state="current"] .proto-plain { background: var(--color-selected); color: var(--color-selected-foreground); }
+.proto-d-rail li[data-state="done"] .proto-step-num { background: var(--color-success-surface); color: var(--color-success); }
+.proto-d-rail .proto-plain { width: 100%; justify-content: flex-start; }
+.proto-d-body { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: var(--spacing-lg); padding: var(--spacing-lg); min-height: 0; }
+.proto-d-body .t-caps { margin: 0; }
+.proto-d-step { overflow: auto; min-height: 0; align-content: start; max-width: 720px; }
+.proto-d-choices { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-md); }
+.proto-choice { display: grid; gap: var(--spacing-xs); text-align: start; padding: var(--spacing-lg); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-card); font: inherit; color: inherit; cursor: pointer; }
+.proto-choice[aria-pressed="true"] { border-color: var(--color-primary); outline: 1px solid var(--color-primary); }
+.proto-d-build { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); padding: var(--spacing-lg); gap: var(--spacing-md); }
+
+/* E: the Dockerfile is the page. Each generated block has its editor beside
+   it; the log is a sheet that rises from the bottom over the document. */
+.proto-e { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; overflow: hidden; position: relative; }
+.proto-e-head { padding: var(--spacing-md) var(--spacing-lg); border-block-end: 1px solid var(--color-border); }
+.proto-e-name { width: 180px; }
+.proto-e-doc { overflow: auto; padding: var(--spacing-lg); display: grid; gap: var(--spacing-md); align-content: start; }
+.proto-e-block { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 40%); gap: var(--spacing-md); }
+.proto-e-block[data-section="base"], .proto-e-block[data-section="runtime"] { grid-template-columns: 1fr; opacity: 0.7; }
+.proto-e-code { min-height: 100%; }
+.proto-e-slot { display: grid; gap: var(--spacing-sm); align-content: start; padding: var(--spacing-md); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); }
+.proto-e-slot .t-caps { margin: 0; }
+.proto-e-sheet { display: grid; grid-template-rows: auto minmax(0, 1fr); border-block-start: 1px solid var(--color-border); background: var(--color-card); }
+.proto-e[data-sheet="true"] { grid-template-rows: auto minmax(0, 1fr) 50%; }
+.proto-e-pill { display: flex; align-items: center; gap: var(--spacing-sm); width: 100%; padding: var(--spacing-sm) var(--spacing-lg); border: 0; background: none; font: inherit; color: inherit; cursor: pointer; text-align: start; }
+.proto-e-sheet .proto-log .logview { border: 0; border-radius: 0; }
+
+/* The switcher bar. Deliberately not kiso: it must read as scaffolding. */
+.proto-bar { position: fixed; inset-inline: 0; bottom: 12px; display: grid; justify-items: center; gap: 6px; z-index: 50; pointer-events: none; }
+.proto-bar-row { pointer-events: auto; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: #111; color: #fff; box-shadow: 0 6px 24px rgba(0, 0, 0, .35); font: 13px/1 system-ui, sans-serif; }
+.proto-bar-row button { border: 0; background: #333; color: #fff; border-radius: 999px; width: 28px; height: 28px; cursor: pointer; font: inherit; }
+.proto-bar-row button:hover { background: #555; }
+.proto-bar-row .proto-bar-state { width: auto; padding-inline: 10px; }
+.proto-bar-label { min-width: 200px; text-align: center; }
+.proto-bar-count { margin-inline-start: 8px; opacity: .6; }
+.proto-state { pointer-events: auto; max-width: 480px; max-height: 40vh; overflow: auto; margin: 0; padding: 10px 12px; border-radius: 8px; background: #111; color: #9f9; font: 11px/1.4 ui-monospace, monospace; box-shadow: 0 6px 24px rgba(0, 0, 0, .35); }

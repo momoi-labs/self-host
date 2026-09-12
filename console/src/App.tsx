@@ -8,6 +8,9 @@ import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
 import { DevImages } from "./views/DevImages.js";
+// PROTOTYPE (#107): ?variant= swaps the image editor for the variants.
+import { DevImagePrototype } from "./views/DevImages.prototype.js";
+import { readVariant } from "./components/PrototypeSwitcher.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
@@ -65,7 +68,9 @@ export function App() {
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
       <section className="page" id="detail" aria-live="polite">
-        {view.view === "dev-images" || view.view === "dev-image" ? (
+        {import.meta.env.DEV && view.view === "dev-image" && readVariant() ? (
+          <DevImagePrototype />
+        ) : view.view === "dev-images" || view.view === "dev-image" ? (
           <DevImages listing={view.view === "dev-images"} selected={view.id}
             onOpen={(id) => go({ view: "dev-image", id })} />
         ) : view.view === "new" ? (
