@@ -78,6 +78,21 @@ async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> (S
     (status, value)
 }
 
+/// The same call for a route that answers with plain text.
+async fn call_text(app: &Router, method: &str, path: &str, body: Value) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("Authorization", format!("Bearer {API_KEY}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
 /// Deploys settle on a background task in the handler the same way they do in the
 /// unit suite; the record is readable as soon as it is committed.
 async fn settled(app: &Router, id: &str) -> Value {
@@ -366,6 +381,75 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     let (status, reloaded) = call(&app, "GET", "/dev-images", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reloaded, saved);
+}
+
+#[tokio::test]
+async fn an_edited_dockerfile_is_stored_verbatim_and_the_host_renders_the_generated_one() {
+    let dir = TempDir::new("development-image-dockerfile");
+    let (app, store) = boot(&dir.state()).await;
+
+    let (status, text) = call_text(
+        &app,
+        "POST",
+        "/dev-images/dockerfile",
+        json!({
+            "name": "", "dependencies": [{"tool": "node", "version": "24"}],
+            "setup": ["curl -fsSL https://example.test/install.sh | bash"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.starts_with("FROM debian:13-slim\n"));
+    assert!(text.contains("RUN curl -fsSL https://example.test/install.sh | bash\n"));
+    assert!(text.contains("COPY <<'MISE_CONFIG_EOF' /opt/mise/config/config.toml\n"));
+
+    let (status, refused) = call(
+        &app,
+        "POST",
+        "/dev-images/dockerfile",
+        Some(json!({"name": "", "dependencies": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(refused["error"].as_str().unwrap().contains("dependency"));
+
+    let dockerfile = format!("{text}# edited by hand\n");
+    let (status, saved) = call(
+        &app,
+        "POST",
+        "/dev-images",
+        Some(json!({"name": "hand written", "dependencies": [], "dockerfile": dockerfile})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(saved["dockerfile"], dockerfile);
+    assert!(saved["dependencies"].as_array().unwrap().is_empty());
+
+    let (status, rejected) = call(
+        &app,
+        "POST",
+        "/dev-images",
+        Some(json!({"name": "no from", "dependencies": [], "dockerfile": "RUN true\n"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(rejected["error"].as_str().unwrap().contains("FROM"));
+
+    for _ in 0..200 {
+        let (_, records) = call(&app, "GET", "/dev-images", None).await;
+        if records[0]["status"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let (_, before) = call(&app, "GET", "/dev-images", None).await;
+    drop(app);
+    drop(store);
+    let (app, _) = boot(&dir.state()).await;
+    let (status, reloaded) = call(&app, "GET", "/dev-images", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reloaded, before);
+    assert_eq!(reloaded[0]["dockerfile"], dockerfile);
 }
 
 #[tokio::test]

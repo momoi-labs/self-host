@@ -98,6 +98,10 @@ pub struct Recipe {
     pub setup: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub build_checks: Vec<String>,
+    /// The file an Operator took over. `Some` switches the builder off: the
+    /// Host builds this text as is (ADR-0022).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option<String>,
 }
 
 /// A list of shell commands the build runs one per line: at most 16, each a
@@ -120,6 +124,43 @@ impl Recipe {
         {
             return Err("Unknown development image template.".into());
         }
+        if self.name.trim().is_empty() || self.name.chars().count() > 128 {
+            return Err("Use an image name of 1 to 128 characters.".into());
+        }
+        if let Some(dockerfile) = &self.dockerfile {
+            return self.validate_manual(dockerfile);
+        }
+        self.validate_builder()
+    }
+
+    /// A file the Operator owns. Nothing is generated for it, so the builder's
+    /// fields must arrive empty rather than be silently dropped.
+    fn validate_manual(&self, dockerfile: &str) -> Result<(), String> {
+        if dockerfile.is_empty()
+            || dockerfile.len() > 65536
+            || dockerfile
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+        {
+            return Err("Write a Dockerfile of 1 to 65536 bytes.".into());
+        }
+        if !dockerfile
+            .lines()
+            .any(|line| line.trim_start().to_uppercase().starts_with("FROM "))
+        {
+            return Err("A Dockerfile needs a FROM instruction.".into());
+        }
+        if !self.dependencies.is_empty() || !self.setup.is_empty() || !self.build_checks.is_empty()
+        {
+            return Err(
+                "An edited Dockerfile replaces the dependencies, the setup and the build checks."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_builder(&self) -> Result<(), String> {
         if !valid_commands(&self.build_checks) {
             return Err(
                 "Use at most 16 build checks, each a single command of 1 to 4096 bytes.".into(),
@@ -129,9 +170,6 @@ impl Recipe {
             return Err(
                 "Use at most 16 setup commands, each a single command of 1 to 4096 bytes.".into(),
             );
-        }
-        if self.name.trim().is_empty() || self.name.chars().count() > 128 {
-            return Err("Use an image name of 1 to 128 characters.".into());
         }
         if self.dependencies.is_empty() || self.dependencies.len() > 64 {
             return Err("Select at least one dependency, with one version per tool.".into());
@@ -200,6 +238,9 @@ impl Recipe {
     /// The file the Host builds. The mise config travels inside it as a
     /// heredoc so the text an Operator reads carries its own dependencies.
     pub fn dockerfile_text(&self) -> String {
+        if let Some(dockerfile) = &self.dockerfile {
+            return dockerfile.clone();
+        }
         let (head, rest) = DOCKERFILE
             .split_once(MISE_HOLE)
             .expect("the Dockerfile template keeps its mise hole");
@@ -623,6 +664,34 @@ pub(crate) async fn create<S: StateStore>(
     (StatusCode::ACCEPTED, Json(accepted)).into_response()
 }
 
+/// Renders the file a builder recipe would build. The console calls this when
+/// the Operator takes the file over, so the template stays on the Host and
+/// nothing is stored here.
+pub(crate) async fn render_dockerfile(Json(recipe): Json<Recipe>) -> Response {
+    if recipe.dockerfile.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorReport::plain(
+                "This recipe already carries its own Dockerfile.",
+            )),
+        )
+            .into_response();
+    }
+    // The name plays no part in the render, so an unnamed recipe still has a
+    // file to show.
+    if let Err(error) = recipe.validate_builder() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorReport::plain(error))).into_response();
+    }
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        recipe.dockerfile_text(),
+    )
+        .into_response()
+}
+
 struct BuildContext(PathBuf);
 
 impl Drop for BuildContext {
@@ -761,6 +830,7 @@ mod tests {
         let mut recipe = Recipe {
             build_checks: vec![],
             setup: vec![],
+            dockerfile: None,
             template_id: None,
             name: "Minha Imagem de Ação".into(),
             dependencies: vec![Dependency {
@@ -784,6 +854,7 @@ mod tests {
         let recipe = Recipe {
             build_checks: vec![],
             setup: vec![],
+            dockerfile: None,
             template_id: None,
             name: "coding".into(),
             dependencies: vec![Dependency {
@@ -825,6 +896,7 @@ mod tests {
         let mut recipe = Recipe {
             build_checks: vec![],
             setup: vec![],
+            dockerfile: None,
             template_id: None,
             name: "web-dev".into(),
             dependencies: vec![Dependency {
@@ -972,6 +1044,43 @@ mod tests {
     }
 
     #[test]
+    fn an_edited_dockerfile_is_built_as_is_and_owns_the_whole_recipe() {
+        let mut recipe: Recipe = serde_json::from_str(
+            r#"{"name":"hand written","dependencies":[],"dockerfile":"FROM debian:13-slim\nRUN true\n"}"#,
+        )
+        .unwrap();
+        assert!(recipe.validate().is_ok());
+        assert_eq!(recipe.dockerfile_text(), "FROM debian:13-slim\nRUN true\n");
+        let tag = recipe.image_tag("test");
+
+        recipe.name = "renamed".into();
+        assert_eq!(recipe.image_tag("test"), tag);
+        recipe.dockerfile = Some("FROM debian:13-slim\nRUN false\n".into());
+        assert_ne!(recipe.image_tag("test"), tag);
+
+        // Indentation and case are the Dockerfile's, not ours.
+        recipe.dockerfile = Some("# a comment\n  from debian:13-slim\n".into());
+        assert!(recipe.validate().is_ok());
+
+        for invalid in ["", "RUN true\n", &"#\n".repeat(40000), "FROM debian\u{7}"] {
+            recipe.dockerfile = Some(invalid.into());
+            assert!(recipe.validate().is_err(), "{invalid}");
+        }
+        recipe.dockerfile = Some("FROM debian:13-slim\n".into());
+        for leftover in [
+            r#"{"name":"x","dependencies":[{"tool":"node","version":"24"}],"dockerfile":"FROM x\n"}"#,
+            r#"{"name":"x","dependencies":[],"setup":["true"],"dockerfile":"FROM x\n"}"#,
+            r#"{"name":"x","dependencies":[],"build_checks":["true"],"dockerfile":"FROM x\n"}"#,
+        ] {
+            let recipe: Recipe = serde_json::from_str(leftover).unwrap();
+            assert!(recipe.validate().is_err(), "{leftover}");
+        }
+        // A builder recipe still needs its dependencies.
+        recipe.dockerfile = None;
+        assert!(recipe.validate().is_err());
+    }
+
+    #[test]
     fn generated_context_includes_every_runtime_asset_referenced_by_dockerfile() {
         let path = std::env::temp_dir().join(format!(
             "self-host-dev-image-context-{}-{}",
@@ -984,6 +1093,7 @@ mod tests {
             recipe: Recipe {
                 build_checks: vec![],
                 setup: vec![],
+                dockerfile: None,
                 template_id: None,
                 name: "test".into(),
                 dependencies: vec![Dependency {
