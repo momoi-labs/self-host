@@ -1,6 +1,6 @@
-# A development image recipe can hand its Dockerfile to the Operator
+# A custom image recipe can hand its Dockerfile to the Operator
 
-A development image is built from a recipe: mise dependencies, setup commands
+A custom image is built from a recipe: mise dependencies, setup commands
 and build checks. The Host renders those into a Dockerfile and builds it.
 Every image that mise plus a few `RUN` lines can describe is covered.
 
@@ -20,7 +20,7 @@ entrypoint, no build checks, no mise. The other three fields must arrive
 empty; a request that sends both is refused rather than half applied.
 
 One action moves between them. "Edit Dockerfile" asks the Host to render the
-current fields (`POST /dev-images/dockerfile`) and puts the answer in the
+current fields (`POST /custom-images/dockerfile`) and puts the answer in the
 editor. "Back to builder" discards the text after a confirmation and the
 fields render again, unchanged.
 

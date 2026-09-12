@@ -21,7 +21,7 @@ use crate::error::ErrorReport;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DevelopmentApplication {
     pub image_id: String,
-    /// The exact development image tag deployed by this Application.
+    /// The exact custom image tag deployed by this Application.
     pub tag: String,
     pub command: String,
     pub web_port: u16,

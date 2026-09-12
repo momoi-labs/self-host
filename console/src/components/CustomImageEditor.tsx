@@ -43,7 +43,7 @@ let toolCatalog: Promise<MiseTool[]> | null = null;
 
 function loadToolCatalog(): Promise<MiseTool[]> {
   if (!toolCatalog) toolCatalog = (async () => {
-    const response = await api("/dev-images/tools");
+    const response = await api("/custom-images/tools");
     if (!response.ok) throw await failureOf(response);
     const payload: unknown = await response.json();
     if (!Array.isArray(payload)) throw new Error("Invalid tool search response");
@@ -286,7 +286,7 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
     setTakingOver(true);
     setFailure(null);
     try {
-      const response = await api("/dev-images/dockerfile", {
+      const response = await api("/custom-images/dockerfile", {
         method: "POST",
         body: JSON.stringify(recipeBody({ name, templateId, dependencies, setup, buildChecks, dockerfile: null })),
       });
@@ -304,7 +304,7 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
     setSubmitting(true);
     setFailure(null);
     try {
-      const response = await api("/dev-images", {
+      const response = await api("/custom-images", {
         method: "POST",
         body: JSON.stringify({
           id: selected,

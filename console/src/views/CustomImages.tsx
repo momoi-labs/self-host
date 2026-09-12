@@ -43,7 +43,7 @@ export function CustomImages({ listing, selected, onOpen }: {
     const controller = new AbortController();
     async function poll() {
       try {
-        const response = await api("/dev-images", { signal: controller.signal });
+        const response = await api("/custom-images", { signal: controller.signal });
         if (!response.ok) throw await failureOf(response);
         const records = await response.json() as CustomImage[];
         if (!active) return;
@@ -74,7 +74,7 @@ export function CustomImages({ listing, selected, onOpen }: {
     setDeleting(image.id);
     setFailure(null);
     try {
-      const response = await api(`/dev-images/${encodeURIComponent(image.id)}`, { method: "DELETE" });
+      const response = await api(`/custom-images/${encodeURIComponent(image.id)}`, { method: "DELETE" });
       if (!response.ok) throw await failureOf(response);
       setImages((images) => images.filter((item) => item.id !== image.id));
       setRefresh((value) => value + 1);

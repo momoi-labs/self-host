@@ -428,9 +428,8 @@ impl DockerRuntime for CliDocker {
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
         if image.starts_with("sf-img-") || image.starts_with("self-host-dev-") {
-            let step = format!(
-                "development image '{image}' is not available on this Host; build it again"
-            );
+            let step =
+                format!("custom image '{image}' is not available on this Host; build it again");
             let output = std::process::Command::new("docker")
                 .args(["image", "inspect", image])
                 .output()

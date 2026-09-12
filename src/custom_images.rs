@@ -1,4 +1,4 @@
-//! Development image recipes and their latest build, kept in Platform State.
+//! Custom image recipes and their latest build, kept in Platform State.
 
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, MutexGuard};
 
 use crate::{AppState, error::ErrorReport, store::StateStore};
 
-const STATE_KEY: &str = "development_images_v1";
+const STATE_KEY: &str = "custom_images_v1";
 
 fn valid_tool(tool: &str) -> bool {
     !tool.is_empty()
@@ -25,9 +25,9 @@ fn valid_tool(tool: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-:/@".contains(&b))
 }
 
-const ENTRYPOINT: &str = include_str!("dev_images/entrypoint.sh");
-const PROFILE: &str = include_str!("dev_images/profile.sh");
-const BUILD_CHECKS: &str = include_str!("dev_images/check.py");
+const ENTRYPOINT: &str = include_str!("custom_images/entrypoint.sh");
+const PROFILE: &str = include_str!("custom_images/profile.sh");
+const BUILD_CHECKS: &str = include_str!("custom_images/check.py");
 
 // The two holes the recipe fills. They sit on their own line, so the value
 // replaces the line and brings its own trailing newline.
@@ -69,14 +69,14 @@ RUN mkdir -p /data/home /tmp/mise-home /opt/mise/cargo \
     && chown -R "${USERNAME}:${USERNAME}" /opt/mise
 # --- setup (root, with network) ---
 {setup}
-COPY runtime-profile.sh /etc/profile.d/self-host-development-image.sh
-COPY runtime-entrypoint.sh /usr/local/bin/self-host-development-image-entrypoint
-RUN chmod 0755 /usr/local/bin/self-host-development-image-entrypoint
+COPY runtime-profile.sh /etc/profile.d/self-host-custom-image.sh
+COPY runtime-entrypoint.sh /usr/local/bin/self-host-custom-image-entrypoint
+RUN chmod 0755 /usr/local/bin/self-host-custom-image-entrypoint
 WORKDIR /data/repos
 COPY build-checks.py /usr/local/lib/self-host-build-checks.py
 RUN --mount=type=tmpfs,target=/data --network=none \
-    /usr/local/bin/self-host-development-image-entrypoint python3 /usr/local/lib/self-host-build-checks.py
-ENTRYPOINT ["/usr/local/bin/self-host-development-image-entrypoint"]
+    /usr/local/bin/self-host-custom-image-entrypoint python3 /usr/local/lib/self-host-build-checks.py
+ENTRYPOINT ["/usr/local/bin/self-host-custom-image-entrypoint"]
 CMD ["sleep", "infinity"]
 "#;
 
@@ -122,7 +122,7 @@ impl Recipe {
             .as_deref()
             .is_some_and(|id| id != "t3-code")
         {
-            return Err("Unknown development image template.".into());
+            return Err("Unknown custom image template.".into());
         }
         if self.name.trim().is_empty() || self.name.chars().count() > 128 {
             return Err("Use an image name of 1 to 128 characters.".into());
@@ -432,7 +432,7 @@ pub(crate) async fn catalog(Query(query): Query<ToolSearch>) -> Response {
 
 pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Response {
     let references = referenced_images(&state).await;
-    match state.dev_images.records(&state.store).await {
+    match state.custom_images.records(&state.store).await {
         Ok(records) => Json(
             records
                 .as_ref()
@@ -481,7 +481,7 @@ async fn referenced_images<S: StateStore>(state: &AppState<S>) -> anyhow::Result
     Ok(references)
 }
 
-/// Returns a ready development image when its stable ID still names the exact
+/// Returns a ready custom image when its stable ID still names the exact
 /// requested tag. Callers keep already deployed tags independently, so an
 /// image edit cannot invalidate an Application that still uses an older tag.
 pub(crate) async fn ready_image<S: StateStore>(
@@ -489,7 +489,7 @@ pub(crate) async fn ready_image<S: StateStore>(
     id: &str,
     tag: &str,
 ) -> anyhow::Result<Option<Image>> {
-    let records = state.dev_images.records(&state.store).await?;
+    let records = state.custom_images.records(&state.store).await?;
     Ok(records
         .as_ref()
         .unwrap()
@@ -502,7 +502,7 @@ pub(crate) async fn remove<S: StateStore>(
     State(state): State<AppState<S>>,
     Path(id): Path<String>,
 ) -> Response {
-    let mut records = match state.dev_images.records(&state.store).await {
+    let mut records = match state.custom_images.records(&state.store).await {
         Ok(records) => records,
         Err(error) => {
             return crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, error.as_ref());
@@ -571,7 +571,7 @@ pub(crate) async fn create<S: StateStore>(
     if let Err(error) = recipe.validate() {
         return (StatusCode::BAD_REQUEST, Json(ErrorReport::plain(error))).into_response();
     }
-    let mut records = match state.dev_images.records(&state.store).await {
+    let mut records = match state.custom_images.records(&state.store).await {
         Ok(records) => records,
         Err(error) => {
             return crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, error.as_ref());
@@ -629,7 +629,7 @@ pub(crate) async fn create<S: StateStore>(
     let accepted = image.clone();
     tokio::spawn(async move {
         let result = build(&state, &image).await;
-        let mut records = state.dev_images.records.lock().await;
+        let mut records = state.custom_images.records.lock().await;
         let images = records.as_mut().unwrap();
         let record = images
             .iter_mut()
@@ -650,7 +650,7 @@ pub(crate) async fn create<S: StateStore>(
             }
         }
         if let Err(error) = save(&state.store, images).await {
-            tracing::error!(%error, "Could not save development image build result");
+            tracing::error!(%error, "Could not save custom image build result");
             let record = images
                 .iter_mut()
                 .find(|record| record.id == image.id)
@@ -702,7 +702,7 @@ impl Drop for BuildContext {
 
 async fn build<S: StateStore>(state: &AppState<S>, image: &Image) -> anyhow::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
-    let path = std::env::temp_dir().join(format!("self-host-dev-image-{}", image.id));
+    let path = std::env::temp_dir().join(format!("self-host-custom-image-{}", image.id));
     std::fs::DirBuilder::new().mode(0o700).create(&path)?;
     let context = BuildContext(path);
     write_build_context(&context.0, image)?;
@@ -713,7 +713,7 @@ async fn build<S: StateStore>(state: &AppState<S>, image: &Image) -> anyhow::Res
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<String>(64);
     let collect = async {
         while let Some(chunk) = receiver.recv().await {
-            let mut records = state.dev_images.records.lock().await;
+            let mut records = state.custom_images.records.lock().await;
             if let Some(record) = records
                 .as_mut()
                 .and_then(|images| images.iter_mut().find(|record| record.id == image.id))
@@ -841,7 +841,7 @@ mod tests {
         };
         let id = crate::apps::generate_app_id();
         let tag = recipe.image_tag(&id);
-        assert_eq!(tag, format!("sf-img-{id}:4690d7e2969a411e85e7bc2840fb697f"));
+        assert_eq!(tag, format!("sf-img-{id}:e40f5fd794b982f958b5c581efd83dc1"));
         recipe.name = "A different display name".repeat(4);
         assert!(recipe.validate().is_ok());
         assert_eq!(recipe.image_tag(&id), tag);
@@ -1083,7 +1083,7 @@ mod tests {
     #[test]
     fn generated_context_includes_every_runtime_asset_referenced_by_dockerfile() {
         let path = std::env::temp_dir().join(format!(
-            "self-host-dev-image-context-{}-{}",
+            "self-host-custom-image-context-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));

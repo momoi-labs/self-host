@@ -291,7 +291,7 @@ async fn concurrent_deploys_cannot_both_claim_one_name() {
 async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     async fn settled_image(app: &Router) -> Value {
         for _ in 0..200 {
-            let (_, records) = call(app, "GET", "/dev-images", None).await;
+            let (_, records) = call(app, "GET", "/custom-images", None).await;
             if records[0]["status"] == "ready" {
                 return records;
             }
@@ -306,7 +306,7 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     let (status, first) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({
             "name": name, "dependencies": [{"tool": "node", "version": "24"}]
         })),
@@ -322,14 +322,14 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     assert_eq!(first["name"], name);
     assert_eq!(
         first["image"],
-        format!("sf-img-{id}:4690d7e2969a411e85e7bc2840fb697f")
+        format!("sf-img-{id}:e40f5fd794b982f958b5c581efd83dc1")
     );
     settled_image(&app).await;
 
     let (status, renamed) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({
             "id": id, "name": "Renamed image", "dependencies": [{"tool": "node", "version": "24"}]
         })),
@@ -343,7 +343,7 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     let (status, rebuilt) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({
             "id": id, "name": "Renamed image", "dependencies": [{"tool": "node", "version": "22"}],
             "build_checks": ["node --version"], "template_id": "t3-code"
@@ -360,7 +360,7 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     let (status, with_setup) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({
             "id": id, "name": "Renamed image", "dependencies": [{"tool": "node", "version": "22"}],
             "setup": ["curl -fsSL https://example.test/install.sh | bash"],
@@ -378,7 +378,7 @@ async fn development_image_identity_survives_renaming_rebuilding_and_restart() {
     drop(app);
     drop(store);
     let (app, _) = boot(&dir.state()).await;
-    let (status, reloaded) = call(&app, "GET", "/dev-images", None).await;
+    let (status, reloaded) = call(&app, "GET", "/custom-images", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reloaded, saved);
 }
@@ -391,7 +391,7 @@ async fn an_edited_dockerfile_is_stored_verbatim_and_the_host_renders_the_genera
     let (status, text) = call_text(
         &app,
         "POST",
-        "/dev-images/dockerfile",
+        "/custom-images/dockerfile",
         json!({
             "name": "", "dependencies": [{"tool": "node", "version": "24"}],
             "setup": ["curl -fsSL https://example.test/install.sh | bash"]
@@ -406,7 +406,7 @@ async fn an_edited_dockerfile_is_stored_verbatim_and_the_host_renders_the_genera
     let (status, refused) = call(
         &app,
         "POST",
-        "/dev-images/dockerfile",
+        "/custom-images/dockerfile",
         Some(json!({"name": "", "dependencies": []})),
     )
     .await;
@@ -417,7 +417,7 @@ async fn an_edited_dockerfile_is_stored_verbatim_and_the_host_renders_the_genera
     let (status, saved) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({"name": "hand written", "dependencies": [], "dockerfile": dockerfile})),
     )
     .await;
@@ -428,7 +428,7 @@ async fn an_edited_dockerfile_is_stored_verbatim_and_the_host_renders_the_genera
     let (status, rejected) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({"name": "no from", "dependencies": [], "dockerfile": "RUN true\n"})),
     )
     .await;
@@ -436,17 +436,17 @@ async fn an_edited_dockerfile_is_stored_verbatim_and_the_host_renders_the_genera
     assert!(rejected["error"].as_str().unwrap().contains("FROM"));
 
     for _ in 0..200 {
-        let (_, records) = call(&app, "GET", "/dev-images", None).await;
+        let (_, records) = call(&app, "GET", "/custom-images", None).await;
         if records[0]["status"] == "ready" {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    let (_, before) = call(&app, "GET", "/dev-images", None).await;
+    let (_, before) = call(&app, "GET", "/custom-images", None).await;
     drop(app);
     drop(store);
     let (app, _) = boot(&dir.state()).await;
-    let (status, reloaded) = call(&app, "GET", "/dev-images", None).await;
+    let (status, reloaded) = call(&app, "GET", "/custom-images", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reloaded, before);
     assert_eq!(reloaded[0]["dockerfile"], dockerfile);
@@ -456,13 +456,13 @@ async fn an_edited_dockerfile_is_stored_verbatim_and_the_host_renders_the_genera
 async fn development_application_keeps_its_deployed_tag_and_form_settings() {
     async fn image_is_ready(app: &Router) -> Value {
         for _ in 0..200 {
-            let (_, images) = call(app, "GET", "/dev-images", None).await;
+            let (_, images) = call(app, "GET", "/custom-images", None).await;
             if images[0]["status"] == "ready" {
                 return images[0].clone();
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        panic!("development image did not finish");
+        panic!("custom image did not finish");
     }
 
     let dir = TempDir::new("development-application");
@@ -470,7 +470,7 @@ async fn development_application_keeps_its_deployed_tag_and_form_settings() {
     let (status, _) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({
             "name": "T3", "dependencies": [{"tool": "node", "version": "24"}]
         })),
@@ -512,13 +512,13 @@ async fn development_application_keeps_its_deployed_tag_and_form_settings() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(
         mixed["error"],
-        "invalid development image: development settings include the image and web target; do not send image, Compose, web service, or web port separately"
+        "invalid custom image: development settings include the image and web target; do not send image, Compose, web service, or web port separately"
     );
 
     let (status, _) = call(
         &app,
         "POST",
-        "/dev-images",
+        "/custom-images",
         Some(json!({
             "id": first["id"], "name": "T3", "dependencies": [{"tool": "node", "version": "22"}]
         })),
@@ -546,7 +546,7 @@ async fn development_application_keeps_its_deployed_tag_and_form_settings() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(
         rejected["error"],
-        "invalid development image: select a successful development image build"
+        "invalid custom image: select a successful custom image build"
     );
 
     drop(app);
@@ -565,7 +565,7 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
     let tag = format!("sf-img-{id}:new-version");
     store
         .store_state(
-            "development_images_v1",
+            "custom_images_v1",
             &json!([{
                 "id": id, "name": "Saved image", "dependencies": [{"tool":"node","version":"24"}],
                 "image": tag, "status": "ready", "last_error": null, "log": ""
@@ -584,16 +584,16 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let (_, records) = call(&app, "GET", "/dev-images", None).await;
+    let (_, records) = call(&app, "GET", "/custom-images", None).await;
     assert_eq!(records[0]["in_use"], true);
-    let (status, _) = call(&app, "DELETE", &format!("/dev-images/{id}"), None).await;
+    let (status, _) = call(&app, "DELETE", &format!("/custom-images/{id}"), None).await;
     assert_eq!(status, StatusCode::CONFLICT);
     let (_, apps) = call(&app, "GET", "/apps", None).await;
     let app_id = apps[0]["id"].as_str().unwrap();
     settled(&app, app_id).await;
     call(&app, "POST", &format!("/apps/id/{app_id}/stop"), None).await;
     assert_eq!(
-        call(&app, "DELETE", &format!("/dev-images/{id}"), None)
+        call(&app, "DELETE", &format!("/custom-images/{id}"), None)
             .await
             .0,
         StatusCode::CONFLICT
@@ -610,19 +610,19 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
     assert_eq!(status, StatusCode::ACCEPTED);
     settled(&app, compose["id"].as_str().unwrap()).await;
     assert_eq!(
-        call(&app, "DELETE", &format!("/dev-images/{id}"), None)
+        call(&app, "DELETE", &format!("/custom-images/{id}"), None)
             .await
             .0,
         StatusCode::CONFLICT
     );
     call(&app, "DELETE", "/apps/using-compose", None).await;
-    let (_, records) = call(&app, "GET", "/dev-images", None).await;
+    let (_, records) = call(&app, "GET", "/custom-images", None).await;
     assert_eq!(records[0]["in_use"], false);
     assert_eq!(
-        call(&app, "DELETE", &format!("/dev-images/{id}"), None)
+        call(&app, "DELETE", &format!("/custom-images/{id}"), None)
             .await
             .0,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(call(&app, "GET", "/dev-images", None).await.1, json!([]));
+    assert_eq!(call(&app, "GET", "/custom-images", None).await.1, json!([]));
 }
