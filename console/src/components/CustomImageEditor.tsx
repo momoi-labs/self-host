@@ -12,10 +12,10 @@ import { Failure } from "./Failure.js";
 import { ShellEditor } from "./ShellEditor.js";
 import { StatusBadge } from "./StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
-import type { DevImage, Report } from "../lib/types.js";
+import type { CustomImage, Report } from "../lib/types.js";
 import { buildLabel, buildTone } from "../lib/status.js";
-import { devImageTemplate, devImageTemplates, type ImageDependency } from "../lib/devImageTemplates.js";
-import { recipeBody } from "../lib/devImageRecipe.js";
+import { customImageTemplate, customImageTemplates, type ImageDependency } from "../lib/customImageTemplates.js";
+import { recipeBody } from "../lib/customImageRecipe.js";
 import {
   ALLOW_BUILDS, isKey, isVersion, readOption, splitKey, suggest, takesAllowBuilds,
 } from "../lib/dependencies.js";
@@ -219,14 +219,14 @@ function Dependencies({ value, onChange, disabled }: {
  * The listing owns the records and the polling; this owns the fields, which
  * is why a poll can refresh the log without touching an edit in progress.
  */
-export function DevImageEditor({ current, selected, building, loaded, loadFailure, onSaved }: {
-  current: DevImage | undefined;
+export function CustomImageEditor({ current, selected, building, loaded, loadFailure, onSaved }: {
+  current: CustomImage | undefined;
   selected: string | null;
   /** Any image on the Host is building, so this one cannot start. */
   building: boolean;
   loaded: boolean;
   loadFailure: Report | null;
-  onSaved: (image: DevImage) => void;
+  onSaved: (image: CustomImage) => void;
 }) {
   const [name, setName] = useState("");
   const [templateId, setTemplateId] = useState("");
@@ -262,8 +262,8 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
   }, [selected, current?.id]);
 
   function chooseTemplate(id: string) {
-    const template = devImageTemplate(id);
-    const previous = devImageTemplate(templateId);
+    const template = customImageTemplate(id);
+    const previous = customImageTemplate(templateId);
     setTemplateId(id);
     setName((name) => !name || name === previous?.imageName ? template?.imageName ?? "" : name);
     setDependencies(structuredClone(template?.dependencies ?? []));
@@ -312,7 +312,7 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
         }),
       });
       if (!response.ok) throw await failureOf(response);
-      const image = await response.json() as DevImage;
+      const image = await response.json() as CustomImage;
       setName(image.name);
       onSaved(image);
     } catch (cause) {
@@ -323,14 +323,14 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
   }
 
   return (
-    <div className="dev-images-page">
+    <div className="custom-images-page">
       <PageHeader>
         <PageHeaderTitle>{selected ? current?.name ?? "Image" : "New image"}</PageHeaderTitle>
         <PageHeaderDescription>Save your image's dependencies and build it on this Host.</PageHeaderDescription>
       </PageHeader>
       {loadFailure ? <Failure failure={loadFailure} /> : null}
-      <Card className="dev-images-panel" data-dock={dock}>
-        <form className="dev-image-form" onSubmit={submit}>
+      <Card className="custom-images-panel" data-dock={dock}>
+        <form className="custom-image-form" onSubmit={submit}>
           <div className="row">
             <p className="t-caps grow">{manual ? "Dockerfile" : "Configuration"}</p>
             {manual ? <Badge variant="warning">Edited by hand</Badge> : null}
@@ -338,16 +338,16 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
           </div>
           {manual ? (
             <>
-              <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
+              <FormField id="custom-image-name" label="Image name" placeholder="web-dev"
                 value={name} onChange={(event) => setName(event.target.value)}
                 required maxLength={128} disabled={editingDisabled}
               />
-              <FormField id="dev-image-dockerfile" label="Dockerfile"
+              <FormField id="custom-image-dockerfile" label="Dockerfile"
                 hint="The Host builds this file as is. Keep the dev user and the entrypoint, or the container will not start. Build checks only run if you keep their RUN --network=none step.">
-                <ShellEditor id="dev-image-dockerfile" value={dockerfile} onChange={setDockerfile}
+                <ShellEditor id="custom-image-dockerfile" value={dockerfile} onChange={setDockerfile}
                   disabled={editingDisabled} maxLength={65536} />
               </FormField>
-              <div className="dev-image-takeover">
+              <div className="custom-image-takeover">
                 {discarding ? (
                   <>
                     <p className="grow t-label">Discard this file and go back to the builder? It is written again from the fields, which still hold what they held before.</p>
@@ -368,19 +368,19 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
             </>
           ) : (
             <>
-              <ol className="dev-image-steps">
+              <ol className="custom-image-steps">
                 <Step title="Image">
                   {!selected ? (
-                    <FormField id="dev-image-template" label="Template"
+                    <FormField id="custom-image-template" label="Template"
                       hint="Start with a template, then edit any field before building.">
-                      <select id="dev-image-template" className="input" value={templateId}
+                      <select id="custom-image-template" className="input" value={templateId}
                         disabled={editingDisabled} onChange={(event) => chooseTemplate(event.target.value)}>
-                        <option value="">Custom image</option>
-                        {devImageTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                        <option value="">No template</option>
+                        {customImageTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
                       </select>
                     </FormField>
                   ) : null}
-                  <FormField id="dev-image-name" label="Image name" placeholder="web-dev"
+                  <FormField id="custom-image-name" label="Image name" placeholder="web-dev"
                     value={name} onChange={(event) => setName(event.target.value)}
                     required maxLength={128} disabled={editingDisabled}
                   />
@@ -389,23 +389,23 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
                   <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
                 </Step>
                 <Step title="Custom commands">
-                  <FormField id="dev-image-setup" label="Custom commands"
+                  <FormField id="custom-image-setup" label="Custom commands"
                     hint="One command per line, each its own build step. Runs as root, with network, after the dependencies. This is where a shell installer or an apt package goes.">
-                    <ShellEditor id="dev-image-setup" value={setup} onChange={setSetup}
+                    <ShellEditor id="custom-image-setup" value={setup} onChange={setSetup}
                       disabled={editingDisabled} maxLength={65536}
                       placeholder={"curl -fsSL https://example.com/install.sh | bash\napt-get install -y --no-install-recommends ripgrep"} />
                   </FormField>
                 </Step>
                 <Step title="Build checks">
-                  <FormField id="build-checks" label="Build checks"
+                  <FormField id="custom-image-checks" label="Build checks"
                     hint="One command per line, saved as tasks.check.run. Runs as dev without network access, after the custom commands, with a 60-second limit per command. Any failure stops the build.">
-                    <ShellEditor id="build-checks" value={buildChecks} onChange={setBuildChecks}
+                    <ShellEditor id="custom-image-checks" value={buildChecks} onChange={setBuildChecks}
                       disabled={editingDisabled} maxLength={65536}
                       placeholder={"t3 --help\nclaude --version\ncodex --version"} />
                   </FormField>
                 </Step>
               </ol>
-              <div className="dev-image-takeover">
+              <div className="custom-image-takeover">
                 <div className="grow">
                   <p className="t-label">Need more than these fields?</p>
                   <p className="muted t-label">Open the generated Dockerfile and edit it directly. The builder switches off for this image, and the Host builds exactly what you write.</p>
@@ -426,12 +426,12 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
             </Button>
           </div>
         </form>
-        <div className="dev-image-dock" role="region" aria-label="Build logs">
-          <div className="dev-image-dock-head">
+        <div className="custom-image-dock" role="region" aria-label="Build logs">
+          <div className="custom-image-dock-head">
             <Button type="button" size="sm" variant="ghost" aria-expanded={dock !== "closed"}
               onClick={() => setDock(dock === "closed" ? "half" : "closed")}>Logs</Button>
             {current ? <StatusBadge tone={buildTone(current)}>{buildLabel(current)}</StatusBadge> : null}
-            <span className="grow mono muted t-label dev-image-lastline">{lastLine}</span>
+            <span className="grow mono muted t-label custom-image-lastline">{lastLine}</span>
             {dock !== "closed" ? (
               <Button type="button" size="sm" variant="ghost"
                 onClick={() => setDock(dock === "full" ? "half" : "full")}>

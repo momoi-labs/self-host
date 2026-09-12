@@ -9,29 +9,29 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
-import { DevImageEditor } from "../components/DevImageEditor.js";
+import { CustomImageEditor } from "../components/CustomImageEditor.js";
 import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
-import type { DevImage, Report } from "../lib/types.js";
+import type { CustomImage, Report } from "../lib/types.js";
 import { buildLabel, buildTone } from "../lib/status.js";
 
 /**
  * The saved images and their latest build. This owns the records and the
  * poll that refreshes them; the editor owns one recipe's fields.
  */
-export function DevImages({ listing, selected, onOpen }: {
+export function CustomImages({ listing, selected, onOpen }: {
   listing: boolean;
   selected: string | null;
   onOpen: (id: string | null) => void;
 }) {
-  const [images, setImages] = useState<DevImage[]>([]);
+  const [images, setImages] = useState<CustomImage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadFailure, setLoadFailure] = useState<Report | null>(null);
   const [failure, setFailure] = useState<Report | null>(null);
   const [query, setQuery] = useState("");
-  const [confirming, setConfirming] = useState<DevImage | null>(null);
+  const [confirming, setConfirming] = useState<CustomImage | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const building = images.some((image) => image.status === "building");
@@ -45,7 +45,7 @@ export function DevImages({ listing, selected, onOpen }: {
       try {
         const response = await api("/dev-images", { signal: controller.signal });
         if (!response.ok) throw await failureOf(response);
-        const records = await response.json() as DevImage[];
+        const records = await response.json() as CustomImage[];
         if (!active) return;
         setImages(records);
         setLoadFailure(null);
@@ -62,7 +62,7 @@ export function DevImages({ listing, selected, onOpen }: {
 
   /** A saved recipe is the record the editor reopens, so it lands here before
    * the next poll does. */
-  function saved(image: DevImage) {
+  function saved(image: CustomImage) {
     setImages((records) => [image, ...records.filter((item) => item.id !== image.id)]);
     onOpen(image.id);
     setRefresh((value) => value + 1);
@@ -70,7 +70,7 @@ export function DevImages({ listing, selected, onOpen }: {
 
   const visible = images.filter((image) => image.name.toLowerCase().includes(query.trim().toLowerCase()));
 
-  async function remove(image: DevImage) {
+  async function remove(image: CustomImage) {
     setDeleting(image.id);
     setFailure(null);
     try {
@@ -86,7 +86,7 @@ export function DevImages({ listing, selected, onOpen }: {
     }
   }
 
-  function deleteReason(image: DevImage) {
+  function deleteReason(image: CustomImage) {
     if (image.status === "building") return "Build in progress";
     if (image.in_use) return "In use";
     if (image.in_use !== false) return "Usage unavailable";
@@ -96,7 +96,7 @@ export function DevImages({ listing, selected, onOpen }: {
   if (listing) return (
     <>
       <PageHeader>
-        <PageHeaderTitle>Development images</PageHeaderTitle>
+        <PageHeaderTitle>Custom images</PageHeaderTitle>
         <PageHeaderDescription>Saved images and their latest build on this Host.</PageHeaderDescription>
       </PageHeader>
       {loadFailure ? <Failure failure={loadFailure} /> : null}
@@ -111,13 +111,13 @@ export function DevImages({ listing, selected, onOpen }: {
         <Card>
           <EmptyState variant="first-run" className="hatch">
             <EmptyStateIcon><Icon name="box" size="lg" /></EmptyStateIcon>
-            <EmptyStateTitle>No development images yet</EmptyStateTitle>
-            <EmptyStateDescription>Choose your mise dependencies and build your first development image.</EmptyStateDescription>
+            <EmptyStateTitle>No custom images yet</EmptyStateTitle>
+            <EmptyStateDescription>Choose your mise dependencies and build your first custom image.</EmptyStateDescription>
             <EmptyStateActions><Button size="sm" variant="primary" onClick={() => onOpen(null)}><Icon name="plus" />New image</Button></EmptyStateActions>
           </EmptyState>
         </Card>
       ) : loaded ? (
-        <div className="stack dev-image-list">
+        <div className="stack custom-image-list">
           <div className="table-wrap">
             <div className="table-scroll">
               <Table>
@@ -176,7 +176,7 @@ export function DevImages({ listing, selected, onOpen }: {
   );
 
   return (
-    <DevImageEditor current={current} selected={selected} building={building}
+    <CustomImageEditor current={current} selected={selected} building={building}
       loaded={loaded} loadFailure={loadFailure} onSaved={saved} />
   );
 }

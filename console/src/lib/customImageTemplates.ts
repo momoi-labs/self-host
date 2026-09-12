@@ -1,6 +1,6 @@
 export type ImageDependency = { tool: string; version: string; allow_builds?: string[] };
 
-export type DevImageTemplate = {
+export type CustomImageTemplate = {
   id: string;
   name: string;
   imageName: string;
@@ -10,7 +10,7 @@ export type DevImageTemplate = {
   application: { command: string; web_port: number; persist_data: boolean };
 };
 
-export const devImageTemplates: DevImageTemplate[] = [{
+export const customImageTemplates: CustomImageTemplate[] = [{
   id: "t3-code",
   name: "T3 Code",
   imageName: "t3-code",
@@ -36,6 +36,6 @@ export const devImageTemplates: DevImageTemplate[] = [{
   },
 }];
 
-export function devImageTemplate(id?: string | null) {
-  return devImageTemplates.find((template) => template.id === id);
+export function customImageTemplate(id?: string | null) {
+  return customImageTemplates.find((template) => template.id === id);
 }

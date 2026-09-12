@@ -17,7 +17,7 @@ import { isCompose, parseAliases } from "../lib/status.js";
 import type { App, ComposeService, Inspection, Report } from "../lib/types.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
-import { devImageTemplate } from "../lib/devImageTemplates.js";
+import { customImageTemplate } from "../lib/customImageTemplates.js";
 
 export type Submission = {
   name: string;
@@ -36,7 +36,7 @@ export type Submission = {
   };
 };
 
-type DevImage = { id: string; name: string; image: string; status: string; template_id?: string | null };
+type CustomImage = { id: string; name: string; image: string; status: string; template_id?: string | null };
 
 type Errors = {
   hostname?: string;
@@ -65,18 +65,18 @@ export function AppForm({
   removing?: boolean;
 }) {
   const creating = !app;
-  const [source, setSource] = useState(creating ? "image" : app?.development ? "dev-image" : isCompose(app) ? "compose" : "image");
+  const [source, setSource] = useState(creating ? "image" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
   const [name, setName] = useState(app?.name ?? "");
   const [image, setImage] = useState(app?.image ?? "");
-  const [devImageId, setDevImageId] = useState(app?.development?.image_id ?? "");
-  const [devImageTag, setDevImageTag] = useState(app?.development?.tag ?? "");
+  const [customImageId, setCustomImageId] = useState(app?.development?.image_id ?? "");
+  const [customImageTag, setCustomImageTag] = useState(app?.development?.tag ?? "");
   const [startCommand, setStartCommand] = useState(app?.development?.command ?? "");
   const [devPort, setDevPort] = useState(app?.development ? String(app.development.web_port) : "");
   const [persistData, setPersistData] = useState(app?.development?.persist_data ?? false);
   const runtimeEdited = useRef(false);
-  const [devImages, setDevImages] = useState<DevImage[]>([]);
-  const [devImagesLoading, setDevImagesLoading] = useState(false);
-  const [devImagesFailure, setDevImagesFailure] = useState<Report | null>(null);
+  const [customImages, setCustomImages] = useState<CustomImage[]>([]);
+  const [customImagesLoading, setCustomImagesLoading] = useState(false);
+  const [customImagesFailure, setCustomImagesFailure] = useState<Report | null>(null);
   const [compose, setCompose] = useState(app?.compose ?? "");
   const [hostname, setHostname] = useState(app?.hostname ?? "");
   const [aliases, setAliases] = useState((app?.aliases ?? []).join(", "));
@@ -94,23 +94,23 @@ export function AppForm({
   const ports = chosen ? [...new Set(chosen.ports.map((p) => String(p.container)))] : [];
 
   useEffect(() => {
-    if (source !== "dev-image") return;
+    if (source !== "custom-image") return;
     const controller = new AbortController();
-    setDevImagesLoading(true);
-    setDevImagesFailure(null);
+    setCustomImagesLoading(true);
+    setCustomImagesFailure(null);
     void (async () => {
       try {
         const response = await api("/dev-images", { signal: controller.signal });
         if (!response.ok) throw await failureOf(response);
-        const images = await response.json() as typeof devImages;
+        const images = await response.json() as typeof customImages;
         if (!controller.signal.aborted) {
           const ready = images.filter((image) => image.status === "ready");
-          setDevImages(ready);
+          setCustomImages(ready);
         }
       } catch (cause) {
-        if (!controller.signal.aborted) setDevImagesFailure(asReport(cause));
+        if (!controller.signal.aborted) setCustomImagesFailure(asReport(cause));
       } finally {
-        if (!controller.signal.aborted) setDevImagesLoading(false);
+        if (!controller.signal.aborted) setCustomImagesLoading(false);
       }
     })();
     return () => controller.abort();
@@ -217,11 +217,11 @@ export function AppForm({
     // Editing always sends the Hostname: an empty one is a mistake here, not
     // a request for the default.
     if (hostname.trim() || !creating) body.hostname = hostname.trim();
-    if (source === "dev-image") {
-      if (!devImageId || !devImageTag || devImagesLoading || devImagesFailure || !startCommand.trim() || !devPort) return;
+    if (source === "custom-image") {
+      if (!customImageId || !customImageTag || customImagesLoading || customImagesFailure || !startCommand.trim() || !devPort) return;
       body.development = {
-        image_id: devImageId,
-        tag: devImageTag,
+        image_id: customImageId,
+        tag: customImageTag,
         command: startCommand.trim(),
         web_port: Number(devPort),
         persist_data: persistData,
@@ -359,7 +359,7 @@ export function AppForm({
           <legend>Definition</legend>
           {[
             ["image", "Container image"],
-            ["dev-image", "Development image"],
+            ["custom-image", "Custom image"],
             ["compose", "Compose file"],
           ].map(([value, label]) => (
             <label className="row" key={value}>
@@ -376,33 +376,33 @@ export function AppForm({
         </fieldset>
       ) : null}
 
-      {source === "compose" ? composeFields : source === "dev-image" ? (
+      {source === "compose" ? composeFields : source === "custom-image" ? (
         <>
-          <FormField id="f-dev-image" label="Development image">
-            <select id="f-dev-image" className="input" required value={devImageTag}
-              disabled={devImagesLoading || !!devImagesFailure || (!devImages.length && !devImageTag)}
+          <FormField id="f-custom-image" label="Custom image">
+            <select id="f-custom-image" className="input" required value={customImageTag}
+              disabled={customImagesLoading || !!customImagesFailure || (!customImages.length && !customImageTag)}
               onChange={(event) => {
-                const selected = devImages.find((image) => image.image === event.target.value);
+                const selected = customImages.find((image) => image.image === event.target.value);
                 if (selected) {
-                  const template = devImageTemplate(selected.template_id);
-                  if (creating && !devImageId && !runtimeEdited.current && template) {
+                  const template = customImageTemplate(selected.template_id);
+                  if (creating && !customImageId && !runtimeEdited.current && template) {
                     setStartCommand(template.application.command);
                     setDevPort(String(template.application.web_port));
                     setPersistData(template.application.persist_data);
                   }
-                  setDevImageId(selected.id);
-                  setDevImageTag(selected.image);
+                  setCustomImageId(selected.id);
+                  setCustomImageTag(selected.image);
                 }
               }}>
-              <option value="">{devImagesLoading ? "Loading images..." : "Select a saved image"}</option>
-              {devImageTag && !devImages.some((image) => image.image === devImageTag) ? (
-                <option value={devImageTag}>Deployed build: {devImageTag}</option>
+              <option value="">{customImagesLoading ? "Loading images..." : "Select a saved image"}</option>
+              {customImageTag && !customImages.some((image) => image.image === customImageTag) ? (
+                <option value={customImageTag}>Deployed build: {customImageTag}</option>
               ) : null}
-              {devImages.map((image) => <option key={image.image} value={image.image}>{image.name}</option>)}
+              {customImages.map((image) => <option key={image.image} value={image.image}>{image.name}</option>)}
             </select>
           </FormField>
-          {devImageTag ? <code className="dev-image-tag">{devImageTag}</code> : null}
-          {devImageId && devImages.some((image) => image.id === devImageId && image.image !== devImageTag) ? (
+          {customImageTag ? <code className="custom-image-tag">{customImageTag}</code> : null}
+          {customImageId && customImages.some((image) => image.id === customImageId && image.image !== customImageTag) ? (
             <p className="muted t-label">A newer successful build is available. Select it and save to redeploy.</p>
           ) : null}
           <FormField id="f-start-command" label="Start command" className="mono"
@@ -424,9 +424,9 @@ export function AppForm({
               Keep files in /data when the container is recreated. Configure your server to store its data there.
             </p>
           </div>
-          {devImagesFailure ? <Failure failure={devImagesFailure} /> : null}
-          {!devImagesLoading && !devImagesFailure && !devImages.length && !devImageTag ? (
-            <p className="muted t-label">No development images are ready. <a href="/console/#dev-images">Save and build an image first.</a></p>
+          {customImagesFailure ? <Failure failure={customImagesFailure} /> : null}
+          {!customImagesLoading && !customImagesFailure && !customImages.length && !customImageTag ? (
+            <p className="muted t-label">No custom images are ready. <a href="/console/#custom-images">Save and build an image first.</a></p>
           ) : null}
         </>
       ) : imageField}
@@ -479,7 +479,7 @@ export function AppForm({
               Cancel
             </Button>
             <Button size="sm" variant="primary" type="submit"
-              disabled={source === "dev-image" && (!devImageId || !devImageTag || devImagesLoading || !!devImagesFailure)}>
+              disabled={source === "custom-image" && (!customImageId || !customImageTag || customImagesLoading || !!customImagesFailure)}>
               Deploy
             </Button>
           </>

@@ -40,10 +40,10 @@ export type DevelopmentApplication = {
   persist_data: boolean;
 };
 
-/** A saved development image recipe and its latest build on this Host. A
+/** A saved custom image recipe and its latest build on this Host. A
  * `dockerfile` means the Operator owns the file and the builder is off
  * (ADR-0022). */
-export type DevImage = {
+export type CustomImage = {
   id: string;
   name: string;
   template_id?: string | null;

@@ -51,7 +51,7 @@ export function NewApp({
           error:
             source === "compose"
               ? "Bringing the Compose project up ..."
-              : source === "dev-image"
+              : source === "custom-image"
                 ? "Starting the development server ..."
               : `Pulling image ${body.image} ...`,
           caused_by: [],

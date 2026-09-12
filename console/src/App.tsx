@@ -7,7 +7,7 @@ import { useView } from "./lib/useView.js";
 import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
-import { DevImages } from "./views/DevImages.js";
+import { CustomImages } from "./views/CustomImages.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
@@ -29,10 +29,10 @@ export function App() {
       ? (app?.name ?? "Application")
       : view.view === "new"
         ? "New application"
-        : view.view === "dev-images"
-          ? "Development images"
-          : view.view === "dev-image"
-            ? view.id ? "Development image" : "New image"
+        : view.view === "custom-images"
+          ? "Custom images"
+          : view.view === "custom-image"
+            ? view.id ? "Custom image" : "New image"
             : "Overview";
 
   return (
@@ -51,10 +51,10 @@ export function App() {
         active: view.view === "new",
         onClick: () => go({ view: "new", id: null }),
       }}
-      devImages={{
-        href: "/console/#dev-images",
-        active: view.view === "dev-images" || view.view === "dev-image",
-        onClick: () => go({ view: "dev-images", id: null }),
+      customImages={{
+        href: "/console/#custom-images",
+        active: view.view === "custom-images" || view.view === "custom-image",
+        onClick: () => go({ view: "custom-images", id: null }),
       }}
       application={(candidate) => ({
         href: `/console/#app-${candidate.id}`,
@@ -65,9 +65,9 @@ export function App() {
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
       <section className="page" id="detail" aria-live="polite">
-        {view.view === "dev-images" || view.view === "dev-image" ? (
-          <DevImages listing={view.view === "dev-images"} selected={view.id}
-            onOpen={(id) => go({ view: "dev-image", id })} />
+        {view.view === "custom-images" || view.view === "custom-image" ? (
+          <CustomImages listing={view.view === "custom-images"} selected={view.id}
+            onOpen={(id) => go({ view: "custom-image", id })} />
         ) : view.view === "new" ? (
           <NewApp
             dnsSuffix={dnsSuffix}
