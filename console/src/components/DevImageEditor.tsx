@@ -385,7 +385,7 @@ export function DevImageEditor({ current, selected, building, loaded, loadFailur
                     required maxLength={128} disabled={editingDisabled}
                   />
                 </Step>
-                <Step title="Dependencies">
+                <Step title="mise packages and dependencies">
                   <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
                 </Step>
                 <Step title="Setup">

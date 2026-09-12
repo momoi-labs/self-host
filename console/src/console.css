@@ -227,12 +227,18 @@
 .dev-images-panel[data-dock="full"] { grid-template-rows: 0 minmax(0, 1fr); }
 .dev-image-form { overflow: auto; padding: var(--spacing-lg); display: grid; gap: var(--spacing-lg); align-content: start; }
 .dev-image-steps { counter-reset: dev-image-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
-.dev-image-steps > li { display: grid; gap: var(--spacing-md); position: relative; padding-inline-start: 2.25rem; }
+.dev-image-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
 .dev-image-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
-.dev-image-steps > li > .t-caps { margin: 0; }
-.dev-image-steps > li::before {
-  counter-increment: dev-image-step; content: counter(dev-image-step);
-  position: absolute; inset-inline-start: 0; display: grid; place-items: center;
+/* The number hangs in the gutter the fields are indented by, on the title's
+   own line so the two stay centred on each other. */
+.dev-image-steps > li > .t-caps {
+  counter-increment: dev-image-step; margin: 0;
+  margin-inline-start: calc(-1.5rem - var(--spacing-sm));
+  display: flex; align-items: center; gap: var(--spacing-sm);
+}
+.dev-image-steps > li > .t-caps::before {
+  content: counter(dev-image-step);
+  flex: none; display: grid; place-items: center;
   width: 1.5rem; height: 1.5rem; border-radius: var(--radius-full);
   background: var(--color-secondary); color: var(--color-secondary-foreground);
   font-size: var(--type-size-label); font-weight: var(--type-weight-medium);
