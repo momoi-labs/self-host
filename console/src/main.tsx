@@ -12,8 +12,11 @@ import "./console.css";
  * rather than rendering a console that cannot load anything.
  */
 async function start() {
-  if (!requireKey()) return;
-  try {
+  // PROTOTYPE (#107): the variants need no Host, so skip the login gate.
+  const prototype = import.meta.env.DEV && location.search.includes("variant=");
+  if (prototype) sessionStorage.setItem("api_key", "prototype");
+  if (!prototype && !requireKey()) return;
+  if (!prototype) try {
     const res = await api("/health");
     if (!res.ok) {
       logout();
