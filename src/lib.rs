@@ -75,6 +75,10 @@ pub fn build_app<S: StateStore>(
             get(dev_images::list::<S>).post(dev_images::create::<S>),
         )
         .route("/dev-images/tools", get(dev_images::catalog))
+        .route(
+            "/dev-images/dockerfile",
+            post(dev_images::render_dockerfile),
+        )
         .route("/dev-images/{id}", delete(dev_images::remove::<S>))
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
