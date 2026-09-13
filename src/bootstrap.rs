@@ -295,10 +295,8 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
         println!("  self-host setup-dns");
         println!("  Configures persistent Host DNS on Linux with systemd-resolved.");
     } else if cfg!(target_os = "macos") {
-        println!(
-            "  sudo mkdir -p /etc/resolver && echo 'nameserver {}' | sudo tee /etc/resolver/{} && dscacheutil -q host -a name admin.{}",
-            result.host_ip, result.dns_suffix, result.dns_suffix
-        );
+        println!("  self-host setup-dns");
+        println!("  Configures persistent Host DNS through /etc/resolver.");
     }
     println!();
 

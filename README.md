@@ -29,7 +29,7 @@ On Linux, or with `SELF_HOST_BINARY_ONLY=1`:
 ```bash
 self-host init
 self-host serve # keep running; use another terminal for the next command
-self-host setup-dns # Linux with systemd-resolved
+self-host setup-dns # Linux with systemd-resolved, macOS via /etc/resolver
 ```
 
 For development, choose a fixed API key during initialization:
@@ -64,13 +64,20 @@ restarts. It does not depend on the binary or worktree path. Run the command
 again to repair the configuration. `serve` warns if Host DNS does not resolve.
 Other Linux resolvers still require manual configuration.
 
+On macOS, the same command writes `/etc/resolver/<dns-suffix>`, which
+mDNSResponder reads to route only the Platform's DNS Suffix to the Platform
+DNS on loopback. The daemon answers on every interface there
+([ADR-0017](docs/adr/0017-host-native-dns.md)), so the file survives LAN
+address changes and reboots. Run the command again to repair it.
+
 Stop the Platform daemon before resetting or uninstalling. Remove the Host
 DNS configuration with:
 
 ```bash
-sudo systemctl disable --now self-host-dns.service
+sudo systemctl disable --now self-host-dns.service    # Linux
 sudo rm /etc/systemd/system/self-host-dns.service
 sudo systemctl daemon-reload
+sudo rm "/etc/resolver/<your-dns-suffix>"             # macOS
 ```
 
 Then visit `https://admin.<your-dns-suffix>` (default: `https://admin.home.lan`).
