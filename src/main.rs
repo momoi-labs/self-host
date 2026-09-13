@@ -262,10 +262,10 @@ async fn main() {
 }
 
 async fn run_setup_dns_command() -> anyhow::Result<()> {
-    #[cfg(not(target_os = "linux"))]
-    anyhow::bail!("setup-dns currently supports Linux with systemd-resolved only");
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    anyhow::bail!("setup-dns currently supports Linux with systemd-resolved and macOS only");
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         // The DNS configuration the daemon serves from, not the store: the
         // daemon holds the store as its writer while it runs, and this is the
@@ -275,11 +275,27 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
         let config = self_host::dns::Config::load()?;
         let suffix = config.dns_suffix;
         let host_ip = self_host::host_addresses::default_source()?.to_string();
+        println!("Configuring Host DNS for *.{suffix}...");
         self_host::host_dns::install(&suffix, &host_ip)?;
-        self_host::host_dns::check(&suffix, &host_ip).await
-            .map_err(|e| anyhow::anyhow!("DNS settings were saved, but verification failed: {e}. Check that the Platform DNS is running, then retry 'self-host setup-dns'."))?;
-        println!("Host DNS configured: *.{suffix} resolves through {host_ip}.");
-        println!("The configuration persists across reboots and worktree changes.");
+
+        // The resolver configuration is saved whether or not the Platform
+        // DNS answers today. Verification, which needs the daemon, then
+        // reports the state instead of failing the saved setup.
+        let nameserver = self_host::host_dns::host_nameserver(&host_ip)?;
+        if tokio::net::TcpStream::connect(nameserver).await.is_ok() {
+            println!("Verifying that admin.{suffix} resolves through the Platform DNS...");
+            self_host::host_dns::check(&suffix, &host_ip)
+                .await
+                .map_err(|e| anyhow::anyhow!("DNS settings were saved, but verification failed: {e}. Check that the Platform DNS is running, then retry 'self-host setup-dns'."))?;
+            println!("Host DNS configured: *.{suffix} resolves through {host_ip}.");
+            println!("The configuration persists across reboots and worktree changes.");
+        } else {
+            println!(
+                "Warning: nothing is listening for DNS on {nameserver} yet; start 'self-host serve'."
+            );
+            println!("Host DNS configuration is saved and applies once the Platform DNS runs.");
+            println!("Re-run 'self-host setup-dns' to verify.");
+        }
         Ok(())
     }
 }
