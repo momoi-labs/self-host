@@ -93,19 +93,16 @@ export function appTotals(metrics: Metrics | null, id: string): Totals | null {
   return metrics && samples ? totalsOf(metrics, [samples[samples.length - 1]]) : null;
 }
 
-/** Every Application's network series, summed tick by tick, for the Host
- * meter's one line. Series can differ in length after a deploy, so they are
- * aligned on the newest sample and truncated to the shortest. */
-export function hostNetworkSeries(metrics: Metrics | null): number[] {
-  const series = (metrics?.applications ?? [])
-    .map((app) => app.samples)
-    .filter((samples) => samples.length > 0);
-  if (!series.length) return [];
-  const length = Math.min(...series.map((samples) => samples.length));
-  return Array.from({ length }, (_, index) =>
-    series.reduce((sum, samples) => {
-      const sample = samples[samples.length - length + index];
-      return sum + sample.rx_bytes + sample.tx_bytes;
-    }, 0),
-  );
+/** Sum only readings from the same collection tick, preserving their timestamps. */
+export function hostNetworkSeries(metrics: Metrics | null): Pick<AppSample, "at" | "rx_bytes" | "tx_bytes">[] {
+  const ticks = new Map<number, Pick<AppSample, "at" | "rx_bytes" | "tx_bytes">>();
+  for (const app of metrics?.applications ?? []) {
+    for (const sample of app.samples) {
+      const total = ticks.get(sample.at) ?? { at: sample.at, rx_bytes: 0, tx_bytes: 0 };
+      total.rx_bytes += sample.rx_bytes;
+      total.tx_bytes += sample.tx_bytes;
+      ticks.set(sample.at, total);
+    }
+  }
+  return [...ticks.values()].sort((a, b) => a.at - b.at);
 }
