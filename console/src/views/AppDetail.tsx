@@ -282,7 +282,9 @@ function Glance({ samples }: { samples: AppSample[] }) {
       <span>
         <span className="k">Net</span>{" "}
         <b>
-          ↓ {formatBytes(latest.rx_bytes)} · ↑ {formatBytes(latest.tx_bytes)}
+          <span className="network-down">↓ {formatBytes(latest.rx_bytes)}</span>
+          <span className="muted"> · </span>
+          <span className="network-up">↑ {formatBytes(latest.tx_bytes)}</span>
         </b>
       </span>
     </div>

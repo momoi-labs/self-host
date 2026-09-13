@@ -47,13 +47,6 @@ Scope for Kiso: the frame, the gutter and the scroll syncing, with the
 highlighting passed in as `highlight?: (code: string) => string`. Self-host
 keeps loading Prism and keeps the token colours.
 
-**A meter, from `Meters`.** A ratio against a known ceiling, drawn as a
-clamped track with the reading beside it. Kiso has Stat for a value and
-Sparkline for a shape, and nothing for a bounded fraction. Scope for Kiso:
-`Meter` with `value`, `max` and a label, `role="meter"`, and the clamp that
-keeps a Host busier than its cores from drawing past the end of its track.
-Self-host keeps which numbers are meters and which are lines, per ADR-0020.
-
 ## Kept here
 
 `Failure` and `Causes` render `{ error, caused_by }` (ADR-0010). The cause
@@ -67,24 +60,31 @@ nothing else.
 `Icon` is a local sprite. Kiso ships BrandMark and TerminalIcon and leaves
 the icon set to the product, which is the right split.
 
-`Traffic` draws two series on one axis with a legend. It is not proposed:
-Kiso's Sparkline contract explicitly defers the framed chart, and a legend
-with axis labels is that chart. Revisit when Kiso opens the contract.
+`Traffic` now maps Platform samples into Kiso's Chart,
+shipped in 0.7.0. Self-host keeps the per-minute conversion, shared zero-based
+scale and proxy error count. Kiso owns the plot and inspection. The console
+hides the summary legend and exact-value disclosure to keep the charts compact.
+
+`Meters` composes Kiso's Meter for CPU and memory, also shipped in 0.7.0.
+Self-host keeps capacity ratios and displayed units. Network traffic now uses
+Kiso Chart with timestamps and a shared byte scale for cumulative counters.
+Received bytes plot above zero in green; sent bytes plot below zero in red. Inspection shows positive byte values and timestamps.
+The time-axis labels stay hidden to keep the panel compact. Overview sums only
+readings collected at the same timestamp.
+Unknown capacity produces an uncollected track; readings above capacity keep
+their displayed value while Kiso clamps the track.
 
 `AppForm`, `ComposeEditor`, `ContainerResources`, `HttpStatus`, `LogPane` and
 the views are Applications, Docker and the self-host API. Nothing to extract.
 
 ## Raised with Kiso, not extractions
 
-Sparkline's tones do not survive this console's dark card. `neutral` is
-`--color-border-strong` and `primary` is `--color-primary`, which measures
-L 0.83 at chroma 0.082 as a data mark and reads gray. The console overrides
-`.sparkline` with `--color-accent-600`. That override should be a question
-about the token, not a permanent local rule.
+Sparkline still defaults to a border color. The console assigns Kiso's
+published `--color-chart-1` token so trends use the same data color as the
+traffic chart, replacing the local accent-ramp choice.
 
-Sparkline brings Recharts, which costs the console page 95 kB gzipped. The
-console is embedded in the binary and served over a LAN, so it is affordable,
-but the drawing is a single path and the dependency is worth questioning.
+Sparkline and Chart use Recharts. The production build reports a main page
+chunk above 500 kB minified after adding the framed chart.
 
 The console was writing Kiso's `.logview` and `.log-scroll` classes by hand
 for the log pane's failure state. Fixed here by using LogView.

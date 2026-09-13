@@ -23,6 +23,7 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../components/Icon.js";
+import { NetworkChart } from "../components/NetworkChart.js";
 import { Meters } from "../components/Meters.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { Traffic } from "../components/Traffic.js";
@@ -133,7 +134,7 @@ export function Overview({
         <div className="stack">
           {/* How many are up, and the load that produces, side by side. */}
           <div className="summary-row">
-            <Card>
+            <Card className="applications-running">
               <Stat>
                 <StatLabel>Applications running</StatLabel>
                 <StatValue>
@@ -146,22 +147,26 @@ export function Overview({
               <div className="card-body">
                 <p className="t-caps">Host load</p>
                 {totals ? (
-                  <Meters totals={totals} network={hostNetworkSeries(metrics)} />
+                  <Meters totals={totals} />
                 ) : (
                   <p className="muted">Collecting.</p>
                 )}
               </div>
             </Card>
+            <Card>
+              <div className="card-body">
+                <NetworkChart samples={hostNetworkSeries(metrics)} />
+              </div>
+            </Card>
+            <Card>
+              <div className="card-body">
+                <Traffic
+                  platform={metrics?.platform ?? []}
+                  intervalSeconds={metrics?.interval_seconds ?? 10}
+                />
+              </div>
+            </Card>
           </div>
-
-          <Card>
-            <div className="card-body">
-              <Traffic
-                platform={metrics?.platform ?? []}
-                intervalSeconds={metrics?.interval_seconds ?? 10}
-              />
-            </div>
-          </Card>
 
           <div className="table-wrap">
             <div className="table-scroll">

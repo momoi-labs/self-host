@@ -3,6 +3,7 @@ import {
   Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
+import { NetworkChart } from "./NetworkChart.js";
 import { Meters } from "./Meters.js";
 import { StatusBadge } from "./StatusBadge.js";
 import { formatBytes, formatWindow } from "../lib/format.js";
@@ -76,10 +77,10 @@ export function ContainerResources({
   return (
     <div className="resources">
       {totals ? (
-        <Meters
-          totals={totals}
-          network={(samples ?? []).map((sample) => sample.rx_bytes + sample.tx_bytes)}
-        />
+        <div className="resource-summary">
+          <Meters totals={totals} />
+          <NetworkChart samples={samples ?? []} />
+        </div>
       ) : null}
 
       {rows.length ? (
