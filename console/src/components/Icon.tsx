@@ -30,6 +30,11 @@ const paths: Record<string, React.ReactNode> = {
       <path d="M4 11V7M8 11V3M12 11V9" />
     </>
   ),
+  history: (
+    <>
+      <path d="M2.5 5.5A5.75 5.75 0 1 1 2.3 10M2.5 2v3.5H6M8 4.5V8l2.5 1.5" />
+    </>
+  ),
   check: <path d="M3 8.5l3.5 3.5L13 5" />,
   key: (
     <>

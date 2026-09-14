@@ -554,3 +554,79 @@ async fn a_service_without_a_port_is_refused() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn audit_keeps_one_event_for_a_failed_vm_operation() {
+    let (app, _) = app(FakeRuntime::unknown()).await;
+    let (status, machine) = request(
+        &app,
+        Method::POST,
+        "/environments",
+        Some(json!({"request_id":"audit-vm", "config":config("audited-vm")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let id = machine["id"].as_str().unwrap();
+    let mut events = Value::Null;
+    for _ in 0..100 {
+        events = request(&app, Method::GET, "/events", None).await.1;
+        if events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["status"] == "failed")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let events = events.as_array().unwrap();
+    assert_eq!(events.len(), 1);
+
+    assert!(events.iter().any(|event| event["status"] == "failed"));
+    assert!(events.iter().all(|event| event["action"] == "create"
+        && event["subject"]["id"] == id
+        && event["subject"]["name"] == "audited-vm"
+        && event["apiName"].is_null()));
+}
+
+#[tokio::test]
+async fn audit_updates_the_same_event_from_running_to_completed() {
+    let release = Arc::new(Notify::new());
+    let (app, _) = app(FakeRuntime {
+        release: Some(release.clone()),
+        ..FakeRuntime::new()
+    })
+    .await;
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/environments",
+        Some(json!({"request_id":"audit-transition", "config":config("transition-vm")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (_, started) = request(&app, Method::GET, "/events", None).await;
+    assert_eq!(started.as_array().unwrap().len(), 1);
+    assert_eq!(started[0]["status"], "running");
+    assert!(started[0]["startedAt"].is_string());
+    assert!(started[0]["finishedAt"].is_null());
+    release.notify_one();
+    let mut finished = Value::Null;
+    for _ in 0..100 {
+        finished = request(&app, Method::GET, "/events", None).await.1;
+        if finished[0]["status"] == "completed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(finished.as_array().unwrap().len(), 1);
+    assert_eq!(finished[0]["status"], "completed");
+    assert_eq!(finished[0]["id"], started[0]["id"]);
+    assert_eq!(finished[0]["startedAt"], started[0]["startedAt"]);
+    assert!(finished[0]["finishedAt"].is_string());
+    assert_eq!(finished[0]["updatedAt"], finished[0]["finishedAt"]);
+    assert!(
+        finished[0]["finishedAt"].as_str().unwrap() >= started[0]["startedAt"].as_str().unwrap()
+    );
+}

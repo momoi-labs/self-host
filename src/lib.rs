@@ -17,6 +17,7 @@ use crate::store::{DevelopmentApplication, StoreError};
 use rand::Rng;
 
 pub mod apps;
+pub mod audit;
 pub mod bootstrap;
 pub mod compose_app;
 pub mod config;
@@ -54,6 +55,7 @@ struct AppState<S: StateStore> {
     environments: Arc<Environments>,
     vm_runtime: Arc<dyn VmRuntime>,
     metrics: metrics::Metrics,
+    audit: Arc<audit::Journal>,
 }
 
 pub fn build_app<S: StateStore>(
@@ -80,6 +82,7 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
     vm_runtime: Arc<dyn VmRuntime>,
 ) -> Router {
     let state = AppState {
+        audit: Arc::new(audit::Journal::default()),
         store,
         docker,
         routes,
@@ -91,6 +94,7 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
 
     let api_routes = Router::new()
         .route("/health", get(health))
+        .route("/events", get(audit::list::<S>))
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
         .route("/compose/inspect", post(inspect_compose))
@@ -138,6 +142,10 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
         .route("/metrics", get(get_metrics::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            audit::capture::<S>,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
@@ -792,7 +800,7 @@ async fn update_app<S: StateStore>(
     )
     .await
     {
-        Ok(pending) => accept_deploy(&state, pending).await,
+        Ok(pending) => accept_deploy(&state, pending, "configure").await,
         Err(e) => deploy_error_response(e),
     }
 }
@@ -806,6 +814,7 @@ async fn update_app<S: StateStore>(
 async fn accept_deploy<S: StateStore>(
     state: &AppState<S>,
     pending: apps::PendingDeploy,
+    action: &'static str,
 ) -> Response {
     let body = Json(ApplicationResponse::from(pending.record.clone()));
 
@@ -828,16 +837,43 @@ async fn accept_deploy<S: StateStore>(
     let store = state.store.clone();
     let docker = state.docker.clone();
     let routes = state.routes.clone();
-    let name = pending.record.name.clone();
-    tokio::spawn(async move {
-        if let Err(e) = apps::finish_deploy(&store, docker.as_ref(), routes.as_ref(), pending).await
-        {
-            tracing::warn!(
-                "deploy of Application '{name}' failed: {}",
-                ErrorReport::new(&e)
-            );
-        }
-    });
+    let audit_state = state.clone();
+    let actor = audit::actor();
+    let subject = audit::Subject {
+        kind: "application".into(),
+        id: pending.record.id.clone(),
+        name: pending.record.name.clone(),
+        available: None,
+    };
+    tokio::spawn(
+        crate::audit::EVENT_ID.scope(crate::audit::event_id(), async move {
+            let result =
+                apps::finish_deploy(&store, docker.as_ref(), routes.as_ref(), pending).await;
+            let status = if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            };
+            if let Err(error) = result {
+                tracing::warn!(
+                    "deploy of Application '{}' failed: {}",
+                    subject.name,
+                    ErrorReport::new(&error)
+                );
+            }
+            audit::record(
+                &audit_state,
+                audit::event(
+                    action,
+                    subject,
+                    status,
+                    actor,
+                    format!("Application deployment {status}."),
+                ),
+            )
+            .await;
+        }),
+    );
 
     (StatusCode::ACCEPTED, body).into_response()
 }
@@ -971,7 +1007,7 @@ async fn deploy_app<S: StateStore>(
     };
 
     match prepared {
-        Ok(pending) => accept_deploy(&state, pending).await,
+        Ok(pending) => accept_deploy(&state, pending, "create").await,
         Err(err) => deploy_error_response(err),
     }
 }
@@ -1304,6 +1340,15 @@ async fn create_key<S: StateStore>(
     let key: String = key_bytes.iter().map(|b| format!("{b:02x}")).collect();
     let id = format!("sk-{}", &key[..12]);
 
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+    if let Err(error) = state
+        .store
+        .store_state(&format!("api_key_digest:{id}"), &digest)
+        .await
+    {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error);
+    }
     match state.store.create_api_key(&id, &body.label).await {
         Ok(()) => {
             let response = CreateKeyResponse {
@@ -1369,14 +1414,32 @@ async fn require_api_key<S: StateStore>(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
 
-    match auth_header {
-        Some(key) if constant_time_eq(key, &expected_key) => next.run(req).await,
-        _ => (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorReport::plain("invalid api key")),
-        )
-            .into_response(),
+    if let Some(key) = auth_header.filter(|key| !key.is_empty()) {
+        if !expected_key.is_empty() && constant_time_eq(key, &expected_key) {
+            return audit::ACTOR.scope(None, next.run(req)).await;
+        }
+        use sha2::{Digest, Sha256};
+        let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+        if let Ok(keys) = state.store.list_api_keys().await {
+            for candidate in keys {
+                if let Ok(Some(expected)) = state
+                    .store
+                    .get_state(&format!("api_key_digest:{}", candidate.id))
+                    .await
+                    && constant_time_eq(&digest, &expected)
+                {
+                    return audit::ACTOR
+                        .scope(Some(candidate.label), next.run(req))
+                        .await;
+                }
+            }
+        }
     }
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorReport::plain("invalid api key")),
+    )
+        .into_response()
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {

@@ -1,0 +1,54 @@
+/** Display data for the event page. Transport mapping belongs at the API boundary. */
+export type PlatformEvent = {
+  id: string;
+  action: "create" | "delete" | "stop" | "start" | "restart" | "configure";
+  status: "pending" | "running" | "completed" | "failed";
+  occurredAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  updatedAt?: string | null;
+  apiName?: string | null;
+  description: string;
+  subject: {
+    kind: "application" | "virtual-machine" | "custom-image" | "api-key";
+    id: string;
+    name: string;
+    service?: string;
+    available?: boolean;
+  };
+};
+
+export function eventSubjectHref(subject: PlatformEvent["subject"]): string | null {
+  if (!subject.id || subject.available === false) return null;
+  if (subject.kind === "api-key") return "/console/api-keys.html";
+  if (subject.kind === "custom-image") return `/console/#custom-image-${encodeURIComponent(subject.id)}`;
+  const prefix = subject.kind === "virtual-machine" ? "environment" : "app";
+  return `/console/#${prefix}-${encodeURIComponent(subject.id)}`;
+}
+
+export function filterEvents(events: readonly PlatformEvent[], query: string, status: string): PlatformEvent[] {
+  const term = query.trim().toLowerCase();
+  return events.filter(event =>
+    `${event.subject.name} ${event.subject.service ?? ""}`.toLowerCase().includes(term)
+    && (status === "all" || event.status === status),
+  ).sort((a, b) => Date.parse(eventUpdatedAt(b)) - Date.parse(eventUpdatedAt(a)));
+}
+
+export function eventActionLabel(event: PlatformEvent): string {
+  const actions = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure" };
+  const resources = { application: "application", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key" };
+  return `${actions[event.action]} ${resources[event.subject.kind]}`;
+}
+
+/** The pre-scheduler backend starts background work immediately on acceptance. */
+export type PlatformEventResponse = Omit<PlatformEvent, "status"> & {
+  status: PlatformEvent["status"] | "accepted";
+};
+
+export function normalizeEvent(event: PlatformEventResponse): PlatformEvent {
+  return { ...event, status: event.status === "accepted" ? "running" : event.status };
+}
+
+export function eventUpdatedAt(event: PlatformEvent): string {
+  return event.updatedAt ?? event.finishedAt ?? event.startedAt ?? event.occurredAt;
+}

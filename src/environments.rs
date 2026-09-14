@@ -759,7 +759,8 @@ pub(crate) async fn action<S: StateStore>(
 }
 
 fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String) {
-    tokio::spawn(async move {
+    let actor = crate::audit::actor();
+    tokio::spawn(crate::audit::EVENT_ID.scope(crate::audit::event_id(), async move {
         let config = match state.environments.records(&state.store).await {
             Ok(records) => records
                 .as_ref()
@@ -819,6 +820,17 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
         let Some(record) = next.iter_mut().find(|r| r.id == id) else {
             return;
         };
+        let subject = crate::audit::Subject {
+            kind: "virtual-machine".into(),
+            id: id.clone(),
+            name: config.name.clone(),
+            available: None,
+        };
+        let mut outcome = if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
         let mut remove = false;
         match result {
             Ok(observation) => {
@@ -868,6 +880,7 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
             events::discard(&id).await;
         }
         if let Err(error) = save(&state.store, &next).await {
+            outcome = "failed";
             tracing::error!(%error, "Could not save environment operation result");
             // A completed side effect must never leave a durable `running`
             // operation. Keep the record for retry when persistence fails.
@@ -878,7 +891,7 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
                     .as_ref()
                     .and_then(|operation| operation.step.clone());
                 record.operation = Some(Operation {
-                    action,
+                    action: action.clone(),
                     status: OperationStatus::Failed,
                     step,
                     error: Some(ErrorReport::plain(format!(
@@ -896,7 +909,19 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
         } else {
             *records = Some(next);
         }
-    });
+        drop(records);
+        crate::audit::record(
+            &state,
+            crate::audit::event(
+                crate::audit::machine_action(&action),
+                subject,
+                outcome,
+                actor,
+                format!("Virtual machine operation {outcome}."),
+            ),
+        )
+        .await;
+    }));
 }
 
 async fn persist_progress<S: StateStore>(

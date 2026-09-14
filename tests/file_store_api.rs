@@ -626,3 +626,70 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
     );
     assert_eq!(call(&app, "GET", "/custom-images", None).await.1, json!([]));
 }
+
+#[tokio::test]
+async fn audit_keeps_identity_and_history_after_deletion_and_restart() {
+    let dir = TempDir::new("audit-history");
+    let (app, store) = boot(&dir.state()).await;
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/apps",
+        Some(json!({"name":"audited","image":"nginx:alpine"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let id = created["id"].as_str().unwrap();
+    settled(&app, id).await;
+    for action in ["stop", "start", "restart"] {
+        assert!(
+            call(&app, "POST", &format!("/apps/id/{id}/{action}"), None)
+                .await
+                .0
+                .is_success()
+        );
+    }
+    assert!(
+        call(
+            &app,
+            "PUT",
+            &format!("/apps/id/{id}"),
+            Some(json!({"name":"renamed"}))
+        )
+        .await
+        .0
+        .is_success()
+    );
+    assert_eq!(
+        call(&app, "DELETE", "/apps/renamed", None).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let (status, before) = call(&app, "GET", "/events", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = before.as_array().unwrap();
+    for action in ["create", "delete", "stop", "start", "restart", "configure"] {
+        assert!(
+            rows.iter()
+                .any(|event| event["action"] == action && event["subject"]["id"] == id),
+            "missing {action}"
+        );
+    }
+    assert!(
+        rows.iter()
+            .all(|event| event["subject"]["available"] == false)
+    );
+    assert!(
+        rows.iter()
+            .any(|event| event["subject"]["name"] == "audited")
+    );
+    assert!(
+        rows.iter()
+            .any(|event| event["subject"]["name"] == "renamed")
+    );
+    drop(app);
+    drop(store);
+    let (restarted, _) = boot(&dir.state()).await;
+    let (status, after) = call(&restarted, "GET", "/events", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(after, before);
+}
