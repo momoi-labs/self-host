@@ -15,6 +15,9 @@ import {
   EmptyStateTitle,
   FormField,
   Label,
+  PageHeader,
+  PageHeaderDescription,
+  PageHeaderTitle,
   Tabs,
   TabsContent,
   TabsList,
@@ -23,11 +26,11 @@ import {
 
 import { Dependencies } from "../components/Dependencies.js";
 import { Failure } from "../components/Failure.js";
+import { Glance } from "../components/Glance.js";
+import { Lifecycle } from "../components/Lifecycle.js";
 import { ShellEditor } from "../components/ShellEditor.js";
 import { Step, Steps } from "../components/Steps.js";
 import { LogSurface } from "../components/LogSurface.js";
-import { Meters } from "../components/Meters.js";
-import { NetworkChart } from "../components/NetworkChart.js";
 import { OperationSteps } from "../components/OperationProgress.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { Terminal } from "../components/Terminal.js";
@@ -37,7 +40,7 @@ import {
   customImageTemplates,
 } from "../lib/customImageTemplates.js";
 import { isVersion } from "../lib/dependencies.js";
-import { machineNetworkSeries, machineTotals } from "../lib/useMetrics.js";
+import { machineSeriesFor } from "../lib/useMetrics.js";
 import type {
   Environment,
   EnvironmentConfig,
@@ -468,7 +471,7 @@ export function Environments({
           log: "Creating virtual machine...",
           ssh_command: "ssh operator@host -p 2225",
           tunnel_command: "ssh -N -L 3003:127.0.0.1:3000 operator@host -p 2225",
-          web_url: "",
+          web_url: null,
           installed_versions: {},
         };
         setRecords((items) => [record, ...items]);
@@ -655,13 +658,13 @@ export function Environments({
     );
   const operation = current.operation;
   const versions = installedVersions(current.installed_versions);
+  // A half-provisioned guest reports numbers that read as a machine sitting
+  // idle, so the glance waits for the service to answer. What it is using is
+  // measured inside it: the Host only sees one hypervisor process.
+  const samples = current.service_ready ? machineSeriesFor(metrics, current.id) : null;
   return (
     <>
       <div className="environment-page">
-        {/* The breadcrumb above already names the machine, so the heading is
-            here for the document's outline rather than for the eye. The room it
-            would take goes to the operation and the actions. */}
-        <h1 className="offscreen">{current.config.name}</h1>
         {demo ? (
           <p className="demo-banner" role="status">
             <strong>Demo mode:</strong> memory-only state transitions. Live API
@@ -678,96 +681,96 @@ export function Environments({
             onAction={() => void perform("retry")}
           />
         ) : null}
-        <div className="environment-actions">
+        {/* The machine says its own name now, the way every other detail
+            screen does. The breadcrumb repeating it is what a breadcrumb is
+            for; a screen with no heading was the odd one out. */}
+        <div className="between">
+          <PageHeader>
+            <PageHeaderTitle>{current.config.name}</PageHeaderTitle>
+            {/* A machine whose service is not answering has no URL to link,
+                so the line is absent rather than empty. */}
+            {current.web_url ? (
+              <PageHeaderDescription>
+                <a href={current.web_url} target="_blank" rel="noreferrer" className="mono">
+                  {current.web_url.replace(/^https?:\/\//, "")}
+                </a>
+              </PageHeaderDescription>
+            ) : null}
+            {samples ? <Glance samples={samples} /> : null}
+          </PageHeader>
           {/* Neither badge moves during a create, so while one runs the row
               carries the operation instead: a bar that walks is the only thing
               on this screen that says the minutes are passing. */}
           {operation?.status === "running" ? (
-            <OperationSteps operation={operation} />
-          ) : (
-            <>
-              <StatusBadge tone={tone(current.state)}>
-                VM {current.state}
-              </StatusBadge>
-              {/* A machine nobody signed into has a T3 service that is off,
-                  which is the normal state and not an error to report. */}
-              <StatusBadge tone={current.service_ready ? "success" : "neutral"}>
-                Service {current.service_ready ? "ready" : "disabled"}
-              </StatusBadge>
-            </>
-          )}
-          <span className="grow" />
-          <Button
-            size="sm"
-            onClick={() => void perform("start")}
-            disabled={
-              busy || actionBusy(current) || current.state === "running"
-            }
-          >
-            Start
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => void perform("stop")}
-            disabled={
-              busy || actionBusy(current) || current.state !== "running"
-            }
-          >
-            Stop
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => void perform("restart")}
-            disabled={
-              busy || actionBusy(current) || current.state !== "running"
-            }
-          >
-            Restart
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => void perform("bootstrap")}
-            disabled={busy || actionBusy(current)}
-          >
-            Bootstrap
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="btn-danger-ghost"
-            onClick={() => setConfirming(current)}
-            disabled={busy || actionBusy(current)}
-          >
-            Delete
-          </Button>
-        </div>
-        {/* Only once the service answers: a half-provisioned guest reports
-            numbers that read as a machine sitting idle. What it is using is
-            measured inside it, because the Host only sees one hypervisor
-            process. */}
-        {current.service_ready ? (
-          <Card>
-            <div className="card-body">
-              <p className="t-caps">Machine resources</p>
-              {machineTotals(metrics, current.id) ? (
-                <>
-                  <Meters totals={machineTotals(metrics, current.id)!} />
-                  <NetworkChart
-                    samples={machineNetworkSeries(metrics, current.id)}
-                  />
-                </>
-              ) : (
-                <p className="muted">Collecting.</p>
-              )}
+            <div className="lifecycle">
+              <OperationSteps operation={operation} />
             </div>
-          </Card>
-        ) : null}
-        <Card className="environment-tabs">
+          ) : (
+            <Lifecycle
+              status={
+                <>
+                  <StatusBadge tone={tone(current.state)}>
+                    VM {current.state}
+                  </StatusBadge>
+                  {/* A machine nobody signed into has a T3 service that is off,
+                      which is the normal state and not an error to report. */}
+                  <StatusBadge tone={current.service_ready ? "success" : "neutral"}>
+                    Service {current.service_ready ? "ready" : "disabled"}
+                  </StatusBadge>
+                </>
+              }
+              actions={
+                <>
+                  <Button
+                    size="sm"
+                    onClick={() => void perform("start")}
+                    disabled={busy || actionBusy(current) || current.state === "running"}
+                  >
+                    Start
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => void perform("stop")}
+                    disabled={busy || actionBusy(current) || current.state !== "running"}
+                  >
+                    Stop
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => void perform("restart")}
+                    disabled={busy || actionBusy(current) || current.state !== "running"}
+                  >
+                    Restart
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => void perform("bootstrap")}
+                    disabled={busy || actionBusy(current)}
+                  >
+                    Bootstrap
+                  </Button>
+                </>
+              }
+              destructive={
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="btn-danger-ghost"
+                  onClick={() => setConfirming(current)}
+                  disabled={busy || actionBusy(current)}
+                >
+                  Delete virtual machine
+                </Button>
+              }
+            />
+          )}
+        </div>
+        <Card className="detail-tabs">
           <Tabs key={current.id} value={tab} onValueChange={setTab}>
             <TabsList aria-label="Virtual machine details">
               <TabsTrigger value="configuration">Configuration</TabsTrigger>
               <TabsTrigger value="logs">Logs</TabsTrigger>
-              <TabsTrigger value="connect">Connect to console</TabsTrigger>
+              <TabsTrigger value="connect">Terminal</TabsTrigger>
             </TabsList>
             <TabsContent value="configuration">
             <EnvironmentEditor
@@ -800,11 +803,11 @@ export function Environments({
               </>
             ) : null}
             </TabsContent>
-            <TabsContent value="logs" className="environment-logs">
+            <TabsContent value="logs" className="detail-logs">
             <LogSurface label="Virtual machine log" text={logs}
               placeholder="Nothing recorded yet." />
             </TabsContent>
-            <TabsContent value="connect" className="environment-terminal">
+            <TabsContent value="connect" className="detail-terminal">
             <Terminal id={current.id} machine />
             </TabsContent>
           </Tabs>
@@ -855,7 +858,7 @@ export function Environments({
   );
 }
 
-function EnvironmentEditor({
+export function EnvironmentEditor({
   config,
   failure,
   busy,

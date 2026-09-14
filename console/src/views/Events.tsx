@@ -73,8 +73,8 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
     {error && <div className="events-error" role="alert"><span>{error}</span>{onRetry && <Button size="sm" onClick={onRetry}>Retry</Button>}</div>}
     <div className={`events-layout${selected ? " events-layout-open" : ""}`}>
       <div className="events-list">
-        <div className="events-filters">
-          <Search containerClassName="events-search" aria-label="Filter by service" placeholder="Search services or virtual machines..."
+        <div className="list-filters">
+          <Search aria-label="Filter by service" placeholder="Search services or virtual machines..."
             value={query} onChange={event => { setQuery(event.target.value); setSelectedId(null); }} />
           <Select value={status} onValueChange={value => { setStatus(value); setSelectedId(null); }}>
             <SelectTrigger aria-label="Filter event status"><SelectValue /></SelectTrigger>
@@ -83,9 +83,9 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
               {Object.entries(states).map(([value, state]) => <SelectItem key={value} value={value}>{state.label}</SelectItem>)}
             </SelectContent>
           </Select>
-          {filtered && <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); setSelectedId(null); }}>Clear filters</Button>}
+          {filtered ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); setSelectedId(null); }}>Clear filters</Button> : null}
         </div>
-        <Card className="events-table-card">
+        <div className="table-wrap">
           <Table aria-label="Platform events">
             <TableHeader><TableRow>
               <TableHead>Action</TableHead><TableHead>Affected service</TableHead><TableHead>Actor</TableHead><TableHead>Last updated</TableHead>
@@ -116,8 +116,8 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
             <EmptyStateTitle>{loading ? "Loading events" : error ? "Could not load events" : filtered ? "No matching events" : "No events yet"}</EmptyStateTitle>
             <EmptyStateDescription>{loading ? "Fetching platform activity." : error ? "Retry to load the event history." : filtered ? "Try another service name or clear the filters." : "Service and virtual machine activity will appear here."}</EmptyStateDescription>
           </EmptyState>}
-          <div className="events-table-footer"><span role="status">{rows.length} {rows.length === 1 ? "event" : "events"}</span><span>Newest first · {Intl.DateTimeFormat().resolvedOptions().timeZone}</span></div>
-        </Card>
+          <p className="table-footer"><span role="status">{rows.length} of {events.length} {events.length === 1 ? "event" : "events"}</span><span>Newest first · {Intl.DateTimeFormat().resolvedOptions().timeZone}</span></p>
+        </div>
       </div>
       {selected && <aside id="event-details" className="events-details" aria-labelledby="event-details-title"
         onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); closeDetails(); } }}>

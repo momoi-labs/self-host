@@ -8,6 +8,7 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "./Failure.js";
+import { Lifecycle } from "./Lifecycle.js";
 import { LogSurface } from "./LogSurface.js";
 import { Step, Steps } from "./Steps.js";
 import { ShellEditor } from "./ShellEditor.js";
@@ -207,7 +208,7 @@ function Dependencies({ value, onChange, disabled }: {
  * The listing owns the records and the polling; this owns the fields, which
  * is why a poll can refresh the log without touching an edit in progress.
  */
-export function CustomImageEditor({ current, selected, building, loaded, loadFailure, onSaved }: {
+export function CustomImageEditor({ current, selected, building, loaded, loadFailure, onSaved, onDelete, deleteReason, deleting }: {
   current: CustomImage | undefined;
   selected: string | null;
   /** Any image on the Host is building, so this one cannot start. */
@@ -215,6 +216,12 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
   loaded: boolean;
   loadFailure: Report | null;
   onSaved: (image: CustomImage) => void;
+  /** Deleting is the list's business — it owns the records — so the header
+   *  only asks. Absent while the image has not been saved yet. */
+  onDelete?: () => void;
+  /** Why this image cannot be deleted, or null when it can. */
+  deleteReason?: string | null;
+  deleting?: boolean;
 }) {
   const [name, setName] = useState("");
   const [templateId, setTemplateId] = useState("");
@@ -312,17 +319,35 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
 
   return (
     <div className="custom-images-page">
-      <PageHeader>
-        <PageHeaderTitle>{selected ? current?.name ?? "Image" : "New image"}</PageHeaderTitle>
-        <PageHeaderDescription>Save your image's dependencies and build it on this Host.</PageHeaderDescription>
-      </PageHeader>
+      {/* The same header row every detail screen carries. An image is built,
+          not run, so it offers no lifecycle verbs — the middle group is
+          absent rather than empty. */}
+      <div className="between">
+        <PageHeader>
+          <PageHeaderTitle>{selected ? current?.name ?? "Image" : "New image"}</PageHeaderTitle>
+          <PageHeaderDescription>Save your image's dependencies and build it on this Host.</PageHeaderDescription>
+        </PageHeader>
+        {current ? (
+          <Lifecycle
+            status={<StatusBadge tone={buildTone(current)}>{buildLabel(current)}</StatusBadge>}
+            destructive={
+              <Button type="button" size="sm" variant="ghost" className="btn-danger-ghost"
+                aria-label={`Delete ${current.name}`}
+                title={deleteReason ?? undefined}
+                disabled={deleting || !!deleteReason || !onDelete}
+                onClick={onDelete}>
+                {deleting ? "Deleting..." : "Delete image"}
+              </Button>
+            }
+          />
+        ) : null}
+      </div>
       {loadFailure ? <Failure failure={loadFailure} /> : null}
       <Card className="custom-images-panel" data-dock={dock}>
         <form className="custom-image-form" onSubmit={submit}>
           <div className="row">
             <p className="t-caps grow">{manual ? "Dockerfile" : "Configuration"}</p>
             {manual ? <Badge variant="warning">Edited by hand</Badge> : null}
-            {current ? <StatusBadge tone={buildTone(current)}>{buildLabel(current)}</StatusBadge> : null}
           </div>
           {manual ? (
             <>

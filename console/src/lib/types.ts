@@ -180,6 +180,6 @@ export type Environment = {
   log: string;
   ssh_command: string;
   tunnel_command?: string;
-  web_url: string;
+  web_url: string | null;
   installed_versions?: unknown;
 };
