@@ -93,19 +93,35 @@ export function CustomImages({ listing, selected, onOpen }: {
     return null;
   }
 
+  const confirmDialog = (
+    <AlertDialog open={!!confirming} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader><AlertDialogTitle>Delete image</AlertDialogTitle></AlertDialogHeader>
+          <div className="dialog-body">
+          <AlertDialogDescription>Delete <code>{confirming?.name}</code> and its local image tags?</AlertDialogDescription>
+          </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction className="btn-danger" onClick={() => { if (confirming) void remove(confirming); }}>Delete image</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+    </AlertDialog>
+  );
+
   if (listing) return (
     <>
-      <PageHeader>
+      <PageHeader actions={
+        <Button size="sm" variant="primary" onClick={() => onOpen(null)}><Icon name="plus" />New image</Button>
+      }>
         <PageHeaderTitle>Custom images</PageHeaderTitle>
         <PageHeaderDescription>Saved images and their latest build on this Host.</PageHeaderDescription>
       </PageHeader>
       {loadFailure ? <Failure failure={loadFailure} /> : null}
       {failure ? <Failure failure={failure} /> : null}
-      <div className="dashboard-filters">
+      <div className="list-filters">
         <Search aria-label="Search by name" placeholder="Search by name..." value={query}
           onChange={(event) => setQuery(event.target.value)} />
-        <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button>
-        <Button size="sm" variant="primary" onClick={() => onOpen(null)}><Icon name="plus" />New image</Button>
+        {query ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
       </div>
       {!loaded && !loadFailure ? <p className="muted">Loading images...</p> : loaded && !images.length ? (
         <Card>
@@ -160,23 +176,19 @@ export function CustomImages({ listing, selected, onOpen }: {
           </div>
         </div>
       ) : null}
-      <AlertDialog open={!!confirming} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Delete image</AlertDialogTitle></AlertDialogHeader>
-          <div className="dialog-body">
-            <AlertDialogDescription>Delete <code>{confirming?.name}</code> and its local image tags?</AlertDialogDescription>
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction className="btn-danger" onClick={() => { if (confirming) void remove(confirming); }}>Delete image</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {confirmDialog}
     </>
   );
 
   return (
-    <CustomImageEditor current={current} selected={selected} building={building}
-      loaded={loaded} loadFailure={loadFailure} onSaved={saved} />
+    <>
+      <CustomImageEditor current={current} selected={selected} building={building}
+        loaded={loaded} loadFailure={loadFailure} onSaved={saved}
+        onDelete={current ? () => setConfirming(current) : undefined}
+        deleteReason={current ? deleteReason(current) : null}
+        deleting={!!deleting} />
+      {failure ? <Failure failure={failure} /> : null}
+      {confirmDialog}
+    </>
   );
 }

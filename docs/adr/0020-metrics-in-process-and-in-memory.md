@@ -81,12 +81,12 @@ How it draws them follows from what the numbers are. CPU and memory are
 fractions of a known ceiling, so they are **meters**: a bar against its track,
 because "203 MiB of 15.7 GiB" set as prose is a ratio nobody reads as 1.3%.
 Network has no ceiling to measure against and keeps a line. The overview meters
-the Host, summed across Applications; the detail meters one Application, and
-its Resources tab lists the containers underneath — one table, because the
-Services list and the per-container metrics are the same rows, and printing
-them apart printed every one-container Application twice. The Application's
-detail header carries a single line of numbers, so the panel below it keeps its
-height.
+the Host, summed across Applications, and lists the containers underneath —
+one table, because the Services list and the per-container metrics are the same
+rows, and printing them apart printed every one-container Application twice. A
+detail screen carries a single line of numbers under its name and nothing more,
+so the card below it keeps its height (ADR-0024). It used to meter the one
+Application again in a Resources tab; that restated the line above it.
 
 The proxy's and DNS's own counts share one plot, because both are events
 counted over the same interval and two y-scales on one chart invent a

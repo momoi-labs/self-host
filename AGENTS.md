@@ -20,6 +20,18 @@ Canonical triage roles use matching label strings. See `docs/agents/triage-label
 
 Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
+### Console pages
+
+**Every new console screen goes through `skills/add-page/SKILL.md`.** Do not
+write a page, view, list or detail screen in `console/src/` without it, and run
+it against an existing screen when reviewing one.
+
+The console has one layout for list screens and one for detail screens
+(ADR-0024), and the skill is how that stays true: it carries the shape to fill
+in, the components to reuse, and a checklist to run before you call the screen
+done. A screen that invents its own layout is the thing ADR-0024 was written to
+end.
+
 ## Console
 
 The console is a React app in `console/`, built with Vite onto

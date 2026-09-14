@@ -6,13 +6,18 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   FormField,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
+  Search,
   Table,
   TableBody,
   TableCell,
@@ -34,6 +39,8 @@ function ApiKeys() {
   const [label, setLabel] = useState("");
   const [created, setCreated] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [query, setQuery] = useState("");
 
   const load = useCallback(async () => {
     setKeys((await getJson<ApiKey[]>("/api-keys")) ?? []);
@@ -55,6 +62,7 @@ function ApiKeys() {
       if (!res.ok) throw new Error("Could not create the key. Try again.");
       const data = (await res.json()) as { key: string };
       setLabel("");
+      setCreating(false);
       setCreated(data.key);
       await load();
     } catch (cause) {
@@ -68,58 +76,49 @@ function ApiKeys() {
     await load();
   }
 
+  const visible = keys.filter((key) =>
+    `${key.label} ${key.id}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+
   return (
     <section className="page">
-      <PageHeader>
-          <PageHeaderTitle>API keys</PageHeaderTitle>
-          <PageHeaderDescription>Manage access for other operators.</PageHeaderDescription>
+      <PageHeader
+        actions={
+          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+            <Icon name="plus" />
+            New key
+          </Button>
+        }
+      >
+        <PageHeaderTitle>API keys</PageHeaderTitle>
+        <PageHeaderDescription>Manage access for other operators.</PageHeaderDescription>
       </PageHeader>
 
-      <Card aria-labelledby="create-heading">
-        <CardHeader>
-          <h2 className="t-h3" id="create-heading">
-            Create a key
-          </h2>
-        </CardHeader>
-        <CardContent>
-          <form className="row" onSubmit={create}>
-            <FormField
-              label="Label"
-              id="key-label"
-              className="grow"
-              placeholder="Laptop"
-              required
-              value={label}
-              onChange={(event) => setLabel(event.target.value)}
-            />
-            <Button variant="primary" size="sm" type="submit">
-              Create key
-            </Button>
-          </form>
+      {created ? (
+        <Alert variant="info">
+          <Icon name="info" size="md" />
+          <AlertContent>
+            <AlertTitle>Copy this key now. It will not be shown again.</AlertTitle>
+            <AlertDescription className="mono">{created}</AlertDescription>
+          </AlertContent>
+        </Alert>
+      ) : null}
 
-          {error ? (
-            <Alert variant="error">
-              <Icon name="alert" size="md" />
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
+      <div className="list-filters">
+        <Search
+          aria-label="Search by label"
+          placeholder="Search by label..."
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        {query ? (
+          <Button size="sm" variant="ghost" onClick={() => setQuery("")}>
+            Clear filters
+          </Button>
+        ) : null}
+      </div>
 
-          {created ? (
-            <Alert variant="info">
-              <Icon name="info" size="md" />
-              <AlertContent>
-                <AlertTitle>Copy this key now. It will not be shown again.</AlertTitle>
-                <AlertDescription className="mono">{created}</AlertDescription>
-              </AlertContent>
-            </Alert>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      <section className="table-wrap" aria-labelledby="keys-heading">
-        <h2 id="keys-heading" className="hidden">
-          Existing API keys
-        </h2>
+      <div className="table-wrap">
         <div className="table-scroll">
           <Table>
             <TableHeader>
@@ -133,14 +132,14 @@ function ApiKeys() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {keys.length === 0 ? (
+              {visible.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={4} className="muted">
-                    No API keys yet.
+                    {keys.length === 0 ? "No API keys yet." : "No keys match your filters."}
                   </TableCell>
                 </TableRow>
               ) : (
-                keys.map((key) => (
+                visible.map((key) => (
                   <TableRow key={key.id}>
                     <TableCell className="mono">{key.id}</TableCell>
                     <TableCell>{key.label}</TableCell>
@@ -161,7 +160,58 @@ function ApiKeys() {
             </TableBody>
           </Table>
         </div>
-      </section>
+        <p className="table-footer">
+          <span>
+            {visible.length} of {keys.length} {keys.length === 1 ? "key" : "keys"}
+          </span>
+        </p>
+      </div>
+
+      {/* Creating is one field, so it is a dialog rather than a card that sits
+          above the list forever asking to be filled in. */}
+      <Dialog
+        open={creating}
+        onOpenChange={(open) => {
+          setCreating(open);
+          if (!open) setError(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New API key</DialogTitle>
+            <DialogDescription>
+              The key is shown once, when it is created.
+            </DialogDescription>
+          </DialogHeader>
+          <form id="new-key" onSubmit={create}>
+            <DialogBody>
+              <FormField
+                label="Label"
+                id="key-label"
+                placeholder="Laptop"
+                required
+                autoFocus
+                value={label}
+                onChange={(event) => setLabel(event.target.value)}
+              />
+              {error ? (
+                <Alert variant="error">
+                  <Icon name="alert" size="md" />
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              ) : null}
+            </DialogBody>
+            <DialogFooter>
+              <Button size="sm" type="button" onClick={() => setCreating(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" variant="primary" type="submit">
+                Create key
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

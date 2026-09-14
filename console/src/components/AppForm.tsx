@@ -54,15 +54,11 @@ export function AppForm({
   dnsSuffix,
   onSubmit,
   onCancel,
-  onRemove,
-  removing,
 }: {
   app?: App;
   dnsSuffix: string;
   onSubmit: (body: Submission, source: string) => Promise<Report | null>;
   onCancel?: () => void;
-  onRemove?: () => void;
-  removing?: boolean;
 }) {
   const creating = !app;
   const [source, setSource] = useState(creating ? "image" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
@@ -484,14 +480,11 @@ export function AppForm({
             </Button>
           </>
         ) : (
-          <>
-            <Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={onRemove} disabled={removing}>
-              {removing ? "Removing..." : "Remove application"}
-            </Button>
-            <Button size="sm" variant="primary" type="submit" disabled={removing}>
-              Save and redeploy
-            </Button>
-          </>
+          /* Removing lives in the header row with the other lifecycle verbs,
+             so the form's footer is only about saving. */
+          <Button size="sm" variant="primary" type="submit">
+            Save and redeploy
+          </Button>
         )}
       </div>
     </form>

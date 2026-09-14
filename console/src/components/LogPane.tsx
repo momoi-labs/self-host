@@ -43,19 +43,19 @@ export function AppLogPane({ id }: { id: string }) {
 
   if (failed) {
     return (
-      <>
-        <p className="t-caps">Logs</p>
-        <LogView>
-          <LogViewLine className="log-error">
-            Could not load containers. Reopen the application to retry.
-          </LogViewLine>
-        </LogView>
-      </>
+      <LogView>
+        <LogViewLine className="log-error">
+          Could not load containers. Reopen the application to retry.
+        </LogViewLine>
+      </LogView>
     );
   }
 
   return (
     <>
+      {/* The tab is already called Logs. Only a Compose Application with
+          several containers needs anything above the stream, and then it is
+          the picker. */}
       {containers && containers.length > 1 ? (
         <Select value={chosen} onValueChange={setChosen}>
           <FormField id="log-container" label="Logs from container">
@@ -71,9 +71,7 @@ export function AppLogPane({ id }: { id: string }) {
             ))}
           </SelectContent>
         </Select>
-      ) : (
-        <p className="t-caps">Logs</p>
-      )}
+      ) : null}
 
       <Logs
         label="Logs"

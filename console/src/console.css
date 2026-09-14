@@ -78,6 +78,21 @@
 }
 .summary-line .sparkline { width: 56px; }
 .section-title { font-size: var(--type-size-title); font-weight: 600; margin: 0; }
+/* The filter row on a list screen (ADR-0024). Search first and growing, any
+   extra filter after it, and "Clear filters" only once something is filtered.
+   The way to add one more is not here — it is in the page header, because
+   narrowing a list and adding to it are opposite intentions. */
+.list-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spacing-sm); }
+.list-filters > .input-group { flex: 1 1 260px; min-width: 0; }
+/* kiso sizes every control at 100% so it fills a form column. In a filter row
+   the select is an accessory to the search, not a second field, so it takes
+   only what its longest option needs. */
+.list-filters > [data-slot="select-trigger"] { flex: none; width: auto; min-width: 11rem; }
+@media (max-width: 560px) {
+  .list-filters > .input-group { flex-basis: 100%; }
+  .list-filters > [data-slot="select-trigger"] { width: 100%; }
+}
+
 /* Title, how much of the list is showing, the search that thins it, and the
    way to add one more. The search takes the middle, so the action stays at the
    end of the row where it has always been. */
@@ -125,62 +140,23 @@
    spaced against the value here. */
 .stat .sparkline { margin-block-start: var(--spacing-sm); }
 
-/* Tabs inside the form pane. The pane already scrolls, so the tab bar stays
-   put and only the panel under it moves. */
-.pane-tabs { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: var(--spacing-lg); min-height: 0; }
-.pane-tabs > [role="tabpanel"] { min-height: 0; }
-
-/* Split panes carry their own inset — kiso leaves .pane bare so a pane can
-   also hold something full-bleed. The log pane is one element tall, so it
-   fills rather than scrolls twice. */
-.split > .pane { padding: var(--spacing-lg); }
-.split > .pane.pane-logs { display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 0; overflow: hidden; }
-.pane-logs > :first-child { padding: var(--spacing-lg); }
-.pane-logs .logview { min-height: 0; border: 0; border-radius: 0; padding: 0; --corner-mark: 0; }
-.pane-logs .log-scroll { padding: var(--spacing-lg); }
 .logview [data-slot="log-view-line"] { white-space: pre; min-height: 1lh; }
 /* Terminal block art needs adjoining cells, without text line spacing. */
 .logview .log-block-art { font-family: "Courier New", monospace; line-height: 1; letter-spacing: 0; }
 
-/* The application detail. The form pane opens at a readable measure instead
-   of at half the window: half of a wide screen is more form than the fields
-   need, and the log pane is the one that actually wants the extra room. The
-   split clips the panes while the outer card keeps its corner marks visible. */
-/* min-height: 0 on both, or the automatic minimum size of a flex and grid item
-   is its content — which is how a long log escapes every cap above it. */
+/* A detail screen fills the window instead of growing it, and that only works
+   if every height in the chain is definite. kiso's .app-shell asks for
+   min-height: 100vh, which leaves the chain content-driven — so a long form or
+   a long log stretches the card, the page and the window with it.
+   min-height: 0 on both, or the automatic minimum size of a flex item is its
+   content, which is how a two thousand line log escapes every cap above it. */
 .app-shell > main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar { flex-shrink: 0; }
 /* Keep charts and scrollable tables inside the available page width. */
 #detail { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 #detail > .stack { grid-template-columns: minmax(0, 1fr); }
-/* The detail is the one screen that fills the window instead of growing it.
-   kiso's .app-shell asks for min-height: 100vh, which leaves every height in
-   the chain content-driven — so a long log would stretch the split, the panel
-   and the page with it. A definite height here is what lets each pane scroll
-   on its own. */
-@media (min-width: 1024px) {
-  .app-shell:has(.detail-panel) { height: 100vh; }
-}
-/* A column, not a two-row grid: the panel takes whatever the header and the
-   blocks above it leave, and how many of those there are is the screen's
-   business — a failure, a resources strip, both, or neither. The grid this
-   replaces sized row two at minmax(0, 1fr) and squashed whichever child
-   happened to land there. min-height: 0 on the panel is the same defence the
-   template's minmax(0, …) was: without it a long log sets the floor. */
-#detail:has(.detail-panel) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-#detail:has(.detail-panel) > * { flex: none; }
-#detail:has(.detail-panel) > .detail-panel { flex: 1; min-height: 0; }
-.detail-panel { display: grid; }
-.detail-panel .split { overflow: hidden; border-radius: inherit; }
-/* kiso's Splitter owns flex-basis (it writes a percentage), so the readable
-   measure this pane used to get from clamp() is a floor and a ceiling now.
-   The form scrolls inside its pane rather than growing the page: the log pane
-   beside it has its own scroller, and two panes that scroll the document
-   between them cannot both stay on screen. */
-.detail-panel .split > .pane:first-child { min-width: 320px; max-width: 720px; overflow: auto; }
-/* Neither pane sets the height any more: the row above caps it, and each pane
-   scrolls its own content. */
-.detail-panel .split > .pane-logs { flex: 1; min-height: 320px; }
+
+/* The form's footer, on every detail screen. */
 .form-actions { display: flex; justify-content: flex-end; gap: var(--spacing-sm); }
 
 /* Per-platform DNS instructions: a stack of disclosures, not a stack of
@@ -201,12 +177,6 @@
    the content instead. */
 @media (max-width: 1023px) {
   .sidebar { display: flex; position: static; height: auto; max-height: 42vh; border-inline-end: 0; border-block-end: 1px solid var(--color-sidebar-border); }
-  .split { display: block; }
-  .split > .pane { overflow: visible; }
-  .splitter { display: none; }
-  .detail-panel .split > .pane:first-child { min-width: 0; }
-  /* Stacked, the form grows naturally and logs keep their own scroll area. */
-  .detail-panel .split > .pane-logs { contain: none; height: 60vh; }
 }
 
 /* The deploy dialog switches between an image and a Compose file. A Compose
@@ -264,7 +234,10 @@
 .custom-image-lastline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (min-width: 1024px) {
   .app-shell:has(.custom-images-page) { height: 100vh; }
-  #detail:has(.custom-images-page) { display: flex; flex: 1; min-height: 0; }
+  /* A column, because the page now carries the header row above the panel and
+     the panel is the only child that should take the leftover height. */
+  #detail:has(.custom-images-page) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  #detail:has(.custom-images-page) > .custom-images-page { flex: 1; min-height: 0; }
 }
 @media (max-width: 1023px) {
   .custom-images-panel[data-dock="half"], .custom-images-panel[data-dock="full"] { grid-template-rows: minmax(0, 1fr) 60vh; }
@@ -280,9 +253,57 @@
 .environment-subheading { margin-block-start: var(--spacing-xl); }
 .demo-banner { margin: 0; padding: var(--spacing-md) var(--spacing-lg); border: 1px solid var(--color-warning); border-radius: var(--radius-md); background: var(--color-warning-surface); }
 
-/* Lifecycle actions sit with the status badge: what it is, and what you can
-   do about it, in one glance. */
-.lifecycle { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-sm); }
+/* The detail screen's header row: what it is, what you can do to it, and the
+   one action you do not want to hit by accident. The gaps say which is which —
+   the two clusters sit a normal gap apart, and the destructive action gets a
+   wider one so nothing is ever flush against it. */
+.lifecycle { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-md); }
+.lifecycle > .btn-danger-ghost { margin-inline-start: var(--spacing-sm); }
+
+/* A cluster is one object made of several. The children give up their own
+   border and corners to the frame, and a hairline between them is what says
+   they are separate readings, or separate choices. */
+.cluster {
+  display: inline-flex; align-items: stretch;
+  height: var(--size-control-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+/* Status is read, not pressed: no shadow, and each badge keeps the tone
+   surface that carries its meaning. Flat against its neighbour, the hairline
+   is the only thing dividing two greens. */
+.cluster-status > .badge {
+  height: auto; border-radius: 0;
+  border-block: 0; border-inline-end: 0;
+  padding-inline: var(--spacing-md);
+  font-size: var(--type-size-label);
+}
+/* The tone's own border would double up against the frame's line. */
+.cluster-status > .badge + .badge { border-inline-start-color: var(--color-border); }
+
+/* The verbs are pressed, so the group carries the surface and the shadow each
+   button carried on its own. */
+.cluster-verbs { background: var(--color-card); box-shadow: var(--shadow-xs); }
+.cluster-verbs > .btn { border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+.cluster-verbs > .btn + .btn { border-inline-start: 1px solid var(--color-border); }
+.cluster-verbs > .btn:hover:not(:disabled) { background: var(--color-accent-surface-hover); }
+/* A greyed verb is the row's normal state — Start is off the whole time an
+   Application is running — so it reads as unavailable without punching a hole
+   in the group. */
+.cluster-verbs > .btn:disabled { background: var(--color-disabled-surface); color: var(--color-disabled); }
+/* The focus ring belongs on the group's edge, not on a square inside it. */
+.cluster-verbs > .btn:focus-visible { outline-offset: -2px; }
+
+/* Wrapped onto its own line, the destructive action has no gap left to set it
+   apart, so it takes the row instead. */
+@media (max-width: 720px) {
+  .lifecycle { gap: var(--spacing-sm); }
+  .cluster-verbs { width: 100%; }
+  .cluster-verbs > .btn { flex: 1; }
+  .lifecycle > .btn-danger-ghost { margin-inline-start: 0; }
+}
 
 
 /* The storage summary under the Compose editor: one line per mount. */
@@ -325,16 +346,13 @@
   .yaml-editor .compose-editor { color: CanvasText; }
 }
 
-/* Application logs and the interactive terminal share the output pane. */
-.detail-panel .split > .pane-console { flex: 1; min-height: 320px; padding: 0; overflow: hidden; }
-.app-console { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-width: 0; }
-.app-console > [data-slot="tabs-list"] { padding-inline: var(--spacing-lg); flex-shrink: 0; }
-.app-console > [data-slot="tabs-content"] { margin: 0; padding: 0; min-height: 0; min-width: 0; overflow: hidden; }
-.app-console > [data-state="inactive"] { display: none; }
-.app-console-logs { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-height: 0; }
-.app-console-logs > :first-child { padding: var(--spacing-lg); }
-.app-console .logview { min-height: 0; border: 0; border-radius: 0; --corner-mark: 0; }
-.app-console .log-scroll { padding: var(--spacing-lg); }
+/* A Compose Application puts a container picker above its log; everything
+   else is the log alone. A column takes either without being told which. */
+.detail-log-pane { display: flex; flex-direction: column; min-height: 0; }
+.detail-log-pane > :not(:last-child) { flex: none; padding: var(--spacing-lg); }
+.detail-log-pane > :last-child { flex: 1; min-height: 0; }
+.detail-tabs .logview { min-height: 0; border: 0; border-radius: 0; --corner-mark: 0; }
+.detail-tabs .log-scroll { padding: var(--spacing-lg); }
 
 .container-terminal { position: relative; height: 100%; min-height: 320px; }
 .terminal-screen { position: absolute; inset: 0; min-width: 0; overflow: hidden; padding: 12px; background: #121116; }
@@ -344,62 +362,59 @@
 .terminal-picker { width: min(100%, 320px); text-align: start; }
 .terminal-session-controls { position: absolute; inset-block-start: 4px; inset-inline-end: 4px; display: flex; align-items: center; gap: var(--spacing-sm); color: #dedbd7; background: #121116; border-radius: var(--radius-md); }
 .terminal-session-controls button { color: inherit; padding: var(--spacing-xs); }
-.environment-tabs { min-width: 0; padding: var(--spacing-xl); }
-.environment-tabs [role="tablist"] { max-width: 100%; overflow-x: auto; }
-.environment-tabs [role="tabpanel"] { min-width: 0; padding-block-start: var(--spacing-lg); }
-/* The log and the terminal take the card below the tabs, out to its edges, the
-   way the build log takes the bottom of the builder. A boot is two thousand
-   lines and a shell is a screen; neither reads in a box three lines tall, and
-   one height for both keeps the card from resizing as the Operator switches. */
-.environment-tabs [role="tabpanel"].environment-logs,
-.environment-tabs [role="tabpanel"].environment-terminal {
-  /* A definite height, because kiso puts the height on `.logview` and lets the
-     scroller take what is left. A minimum would let two thousand lines push
-     the page down instead. */
-  display: grid; grid-template-rows: minmax(0, 1fr); height: min(60vh, 34rem);
-  /* Straight under the tabs: the tab list already draws the line between them,
-     and the panel's own padding would leave a white band above the log. */
-  padding-block-start: 0;
-  margin-block-end: calc(-1 * var(--spacing-xl));
-  margin-inline: calc(-1 * var(--spacing-xl));
+/* One card for everything a detail screen holds: configuration, and whatever
+   it prints. The Application and the machine both use it, so nothing here
+   names either. */
+/* The card is the screen, not a block on it. It takes the height the header
+   row leaves and each panel scrolls inside it, so a five-step form and a two
+   thousand line boot log are the same size and switching tabs does not resize
+   the page under the Operator's cursor. */
+.detail-tabs { min-width: 0; display: grid; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+.detail-tabs > [data-slot="tabs"] { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+/* The tab list scrolls sideways, and a scroller's automatic minimum size is
+   zero: beside a panel asking for the rest of the column it collapses to
+   nothing. The `auto` track keeps its own height; the panel takes what is
+   left. */
+.detail-tabs [role="tablist"] { max-width: 100%; overflow-x: auto; padding-inline: var(--spacing-xl); }
+.detail-tabs > [data-slot="tabs"] > [role="tablist"] { min-height: min-content; }
+/* The form scrolls; the log and the terminal bring their own scroller and
+   take the panel out to the card's edges. */
+.detail-tabs [role="tabpanel"] { min-width: 0; min-height: 0; overflow: auto; padding: var(--spacing-xl); }
+.detail-tabs [role="tabpanel"].detail-logs,
+.detail-tabs [role="tabpanel"].detail-terminal {
+  display: grid; grid-template-rows: minmax(0, 1fr);
+  overflow: hidden; padding: 0;
 }
 /* The panel that is not showing keeps its place in the DOM with `hidden`, and
    a `display` of our own beats that attribute. Without this the tab you left
    stays as an empty block above the one you opened. */
-.environment-tabs [role="tabpanel"][hidden] { display: none; }
-.environment-tabs li { overflow-wrap: anywhere; }
-@media (max-width: 720px) {
-  .environment-tabs { padding: var(--spacing-lg); }
-  .environment-tabs [role="tabpanel"].environment-logs,
-  .environment-tabs [role="tabpanel"].environment-terminal {
-    margin-block-end: calc(-1 * var(--spacing-lg));
-    margin-inline: calc(-1 * var(--spacing-lg));
-  }
-}
-/* On a wide window the tabs card takes the rest of the screen instead of a
-   fixed slab: a boot log is two thousand lines and a shell wants a screen,
-   so every pixel under the actions row is reading room. Same posture as the
-   application detail, a definite shell height, a column, and one card
-   allowed to grow; under the breakpoint the fixed height above stays. */
+.detail-tabs [role="tabpanel"][hidden] { display: none; }
+.detail-tabs li { overflow-wrap: anywhere; }
+
+/* The page the card sits on has to stop growing with it, or the card has no
+   height to take. Below 1024px the sidebar stacks above the content and the
+   document scrolls again, so the cap is lifted with it. */
 @media (min-width: 1024px) {
-  .app-shell:has(.environment-page) { height: 100vh; }
-  #detail:has(.environment-page) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  .environment-page { flex: 1; min-height: 0; }
-  .environment-page > .environment-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  .environment-tabs [data-slot="tabs"] { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  /* The tab list scrolls sideways, and a scroller's automatic minimum size
-     is zero: beside a panel asking for the rest of the column it collapses
-     to nothing. It keeps its own height; the panel takes what is left. */
-  .environment-tabs [data-slot="tabs"] > [role="tablist"] { flex: none; }
-  /* Every panel takes the card's remaining height. The log and the terminal
-     scroll themselves; the editor scrolls as a panel, the way the application
-     detail's form pane does, instead of pushing the page out from under a
-     full-height card. */
-  .environment-tabs [data-slot="tabs"] > [role="tabpanel"] { flex: 1 1 auto; min-height: 0; }
-  .environment-tabs [role="tabpanel"].environment-logs,
-  .environment-tabs [role="tabpanel"].environment-terminal { height: auto; }
-  .environment-tabs [role="tabpanel"]:not(.environment-logs):not(.environment-terminal) { overflow: auto; }
+  .app-shell:has(.detail-tabs) { height: 100vh; }
+  #detail:has(.detail-tabs) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  #detail:has(.detail-tabs) > * { flex: none; }
+  #detail:has(.detail-tabs) > .detail-tabs,
+  #detail:has(.detail-tabs) > .environment-page { flex: 1; min-height: 0; }
+  .environment-page:has(.detail-tabs) > .detail-tabs { flex: 1; min-height: 0; }
 }
+@media (max-width: 1023px) {
+  .detail-tabs { grid-template-rows: auto; }
+  .detail-tabs [role="tabpanel"] { overflow: visible; }
+  .detail-tabs [role="tabpanel"].detail-logs,
+  .detail-tabs [role="tabpanel"].detail-terminal { height: 60vh; }
+}
+@media (max-width: 720px) {
+  .detail-tabs [role="tablist"] { padding-inline: var(--spacing-lg); }
+  .detail-tabs [role="tabpanel"] { padding: var(--spacing-lg); }
+  .detail-tabs [role="tabpanel"].detail-logs,
+  .detail-tabs [role="tabpanel"].detail-terminal { padding: 0; }
+}
+
 
 .advanced > summary { cursor: pointer; font-weight: 600; padding-block: var(--spacing-sm); }
 .advanced[open] > summary { margin-block-end: var(--spacing-md); }

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { Suspense, lazy, useRef, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,13 +10,10 @@ import {
   AlertDialogTitle,
   Button,
   Card,
-  Pane,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
-  Sparkline,
-  Split,
-  Splitter,
+  Skeleton,
   Tabs,
   TabsContent,
   TabsList,
@@ -24,17 +21,21 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { AppForm, type Submission } from "../components/AppForm.js";
-import { AppConsole } from "../components/AppConsole.js";
-import { ContainerResources } from "../components/ContainerResources.js";
 import { Failure } from "../components/Failure.js";
+import { Glance } from "../components/Glance.js";
 import { HttpStatus } from "../components/HttpStatus.js";
+import { Lifecycle } from "../components/Lifecycle.js";
+import { AppLogPane } from "../components/LogPane.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
-import { formatBytes } from "../lib/format.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
-import type { App, AppSample, Metrics, Report } from "../lib/types.js";
-import { appTotals, containersFor, seriesFor } from "../lib/useMetrics.js";
+import type { App, Metrics, Report } from "../lib/types.js";
+import { seriesFor } from "../lib/useMetrics.js";
+
+// xterm is a third of the console's JavaScript and only the Terminal tab needs
+// it, so the chunk arrives when the Operator opens that tab.
+const Terminal = lazy(() => import("../components/Terminal.js").then((module) => ({ default: module.Terminal })));
 
 export function AppDetail({
   app,
@@ -54,8 +55,8 @@ export function AppDetail({
   const [removing, setRemoving] = useState(false);
   const removalInFlight = useRef(false);
   const samples = seriesFor(metrics, app.id);
-  const containers = containersFor(metrics, app.id);
-  const totals = appTotals(metrics, app.id);
+  const [tab, setTab] = useState("configuration");
+  const [openedTerminal, setOpenedTerminal] = useState(false);
 
   const canStop = app.status === "running" || app.status === "failed";
   const canStart = app.status === "stopped" || app.status === "failed";
@@ -163,23 +164,44 @@ export function AppDetail({
           </PageHeaderDescription>
           {samples ? <Glance samples={samples} /> : null}
         </PageHeader>
-        <div className="lifecycle">
-          <StatusBadge tone={statusTone(app.status)}>{app.status}</StatusBadge>
-          <HttpStatus id={app.id} status={app.status} />
-          <Button size="sm" disabled={removing || !canStart} onClick={() => void lifecycle("start")}>
-            Start
-          </Button>
-          <Button size="sm" disabled={removing || !canStop} onClick={() => void lifecycle("stop")}>
-            Stop
-          </Button>
-          <Button
-            size="sm"
-            disabled={removing || app.status !== "running"}
-            onClick={() => void lifecycle("restart")}
-          >
-            Restart
-          </Button>
-        </div>
+        <Lifecycle
+          status={
+            <>
+              <StatusBadge tone={statusTone(app.status)}>{app.status}</StatusBadge>
+              <HttpStatus id={app.id} status={app.status} />
+            </>
+          }
+          actions={
+            <>
+              <Button size="sm" disabled={removing || !canStart} onClick={() => void lifecycle("start")}>
+                Start
+              </Button>
+              <Button size="sm" disabled={removing || !canStop} onClick={() => void lifecycle("stop")}>
+                Stop
+              </Button>
+              <Button
+                size="sm"
+                disabled={removing || app.status !== "running"}
+                onClick={() => void lifecycle("restart")}
+              >
+                Restart
+              </Button>
+            </>
+          }
+          destructive={
+            <Button
+              size="sm"
+              variant="ghost"
+              className="btn-danger-ghost"
+              disabled={removing}
+              onClick={() => {
+                if (!removing && !removalInFlight.current) setConfirming(true);
+              }}
+            >
+              {removing ? "Removing..." : "Remove application"}
+            </Button>
+          }
+        />
       </div>
 
       {app.last_error ? (
@@ -192,43 +214,37 @@ export function AppDetail({
         />
       ) : null}
 
-      <Card className="detail-panel">
-        <Split>
-          <Pane>
-            <Tabs defaultValue="configuration" className="pane-tabs">
-              <TabsList className="tabs">
-                <TabsTrigger value="configuration">Configuration</TabsTrigger>
-                <TabsTrigger value="resources">Resources</TabsTrigger>
-              </TabsList>
-              <TabsContent value="configuration">
-                <AppForm
-                  app={app}
-                  dnsSuffix={dnsSuffix}
-                  onSubmit={save}
-                  removing={removing}
-                  onRemove={() => {
-                    if (!removing && !removalInFlight.current) {
-                      setConfirming(true);
-                    }
-                  }}
-                />
-              </TabsContent>
-              <TabsContent value="resources">
-                <ContainerResources
-                  samples={samples}
-                  services={app.services ?? []}
-                  containers={containers}
-                  totals={totals}
-                  intervalSeconds={metrics?.interval_seconds ?? 10}
-                />
-              </TabsContent>
-            </Tabs>
-          </Pane>
-          <Splitter defaultSize={42} min={25} max={70} aria-label="Resize the form and the logs" />
-          <Pane className="pane-console">
-            <AppConsole id={app.id} />
-          </Pane>
-        </Split>
+      {/* One card for the configuration and for whatever the Application
+          prints, the way the machine's screen already worked. */}
+      <Card className="detail-tabs">
+        <Tabs
+          value={tab}
+          onValueChange={(next) => {
+            setTab(next);
+            if (next === "terminal") setOpenedTerminal(true);
+          }}
+        >
+          <TabsList aria-label="Application details">
+            <TabsTrigger value="configuration">Configuration</TabsTrigger>
+            <TabsTrigger value="logs">Logs</TabsTrigger>
+            <TabsTrigger value="terminal">Terminal</TabsTrigger>
+          </TabsList>
+          <TabsContent value="configuration">
+            <AppForm app={app} dnsSuffix={dnsSuffix} onSubmit={save} />
+          </TabsContent>
+          <TabsContent value="logs" className="detail-logs">
+            {/* The panel is one row tall; the Application's log brings a
+                container picker above it, so the two share a wrapper. */}
+            <div className="detail-log-pane"><AppLogPane id={app.id} /></div>
+          </TabsContent>
+          <TabsContent value="terminal" className="detail-terminal" forceMount hidden={tab !== "terminal"}>
+            {openedTerminal ? (
+              <Suspense fallback={<Skeleton className="terminal-loading" />}>
+                <Terminal id={app.id} />
+              </Suspense>
+            ) : null}
+          </TabsContent>
+        </Tabs>
       </Card>
 
       {/*
@@ -255,38 +271,5 @@ export function AppDetail({
         </AlertDialogContent>
       </AlertDialog>
     </>
-  );
-}
-
-/**
- * One line of numbers under the hostname: the glance. The detail screen is
- * for configuration and logs, so the history lives in the Resources tab
- * rather than in a card that pushes the panel down (ADR-0020).
- */
-function Glance({ samples }: { samples: AppSample[] }) {
-  const latest = samples[samples.length - 1];
-  const values = samples.map((sample) => sample.cpu_percent);
-  const memory = samples.map((sample) => sample.memory_bytes);
-  return (
-    <div className="glance">
-      <span>
-        <span className="k">CPU</span> <b>{latest.cpu_percent.toFixed(2)}%</b>
-      </span>
-      <Sparkline values={values} height={18} />
-      <span className="sep">·</span>
-      <span>
-        <span className="k">Memory</span> <b>{formatBytes(latest.memory_bytes)}</b>
-      </span>
-      <Sparkline values={memory} height={18} />
-      <span className="sep">·</span>
-      <span>
-        <span className="k">Net</span>{" "}
-        <b>
-          <span className="network-down">↓ {formatBytes(latest.rx_bytes)}</span>
-          <span className="muted"> · </span>
-          <span className="network-up">↑ {formatBytes(latest.tx_bytes)}</span>
-        </b>
-      </span>
-    </div>
   );
 }
