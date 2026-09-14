@@ -191,6 +191,9 @@ struct AppSeries {
 #[derive(Default)]
 struct Series {
     applications: BTreeMap<String, AppSeries>,
+    /// A Virtual machine is one process tree behind one kernel, so unlike an
+    /// Application it has nothing to break down into.
+    machines: BTreeMap<String, VecDeque<AppSample>>,
     platform: VecDeque<PlatformSample>,
     /// The counter totals the previous platform sample was computed from.
     last_totals: (u64, u64, u64),
@@ -224,6 +227,7 @@ pub struct MetricsSnapshot {
     /// a percentage only becomes a fraction of the Host once divided by this.
     pub host_cpus: usize,
     pub applications: Vec<AppSeriesSnapshot>,
+    pub machines: Vec<MachineSeriesSnapshot>,
     pub platform: Vec<PlatformSample>,
     pub proxy: Vec<HostTrafficSnapshot>,
     pub dns: DnsSnapshot,
@@ -236,6 +240,13 @@ pub struct AppSeriesSnapshot {
     pub samples: Vec<AppSample>,
     /// The same window, one series per container.
     pub containers: Vec<ContainerSeriesSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MachineSeriesSnapshot {
+    pub id: String,
+    /// Oldest first.
+    pub samples: Vec<AppSample>,
 }
 
 #[derive(Debug, Serialize)]
@@ -356,6 +367,25 @@ impl Metrics {
             .retain(|_, samples| samples.back().is_some_and(|last| last.at >= cutoff));
     }
 
+    /// One reading of one Virtual machine, taken from inside it.
+    pub fn record_machine_tick(&self, id: &str, sample: AppSample) {
+        let retained = self.inner.retained;
+        let mut series = self.inner.series.write().unwrap();
+        let entry = series.machines.entry(id.to_string()).or_default();
+        push(entry, sample, retained);
+    }
+
+    /// Drops the series of machines the store no longer has, the same way
+    /// Applications are pruned.
+    pub fn retain_machines(&self, live: &[String]) {
+        self.inner
+            .series
+            .write()
+            .unwrap()
+            .machines
+            .retain(|id, _| live.contains(id));
+    }
+
     /// Drops the series of Applications the store no longer has. The
     /// collector calls it every tick with the live ids.
     pub fn retain_applications(&self, live: &[String]) {
@@ -444,6 +474,14 @@ impl Metrics {
                         .collect(),
                 })
                 .collect(),
+            machines: series
+                .machines
+                .iter()
+                .map(|(id, samples)| MachineSeriesSnapshot {
+                    id: id.clone(),
+                    samples: samples.iter().copied().collect(),
+                })
+                .collect(),
             platform: series.platform.iter().copied().collect(),
             proxy,
             dns: DnsSnapshot {
@@ -498,7 +536,12 @@ fn aggregate(stats: Vec<ContainerStats>) -> BTreeMap<String, AppTick> {
 /// Samples Docker once and folds the counters. One tick of the collector:
 /// a Docker that cannot be reached keeps the series it has, because a Host
 /// whose Docker is down is exactly the moment its history is worth reading.
-pub async fn collect_once<S: StateStore>(store: &S, docker: &dyn DockerRuntime, metrics: &Metrics) {
+pub async fn collect_once<S: StateStore>(
+    store: &S,
+    docker: &dyn DockerRuntime,
+    vms: &dyn crate::environments::VmRuntime,
+    metrics: &Metrics,
+) {
     match store.list_applications().await {
         Ok(applications) => {
             let live: Vec<String> = applications.into_iter().map(|app| app.id).collect();
@@ -515,11 +558,39 @@ pub async fn collect_once<S: StateStore>(store: &S, docker: &dyn DockerRuntime, 
         // Without the store there is no honest live list to prune by either.
         Err(e) => tracing::warn!("could not list Applications for metrics: {e}"),
     }
+    // A machine measures itself: the Host only sees one hypervisor process,
+    // which says nothing about what the workspace inside is doing.
+    let machines = crate::environments::running_ids(store).await;
+    let at = now();
+    for id in &machines {
+        match vms.sample(id).await {
+            Ok(usage) => metrics.record_machine_tick(
+                id,
+                AppSample {
+                    at,
+                    cpu_percent: usage.cpu_percent,
+                    memory_bytes: usage.memory_bytes,
+                    memory_limit_bytes: usage.memory_limit_bytes,
+                    rx_bytes: usage.rx_bytes,
+                    tx_bytes: usage.tx_bytes,
+                },
+            ),
+            // A machine that just booted or is mid-operation is not an error
+            // worth a warning every tick.
+            Err(error) => tracing::debug!(machine = id, %error, "could not sample a machine"),
+        }
+    }
+    metrics.retain_machines(&machines);
     metrics.record_platform_tick();
 }
 
 /// Runs [`collect_once`] once per tick, for as long as the daemon does.
-pub fn spawn_collector<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>, metrics: Metrics) {
+pub fn spawn_collector<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    vms: Arc<dyn crate::environments::VmRuntime>,
+    metrics: Metrics,
+) {
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(metrics.interval());
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -528,7 +599,7 @@ pub fn spawn_collector<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>, 
         timer.tick().await;
         loop {
             timer.tick().await;
-            collect_once(&store, docker.as_ref(), &metrics).await;
+            collect_once(&store, docker.as_ref(), vms.as_ref(), &metrics).await;
         }
     });
 }
@@ -536,6 +607,29 @@ pub fn spawn_collector<S: StateStore>(store: S, docker: Arc<dyn DockerRuntime>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A machine is measured beside the Applications and pruned the same way,
+    /// so a deleted machine stops being charted rather than freezing.
+    #[test]
+    fn machine_series_are_kept_and_pruned_like_applications() {
+        let metrics = Metrics::new();
+        metrics.record_machine_tick("env-one", sample(10, 1024));
+        metrics.record_machine_tick("env-two", sample(10, 2048));
+
+        let snapshot = metrics.snapshot();
+        let ids: Vec<&str> = snapshot
+            .machines
+            .iter()
+            .map(|series| series.id.as_str())
+            .collect();
+        assert_eq!(ids, ["env-one", "env-two"]);
+
+        metrics.retain_machines(&["env-one".to_string()]);
+        let after = metrics.snapshot();
+        assert_eq!(after.machines.len(), 1);
+        assert_eq!(after.machines[0].id, "env-one");
+        assert_eq!(after.machines[0].samples.len(), 1);
+    }
 
     fn sample(at: u64, memory: u64) -> AppSample {
         AppSample {

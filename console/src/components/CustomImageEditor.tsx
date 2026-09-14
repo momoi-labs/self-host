@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   Badge, Button, Card, FormField, Label,
   Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
   ChipName, ChipOption, ChipOptionAdd, ChipRemove, ChipScope, ChipValue,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
-  LogView, LogViewLine,
   ValidationMessage,
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "./Failure.js";
+import { LogSurface } from "./LogSurface.js";
+import { Step, Steps } from "./Steps.js";
 import { ShellEditor } from "./ShellEditor.js";
 import { StatusBadge } from "./StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
@@ -25,19 +26,6 @@ type MiseTool = { name: string; description?: string; backends: string[] };
 
 /** How much of the card the build log takes: none, the lower half, or all. */
 type Dock = "closed" | "half" | "full";
-
-/**
- * One numbered section of the form. The four of them run in the order the
- * Dockerfile does, so the Operator reads the build by scrolling the form.
- */
-function Step({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <li>
-      <p className="t-caps">{title}</p>
-      {children}
-    </li>
-  );
-}
 
 let toolCatalog: Promise<MiseTool[]> | null = null;
 
@@ -368,7 +356,7 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
             </>
           ) : (
             <>
-              <ol className="custom-image-steps">
+              <Steps>
                 <Step title="Image">
                   {!selected ? (
                     <FormField id="custom-image-template" label="Template"
@@ -404,7 +392,7 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
                       placeholder={"t3 --help\nclaude --version\ncodex --version"} />
                   </FormField>
                 </Step>
-              </ol>
+              </Steps>
               <div className="custom-image-takeover">
                 <div className="grow">
                   <p className="t-label">Need more than these fields?</p>
@@ -440,11 +428,8 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
             ) : null}
           </div>
           {dock !== "closed" ? (
-            <LogView key={current?.id ?? "new"} role="log" aria-live="polite" tabIndex={0} aria-label="Build logs">
-              {(current?.log || "Save and build to see the output here.").split("\n").map((line, index) => (
-                <LogViewLine key={index}>{line || " "}</LogViewLine>
-              ))}
-            </LogView>
+            <LogSurface key={current?.id ?? "new"} label="Build logs" text={current?.log}
+              placeholder="Save and build to see the output here." />
           ) : null}
         </div>
       </Card>

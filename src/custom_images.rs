@@ -116,7 +116,7 @@ fn valid_commands(commands: &[String]) -> bool {
 }
 
 impl Recipe {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self
             .template_id
             .as_deref()
@@ -130,7 +130,22 @@ impl Recipe {
         if let Some(dockerfile) = &self.dockerfile {
             return self.validate_manual(dockerfile);
         }
-        self.validate_builder()
+        self.validate_builder(true)
+    }
+
+    /// The same recipe read as a machine's. A machine may install no mise
+    /// tools at all: plain Ubuntu with a couple of custom commands is a
+    /// workspace an Operator may well have asked for, while an image with
+    /// nothing to install has nothing to build.
+    pub(crate) fn validate_machine(&self) -> Result<(), String> {
+        if self
+            .template_id
+            .as_deref()
+            .is_some_and(|id| id != "t3-code")
+        {
+            return Err("Unknown custom image template.".into());
+        }
+        self.validate_builder(false)
     }
 
     /// A file the Operator owns. Nothing is generated for it, so the builder's
@@ -160,7 +175,7 @@ impl Recipe {
         Ok(())
     }
 
-    fn validate_builder(&self) -> Result<(), String> {
+    fn validate_builder(&self, require_dependencies: bool) -> Result<(), String> {
         if !valid_commands(&self.build_checks) {
             return Err(
                 "Use at most 16 build checks, each a single command of 1 to 4096 bytes.".into(),
@@ -171,7 +186,7 @@ impl Recipe {
                 "Use at most 16 setup commands, each a single command of 1 to 4096 bytes.".into(),
             );
         }
-        if self.dependencies.is_empty() || self.dependencies.len() > 64 {
+        if (require_dependencies && self.dependencies.is_empty()) || self.dependencies.len() > 64 {
             return Err("Select at least one dependency, with one version per tool.".into());
         }
         let mut seen = BTreeSet::new();
@@ -679,7 +694,7 @@ pub(crate) async fn render_dockerfile(Json(recipe): Json<Recipe>) -> Response {
     }
     // The name plays no part in the render, so an unnamed recipe still has a
     // file to show.
-    if let Err(error) = recipe.validate_builder() {
+    if let Err(error) = recipe.validate_builder(true) {
         return (StatusCode::BAD_REQUEST, Json(ErrorReport::plain(error))).into_response();
     }
     (

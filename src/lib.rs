@@ -24,6 +24,7 @@ pub mod console;
 pub mod custom_images;
 pub mod dns;
 pub mod docker;
+pub mod environments;
 pub mod error;
 pub mod file_store;
 pub mod host_addresses;
@@ -36,9 +37,11 @@ pub mod routes;
 pub mod store;
 pub mod terminal;
 pub mod tls;
+pub mod vms;
 
 use apps::{DeployError, RemoveError};
 use docker::DockerRuntime;
+use environments::{Environments, VmRuntime};
 use routes::RouteStore;
 use store::StateStore;
 
@@ -48,6 +51,8 @@ struct AppState<S: StateStore> {
     docker: Arc<dyn DockerRuntime>,
     routes: Arc<dyn RouteStore>,
     custom_images: Arc<custom_images::Builds>,
+    environments: Arc<Environments>,
+    vm_runtime: Arc<dyn VmRuntime>,
     metrics: metrics::Metrics,
 }
 
@@ -57,11 +62,30 @@ pub fn build_app<S: StateStore>(
     routes: Arc<dyn RouteStore>,
     metrics: metrics::Metrics,
 ) -> Router {
+    build_app_with_vm_runtime(
+        store,
+        docker,
+        routes,
+        metrics,
+        Arc::new(vms::LimaRuntime::default()),
+    )
+}
+
+/// Builds the API with an injected environment runtime for isolated testing.
+pub fn build_app_with_vm_runtime<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
+    metrics: metrics::Metrics,
+    vm_runtime: Arc<dyn VmRuntime>,
+) -> Router {
     let state = AppState {
         store,
         docker,
         routes,
         custom_images: Arc::new(custom_images::Builds::default()),
+        environments: Arc::new(Environments::default()),
+        vm_runtime,
         metrics,
     };
 
@@ -80,6 +104,26 @@ pub fn build_app<S: StateStore>(
             post(custom_images::render_dockerfile),
         )
         .route("/custom-images/{id}", delete(custom_images::remove::<S>))
+        .route(
+            "/environments",
+            get(environments::list::<S>).post(environments::create::<S>),
+        )
+        .route(
+            "/environments/{id}",
+            get(environments::get::<S>).put(environments::update::<S>),
+        )
+        .route(
+            "/environments/{id}/actions",
+            post(environments::action::<S>),
+        )
+        .route(
+            "/environments/{id}/events",
+            get(environments::events_log::<S>),
+        )
+        .route(
+            "/environments/{id}/logs/{source}",
+            get(environments::machine_log::<S>),
+        )
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
         .route("/apps/id/{id}/start", post(start_app::<S>))
@@ -98,8 +142,13 @@ pub fn build_app<S: StateStore>(
             state.clone(),
             require_api_key::<S>,
         ))
-        // This route authenticates its first WebSocket frame before opening a PTY.
+        // These routes authenticate their first WebSocket frame before opening
+        // a PTY: a browser cannot put a Bearer header on an upgrade.
         .route("/apps/id/{id}/terminal", get(terminal::upgrade::<S>))
+        .route(
+            "/environments/{id}/terminal",
+            get(terminal::upgrade_environment::<S>),
+        )
         .with_state(state);
 
     console::console_router()
@@ -1545,7 +1594,7 @@ mod tests {
         .await;
         let record = settle(&store, "hermes").await;
 
-        metrics::collect_once(&store, &docker, &metrics).await;
+        metrics::collect_once(&store, &docker, &environments::FakeVmRuntime, &metrics).await;
 
         let response = send(&app, "/metrics", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);

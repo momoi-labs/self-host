@@ -1,3 +1,5 @@
+import type { ImageDependency } from "./customImageTemplates.js";
+
 /** Every failure reaches the console as this shape (ADR-0010). */
 export type Report = {
   error: string;
@@ -120,11 +122,64 @@ export type AppSeries = {
   containers: ContainerSeries[];
 };
 
+/** A Virtual machine measures itself from inside, so unlike an Application
+ * there is nothing to break down into. */
+export type MachineSeries = {
+  id: string;
+  samples: AppSample[];
+};
+
 export type Metrics = {
   interval_seconds: number;
   host_cpus: number;
   applications: AppSeries[];
+  machines: MachineSeries[];
   platform: PlatformSample[];
   proxy: HostTraffic[];
   dns: { queries_total: number; by_name: { name: string; queries: number }[] };
+};
+
+/** A Virtual machine's saved settings. `applied_config` is what the Host has
+ * actually installed; `config` is what the Operator last saved.
+ *
+ * The Platform omits an empty list instead of sending `[]`, so these arrays
+ * are only guaranteed after `normalizeConfig` has put them back. */
+export type EnvironmentConfig = {
+  name: string;
+  cpus: number;
+  memory_gib: number;
+  disk_gib: number;
+  ssh_public_key: string;
+  recipe: {
+    name: string;
+    template_id?: string | null;
+    dependencies: ImageDependency[];
+    setup: string[];
+    build_checks: string[];
+  };
+  command: string;
+  web_port: number;
+};
+
+/** A durable lifecycle action. It outlives the request that started it, so an
+ * interrupted one is still here to retry. */
+export type Operation = {
+  action: string;
+  status: string;
+  step?: string | null;
+  error?: Report | null;
+} | null;
+
+export type Environment = {
+  id: string;
+  config: EnvironmentConfig;
+  applied_config?: EnvironmentConfig;
+  state: string;
+  service_ready: boolean;
+  operation: Operation;
+  log: string;
+  ssh_command: string;
+  tunnel_command?: string;
+  web_url: string;
+  installed_versions?: unknown;
 };
