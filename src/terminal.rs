@@ -43,6 +43,13 @@ struct Connect {
     #[serde(flatten)]
     size: Size,
 }
+/// A Virtual machine is one shell, so there is nothing to choose between.
+#[derive(Deserialize)]
+struct ConnectVm {
+    key: String,
+    #[serde(flatten)]
+    size: Size,
+}
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Input {
@@ -96,6 +103,67 @@ pub(crate) async fn upgrade<S: StateStore>(
         .max_frame_size(64 * 1024)
         .on_upgrade(move |socket| connected(socket, state, id))
 }
+/// The same upgrade for a Virtual machine. Its shell is the Operator's, so it
+/// opens as `dev` rather than as the machine's root.
+pub(crate) async fn upgrade_environment<S: StateStore>(
+    State(state): State<AppState<S>>,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| connected_environment(socket, state, id))
+}
+
+async fn connected_environment<S: StateStore>(
+    mut socket: WebSocket,
+    state: AppState<S>,
+    id: String,
+) {
+    let Ok(Some(Ok(Message::Text(first)))) =
+        tokio::time::timeout(Duration::from_secs(5), socket.recv()).await
+    else {
+        return;
+    };
+    let Ok(request) = serde_json::from_str::<ConnectVm>(&first) else {
+        fail(&mut socket, "Invalid terminal request.").await;
+        return;
+    };
+    if !authentic(&state, &request.key).await {
+        fail(&mut socket, "Invalid API key.").await;
+        return;
+    }
+    if !request.size.valid() {
+        fail(&mut socket, "Invalid terminal dimensions.").await;
+        return;
+    }
+    if let Err(message) = crate::environments::running(&state, &id).await {
+        fail(&mut socket, message).await;
+        return;
+    }
+    let session = match state.vm_runtime.open_terminal(&id, request.size).await {
+        Ok(session) => session,
+        Err(message) => {
+            fail(&mut socket, message).await;
+            return;
+        }
+    };
+    pump(socket, session).await;
+}
+
+/// Browsers cannot set a Bearer header on a WebSocket upgrade, so the key
+/// arrives in the first frame and is compared before anything is started.
+async fn authentic<S: StateStore>(state: &AppState<S>, key: &str) -> bool {
+    let expected = state
+        .store
+        .get_api_key()
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    !expected.is_empty() && crate::constant_time_eq(key, &expected)
+}
+
 async fn fail(socket: &mut WebSocket, message: impl ToString) {
     let report = ErrorReport::plain(message.to_string());
     let _ = socket
@@ -116,14 +184,7 @@ async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, id:
         fail(&mut socket, "Invalid terminal request.").await;
         return;
     };
-    let expected = state
-        .store
-        .get_api_key()
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if expected.is_empty() || !crate::constant_time_eq(&request.key, &expected) {
+    if !authentic(&state, &request.key).await {
         fail(&mut socket, "Invalid API key.").await;
         return;
     }
@@ -134,7 +195,7 @@ async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, id:
             return;
         }
     };
-    let mut session = match state
+    let session = match state
         .docker
         .open_terminal(&request.container, request.size, user)
         .await
@@ -145,6 +206,13 @@ async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, id:
             return;
         }
     };
+    pump(socket, session).await;
+}
+
+/// The protocol, once a session is open: output out, input and resizes in, a
+/// heartbeat so a dead peer does not hold a shell forever. Nothing here knows
+/// which runtime produced the session.
+async fn pump(mut socket: WebSocket, mut session: Session) {
     let _ = socket
         .send(Message::Text("{\"type\":\"ready\"}".into()))
         .await;
@@ -251,7 +319,6 @@ done
 "#;
 
 fn spawn(container: &str, size: Size, user: Option<&str>) -> anyhow::Result<Session> {
-    let pair = native_pty_system().openpty(size.pty())?;
     let marker = format!("SF_TERMINAL_SESSION={:032x}", rand::random::<u128>());
     let mut command = CommandBuilder::new("docker");
     command.args([
@@ -266,6 +333,28 @@ fn spawn(container: &str, size: Size, user: Option<&str>) -> anyhow::Result<Sess
         command.args(["--user", user]);
     }
     command.args(["--", container, "bash", "-i"]);
+    let container = container.to_owned();
+    let user = user.map(str::to_owned);
+    // Docker keeps exec processes alive after its client disconnects. Signal
+    // only processes carrying this session's random environment marker.
+    spawn_on_pty(
+        command,
+        size,
+        Some(Box::new(move || {
+            reap_docker_exec(&container, user.as_deref(), &marker)
+        })),
+    )
+}
+
+/// Runs `command` on a fresh pseudo-terminal and pumps it into a `Session`.
+/// `finished` runs once the child exits, for a runtime that leaves the process
+/// behind when its client goes away. Incus does not; Docker does.
+pub(crate) fn spawn_on_pty(
+    command: CommandBuilder,
+    size: Size,
+    finished: Option<Box<dyn FnOnce() + Send>>,
+) -> anyhow::Result<Session> {
+    let pair = native_pty_system().openpty(size.pty())?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
     let mut child = pair.slave.spawn_command(command)?;
@@ -288,8 +377,6 @@ fn spawn(container: &str, size: Size, user: Option<&str>) -> anyhow::Result<Sess
             }
         }
     });
-    let container = container.to_owned();
-    let user = user.map(str::to_owned);
     std::thread::spawn(move || {
         let mut buffer = [0; 8192];
         loop {
@@ -309,32 +396,8 @@ fn spawn(container: &str, size: Size, user: Option<&str>) -> anyhow::Result<Sess
             }
         }
         let status = child.wait();
-        // Docker keeps exec processes alive after its client disconnects. Signal
-        // only processes carrying this session's random environment marker.
-        let mut cleanup = std::process::Command::new("docker");
-        cleanup.arg("exec");
-        if let Some(user) = user {
-            cleanup.args(["--user", &user]);
-        }
-        cleanup.args(["--", &container, "bash", "-c", CLEANUP, "bash", &marker]);
-        cleanup
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        if let Ok(mut process) = cleanup.spawn() {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            loop {
-                if !matches!(process.try_wait(), Ok(None)) {
-                    break;
-                }
-                if std::time::Instant::now() >= deadline {
-                    let _ = process.kill();
-                    let _ = process.wait();
-                    tracing::warn!("Timed out closing a container terminal");
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+        if let Some(finished) = finished {
+            finished();
         }
         match status {
             Ok(status) => {
@@ -350,6 +413,37 @@ fn spawn(container: &str, size: Size, user: Option<&str>) -> anyhow::Result<Sess
         output,
         killer: Some(killer),
     })
+}
+
+/// Docker leaves an exec process running when its client disconnects. Signal
+/// only the processes carrying this session's random environment marker.
+fn reap_docker_exec(container: &str, user: Option<&str>, marker: &str) {
+    let mut cleanup = std::process::Command::new("docker");
+    cleanup.arg("exec");
+    if let Some(user) = user {
+        cleanup.args(["--user", user]);
+    }
+    cleanup.args(["--", container, "bash", "-c", CLEANUP, "bash", marker]);
+    cleanup
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let Ok(mut process) = cleanup.spawn() else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if !matches!(process.try_wait(), Ok(None)) {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = process.kill();
+            let _ = process.wait();
+            tracing::warn!("Timed out closing a container terminal");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[cfg(test)]

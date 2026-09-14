@@ -39,6 +39,13 @@ export function seriesFor(metrics: Metrics | null, id: string): AppSample[] | nu
   return series && series.samples.length > 0 ? series.samples : null;
 }
 
+/** One Virtual machine's series, oldest first, or `null` before its first
+ * sample lands. A machine that is off is measured by nobody. */
+export function machineSeriesFor(metrics: Metrics | null, id: string): AppSample[] | null {
+  const series = metrics?.machines.find((candidate) => candidate.id === id);
+  return series && series.samples.length > 0 ? series.samples : null;
+}
+
 /** The same window per container, busiest first, so the service eating the
  * Host is the one at the top rather than the one named first. */
 export function containersFor(metrics: Metrics | null, id: string): ContainerSeries[] {
@@ -77,11 +84,12 @@ function totalsOf(metrics: Metrics, samples: AppSample[]): Totals {
   };
 }
 
-/** Everything running on this Host, summed from each Application's newest
- * sample. `null` until the collector's first tick. */
+/** Everything running on this Host, summed from each Application's and each
+ * Virtual machine's newest sample. A machine is a workload on this Host like
+ * any other, so the Host meter counts it. `null` until the first tick. */
 export function hostTotals(metrics: Metrics | null): Totals | null {
   if (!metrics) return null;
-  const latest = metrics.applications
+  const latest = [...metrics.applications, ...metrics.machines]
     .map((series) => series.samples[series.samples.length - 1])
     .filter((sample): sample is AppSample => Boolean(sample));
   return latest.length ? totalsOf(metrics, latest) : null;
@@ -93,11 +101,26 @@ export function appTotals(metrics: Metrics | null, id: string): Totals | null {
   return metrics && samples ? totalsOf(metrics, [samples[samples.length - 1]]) : null;
 }
 
-/** Sum only readings from the same collection tick, preserving their timestamps. */
+/** One Virtual machine's newest reading. Its memory ceiling is its own, not
+ * the Host's: the hypervisor reserved it at boot. */
+export function machineTotals(metrics: Metrics | null, id: string): Totals | null {
+  const samples = machineSeriesFor(metrics, id);
+  return metrics && samples ? totalsOf(metrics, [samples[samples.length - 1]]) : null;
+}
+
+/** One machine's network series, for its chart. */
+export function machineNetworkSeries(metrics: Metrics | null, id: string): Pick<AppSample, "at" | "rx_bytes" | "tx_bytes">[] {
+  const samples = machineSeriesFor(metrics, id) ?? [];
+  return samples.map(({ at, rx_bytes, tx_bytes }) => ({ at, rx_bytes, tx_bytes }));
+}
+
+/** Sum only readings from the same collection tick, preserving their
+ * timestamps. A machine is a workload on this Host like any other, so the
+ * Host's line counts it. */
 export function hostNetworkSeries(metrics: Metrics | null): Pick<AppSample, "at" | "rx_bytes" | "tx_bytes">[] {
   const ticks = new Map<number, Pick<AppSample, "at" | "rx_bytes" | "tx_bytes">>();
-  for (const app of metrics?.applications ?? []) {
-    for (const sample of app.samples) {
+  for (const workload of [...(metrics?.applications ?? []), ...(metrics?.machines ?? [])]) {
+    for (const sample of workload.samples) {
       const total = ticks.get(sample.at) ?? { at: sample.at, rx_bytes: 0, tx_bytes: 0 };
       total.rx_bytes += sample.rx_bytes;
       total.tx_bytes += sample.tx_bytes;

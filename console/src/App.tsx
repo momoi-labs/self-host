@@ -1,21 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
+import { OperationProgress } from "./components/OperationProgress.js";
 import { Shell } from "./components/Shell.js";
 import { useMetrics } from "./lib/useMetrics.js";
+import { useEnvironments } from "./lib/useEnvironments.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
 import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
 import { CustomImages } from "./views/CustomImages.js";
+import { Environments } from "./views/Environments.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
+  const { environments } = useEnvironments();
   const metrics = useMetrics();
   const [view, go] = useView();
-  const [query, setQuery] = useState("");
 
-  const app = view.view === "app" ? apps.find((candidate) => candidate.id === view.id) : undefined;
+  const app =
+    view.view === "app"
+      ? apps.find((candidate) => candidate.id === view.id)
+      : undefined;
 
   // A view whose subject is gone — an Application removed here or in another
   // tab — falls back to the Overview rather than rendering nothing.
@@ -32,8 +38,15 @@ export function App() {
         : view.view === "custom-images"
           ? "Custom images"
           : view.view === "custom-image"
-            ? view.id ? "Custom image" : "New image"
-            : "Overview";
+            ? view.id
+              ? "Custom image"
+              : "New image"
+            : view.view === "environments"
+              ? (environments.find((one) => one.id === view.id)?.config.name ??
+                "Virtual machine")
+              : view.view === "environment-new"
+                ? "New virtual machine"
+                : "Overview";
 
   return (
     <Shell
@@ -65,16 +78,32 @@ export function App() {
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
       <section className="page" id="detail" aria-live="polite">
-        {view.view === "custom-images" || view.view === "custom-image" ? (
-          <CustomImages listing={view.view === "custom-images"} selected={view.id}
-            onOpen={(id) => go({ view: "custom-image", id })} />
+        {view.view === "environment-new" || (view.view === "environments" && view.id) ? (
+          <Environments
+            metrics={metrics}
+            mode={view.view === "environment-new" ? "new" : "detail"}
+            selected={view.id}
+            onOpen={(id) =>
+              go(id ? { view: "environments", id } : { view: "overview", id: null })
+            }
+          />
+        ) : view.view === "custom-images" || view.view === "custom-image" ? (
+          <CustomImages
+            listing={view.view === "custom-images"}
+            selected={view.id}
+            onOpen={(id) => go({ view: "custom-image", id })}
+          />
         ) : view.view === "new" ? (
           <NewApp
             dnsSuffix={dnsSuffix}
             reload={reload}
             onCancel={() => go({ view: "overview", id: null })}
             onCreated={(created) =>
-              go(created ? { view: "app", id: created.id } : { view: "overview", id: null })
+              go(
+                created
+                  ? { view: "app", id: created.id }
+                  : { view: "overview", id: null },
+              )
             }
           />
         ) : app ? (
@@ -91,15 +120,23 @@ export function App() {
         ) : (
           <Overview
             apps={apps}
+            environments={environments}
             dnsSuffix={dnsSuffix}
             metrics={metrics}
-            query={query}
-            onQuery={setQuery}
             onOpenApp={(id) => go({ view: "app", id })}
+            onOpenEnvironment={(id) => go({ view: "environments", id })}
             onDeploy={() => go({ view: "new", id: null })}
+            onNewMachine={() => go({ view: "environment-new", id: null })}
           />
         )}
       </section>
+      {/* The toast follows an operation to wherever the Operator went. On the
+          machine's own screen the header already carries it, and two bars
+          counting the same steps are one too many. */}
+      <OperationProgress
+        environments={environments}
+        watching={view.view === "environments" ? view.id : null}
+      />
     </Shell>
   );
 }
@@ -116,6 +153,8 @@ function signature(app: import("./lib/types.js").App): string {
     app.compose ?? "",
     app.web_service ?? "",
     app.web_port ?? "",
-    (app.services ?? []).map((service) => `${service.service}:${service.state}`).join(","),
+    (app.services ?? [])
+      .map((service) => `${service.service}:${service.state}`)
+      .join(","),
   ].join("|");
 }

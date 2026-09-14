@@ -4,7 +4,6 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use self_host::bootstrap::{self, BootstrapResult, OPERATOR_API_PORT};
-use self_host::build_app;
 use self_host::config::CliConfig;
 use self_host::docker::{CliDocker, DockerRuntime};
 use self_host::error::ErrorReport;
@@ -49,6 +48,11 @@ enum Command {
         /// disk, so a longer window costs RAM and nothing else.
         #[arg(long, value_parser = self_host::metrics::parse_duration, default_value = "5m")]
         monitoring_max_age: std::time::Duration,
+        /// Serve the API and the console without the DNS server. Names under
+        /// the DNS Suffix stop resolving, so reach the Platform by address.
+        /// For a Host that already has something on port 53.
+        #[arg(long)]
+        no_dns: bool,
     },
     /// Manage Applications
     Apps {
@@ -244,11 +248,12 @@ async fn main() {
         Some(Command::Serve {
             monitoring_collect_interval,
             monitoring_max_age,
+            no_dns,
         }) => {
             // The two flags only mean something together, so they are checked
             // against each other here rather than one value at a time.
             match self_host::metrics::Window::new(monitoring_collect_interval, monitoring_max_age) {
-                Ok(window) => run_server(window).await,
+                Ok(window) => run_server(window, no_dns).await,
                 Err(error) => {
                     eprintln!("error: {error}");
                     std::process::exit(2);
@@ -256,7 +261,7 @@ async fn main() {
             }
         }
         None => {
-            run_server(self_host::metrics::Window::default()).await;
+            run_server(self_host::metrics::Window::default(), false).await;
         }
     }
 }
@@ -1156,11 +1161,20 @@ fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
 /// runtime is still coming up and the Platform Infra with it. Nothing here
 /// gives up: each dependency is waited for, out loud, for as long as it
 /// takes. Exiting would only make launchd start us again with less context.
-async fn run_server(window: self_host::metrics::Window) {
+async fn run_server(window: self_host::metrics::Window, no_dns: bool) {
     // One set of metrics for the whole daemon: DNS, the proxy, the collector
     // and the API all count and read from the same place (ADR-0020).
     let metrics = self_host::metrics::Metrics::with_window(window);
     let result = async {
+        if no_dns {
+            // Port 53 belongs to something else on this Host. The rest of the
+            // Platform does not depend on serving names, so it still runs.
+            tracing::warn!(
+                "starting without DNS: names under the DNS Suffix will not resolve from this Host"
+            );
+            run_api_server(metrics.clone()).await;
+            return Ok::<(), anyhow::Error>(());
+        }
         let config = self_host::dns::Config::load()?;
         let mut dns = self_host::dns::start(&config, &metrics).await?;
         tokio::select! {
@@ -1217,9 +1231,19 @@ async fn run_api_server(metrics: self_host::metrics::Metrics) {
         tracing::warn!("failed to reconcile Applications: {e}");
     }
 
-    // Samples Applications and folds the proxy and DNS counters, one tick at
-    // a time (ADR-0020).
-    self_host::metrics::spawn_collector(store.clone(), docker.clone(), metrics.clone());
+    // One runner for the whole daemon: the API drives machines through it and
+    // the collector measures them through the same handle.
+    let vm_runtime: Arc<dyn self_host::environments::VmRuntime> =
+        Arc::new(self_host::vms::LimaRuntime::default());
+
+    // Samples Applications and Virtual machines, and folds the proxy and DNS
+    // counters, one tick at a time (ADR-0020).
+    self_host::metrics::spawn_collector(
+        store.clone(),
+        docker.clone(),
+        vm_runtime.clone(),
+        metrics.clone(),
+    );
 
     // Log the admin dashboard URL if we know the DNS suffix.
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
@@ -1232,7 +1256,13 @@ async fn run_api_server(metrics: self_host::metrics::Metrics) {
         }
     }
 
-    let app = build_app(store.clone(), docker.clone(), routes, metrics.clone());
+    let app = self_host::build_app_with_vm_runtime(
+        store.clone(),
+        docker.clone(),
+        routes,
+        metrics.clone(),
+        vm_runtime.clone(),
+    );
 
     // Consumer traffic is the Platform's own listener now, so an upgrade has
     // to take the ports back from the container that used to hold them
@@ -1393,6 +1423,27 @@ mod tests {
             };
             assert_eq!(api_key.as_deref(), key);
         }
+    }
+
+    /// A Host with something else on port 53 can still serve the API and the
+    /// console, so the Operator can work while the conflict is sorted out.
+    #[test]
+    fn serve_can_leave_dns_to_whatever_already_holds_port_53() {
+        let Some(Command::Serve { no_dns, .. }) =
+            Cli::try_parse_from(["self-host", "serve"]).unwrap().command
+        else {
+            panic!("expected serve");
+        };
+        assert!(!no_dns);
+
+        let Some(Command::Serve { no_dns, .. }) =
+            Cli::try_parse_from(["self-host", "serve", "--no-dns"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected serve");
+        };
+        assert!(no_dns);
     }
 
     #[test]
