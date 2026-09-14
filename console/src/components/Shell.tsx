@@ -44,6 +44,7 @@ export function Shell({
   overview,
   deploy,
   customImages = { href: "/console/#custom-images", active: false },
+  events = { href: "/console/#events", active: false },
   application,
   children,
 }: {
@@ -54,6 +55,7 @@ export function Shell({
   overview: Destination;
   deploy: Destination;
   customImages?: Destination;
+  events?: Destination;
   application: (app: App) => Destination;
   children: ReactNode;
 }) {
@@ -90,6 +92,7 @@ export function Shell({
         {
           destinations: [
             { ...overview, label: "Overview", leading: <Icon name="chart" /> },
+            { ...events, label: "Events", leading: <Icon name="history" /> },
             {
               ...customImages,
               label: "Custom images",

@@ -10,6 +10,7 @@ import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
 import { CustomImages } from "./views/CustomImages.js";
+import { EventsPage } from "./views/Events.js";
 import { Environments } from "./views/Environments.js";
 
 export function App() {
@@ -31,7 +32,9 @@ export function App() {
   }, [ready, view, app, go]);
 
   const crumb =
-    view.view === "app"
+    view.view === "events"
+      ? "Events"
+      : view.view === "app"
       ? (app?.name ?? "Application")
       : view.view === "new"
         ? "New application"
@@ -59,6 +62,11 @@ export function App() {
         active: view.view === "overview",
         onClick: () => go({ view: "overview", id: null }),
       }}
+      events={{
+        href: "/console/#events",
+        active: view.view === "events",
+        onClick: () => go({ view: "events", id: null }),
+      }}
       deploy={{
         href: "/console/#new",
         active: view.view === "new",
@@ -78,7 +86,12 @@ export function App() {
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
       <section className="page" id="detail" aria-live="polite">
-        {view.view === "environment-new" || (view.view === "environments" && view.id) ? (
+        {view.view === "events" ? (
+          <EventsPage onOpenSubject={(subject) => {
+            if (subject.kind === "api-key") { location.href = "/console/api-keys.html"; return; }
+            go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
+          }} />
+        ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
           <Environments
             metrics={metrics}
             mode={view.view === "environment-new" ? "new" : "detail"}

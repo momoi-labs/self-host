@@ -26,6 +26,8 @@ export default defineConfig({
     proxy: Object.fromEntries(
       [
         "/health",
+        "/events",
+        "/environments",
         "/apps",
         "/system",
         "/bootstrap",

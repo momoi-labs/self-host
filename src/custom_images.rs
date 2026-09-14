@@ -602,6 +602,11 @@ pub(crate) async fn create<S: StateStore>(
         )
             .into_response();
     }
+    let audit_action = if request.id.is_some() {
+        "configure"
+    } else {
+        "create"
+    };
     let id = match request.id {
         Some(id) if next.iter().any(|image| image.id == id) => id,
         Some(_) => {
@@ -642,40 +647,66 @@ pub(crate) async fn create<S: StateStore>(
     *records = Some(next);
     drop(records);
     let accepted = image.clone();
-    tokio::spawn(async move {
-        let result = build(&state, &image).await;
-        let mut records = state.custom_images.records.lock().await;
-        let images = records.as_mut().unwrap();
-        let record = images
-            .iter_mut()
-            .find(|record| record.id == image.id)
-            .unwrap();
-        match result {
-            Ok(()) => {
-                record.status = "ready".into();
-                append_log(
-                    &mut record.log,
-                    &format!("\nImage built: {}\n", record.image),
-                );
-            }
-            Err(error) => {
-                record.status = "failed".into();
-                append_log(&mut record.log, &format!("\nBuild failed: {error:#}\n"));
-                record.last_error = Some(ErrorReport::new(error.as_ref()));
-            }
-        }
-        if let Err(error) = save(&state.store, images).await {
-            tracing::error!(%error, "Could not save custom image build result");
+    let actor = crate::audit::actor();
+    tokio::spawn(
+        crate::audit::EVENT_ID.scope(crate::audit::event_id(), async move {
+            let result = build(&state, &image).await;
+            let mut outcome = if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            };
+            let mut records = state.custom_images.records.lock().await;
+            let images = records.as_mut().unwrap();
             let record = images
                 .iter_mut()
                 .find(|record| record.id == image.id)
                 .unwrap();
-            record.status = "failed".into();
-            record.last_error = Some(ErrorReport::plain(format!(
-                "Could not save the build result: {error}"
-            )));
-        }
-    });
+            match result {
+                Ok(()) => {
+                    record.status = "ready".into();
+                    append_log(
+                        &mut record.log,
+                        &format!("\nImage built: {}\n", record.image),
+                    );
+                }
+                Err(error) => {
+                    record.status = "failed".into();
+                    append_log(&mut record.log, &format!("\nBuild failed: {error:#}\n"));
+                    record.last_error = Some(ErrorReport::new(error.as_ref()));
+                }
+            }
+            if let Err(error) = save(&state.store, images).await {
+                outcome = "failed";
+                tracing::error!(%error, "Could not save custom image build result");
+                let record = images
+                    .iter_mut()
+                    .find(|record| record.id == image.id)
+                    .unwrap();
+                record.status = "failed".into();
+                record.last_error = Some(ErrorReport::plain(format!(
+                    "Could not save the build result: {error}"
+                )));
+            }
+            drop(records);
+            crate::audit::record(
+                &state,
+                crate::audit::event(
+                    audit_action,
+                    crate::audit::Subject {
+                        kind: "custom-image".into(),
+                        id: image.id.clone(),
+                        name: image.recipe.name.clone(),
+                        available: None,
+                    },
+                    outcome,
+                    actor,
+                    format!("Custom image build {outcome}."),
+                ),
+            )
+            .await;
+        }),
+    );
     (StatusCode::ACCEPTED, Json(accepted)).into_response()
 }
 
