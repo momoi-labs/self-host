@@ -12,9 +12,6 @@ import {
   PageHeaderTitle,
   Search,
   Sparkline,
-  Stat,
-  StatLabel,
-  StatValue,
   Table,
   TableBody,
   TableCell,
@@ -24,10 +21,7 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../components/Icon.js";
-import { NetworkChart } from "../components/NetworkChart.js";
-import { Meters } from "../components/Meters.js";
 import { StatusBadge } from "../components/StatusBadge.js";
-import { Traffic } from "../components/Traffic.js";
 import { formatBytes } from "../lib/format.js";
 import { statusTone } from "../lib/status.js";
 import { hostNetworkSeries, hostTotals, machineSeriesFor, seriesFor } from "../lib/useMetrics.js";
@@ -90,9 +84,6 @@ export function Overview({
     matches(one.config.name, machineQuery),
   );
   const empty = rows.length === 0 && environments.length === 0;
-  const running = apps.filter((app) => app.status === "running").length;
-  const awake = environments.filter((one) => one.state === "running").length;
-  const totals = hostTotals(metrics);
 
   const open = (row: Row) => onOpenApp(row.id);
 
@@ -141,51 +132,7 @@ export function Overview({
         </Card>
       ) : (
         <div className="stack">
-          {/* What is up, what it costs the Host, and what the Platform's own
-              servers did, on one line. */}
-          <div className="summary-row">
-            <Card className="summary-1">
-              <Stat>
-                <StatLabel>Apps running</StatLabel>
-                <StatValue>
-                  {running}
-                  <span className="of-total">/{apps.length}</span>
-                </StatValue>
-              </Stat>
-            </Card>
-            <Card className="summary-1">
-              <Stat>
-                <StatLabel>VMs running</StatLabel>
-                <StatValue>
-                  {awake}
-                  <span className="of-total">/{environments.length}</span>
-                </StatValue>
-              </Stat>
-            </Card>
-            <Card className="summary-4 host-load">
-              <div className="card-body">
-                <p className="t-caps">Host load</p>
-                {totals ? (
-                  <Meters totals={totals} />
-                ) : (
-                  <p className="muted">Collecting.</p>
-                )}
-              </div>
-            </Card>
-            <Card className="summary-3">
-              <div className="card-body">
-                <NetworkChart samples={hostNetworkSeries(metrics)} />
-              </div>
-            </Card>
-            <Card className="summary-3">
-              <div className="card-body">
-                <Traffic
-                  platform={metrics?.platform ?? []}
-                  intervalSeconds={metrics?.interval_seconds ?? 10}
-                />
-              </div>
-            </Card>
-          </div>
+          <GroupedSummary apps={apps} environments={environments} metrics={metrics} />
 
           <div className="section-heading">
             <h2 className="section-title">Applications</h2>
@@ -379,6 +326,85 @@ export function Overview({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * The Overview's summary: four questions on one line, a caps label over
+ * each. What is up, what the workloads cost the Host, what crossed the
+ * wire, and what the Platform's own servers handled. A line, not cards:
+ * the reading is the answer, and the tables below are where anything
+ * deeper gets inspected.
+ */
+function GroupedSummary({ apps, environments, metrics }: {
+  apps: App[];
+  environments: Environment[];
+  metrics: Metrics | null;
+}) {
+  const running = apps.filter((app) => app.status === "running").length;
+  const awake = environments.filter((one) => one.state === "running").length;
+  const totals = hostTotals(metrics);
+  const net = hostNetworkSeries(metrics);
+  const latest = net[net.length - 1];
+  const platform = metrics?.platform ?? [];
+  const platformLatest = platform[platform.length - 1];
+  // Proxy and DNS count events over the same interval and share one scale
+  // (ADR-0020), so both speak per minute.
+  const perMinute = (count: number) =>
+    Math.round((count * 60) / Math.max(1, metrics?.interval_seconds ?? 10));
+  const proxyPerMinute = platform.map((sample) => perMinute(sample.proxy_requests));
+  const dnsPerMinute = platform.map((sample) => perMinute(sample.dns_queries));
+
+  return (
+    <div className="summary-groups">
+      <div className="summary-group">
+        <p className="t-caps">Workloads</p>
+        <p className="summary-line">
+          <b>{awake}</b>/{environments.length} VMs
+          <span className="sep">·</span>
+          <b>{running}</b>/{apps.length} apps
+        </p>
+      </div>
+      <div className="summary-group">
+        <p className="t-caps">Host</p>
+        <p className="summary-line">
+          <span className="k">CPU</span> <b>{totals ? `${totals.cpu.toFixed(1)}%` : "—"}</b>
+          <span className="sep">·</span>
+          <span className="k">Mem</span>{" "}
+          <b>{totals ? formatBytes(totals.memory) : "—"}</b>
+          {totals ? ` / ${formatBytes(totals.memoryLimit)}` : ""}
+        </p>
+      </div>
+      <div className="summary-group">
+        <p className="t-caps">Network</p>
+        <p className="summary-line">
+          <b>
+            <span className="network-down">
+              ↓ {latest ? formatBytes(latest.rx_bytes) : "—"}
+            </span>
+          </b>
+          <Sparkline values={net.map((one) => one.rx_bytes)} height={14} />
+          <b>
+            <span className="network-up">
+              ↑ {latest ? formatBytes(latest.tx_bytes) : "—"}
+            </span>
+          </b>
+          <Sparkline values={net.map((one) => one.tx_bytes)} height={14} />
+        </p>
+      </div>
+      <div className="summary-group">
+        <p className="t-caps">Traffic</p>
+        <p className="summary-line">
+          <span className="k">Proxy</span>{" "}
+          <b>{platformLatest ? `${perMinute(platformLatest.proxy_requests)}/min` : "—"}</b>
+          <Sparkline values={proxyPerMinute} height={14} />
+          <span className="sep">·</span>
+          <span className="k">DNS</span>{" "}
+          <b>{platformLatest ? `${perMinute(platformLatest.dns_queries)}/min` : "—"}</b>
+          <Sparkline values={dnsPerMinute} height={14} />
+        </p>
+      </div>
+    </div>
   );
 }
 
