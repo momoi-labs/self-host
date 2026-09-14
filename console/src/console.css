@@ -48,24 +48,35 @@
 .network-down { color: var(--color-success); }
 .network-up { color: var(--color-danger); }
 
-/* The Overview's "running of total": the total is context for the number
-   that matters, so it is sized and coloured as context. */
-.of-total { color: var(--color-muted-foreground); font-size: 0.6em; font-weight: var(--type-weight-regular); }
-
-/* One row across the top of the Overview, on a twelve slot grid: the two
-   counts are a number each, the Host's load needs room for its meters, and the
-   network and the Platform's own traffic split what is left. */
-.summary-row { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(12, minmax(0, 1fr)); }
-.summary-row > * { min-width: 0; }
-.summary-1 { grid-column: span 1; }
-.summary-3 { grid-column: span 3; }
-.summary-4 { grid-column: span 4; }
-/* Twelve slots stop meaning anything once each is a few characters wide. */
-@media (max-width: 1200px) {
-  .summary-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .summary-1, .summary-3, .summary-4 { grid-column: span 1; }
+/* The Overview's summary: four questions on one line, a caps label over
+   each. What is up, what the workloads cost the Host, what crossed the
+   wire, and what the Platform's own servers handled. A line, not cards:
+   the reading is the answer, and the tables below are where anything
+   deeper gets inspected. */
+.summary-groups {
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  gap: var(--spacing-md) var(--spacing-xl);
 }
-@media (max-width: 720px) { .summary-row { grid-template-columns: minmax(0, 1fr); } }
+.summary-group { display: grid; gap: var(--spacing-2xs); align-content: start; }
+.summary-group + .summary-group {
+  padding-inline-start: var(--spacing-xl);
+  border-inline-start: 1px solid var(--color-border);
+}
+.summary-group .t-caps {
+  margin: 0; font-size: var(--type-size-metadata);
+  color: var(--color-subtle-foreground);
+}
+/* Values lead in the foreground voice; keys and totals trail muted. */
+.summary-line {
+  margin: 0; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 0 var(--spacing-2xs);
+  font-size: var(--type-size-label); color: var(--color-muted-foreground);
+}
+.summary-line b {
+  color: var(--color-foreground); font-weight: var(--type-weight-regular);
+  font-variant-numeric: tabular-nums;
+}
+.summary-line .sparkline { width: 56px; }
 .section-title { font-size: var(--type-size-title); font-weight: 600; margin: 0; }
 /* Title, how much of the list is showing, the search that thins it, and the
    way to add one more. The search takes the middle, so the action stays at the
@@ -77,8 +88,6 @@
   .section-heading { flex-wrap: wrap; }
   .section-heading > .section-search { margin-inline-start: 0; order: 1; width: 100%; }
 }
-.host-load .t-caps { margin: 0 0 var(--spacing-md); }
-
 /* Inspect values in the charts without a permanent summary or detail table. */
 .traffic .chart-values, .traffic > .framed-chart > [data-slot="chart-legend"] { display: none; }
 .traffic-errors { color: var(--color-danger); font-size: var(--type-size-label); }
@@ -366,6 +375,30 @@
     margin-block-end: calc(-1 * var(--spacing-lg));
     margin-inline: calc(-1 * var(--spacing-lg));
   }
+}
+/* On a wide window the tabs card takes the rest of the screen instead of a
+   fixed slab: a boot log is two thousand lines and a shell wants a screen,
+   so every pixel under the actions row is reading room. Same posture as the
+   application detail, a definite shell height, a column, and one card
+   allowed to grow; under the breakpoint the fixed height above stays. */
+@media (min-width: 1024px) {
+  .app-shell:has(.environment-page) { height: 100vh; }
+  #detail:has(.environment-page) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .environment-page { flex: 1; min-height: 0; }
+  .environment-page > .environment-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .environment-tabs [data-slot="tabs"] { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* The tab list scrolls sideways, and a scroller's automatic minimum size
+     is zero: beside a panel asking for the rest of the column it collapses
+     to nothing. It keeps its own height; the panel takes what is left. */
+  .environment-tabs [data-slot="tabs"] > [role="tablist"] { flex: none; }
+  /* Every panel takes the card's remaining height. The log and the terminal
+     scroll themselves; the editor scrolls as a panel, the way the application
+     detail's form pane does, instead of pushing the page out from under a
+     full-height card. */
+  .environment-tabs [data-slot="tabs"] > [role="tabpanel"] { flex: 1 1 auto; min-height: 0; }
+  .environment-tabs [role="tabpanel"].environment-logs,
+  .environment-tabs [role="tabpanel"].environment-terminal { height: auto; }
+  .environment-tabs [role="tabpanel"]:not(.environment-logs):not(.environment-terminal) { overflow: auto; }
 }
 
 .advanced > summary { cursor: pointer; font-weight: 600; padding-block: var(--spacing-sm); }
