@@ -1172,17 +1172,21 @@ async fn run_server(window: self_host::metrics::Window, no_dns: bool) {
             tracing::warn!(
                 "starting without DNS: names under the DNS Suffix will not resolve from this Host"
             );
-            run_api_server(metrics.clone()).await;
+            run_api_server(
+                metrics.clone(),
+                Arc::new(self_host::dns_records::UnservedZone),
+            )
+            .await;
             return Ok::<(), anyhow::Error>(());
         }
         let config = self_host::dns::Config::load()?;
-        let mut dns = self_host::dns::start(&config, &metrics).await?;
+        let (mut dns, zone) = self_host::dns::start(&config, &metrics).await?;
         tokio::select! {
             result = dns.block_until_done() => {
                 result?;
                 anyhow::bail!("DNS server stopped unexpectedly");
             }
-            () = run_api_server(metrics.clone()) => Ok::<(), anyhow::Error>(()),
+            () = run_api_server(metrics.clone(), Arc::new(zone)) => Ok::<(), anyhow::Error>(()),
         }
     }
     .await;
@@ -1192,7 +1196,10 @@ async fn run_server(window: self_host::metrics::Window, no_dns: bool) {
     }
 }
 
-async fn run_api_server(metrics: self_host::metrics::Metrics) {
+async fn run_api_server(
+    metrics: self_host::metrics::Metrics,
+    zone: Arc<dyn self_host::dns_records::Zone>,
+) {
     let (api_key, listen_addr) = resolve_server_config().await;
 
     // The state comes first, and from files. The console, the configuration
@@ -1231,6 +1238,13 @@ async fn run_api_server(metrics: self_host::metrics::Metrics) {
         tracing::warn!("failed to reconcile Applications: {e}");
     }
 
+    // The Zone is memory; the Operator's Records are state. Every one of
+    // them answers again before the API can change them (ADR-0025).
+    match self_host::dns_records::rebuild(&store, zone.as_ref()).await {
+        Ok(count) => info!(count, "DNS Records published"),
+        Err(e) => tracing::error!("failed to publish the DNS Records: {e}"),
+    }
+
     // One runner for the whole daemon: the API drives machines through it and
     // the collector measures them through the same handle.
     let vm_runtime: Arc<dyn self_host::environments::VmRuntime> =
@@ -1262,6 +1276,7 @@ async fn run_api_server(metrics: self_host::metrics::Metrics) {
         routes,
         metrics.clone(),
         vm_runtime.clone(),
+        zone,
     );
 
     // Consumer traffic is the Platform's own listener now, so an upgrade has

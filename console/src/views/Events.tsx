@@ -105,7 +105,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
                 </button>
               </TableCell>
               <TableCell>{subjectLink(event.subject)}<span className="events-secondary">
-                {event.subject.kind === "virtual-machine" ? "Virtual machine" : event.subject.kind === "custom-image" ? "Custom image" : event.subject.kind === "api-key" ? "API key" : event.subject.service ? event.subject.name : "Application"}
+                {event.subject.kind === "virtual-machine" ? "Virtual machine" : event.subject.kind === "custom-image" ? "Custom image" : event.subject.kind === "api-key" ? "API key" : event.subject.kind === "dns-record" ? "DNS record" : event.subject.service ? event.subject.name : "Application"}
               </span></TableCell>
               <TableCell><span className={`mono${event.apiName ? "" : " muted"}`}>{event.apiName?.trim() || "system"}</span></TableCell>
               <TableCell><Timestamp value={eventUpdatedAt(event)} /></TableCell>

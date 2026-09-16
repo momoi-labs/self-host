@@ -5,7 +5,7 @@ Everything the Operator configured lives in one directory on the Host:
 ```
 ~/.config/self-host/
 ├── state/                 # authoritative: settings, credentials, Applications
-│   ├── platform.json
+│   ├── platform.json      # settings, credentials, dns_records_v1
 │   ├── platform.lock
 │   └── applications/<application-id>/
 │       ├── application.json
@@ -25,6 +25,12 @@ interfaces every 30 seconds and publishes every LAN address that is actually
 up, so a restore onto a Host with a different address needs no edit at all.
 `--host-ip` on `init` pins a candidate into `include`; it is still served only
 while an interface has it.
+
+The Records the Operator adds to the Zone through `POST /dns/records` live in
+`platform.json` under `dns_records_v1`: one Record per name and Record Type,
+with the value, the TTL of 60 seconds, an optional description and the owner.
+The served Zone is memory. The daemon publishes every stored Record again on
+start, so a restore brings the names back with everything else in `state/`.
 
 The daemon is the only writer. `state/platform.lock` is held for as long as it
 runs, and a second `self-host serve` against the same directory is refused

@@ -1,4 +1,6 @@
-//! Host-native DNS, independent of Docker and the state store.
+//! Host-native DNS, independent of Docker. The Zone it serves is the wildcard
+//! plus the Records in Platform State (ADR-0025), which [`crate::dns_records`]
+//! publishes into it through [`ServedZone`].
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -23,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Mutex;
 
+use crate::dns_records;
 use crate::host_addresses::{self, AddressPolicy};
 use crate::metrics::Metrics;
 
@@ -214,9 +217,11 @@ fn catalog(
 // exists at a wildcard. Every name in our wildcard zone exists: a missing
 // type must be NODATA, or clients may negatively cache the working A/AAAA too.
 //
-// The handler sits behind a mutex because the address records change under
-// it: the 30-second scan rewrites the wildcard RRset in place, and a lookup
-// that lands mid-rewrite must see the old set or the new one, never neither.
+// The handler sits behind a mutex because the records change under it: the
+// 30-second scan rewrites the wildcard RRset in place, the Operator's Records
+// come and go through the API, and a lookup that lands mid-rewrite must see
+// the old set or the new one, never neither. An explicit Record at a name
+// answers ahead of the wildcard, as DNS already says it should.
 struct WildcardZone {
     origin: LowerName,
     handler: Mutex<InMemoryZoneHandler>,
@@ -225,18 +230,58 @@ struct WildcardZone {
 }
 
 impl WildcardZone {
-    /// Replaces the wildcard A records with `addresses`. The whole RRset goes
-    /// first, so a withdrawn interface stops being answered within one scan,
-    /// inside the 60-second TTL a client may cache.
-    async fn publish_addresses(&self, wildcard: &Name, addresses: &[Ipv4Addr]) {
+    /// Replaces the A records at `name` with `addresses`. The whole RRset
+    /// goes first, so a withdrawn interface stops being answered within one
+    /// scan, inside the 60-second TTL a client may cache.
+    async fn publish_addresses(&self, name: &Name, addresses: &[Ipv4Addr]) {
         let mut handler = self.handler.lock().await;
-        let key = RrKey::new(wildcard.clone().into(), RecordType::A);
+        let key = RrKey::new(name.clone().into(), RecordType::A);
         handler.records_get_mut().remove(&key);
         for address in addresses {
             handler.upsert_mut(
-                Record::from_rdata(wildcard.clone(), 60, RData::A(A(*address))),
+                Record::from_rdata(name.clone(), 60, RData::A(A(*address))),
                 1,
             );
+        }
+    }
+
+    /// Removes every record of `record_type` at `name`; the wildcard answers
+    /// for it again.
+    async fn withdraw(&self, name: &Name, record_type: RecordType) {
+        let key = RrKey::new(name.clone().into(), record_type);
+        self.handler.lock().await.records_get_mut().remove(&key);
+    }
+}
+
+/// The Zone this process serves, as the Operator's Records reach it.
+pub struct ServedZone {
+    origin: Name,
+    zone: Arc<WildcardZone>,
+}
+
+impl ServedZone {
+    fn fqdn(&self, name: &str) -> Option<Name> {
+        match Name::from_ascii(format!("{name}.{}", self.origin)) {
+            Ok(fqdn) => Some(fqdn),
+            Err(error) => {
+                tracing::warn!(name, "not a DNS name, so not served: {error}");
+                None
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl dns_records::Zone for ServedZone {
+    async fn publish(&self, name: &str, address: Ipv4Addr) {
+        if let Some(fqdn) = self.fqdn(name) {
+            self.zone.publish_addresses(&fqdn, &[address]).await;
+        }
+    }
+
+    async fn withdraw(&self, name: &str, record_type: dns_records::RecordType) {
+        if let Some(fqdn) = self.fqdn(name) {
+            self.zone.withdraw(&fqdn, record_type.into()).await;
         }
     }
 }
@@ -357,8 +402,12 @@ async fn bind(
     address: SocketAddr,
     upstream: ForwardConfig,
     metrics: &Metrics,
-) -> anyhow::Result<(Server<Catalog>, SocketAddr)> {
+) -> anyhow::Result<(Server<Catalog>, SocketAddr, ServedZone)> {
     let (catalog, zone, wildcard) = catalog(config, addresses, upstream, metrics)?;
+    let served = ServedZone {
+        origin: wildcard.base_name(),
+        zone: zone.clone(),
+    };
     // Bind both transports before spawning either listener.
     let udp = UdpSocket::bind(address)
         .await
@@ -401,7 +450,7 @@ async fn bind(
         }
     });
 
-    Ok((server, bound))
+    Ok((server, bound, served))
 }
 
 /// What the interfaces have right now: the address the default route leaves
@@ -438,7 +487,12 @@ const BIND_HINT: &str = "Find what already holds port 53 with 'lsof -nP -iTCP:53
 #[cfg(not(target_os = "macos"))]
 const BIND_HINT: &str = "Check port 53 conflicts; grant CAP_NET_BIND_SERVICE to the Platform";
 
-pub async fn start(config: &Config, metrics: &Metrics) -> anyhow::Result<Server<Catalog>> {
+/// Serves the Zone, and hands back the handle the Operator's Records are
+/// published through once the state is open.
+pub async fn start(
+    config: &Config,
+    metrics: &Metrics,
+) -> anyhow::Result<(Server<Catalog>, ServedZone)> {
     // An unattended boot may reach DNS before any interface is up, so the
     // scan is retried until there is something to serve and something to
     // listen on. Publishing an address that is not there is what #61 forbids.
@@ -461,9 +515,9 @@ pub async fn start(config: &Config, metrics: &Metrics) -> anyhow::Result<Server<
         )
         .await
         {
-            Ok((server, address)) => {
+            Ok((server, address, zone)) => {
                 tracing::info!(%address, ?addresses, suffix = %config.dns_suffix, "DNS listening on UDP and TCP");
-                return Ok(server);
+                return Ok((server, zone));
             }
             Err(error)
                 if error
@@ -555,7 +609,7 @@ mod tests {
         .expect("DNS response within five seconds")
     }
 
-    async fn local_server(upstream: ForwardConfig) -> (Server<Catalog>, SocketAddr) {
+    async fn local_server(upstream: ForwardConfig) -> (Server<Catalog>, SocketAddr, ServedZone) {
         bind(
             &Config::new("home.lan", vec![]).unwrap(),
             &[Ipv4Addr::new(192, 0, 2, 10)],
@@ -567,12 +621,132 @@ mod tests {
         .unwrap()
     }
 
+    /// The A answers for `name`, in address order.
+    async fn a_answers(address: SocketAddr, name: &str) -> (Message, Vec<Ipv4Addr>) {
+        let response = exchange(address, &query(name, RecordType::A, None), false).await;
+        let mut answers: Vec<Ipv4Addr> = response
+            .answers
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::A(A(ip)) => Some(*ip),
+                _ => None,
+            })
+            .collect();
+        answers.sort();
+        (response, answers)
+    }
+
+    #[tokio::test]
+    async fn a_record_answers_ahead_of_the_wildcard_and_the_wildcard_takes_over_when_withdrawn() {
+        use crate::dns_records::{RecordType as Type, Zone};
+        let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (mut server, address, zone) =
+            local_server(upstream(&[unavailable.local_addr().unwrap()])).await;
+        let nas = Ipv4Addr::new(192, 0, 2, 30);
+        let host = Ipv4Addr::new(192, 0, 2, 10);
+
+        zone.publish("nas", nas).await;
+
+        let (response, answers) = a_answers(address, "nas.home.lan.").await;
+        assert_eq!(answers, vec![nas]);
+        assert!(response.authoritative);
+        assert_eq!(response.answers[0].ttl, 60);
+        // Case does not matter, and neither does the trailing dot a client adds.
+        assert_eq!(a_answers(address, "NAS.Home.LAN.").await.1, vec![nas]);
+        // Every other name is still the wildcard's, and the apex is untouched.
+        assert_eq!(a_answers(address, "other.home.lan.").await.1, vec![host]);
+        assert_eq!(
+            a_answers(address, "media.nas.home.lan.").await.1,
+            vec![host]
+        );
+        let apex = exchange(address, &query("home.lan.", RecordType::SOA, None), false).await;
+        assert_eq!(apex.answers[0].record_type(), RecordType::SOA);
+        // A type the Record does not carry falls through to the wildcard's
+        // answer for it: nothing, as NODATA, never NXDOMAIN.
+        let aaaa = exchange(
+            address,
+            &query("nas.home.lan.", RecordType::AAAA, None),
+            false,
+        )
+        .await;
+        assert_eq!(aaaa.response_code, ResponseCode::NoError);
+        assert!(aaaa.answers.is_empty());
+
+        // Publishing again replaces the value rather than adding a second one.
+        let moved = Ipv4Addr::new(192, 0, 2, 31);
+        zone.publish("nas", moved).await;
+        assert_eq!(a_answers(address, "nas.home.lan.").await.1, vec![moved]);
+
+        zone.withdraw("nas", Type::A).await;
+        assert_eq!(a_answers(address, "nas.home.lan.").await.1, vec![host]);
+        // Withdrawing what is not there is not an error.
+        zone.withdraw("nas", Type::A).await;
+        assert_eq!(a_answers(address, "nas.home.lan.").await.1, vec![host]);
+        server.shutdown_gracefully().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_records_in_state_are_served_again_after_a_restart() {
+        use crate::dns_records::{Owner, Record, RecordType as Type, TTL};
+        use crate::store::{FakeStateStore, StateStore};
+        let store = FakeStateStore::new();
+        let records = vec![
+            Record {
+                name: "nas".into(),
+                record_type: Type::A,
+                value: Ipv4Addr::new(192, 0, 2, 30),
+                ttl: TTL,
+                description: None,
+                owner: Owner::Operator,
+            },
+            Record {
+                name: "media.nas".into(),
+                record_type: Type::A,
+                value: Ipv4Addr::new(192, 0, 2, 31),
+                ttl: TTL,
+                description: Some("the media share".into()),
+                owner: Owner::Operator,
+            },
+        ];
+        store
+            .store_state(
+                crate::dns_records::STATE_KEY,
+                &serde_json::to_string(&records).unwrap(),
+            )
+            .await
+            .unwrap();
+        let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        // A fresh Zone, as after a restart: memory is empty, the state is not.
+        let (mut server, address, zone) =
+            local_server(upstream(&[unavailable.local_addr().unwrap()])).await;
+        assert_eq!(
+            a_answers(address, "nas.home.lan.").await.1,
+            vec![Ipv4Addr::new(192, 0, 2, 10)]
+        );
+
+        assert_eq!(crate::dns_records::rebuild(&store, &zone).await.unwrap(), 2);
+
+        assert_eq!(
+            a_answers(address, "nas.home.lan.").await.1,
+            vec![Ipv4Addr::new(192, 0, 2, 30)]
+        );
+        assert_eq!(
+            a_answers(address, "media.nas.home.lan.").await.1,
+            vec![Ipv4Addr::new(192, 0, 2, 31)]
+        );
+        assert_eq!(
+            a_answers(address, "other.home.lan.").await.1,
+            vec![Ipv4Addr::new(192, 0, 2, 10)]
+        );
+        server.shutdown_gracefully().await.unwrap();
+    }
+
     #[tokio::test]
     async fn queries_are_counted_local_named_and_forwarded() {
         // Bound but never read: any accidental forwarding times out.
         let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let metrics = Metrics::new();
-        let (mut server, address) = bind(
+        let (mut server, address, _) = bind(
             &Config::new("home.lan", vec![]).unwrap(),
             &[Ipv4Addr::new(192, 0, 2, 10)],
             "127.0.0.1:0".parse().unwrap(),
@@ -607,7 +781,7 @@ mod tests {
     async fn local_zone_answers_without_docker_database_or_upstream() {
         // Bound but never read: any accidental forwarding times out.
         let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let (mut server, address) =
+        let (mut server, address, _) =
             local_server(upstream(&[unavailable.local_addr().unwrap()])).await;
         for tcp in [false, true] {
             for name in ["admin.home.lan.", "nested.app.home.lan.", "APP.HOME.LAN."] {
@@ -694,7 +868,7 @@ mod tests {
     #[tokio::test]
     async fn forwards_external_names_preserving_aliases_and_negative_answers() {
         let (mut external, upstream_address) = external_server().await;
-        let (mut server, address) = local_server(upstream(&[upstream_address])).await;
+        let (mut server, address, _) = local_server(upstream(&[upstream_address])).await;
         for tcp in [false, true] {
             let answer = exchange(
                 address,
@@ -736,7 +910,7 @@ mod tests {
     #[tokio::test]
     async fn retries_truncated_upstream_over_tcp_and_respects_client_udp_limits() {
         let (mut external, upstream_address) = external_server().await;
-        let (mut server, address) = local_server(upstream(&[upstream_address])).await;
+        let (mut server, address, _) = local_server(upstream(&[upstream_address])).await;
         for edns in [None, Some(1232)] {
             let query = query("large.example.", RecordType::TXT, edns);
             let udp = exchange(address, &query, false).await;
@@ -753,7 +927,7 @@ mod tests {
     #[tokio::test]
     async fn upstream_failure_returns_servfail_but_local_names_still_work() {
         let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let (mut server, address) =
+        let (mut server, address, _) =
             local_server(upstream(&[unavailable.local_addr().unwrap()])).await;
         for name in ["example.", "nothome.lan.", "home.lan.example."] {
             let failed = exchange(address, &query(name, RecordType::A, None), false).await;
@@ -768,7 +942,7 @@ mod tests {
     async fn uses_another_upstream_when_one_is_unavailable() {
         let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let (mut external, upstream_address) = external_server().await;
-        let (mut server, address) = local_server(upstream(&[
+        let (mut server, address, _) = local_server(upstream(&[
             unavailable.local_addr().unwrap(),
             upstream_address,
         ]))
@@ -783,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn the_wildcard_answers_with_every_published_address() {
         let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let (mut server, address) = bind(
+        let (mut server, address, _) = bind(
             &Config::new("home.lan", vec![]).unwrap(),
             &[Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(192, 0, 2, 11)],
             "127.0.0.1:0".parse().unwrap(),
