@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # Installs self-host. On macOS it also prepares the Host to run the Platform
-# unattended: a Docker runtime, Compose, the Platform Infra, and two launchd
-# LaunchDaemons so everything returns after a reboot without anyone logging
-# in (ADR-0013). See docs/macos-host.md for what this expects of the Mac.
+# unattended: a Docker runtime, Compose, the Platform Infra, a bridged network
+# for Virtual machines, and launchd LaunchDaemons so everything returns after
+# a reboot without anyone logging in (ADR-0013). See docs/macos-host.md for
+# what this expects of the Mac.
 #
 # Environment:
 #   INSTALL_DIR              where the binary goes            (default /usr/local/bin)
@@ -34,11 +35,24 @@ COLIMA_DNS="1.1.1.1, 1.0.0.1"
 
 PLATFORM_LABEL="dev.momoi.self-host"
 COLIMA_LABEL="dev.momoi.self-host.colima"
+VMNET_LABEL="dev.momoi.self-host.vmnet"
 DAEMON_DIR="/Library/LaunchDaemons"
+
+# socket_vmnet gives Lima a bridged vmnet interface over a Unix socket
+# (ADR-0025). Built from source at this commit; the prefix is upstream's,
+# chosen because only root can write there and the daemon runs as root.
+SOCKET_VMNET_REPO="https://github.com/lima-vm/socket_vmnet"
+SOCKET_VMNET_COMMIT="a061a8133f5f27d5e99da5dfb95d64d04fd4364a"
+SOCKET_VMNET_PREFIX="/opt/socket_vmnet"
+VMNET_SOCKET="/var/run/self-host-vmnet.sock"
 
 # Whether `trust-ca` succeeded; the closing summary tells the Operator what
 # this Host's own browser will do.
 CA_TRUSTED=""
+
+# Whether this run built socket_vmnet. A running daemon keeps the old binary
+# until launchd starts it again, so a build forces a reload.
+VMNET_REBUILT=""
 
 # Where the downloaded archive is unpacked. The EXIT trap that removes it
 # fires after install_binary has returned, so this cannot be a local.
@@ -59,6 +73,8 @@ main() {
 			echo
 			echo "Next: self-host init && self-host serve"
 			echo "Unattended startup on Linux is not set up by this installer."
+			echo "Neither is the bridged network for Virtual machines: that is"
+			echo "vmnet, which is macOS only. Lima on Linux bridges another way."
 			;;
 	esac
 }
@@ -178,6 +194,8 @@ bootstrap_macos() {
 
 	install_platform_daemon "$operator" "$home"
 
+	install_vmnet "$home"
+
 	echo
 	echo "=== Done ==="
 	echo
@@ -187,8 +205,10 @@ bootstrap_macos() {
 	else
 		echo "  Console:   https://admin.${DNS_SUFFIX} (untrusted CA here; see the warning above)"
 	fi
+	echo "  Machines:  bridged on $(lan_interface) through ${VMNET_SOCKET}"
 	echo "  Logs:      $home/Library/Logs/self-host/"
 	echo "  Status:    sudo launchctl print system/${PLATFORM_LABEL}"
+	echo "             sudo launchctl print system/${VMNET_LABEL}"
 	echo
 	echo "Validate unattended startup now: reboot the Mac and open the console"
 	echo "from another machine before anyone logs in. See docs/macos-host.md."
@@ -524,13 +544,17 @@ host_ip() {
 		echo "$HOST_IP"
 		return
 	fi
-	# The interface the default route leaves through is the LAN one.
 	local iface
-	iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+	iface="$(lan_interface)"
 	if [ -n "$iface" ]; then
 		ipconfig getifaddr "$iface" 2>/dev/null && return
 	fi
 	echo "127.0.0.1"
+}
+
+# The interface the default route leaves through is the LAN one.
+lan_interface() {
+	route -n get default 2>/dev/null | awk '/interface:/{print $2}'
 }
 
 # The Platform serves the console and every Application over HTTPS, signed by
@@ -553,6 +577,161 @@ trust_ca() {
 	echo "graphical session and approve the system prompt. Retrying over SSH" >&2
 	echo "or through a root LaunchDaemon does not provide that authorization." >&2
 	echo "Consumers must trust the CA on their own machines." >&2
+}
+
+# A Virtual machine is a host on the LAN (ADR-0025). socket_vmnet opens a
+# bridged vmnet interface on the Host's LAN interface and hands it to Lima
+# over a Unix socket. vmnet wants root, so the daemon runs as root under a
+# LaunchDaemon that is always up, and the Platform never needs sudo. Bridged
+# mode leaves port 53 alone; it is shared mode that hands it to mDNSResponder.
+#
+# Running this again on an installed Host changes nothing and says so.
+install_vmnet() {
+	local home="$1" iface
+	iface="$(lan_interface)"
+	case "$iface" in
+		"")
+			echo "no default route, so there is no LAN interface to bridge machines onto." >&2
+			echo "Connect the Mac to the LAN and run the installer again." >&2
+			exit 1
+			;;
+		en*) ;;
+		*)
+			# A VPN's utun, for one. vmnet cannot bridge it, and a daemon
+			# that tries opens the socket, fails and comes back every ten
+			# seconds, which looks up from a distance.
+			echo "the default route leaves through ${iface}, which is not a LAN interface." >&2
+			echo "Disconnect the VPN, or whatever holds the route, and run the installer again." >&2
+			exit 1
+			;;
+	esac
+
+	build_socket_vmnet
+	install_vmnet_daemon "$iface" "$home"
+	wait_for_vmnet
+}
+
+# From source at a pinned commit. The Lima project does not recommend the
+# Homebrew package: its binary sits where any account with administrator
+# rights can replace it, and launchd runs it as root. The build runs as the
+# Operator; only the install needs sudo. The binary reports the commit it was
+# built from, which is how the next run knows this build is already in place.
+build_socket_vmnet() {
+	local bin="$SOCKET_VMNET_PREFIX/bin/socket_vmnet" src
+	if [ -x "$bin" ] && [ "$("$bin" --version 2>/dev/null)" = "$SOCKET_VMNET_COMMIT" ]; then
+		echo "socket_vmnet ${SOCKET_VMNET_COMMIT:0:7} is already in ${SOCKET_VMNET_PREFIX}; nothing to build."
+		return
+	fi
+
+	require_command_line_tools
+	src="$tmpdir/socket_vmnet"
+
+	echo "building socket_vmnet ${SOCKET_VMNET_COMMIT:0:7} from source..."
+	git init -q "$src"
+	git -C "$src" fetch -q --depth 1 "$SOCKET_VMNET_REPO" "$SOCKET_VMNET_COMMIT"
+	git -C "$src" checkout -q FETCH_HEAD
+	make -C "$src" socket_vmnet VERSION="$SOCKET_VMNET_COMMIT" >/dev/null
+
+	echo "installing ${bin} (requires sudo)..."
+	sudo install -d -m 755 -o root -g wheel "$SOCKET_VMNET_PREFIX/bin"
+	sudo install -m 755 -o root -g wheel "$src/socket_vmnet" "$bin"
+	VMNET_REBUILT=1
+}
+
+# `cc` and `make` on a Mac without the Command Line Tools are stubs that open
+# a dialog nobody sees over SSH. Homebrew brings the tools with it; a Host
+# that kept its own Docker runtime may never have had Homebrew.
+require_command_line_tools() {
+	if xcode-select -p >/dev/null 2>&1; then
+		return
+	fi
+	echo "the Command Line Tools are required to build socket_vmnet. Install them first:" >&2
+	echo "  xcode-select --install" >&2
+	exit 1
+}
+
+# The socket is group staff, mode 0770: root opens it, and the Operator, who
+# is in staff, connects to it. Rewritten and reloaded only when the plist
+# would differ, since a reload drops every machine off the bridge.
+install_vmnet_daemon() {
+	local iface="$1" home="$2" plist desired
+	plist="$DAEMON_DIR/${VMNET_LABEL}.plist"
+	desired="$tmpdir/${VMNET_LABEL}.plist"
+
+	cat >"$desired" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>${VMNET_LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>${SOCKET_VMNET_PREFIX}/bin/socket_vmnet</string>
+		<string>--vmnet-mode=bridged</string>
+		<string>--vmnet-interface=${iface}</string>
+		<string>--socket-group=staff</string>
+		<string>${VMNET_SOCKET}</string>
+	</array>
+	<key>UserName</key>
+	<string>root</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>${home}/Library/Logs/self-host/vmnet.log</string>
+	<key>StandardErrorPath</key>
+	<string>${home}/Library/Logs/self-host/vmnet.log</string>
+</dict>
+</plist>
+EOF
+
+	if [ -z "$VMNET_REBUILT" ] && cmp -s "$desired" "$plist" 2>/dev/null; then
+		echo "checking LaunchDaemon ${VMNET_LABEL} (requires sudo)..."
+		if [ -n "$(vmnet_pid)" ]; then
+			echo "LaunchDaemon ${VMNET_LABEL} is already running, bridged on ${iface}; nothing to change."
+			return
+		fi
+	fi
+
+	mkdir -p "$home/Library/Logs/self-host"
+
+	echo "installing LaunchDaemon ${VMNET_LABEL}, bridged on ${iface} (requires sudo)..."
+	sudo install -m 644 -o root -g wheel "$desired" "$plist"
+	reload_daemon "$VMNET_LABEL"
+}
+
+# The socket file is not proof of anything: socket_vmnet opens it before it
+# asks vmnet for the interface, and leaves it behind when that fails. A
+# daemon that cannot bridge exits at once and KeepAlive brings it back, so
+# the proof is one process that is still there a moment later.
+wait_for_vmnet() {
+	local i pid
+	for i in $(seq 1 10); do
+		pid="$(vmnet_pid)"
+		if [ -n "$pid" ] && [ -S "$VMNET_SOCKET" ]; then
+			sleep 2
+			if [ "$(vmnet_pid)" = "$pid" ]; then
+				echo "socket_vmnet is up at ${VMNET_SOCKET}."
+				return
+			fi
+		fi
+		sleep 1
+	done
+	echo "socket_vmnet is not staying up on ${VMNET_SOCKET}." >&2
+	echo "See $HOME/Library/Logs/self-host/vmnet.log and" >&2
+	echo "  sudo launchctl print system/${VMNET_LABEL}" >&2
+	exit 1
+}
+
+# The pid launchd holds for the daemon; empty when it is not running.
+vmnet_pid() {
+	sudo launchctl print "system/${VMNET_LABEL}" 2>/dev/null | awk '/^\tpid = /{print $3}'
 }
 
 # The Platform itself, supervised by launchd as the Operator's user so that
