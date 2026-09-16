@@ -21,6 +21,9 @@ them not obvious. They are in the prerequisites now, and in
 - Apple Silicon Mac on macOS 13 or later, for the `vz` virtual machine type.
 - [Homebrew](https://brew.sh), unless a Docker runtime already answers
   `docker info`.
+- The Xcode Command Line Tools, to build `socket_vmnet`. Homebrew installs
+  them; a Mac that kept its own Docker runtime and never had Homebrew needs
+  `xcode-select --install`.
 - A user account for the Operator with administrator rights. The installer
   runs as that user and asks for `sudo` where it writes to `/Library` and
   `/etc`.
@@ -118,9 +121,58 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    none of which needs Docker. Bringing the Platform Infra up runs alongside;
    a Docker that is still starting delays HTTPS and Applications, not the
    console.
+10. Builds `socket_vmnet` from source at a pinned commit into
+    `/opt/socket_vmnet` and installs
+    `/Library/LaunchDaemons/dev.momoi.self-host.vmnet.plist`: a bridged vmnet
+    interface on the LAN interface, opened as root, at boot, kept alive, and
+    handed to Lima at `/var/run/self-host-vmnet.sock`. This is the network
+    Virtual machines join (ADR-0025); see
+    [the bridged network](#the-bridged-network-for-machines) below. It comes
+    last because the Platform does not need it to start. Run again, it finds
+    the build and the daemon in place and says so.
 
 Logs land in `~/Library/Logs/self-host/`. `sudo launchctl print
 system/dev.momoi.self-host` shows the daemon's state.
+
+## The bridged network for machines
+
+A Virtual machine is a host on the LAN (ADR-0025). `socket_vmnet` opens a
+bridged vmnet interface on the interface that carries the Host's default
+route, `en7` on the Host in the acceptance record, and hands it to Lima over
+`/var/run/self-host-vmnet.sock`. A machine attached to that socket asks the
+LAN's DHCP server for an address, like any other device in the house. The
+installer refuses a default route that leaves through anything but an `en`
+interface, a VPN's `utun` for one, because vmnet cannot bridge it.
+
+The daemon is `dev.momoi.self-host.vmnet` in `/Library/LaunchDaemons`. It
+runs as root, because vmnet requires it, at boot and kept alive, so it is up
+before anyone logs in and the Platform never needs `sudo`. It is unmanaged:
+nothing starts or stops it on demand. `install.sh` builds it from source at
+a pinned commit of [lima-vm/socket_vmnet](https://github.com/lima-vm/socket_vmnet)
+into `/opt/socket_vmnet`, a directory only root can write, because the Lima
+project does not recommend the Homebrew package for a daemon that runs as
+root. Its log is `~/Library/Logs/self-host/vmnet.log`.
+
+To check it is up:
+
+```sh
+sudo launchctl print system/dev.momoi.self-host.vmnet | grep -E 'state|pid'
+ls -l /var/run/self-host-vmnet.sock
+ifconfig | grep -E '^(bridge|vmenet)'
+lsof -nP -iTCP:53 -iUDP:53
+```
+
+The first prints `state = running` and a pid. The second shows a socket
+owned by `root:staff`, mode `srwxrwx---`, which is what lets the Operator's
+Lima connect to it. The third lists the `bridge100` and `vmenet0` the daemon
+created. The fourth prints nothing, or only the Platform: bridged mode does
+not hand port 53 to `mDNSResponder`. Shared mode does, which is what
+ADR-0023 recorded and ADR-0025 closed.
+
+To see a machine get an address, attach a Lima instance to the socket with
+`networks: [{socket: /var/run/self-host-vmnet.sock}]` and read `lima0`
+inside it: `limactl shell <name> -- ip -4 -brief addr show lima0` prints an
+address from the LAN's DHCP pool, and another device on the LAN can ping it.
 
 ## Configure another device
 
@@ -141,6 +193,7 @@ to setup or from setup to the console.
 | Layer | Brought back by |
 | --- | --- |
 | Colima VM and Docker daemon | `dev.momoi.self-host.colima` LaunchDaemon |
+| Bridged network for machines | `dev.momoi.self-host.vmnet` LaunchDaemon, as root |
 | Platform Infra containers | Docker's `unless-stopped` restart policy, and `self-host serve` as a fallback |
 | DNS | The Platform daemon, before Docker is available |
 | Platform state | Files under `~/.config/self-host/state/`; the daemon reads them at startup |
@@ -158,10 +211,11 @@ hard to read. `uninstall.sh` puts the Mac back where the installer found it:
 curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/uninstall.sh | bash
 ```
 
-It removes both LaunchDaemons, every Platform and Application container,
-volume and network, `~/.config/self-host`, the CA in the System Keychain,
-`/etc/resolver/<suffix>`, the binary and the logs. It asks first, and
-`SELF_HOST_FORCE=1` skips that.
+It removes every LaunchDaemon the installer wrote, every Platform and
+Application container, volume and network, `~/.config/self-host`, the CA in
+the System Keychain, `/etc/resolver/<suffix>`, `socket_vmnet` and its
+socket, the binary and the logs. It asks first, and `SELF_HOST_FORCE=1`
+skips that.
 
 The Colima VM stays, because rebuilding it costs minutes and holds nothing of
 the Platform. `SELF_HOST_DELETE_VM=1` removes it too, for a run that has to
@@ -234,6 +288,8 @@ FileVault off.
 | Data survives recreation | Edit the Compose file, save, confirm the previous conversation is still there | Open |
 | Stopped stays stopped | Stop an Application, reboot, confirm it is still stopped and its Hostname does not answer | Open |
 | Failure is visible | Set a bad `command`, save, confirm `failed` with the exit code and the logs | Open |
+| Bridge returns, no login | After the reboot, `sudo launchctl print system/dev.momoi.self-host.vmnet` shows `state = running`, the socket exists, and `lsof -nP -iTCP:53 -iUDP:53` lists no `mDNSResponder` | Open |
+| A machine gets a LAN address | Attach a Lima instance to the socket; `lima0` holds an address from the router's DHCP pool and another device pings it | Open |
 
 ### What the record does not say
 

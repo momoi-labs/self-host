@@ -3,7 +3,7 @@
 # Removes what install.sh left on a macOS Host, so the next install starts
 # from nothing. This is the cleanup between validation runs
 # (docs/macos-host.md), not a polite uninstaller: the Applications, their
-# volumes and the Platform CA go with it.
+# volumes, the Platform CA and the bridged network for machines go with it.
 #
 # The Colima VM survives by default. Rebuilding it costs minutes, nothing in
 # it belongs to the Platform, and the installer patches the profile it finds.
@@ -23,7 +23,11 @@ CA_NAME="Self-Host LAN CA"
 
 PLATFORM_LABEL="dev.momoi.self-host"
 COLIMA_LABEL="dev.momoi.self-host.colima"
+VMNET_LABEL="dev.momoi.self-host.vmnet"
 DAEMON_DIR="/Library/LaunchDaemons"
+
+SOCKET_VMNET_PREFIX="/opt/socket_vmnet"
+VMNET_SOCKET="/var/run/self-host-vmnet.sock"
 
 SUFFIX=""
 
@@ -55,6 +59,7 @@ main() {
 	reset_platform
 	remove_daemon "$COLIMA_LABEL"
 	delete_vm
+	remove_vmnet
 
 	remove_resolver
 	remove_ca
@@ -81,7 +86,8 @@ confirm() {
 	fi
 
 	echo "This removes from this Mac:"
-	echo "  - both LaunchDaemons, so nothing starts at boot"
+	echo "  - every LaunchDaemon the installer wrote, so nothing starts at boot"
+	echo "  - the bridged network for machines: socket_vmnet in ${SOCKET_VMNET_PREFIX} and its socket"
 	echo "  - every Platform and Application container, volume and network"
 	echo "  - ${HOME}/.config/self-host, including the CA and the API key"
 	echo "  - the CA from the System Keychain, so browsers warn again"
@@ -151,6 +157,24 @@ delete_vm() {
 	fi
 	echo "deleting the Colima VM..."
 	colima delete --force || true
+}
+
+# The bridged network for machines: the daemon, the socket it opened and the
+# binary the installer built. Only the binary and the directories that leaves
+# empty; anything else under the prefix is not the installer's to delete.
+remove_vmnet() {
+	remove_daemon "$VMNET_LABEL"
+
+	if [ -e "$VMNET_SOCKET" ]; then
+		echo "removing ${VMNET_SOCKET} (requires sudo)..."
+		sudo rm -f "$VMNET_SOCKET"
+	fi
+
+	if [ -d "$SOCKET_VMNET_PREFIX" ]; then
+		echo "removing ${SOCKET_VMNET_PREFIX}/bin/socket_vmnet (requires sudo)..."
+		sudo rm -f "$SOCKET_VMNET_PREFIX/bin/socket_vmnet"
+		sudo rmdir "$SOCKET_VMNET_PREFIX/bin" "$SOCKET_VMNET_PREFIX" 2>/dev/null || true
+	fi
 }
 
 remove_resolver() {
