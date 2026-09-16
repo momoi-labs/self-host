@@ -189,8 +189,27 @@ async fn validate_routing(
     store: &impl StateStore,
     record: &ApplicationRecord,
 ) -> Result<(), DeployError> {
+    let suffix = store
+        .get_state("dns_suffix")
+        .await?
+        .ok_or(DeployError::NotInitialized)?;
+    let records = crate::dns_records::load(store).await?;
     for hostname in crate::routes::hostnames(record) {
         validate_hostname(hostname)?;
+        if hostname == suffix {
+            return Err(DeployError::InvalidHostname(format!(
+                "'{suffix}' is the apex of the Zone"
+            )));
+        }
+        if let Some(taken) = records
+            .iter()
+            .find(|entry| hostname == format!("{}.{}", entry.name, suffix))
+        {
+            return Err(DeployError::InvalidHostname(format!(
+                "'{hostname}' is already answered by Record '{}'",
+                taken.key()
+            )));
+        }
     }
 
     for other in store.list_applications().await? {
@@ -228,22 +247,19 @@ pub fn identity_labels(id: &str, name: &str) -> Vec<(String, String)> {
 /// retyping it instead of fixing one field.
 async fn record_outcome(
     store: &impl StateStore,
-    mut record: ApplicationRecord,
+    record: ApplicationRecord,
     result: Result<(), DeployError>,
 ) -> Result<ApplicationRecord, DeployError> {
     match result {
-        Ok(()) => {
-            record.status = STATUS_RUNNING.into();
-            record.last_error = None;
-            store.insert_application(&record).await?;
-            Ok(record)
-        }
+        Ok(()) => Ok(store
+            .set_application_outcome(&record.id, STATUS_RUNNING, None)
+            .await?),
         Err(e) => {
-            record.status = STATUS_FAILED.into();
-            record.last_error = Some(ErrorReport::new(&e));
             // The deploy error is what the caller needs; a failure to write the
             // reason down must not replace it.
-            let _ = store.insert_application(&record).await;
+            let _ = store
+                .set_application_outcome(&record.id, STATUS_FAILED, Some(ErrorReport::new(&e)))
+                .await;
             Err(e)
         }
     }
@@ -676,20 +692,19 @@ pub async fn finish_deploy(
             DeployWork::ComposeUp => {
                 let project = project_for(store, &record).await?;
                 docker.compose_up(&project).await?;
-                routes.publish(&record);
                 return Ok(());
             }
             DeployWork::Settled => unreachable!(),
         }
         start_container(store, docker, &record).await?;
-        // Published after the container is up, so the proxy never routes at
-        // a backend that is not there yet.
-        routes.publish(&record);
         Ok(())
     }
     .await;
 
-    record_outcome(store, record, result).await
+    let current = record_outcome(store, record, result).await?;
+    // Publish after the container is up, using the names currently on record.
+    routes.publish(&current);
+    Ok(current)
 }
 
 /// Gives an Application deployed before the Platform served HTTP itself a Host
@@ -1153,7 +1168,7 @@ pub async fn stop_application(
     routes: &(impl RouteStore + ?Sized),
     id: &str,
 ) -> Result<ApplicationRecord, DeployError> {
-    let mut app = get_application(store, id).await?;
+    let app = get_application(store, id).await?;
 
     routes.withdraw(&app.id);
     if app.source == SOURCE_COMPOSE {
@@ -1164,10 +1179,9 @@ pub async fn stop_application(
         docker.stop_container(&container_name_for(&app.id)).await?;
     }
 
-    app.status = STATUS_STOPPED.into();
-    app.last_error = None;
-    store.insert_application(&app).await?;
-    Ok(app)
+    Ok(store
+        .set_application_outcome(id, STATUS_STOPPED, None)
+        .await?)
 }
 
 /// Starts what is already there. A failed Application has nothing to start
@@ -1188,11 +1202,12 @@ pub async fn start_application(
         } else {
             docker.start_container(&container_name_for(&app.id)).await?;
         }
-        routes.publish(&app);
         Ok(())
     }
     .await;
-    record_outcome(store, app, result).await
+    let current = record_outcome(store, app, result).await?;
+    routes.publish(&current);
+    Ok(current)
 }
 
 pub async fn restart_application(
@@ -1212,11 +1227,12 @@ pub async fn restart_application(
                 .restart_container(&container_name_for(&app.id))
                 .await?;
         }
-        routes.publish(&app);
         Ok(())
     }
     .await;
-    record_outcome(store, app, result).await
+    let current = record_outcome(store, app, result).await?;
+    routes.publish(&current);
+    Ok(current)
 }
 
 // ── State ──────────────────────────────────────────────────────

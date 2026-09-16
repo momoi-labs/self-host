@@ -340,6 +340,14 @@ impl StateStore for FailOnceStore {
     async fn insert_application(&self, value: &ApplicationRecord) -> Result<(), StoreError> {
         self.inner.insert_application(value).await
     }
+    async fn set_application_outcome(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<self_host::error::ErrorReport>,
+    ) -> Result<ApplicationRecord, StoreError> {
+        self.inner.set_application_outcome(id, status, error).await
+    }
     async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, StoreError> {
         self.inner.get_application(id).await
     }

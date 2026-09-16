@@ -148,7 +148,10 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
         .route("/metrics", get(get_metrics::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
-        .route("/dns/records", post(dns_records::create::<S>))
+        .route(
+            "/dns/records",
+            get(dns_records::list::<S>).post(dns_records::create::<S>),
+        )
         .route(
             "/dns/records/{name}/{type}",
             axum::routing::put(dns_records::update::<S>).delete(dns_records::remove::<S>),
@@ -218,11 +221,10 @@ async fn get_metrics<S: StateStore>(
 struct BootstrapStatusResponse {
     initialized: bool,
     host_ip: Option<String>,
-    /// What the interfaces have right now, under the policy in `dns.json`.
-    /// Empty when nothing is up or the scan fails: an address that is not
-    /// there must not be advertised (#61).
+    /// The addresses currently published by the served Zone's wildcard.
     host_addresses: Vec<String>,
     dns_suffix: Option<String>,
+    forwarders: Vec<std::net::Ipv4Addr>,
 }
 
 async fn bootstrap_status<S: StateStore>(
@@ -243,7 +245,7 @@ async fn bootstrap_status<S: StateStore>(
     };
 
     let host_addresses = if initialized {
-        scan_for_status().unwrap_or_default()
+        state.dns_records.addresses().await
     } else {
         Vec::new()
     };
@@ -253,22 +255,12 @@ async fn bootstrap_status<S: StateStore>(
         host_ip,
         host_addresses,
         dns_suffix,
+        forwarders: if initialized {
+            dns::FORWARDERS.to_vec()
+        } else {
+            Vec::new()
+        },
     })
-}
-
-/// The policy lives in `dns.json`; the addresses live on the interfaces.
-/// Either being unreadable means "nothing to advertise", not an error page.
-fn scan_for_status() -> Option<Vec<String>> {
-    let config = crate::dns::Config::load().ok()?;
-    let source = crate::host_addresses::default_source().ok()?;
-    let interfaces = crate::host_addresses::interfaces().ok()?;
-    let addresses = crate::host_addresses::select(&config.host_addresses, source, &interfaces);
-    Some(
-        addresses
-            .iter()
-            .map(|address| address.to_string())
-            .collect(),
-    )
 }
 
 #[derive(Deserialize)]
@@ -795,7 +787,8 @@ async fn update_app<S: StateStore>(
         }
         None => None,
     };
-    match apps::prepare_update(
+    let namespace = state.dns_records.lock_namespace().await;
+    let prepared = apps::prepare_update(
         &state.store,
         &id,
         apps::ApplicationUpdate {
@@ -809,8 +802,9 @@ async fn update_app<S: StateStore>(
             development,
         },
     )
-    .await
-    {
+    .await;
+    drop(namespace);
+    match prepared {
         Ok(pending) => accept_deploy(&state, pending, "configure").await,
         Err(e) => deploy_error_response(e),
     }
@@ -976,6 +970,7 @@ async fn deploy_app<S: StateStore>(
         },
         None => None,
     };
+    let namespace = state.dns_records.lock_namespace().await;
     let prepared = match (
         &body.image[..],
         &body.path[..],
@@ -1017,6 +1012,7 @@ async fn deploy_app<S: StateStore>(
         )),
     };
 
+    drop(namespace);
     match prepared {
         Ok(pending) => accept_deploy(&state, pending, "create").await,
         Err(err) => deploy_error_response(err),

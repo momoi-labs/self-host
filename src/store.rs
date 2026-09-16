@@ -137,6 +137,13 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     }
 
     async fn insert_application(&self, app: &ApplicationRecord) -> Result<(), StoreError>;
+    /// Saves an execution result atomically without restoring an older name or definition.
+    async fn set_application_outcome(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<crate::error::ErrorReport>,
+    ) -> Result<ApplicationRecord, StoreError>;
     async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, StoreError>;
     async fn find_application_by_name(
         &self,
@@ -220,6 +227,21 @@ impl StateStore for FakeStateStore {
 
     async fn get_application(&self, id: &str) -> Result<Option<ApplicationRecord>, StoreError> {
         Ok(self.apps.read().await.get(id).cloned())
+    }
+
+    async fn set_application_outcome(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<crate::error::ErrorReport>,
+    ) -> Result<ApplicationRecord, StoreError> {
+        let mut apps = self.apps.write().await;
+        let app = apps
+            .get_mut(id)
+            .ok_or_else(|| StoreError::NotFound(id.into()))?;
+        app.status = status.into();
+        app.last_error = error;
+        Ok(app.clone())
     }
 
     async fn find_application_by_name(
