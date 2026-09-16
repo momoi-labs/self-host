@@ -361,6 +361,28 @@ impl StateStore for FileStateStore {
             .map(ApplicationRecord::from))
     }
 
+    async fn set_application_outcome(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<crate::error::ErrorReport>,
+    ) -> Result<ApplicationRecord, StoreError> {
+        self.writable()?;
+        let mut snapshot = self.snapshot_write().await;
+        let existing = snapshot
+            .apps
+            .get(id)
+            .ok_or_else(|| StoreError::NotFound(id.into()))?;
+        let mut record = ApplicationRecord::from(existing);
+        record.status = status.into();
+        record.last_error = error;
+        let mut entry = entry_from(&record);
+        entry.file.env = existing.file.env.clone();
+        self.commit_app(&entry)?;
+        snapshot.apps.insert(id.into(), entry);
+        Ok(record)
+    }
+
     async fn find_application_by_name(
         &self,
         name: &str,

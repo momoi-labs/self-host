@@ -64,12 +64,13 @@ impl From<RecordType> for hickory_server::proto::rr::RecordType {
     }
 }
 
-/// Who a Record belongs to. The Operator creates, edits and deletes their
-/// own; the other owners in CONTEXT.md arrive with their own slices.
+/// Who a Record belongs to in the Zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Owner {
     Operator,
+    Platform,
+    Application,
 }
 
 /// One answer in the Zone, as it is stored and as the API returns it.
@@ -177,6 +178,8 @@ fn parse_description(input: Option<String>) -> Result<Option<String>, String> {
 /// knows its own origin.
 #[async_trait]
 pub trait Zone: Send + Sync + 'static {
+    /// The addresses currently published at the wildcard.
+    async fn addresses(&self) -> Vec<Ipv4Addr>;
     /// Answers `<name>.<suffix>` with `address` from now on, ahead of the
     /// wildcard, replacing any `A` Record already there.
     async fn publish(&self, name: &str, address: Ipv4Addr);
@@ -209,6 +212,10 @@ impl FakeZone {
 
 #[async_trait]
 impl Zone for FakeZone {
+    async fn addresses(&self) -> Vec<Ipv4Addr> {
+        self.answer("*").into_iter().collect()
+    }
+
     async fn publish(&self, name: &str, address: Ipv4Addr) {
         self.published
             .lock()
@@ -230,6 +237,9 @@ pub struct UnservedZone;
 
 #[async_trait]
 impl Zone for UnservedZone {
+    async fn addresses(&self) -> Vec<Ipv4Addr> {
+        Vec::new()
+    }
     async fn publish(&self, _name: &str, _address: Ipv4Addr) {}
     async fn withdraw(&self, _name: &str, _record_type: RecordType) {}
 }
@@ -239,6 +249,11 @@ pub enum RecordError {
     NotInitialized,
     Invalid(String),
     AlreadyExists(String, RecordType),
+    ApplicationOwned {
+        name: String,
+        application: String,
+        id: String,
+    },
     NotFound(String, RecordType),
     Store(StoreError),
 }
@@ -252,6 +267,16 @@ impl std::fmt::Display for RecordError {
             RecordError::Invalid(message) => write!(f, "invalid Record: {message}"),
             RecordError::AlreadyExists(name, record_type) => {
                 write!(f, "'{name}' already has an {record_type} Record")
+            }
+            RecordError::ApplicationOwned {
+                name,
+                application,
+                id,
+            } => {
+                write!(
+                    f,
+                    "'{name}' is owned by Application '{application}' ({id}); edit the Application instead"
+                )
             }
             RecordError::NotFound(name, record_type) => {
                 write!(f, "'{name}' has no {record_type} Record")
@@ -287,6 +312,28 @@ pub async fn load<S: StateStore>(store: &S) -> Result<Vec<Record>, StoreError> {
 async fn save<S: StateStore>(store: &S, records: &[Record]) -> Result<(), StoreError> {
     let json = serde_json::to_string(records).map_err(|e| StoreError::Serialize(e.to_string()))?;
     store.store_state(STATE_KEY, &json).await
+}
+
+pub(crate) async fn initialize_admin(
+    store: &impl StateStore,
+    address: Ipv4Addr,
+) -> Result<(), StoreError> {
+    let mut records = load(store).await?;
+    if !records
+        .iter()
+        .any(|record| record.is("admin", RecordType::A))
+    {
+        records.push(Record {
+            name: "admin".into(),
+            record_type: RecordType::A,
+            value: address,
+            ttl: TTL,
+            description: None,
+            owner: Owner::Platform,
+        });
+        save(store, &records).await?;
+    }
+    Ok(())
 }
 
 /// Publishes every stored Record into the Zone. Run on start, after the state
@@ -330,6 +377,38 @@ pub(crate) struct Records {
 }
 
 impl Records {
+    /// Shares the Record writer with Application name claims until their row is saved.
+    pub(crate) async fn lock_namespace(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.write.lock().await
+    }
+
+    pub(crate) async fn addresses(&self) -> Vec<String> {
+        self.zone
+            .addresses()
+            .await
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    async fn require_unowned<S: StateStore>(
+        &self,
+        store: &S,
+        name: &str,
+    ) -> Result<(), RecordError> {
+        let hostname = format!("{name}.{}", self.suffix(store).await?);
+        for application in store.list_applications().await? {
+            if crate::routes::hostnames(&application).contains(&hostname.as_str()) {
+                return Err(RecordError::ApplicationOwned {
+                    name: name.into(),
+                    application: application.name,
+                    id: application.id,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(zone: Arc<dyn Zone>) -> Self {
         Records {
             zone,
@@ -373,6 +452,7 @@ impl Records {
             owner: Owner::Operator,
         };
         let _guard = self.write.lock().await;
+        self.require_unowned(store, &record.name).await?;
         let mut records = load(store).await?;
         if records
             .iter()
@@ -397,6 +477,7 @@ impl Records {
         let value = parse_value(&request.value).map_err(RecordError::Invalid)?;
         let description = parse_description(request.description).map_err(RecordError::Invalid)?;
         let _guard = self.write.lock().await;
+        self.require_unowned(store, &name).await?;
         let mut records = load(store).await?;
         let record = records
             .iter_mut()
@@ -418,6 +499,7 @@ impl Records {
     ) -> Result<(), RecordError> {
         let (name, record_type) = self.key(store, name, record_type).await?;
         let _guard = self.write.lock().await;
+        self.require_unowned(store, &name).await?;
         let mut records = load(store).await?;
         let before = records.len();
         records.retain(|existing| !existing.is(&name, record_type));
@@ -430,11 +512,84 @@ impl Records {
     }
 }
 
+#[derive(Serialize)]
+struct InventoryRecord {
+    #[serde(flatten)]
+    record: Record,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    application_id: Option<String>,
+}
+
+impl Records {
+    async fn inventory<S: StateStore>(
+        &self,
+        store: &S,
+    ) -> Result<Vec<InventoryRecord>, RecordError> {
+        let suffix = self.suffix(store).await?;
+        let mut records: Vec<_> = load(store)
+            .await?
+            .into_iter()
+            .map(|record| InventoryRecord {
+                record,
+                application_id: None,
+            })
+            .collect();
+        let addresses = self.zone.addresses().await;
+        for value in &addresses {
+            records.push(InventoryRecord {
+                record: Record {
+                    name: "*".into(),
+                    record_type: RecordType::A,
+                    value: *value,
+                    ttl: TTL,
+                    description: None,
+                    owner: Owner::Platform,
+                },
+                application_id: None,
+            });
+        }
+        for application in store.list_applications().await? {
+            for hostname in crate::routes::hostnames(&application) {
+                // External routing hostnames are not answers in our Zone.
+                let Some(name) = hostname.strip_suffix(&format!(".{suffix}")) else {
+                    continue;
+                };
+                for value in &addresses {
+                    records.push(InventoryRecord {
+                        record: Record {
+                            name: name.into(),
+                            record_type: RecordType::A,
+                            value: *value,
+                            ttl: TTL,
+                            description: None,
+                            owner: Owner::Application,
+                        },
+                        application_id: Some(application.id.clone()),
+                    });
+                }
+            }
+        }
+        records.sort_by(|a, b| {
+            (&a.record.name, a.record.value).cmp(&(&b.record.name, b.record.value))
+        });
+        Ok(records)
+    }
+}
+
+pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Response {
+    match state.dns_records.inventory(&state.store).await {
+        Ok(records) => Json(records).into_response(),
+        Err(error) => error_response(error.into()),
+    }
+}
+
 fn error_response(error: RecordError) -> Response {
     let status = match &error {
         RecordError::NotInitialized => StatusCode::PRECONDITION_FAILED,
         RecordError::Invalid(_) => StatusCode::BAD_REQUEST,
-        RecordError::AlreadyExists(..) => StatusCode::CONFLICT,
+        RecordError::AlreadyExists(..) | RecordError::ApplicationOwned { .. } => {
+            StatusCode::CONFLICT
+        }
         RecordError::NotFound(..) => StatusCode::NOT_FOUND,
         RecordError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -657,6 +812,239 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn inventory_lists_stored_records_with_their_owner() {
+        let (app, _, _) = setup().await;
+        let (status, created) = call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "nas", "type": "A", "value": "192.168.1.30"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(inventory.as_array().unwrap().contains(&created));
+    }
+
+    #[tokio::test]
+    async fn inventory_derives_application_names_and_wildcard_from_the_served_zone() {
+        let (app, _, zone) = setup().await;
+        zone.publish("*", "192.168.1.10".parse().unwrap()).await;
+        let (status, application) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({
+                "name": "blog", "image": "nginx:alpine",
+                "aliases": ["news.home.lan", "blog.home.lan", "external.example.com"]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{application}");
+        let (status, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            inventory,
+            json!([
+                {"name": "*", "type": "A", "value": "192.168.1.10", "ttl": 60, "owner": "platform"},
+                {"name": "blog", "type": "A", "value": "192.168.1.10", "ttl": 60, "owner": "application", "application_id": application["id"]},
+                {"name": "news", "type": "A", "value": "192.168.1.10", "ttl": 60, "owner": "application", "application_id": application["id"]}
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn application_names_cannot_be_created_edited_or_deleted_as_operator_records() {
+        let (app, _, _) = setup().await;
+        let (_, application) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({
+                "name": "blog", "image": "nginx:alpine", "aliases": ["news.home.lan"]
+            }),
+        )
+        .await;
+        for name in ["blog", "news"] {
+            for (method, path, body) in [
+                (
+                    "POST",
+                    "/dns/records".to_string(),
+                    json!({"name": format!("{name}.home.lan"), "type": "A", "value": "192.168.1.30"}),
+                ),
+                (
+                    "PUT",
+                    format!("/dns/records/{name}/A"),
+                    json!({"value": "192.168.1.30"}),
+                ),
+                ("DELETE", format!("/dns/records/{name}/A"), Value::Null),
+            ] {
+                let (status, error) = call(&app, method, &path, body).await;
+                assert_eq!(status, StatusCode::CONFLICT, "{method} {error}");
+                let message = error["error"].as_str().unwrap();
+                assert!(message.contains("Application 'blog'"), "{message}");
+                assert!(
+                    message.contains(application["id"].as_str().unwrap()),
+                    "{message}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn applications_cannot_take_a_record_name_on_deploy_or_update() {
+        let (app, _, _) = setup().await;
+        call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "nas", "type": "A", "value": "192.168.1.30"}),
+        )
+        .await;
+        for body in [
+            json!({"name": "nas", "image": "nginx:alpine"}),
+            json!({"name": "other", "image": "nginx:alpine", "hostname": "nas.home.lan"}),
+            json!({"name": "other", "image": "nginx:alpine", "aliases": ["nas.home.lan"]}),
+        ] {
+            let (status, error) = call(&app, "POST", "/apps", body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+            assert!(
+                error["error"].as_str().unwrap().contains("Record 'nas/A'"),
+                "{error}"
+            );
+        }
+        let (_, application) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        let path = format!("/apps/id/{}", application["id"].as_str().unwrap());
+        for body in [
+            json!({"hostname": "nas.home.lan"}),
+            json!({"aliases": ["nas.home.lan"]}),
+        ] {
+            let (status, error) = call(&app, "PUT", &path, body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+            assert!(
+                error["error"].as_str().unwrap().contains("Record 'nas/A'"),
+                "{error}"
+            );
+        }
+        let (_, unchanged) = call(&app, "GET", &path, Value::Null).await;
+        assert_eq!(unchanged["hostname"], "blog.home.lan");
+        assert_eq!(unchanged["aliases"], json!([]));
+        for hostname in ["home.lan", "*.home.lan"] {
+            let (status, _) = call(&app, "PUT", &path, json!({"hostname": hostname})).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn init_creates_an_editable_admin_that_keeps_its_address_and_can_be_deleted() {
+        let store = FakeStateStore::new();
+        let result = crate::bootstrap::BootstrapResult {
+            dns_suffix: "home.lan".into(),
+            api_key: KEY.into(),
+            api_listen_addr: "0.0.0.0:3721".into(),
+            host_ip: "192.168.1.10".into(),
+            host_addresses: vec!["192.168.1.10".parse().unwrap()],
+            execution_unavailable: None,
+        };
+        crate::bootstrap::persist_bootstrap_state(&store, &result)
+            .await
+            .unwrap();
+        let zone = Arc::new(FakeZone::new());
+        zone.publish("*", "192.168.1.20".parse().unwrap()).await;
+        rebuild(&store, zone.as_ref()).await.unwrap();
+        let app = build_app_with_vm_runtime(
+            store.clone(),
+            Arc::new(FakeDocker::new()),
+            Arc::new(FakeRoutes::new()),
+            Metrics::new(),
+            Arc::new(FakeVmRuntime),
+            zone,
+        );
+        let (_, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
+        assert!(inventory.as_array().unwrap().contains(&json!({
+            "name": "admin", "type": "A", "value": "192.168.1.10", "ttl": 60, "owner": "platform"
+        })));
+        let (status, error) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({"name": "admin", "image": "nginx"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+        let (status, updated) = call(
+            &app,
+            "PUT",
+            "/dns/records/admin/A",
+            json!({"value": "192.168.1.30"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["owner"], "platform");
+        let restarted = FakeZone::new();
+        rebuild(&store, &restarted).await.unwrap();
+        assert_eq!(
+            restarted.answer("admin"),
+            Some("192.168.1.30".parse().unwrap())
+        );
+        let (status, _) = call(&app, "DELETE", "/dns/records/admin/A", Value::Null).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(
+            crate::bootstrap::persist_bootstrap_state(&store, &result)
+                .await
+                .is_err()
+        );
+        let (_, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
+        assert!(
+            inventory
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|record| record["name"] != "admin")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_deploy_cannot_reclaim_a_name_released_by_an_edit() {
+        let (app, store, _) = setup().await;
+        let pending = crate::apps::prepare_deploy_from_image(&store, "blog", "nginx", None, None)
+            .await
+            .unwrap();
+        let path = format!("/apps/id/{}", pending.record.id);
+        let (status, _) = call(&app, "PUT", &path, json!({"hostname": "news.home.lan"})).await;
+        assert!(status.is_success());
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "blog", "type": "A", "value": "192.168.1.30"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        crate::apps::finish_deploy(&store, &FakeDocker::new(), &FakeRoutes::new(), pending)
+            .await
+            .unwrap();
+        let (_, application) = call(&app, "GET", &path, Value::Null).await;
+        assert_eq!(application["hostname"], "news.home.lan");
+    }
+
+    #[tokio::test]
+    async fn status_exposes_the_upstream_forwarders() {
+        let (app, _, _) = setup().await;
+        let (status, body) = call(&app, "GET", "/bootstrap/status", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["dns_suffix"], "home.lan");
+        assert_eq!(body["forwarders"], json!(["1.1.1.1", "1.0.0.1"]));
     }
 
     #[tokio::test]

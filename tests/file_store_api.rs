@@ -21,6 +21,71 @@ use tower::ServiceExt;
 
 const API_KEY: &str = "test-key";
 
+#[tokio::test]
+async fn concurrent_record_and_application_claims_have_one_winner() {
+    let temp = TempDir::new("dns-namespace");
+    let (app, _) = boot(&temp.state()).await;
+    let (record, application) = tokio::join!(
+        call(
+            &app,
+            "POST",
+            "/dns/records",
+            Some(json!({"name": "nas", "type": "A", "value": "192.168.1.30"}))
+        ),
+        call(
+            &app,
+            "POST",
+            "/apps",
+            Some(json!({"name": "nas", "image": "nginx"}))
+        ),
+    );
+    assert_ne!(
+        record.0.is_success(),
+        application.0.is_success(),
+        "{record:?} {application:?}"
+    );
+}
+
+#[tokio::test]
+async fn late_deploy_keeps_the_edited_namespace_on_disk() {
+    let temp = TempDir::new("dns-late-deploy");
+    let (app, store) = boot(&temp.state()).await;
+    let pending = self_host::apps::prepare_deploy_from_image(&store, "blog", "nginx", None, None)
+        .await
+        .unwrap();
+    let id = pending.record.id.clone();
+    let updated = self_host::apps::prepare_update(
+        &store,
+        &id,
+        self_host::apps::ApplicationUpdate {
+            hostname: Some("news.home.lan".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let routes = FakeRoutes::new();
+    self_host::apps::finish_deploy(&store, &FakeDocker::new(), &routes, updated)
+        .await
+        .unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/dns/records",
+        Some(json!({"name": "blog", "type": "A", "value": "192.168.1.30"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    self_host::apps::finish_deploy(&store, &FakeDocker::new(), &routes, pending)
+        .await
+        .unwrap();
+    drop(app);
+    drop(store);
+    let (app, _) = boot(&temp.state()).await;
+    let (_, application) = call(&app, "GET", &format!("/apps/id/{id}"), None).await;
+    assert_eq!(application["hostname"], "news.home.lan");
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {

@@ -134,13 +134,15 @@ pub fn config_path() -> PathBuf {
     crate::paths::platform_config_dir().join("dns.json")
 }
 
+pub(crate) const FORWARDERS: [Ipv4Addr; 2] = [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(1, 0, 0, 1)];
+
 fn cloudflare() -> ForwardConfig {
     let mut options = ResolverOpts::default();
     options.timeout = Duration::from_secs(2);
     options.attempts = 2;
     options.edns0 = true;
     ForwardConfig {
-        name_servers: [Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(1, 0, 0, 1)]
+        name_servers: FORWARDERS
             .into_iter()
             .map(|ip| NameServerConfig::udp_and_tcp(ip.into()))
             .collect(),
@@ -273,6 +275,24 @@ impl ServedZone {
 
 #[async_trait::async_trait]
 impl dns_records::Zone for ServedZone {
+    async fn addresses(&self) -> Vec<Ipv4Addr> {
+        let wildcard = self.fqdn("*").expect("the Zone origin is a DNS name");
+        let mut handler = self.zone.handler.lock().await;
+        handler
+            .records_get_mut()
+            .get(&RrKey::new(wildcard.into(), RecordType::A))
+            .map(|records| {
+                records
+                    .records_without_rrsigs()
+                    .filter_map(|record| match &record.data {
+                        RData::A(A(address)) => Some(*address),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     async fn publish(&self, name: &str, address: Ipv4Addr) {
         if let Some(fqdn) = self.fqdn(name) {
             self.zone.publish_addresses(&fqdn, &[address]).await;
@@ -682,6 +702,46 @@ mod tests {
         // Withdrawing what is not there is not an error.
         zone.withdraw("nas", Type::A).await;
         assert_eq!(a_answers(address, "nas.home.lan.").await.1, vec![host]);
+        server.shutdown_gracefully().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bootstrap_admin_answers_explicitly_after_the_host_address_changes() {
+        use crate::bootstrap::{BootstrapResult, persist_bootstrap_state};
+        use crate::dns_records::Zone;
+        use crate::store::FakeStateStore;
+        let store = FakeStateStore::new();
+        persist_bootstrap_state(
+            &store,
+            &BootstrapResult {
+                dns_suffix: "home.lan".into(),
+                api_key: "test-key".into(),
+                api_listen_addr: "0.0.0.0:3721".into(),
+                host_ip: "192.0.2.30".into(),
+                host_addresses: vec![Ipv4Addr::new(192, 0, 2, 30)],
+                execution_unavailable: None,
+            },
+        )
+        .await
+        .unwrap();
+        let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (mut server, address, zone) =
+            local_server(upstream(&[unavailable.local_addr().unwrap()])).await;
+        crate::dns_records::rebuild(&store, &zone).await.unwrap();
+        let (response, answers) = a_answers(address, "admin.home.lan.").await;
+        assert_eq!(answers, vec![Ipv4Addr::new(192, 0, 2, 30)]);
+        assert_eq!(response.answers[0].ttl, 60);
+        assert_eq!(
+            a_answers(address, "other.home.lan.").await.1,
+            vec![Ipv4Addr::new(192, 0, 2, 10)]
+        );
+        assert_eq!(zone.addresses().await, vec![Ipv4Addr::new(192, 0, 2, 10)]);
+        zone.publish("*", Ipv4Addr::new(192, 0, 2, 40)).await;
+        assert_eq!(zone.addresses().await, vec![Ipv4Addr::new(192, 0, 2, 40)]);
+        assert_eq!(
+            a_answers(address, "admin.home.lan.").await.1,
+            vec![Ipv4Addr::new(192, 0, 2, 30)]
+        );
         server.shutdown_gracefully().await.unwrap();
     }
 

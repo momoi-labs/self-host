@@ -180,6 +180,11 @@ pub async fn persist_bootstrap_state(
         return Err(BootstrapError::AlreadyInitialized);
     }
 
+    let address = result
+        .host_ip
+        .parse()
+        .map_err(|_| BootstrapError::InvalidHostIp(result.host_ip.clone()))?;
+    crate::dns_records::initialize_admin(store, address).await?;
     store.store_state("api_key", &result.api_key).await?;
     store.store_state("dns_suffix", &result.dns_suffix).await?;
     store.store_state("host_ip", &result.host_ip).await?;
