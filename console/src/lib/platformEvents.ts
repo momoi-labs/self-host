@@ -10,7 +10,7 @@ export type PlatformEvent = {
   apiName?: string | null;
   description: string;
   subject: {
-    kind: "application" | "virtual-machine" | "custom-image" | "api-key";
+    kind: "application" | "virtual-machine" | "custom-image" | "api-key" | "dns-record";
     id: string;
     name: string;
     service?: string;
@@ -20,6 +20,8 @@ export type PlatformEvent = {
 
 export function eventSubjectHref(subject: PlatformEvent["subject"]): string | null {
   if (!subject.id || subject.available === false) return null;
+  // A Record has no screen of its own yet (#124).
+  if (subject.kind === "dns-record") return null;
   if (subject.kind === "api-key") return "/console/api-keys.html";
   if (subject.kind === "custom-image") return `/console/#custom-image-${encodeURIComponent(subject.id)}`;
   const prefix = subject.kind === "virtual-machine" ? "environment" : "app";
@@ -36,7 +38,7 @@ export function filterEvents(events: readonly PlatformEvent[], query: string, st
 
 export function eventActionLabel(event: PlatformEvent): string {
   const actions = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure" };
-  const resources = { application: "application", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key" };
+  const resources = { application: "application", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key", "dns-record": "DNS record" };
   return `${actions[event.action]} ${resources[event.subject.kind]}`;
 }
 

@@ -24,6 +24,7 @@ pub mod config;
 pub mod console;
 pub mod custom_images;
 pub mod dns;
+pub mod dns_records;
 pub mod docker;
 pub mod environments;
 pub mod error;
@@ -54,6 +55,7 @@ struct AppState<S: StateStore> {
     custom_images: Arc<custom_images::Builds>,
     environments: Arc<Environments>,
     vm_runtime: Arc<dyn VmRuntime>,
+    dns_records: Arc<dns_records::Records>,
     metrics: metrics::Metrics,
     audit: Arc<audit::Journal>,
 }
@@ -70,16 +72,19 @@ pub fn build_app<S: StateStore>(
         routes,
         metrics,
         Arc::new(vms::LimaRuntime::default()),
+        Arc::new(dns_records::UnservedZone),
     )
 }
 
-/// Builds the API with an injected environment runtime for isolated testing.
+/// Builds the API with an injected environment runtime and Zone for isolated
+/// testing.
 pub fn build_app_with_vm_runtime<S: StateStore>(
     store: S,
     docker: Arc<dyn DockerRuntime>,
     routes: Arc<dyn RouteStore>,
     metrics: metrics::Metrics,
     vm_runtime: Arc<dyn VmRuntime>,
+    zone: Arc<dyn dns_records::Zone>,
 ) -> Router {
     let state = AppState {
         audit: Arc::new(audit::Journal::default()),
@@ -89,6 +94,7 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
         custom_images: Arc::new(custom_images::Builds::default()),
         environments: Arc::new(Environments::default()),
         vm_runtime,
+        dns_records: Arc::new(dns_records::Records::new(zone)),
         metrics,
     };
 
@@ -142,6 +148,11 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
         .route("/metrics", get(get_metrics::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
+        .route("/dns/records", post(dns_records::create::<S>))
+        .route(
+            "/dns/records/{name}/{type}",
+            axum::routing::put(dns_records::update::<S>).delete(dns_records::remove::<S>),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             audit::capture::<S>,

@@ -231,6 +231,10 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
                         json.and_then(|json| serde_json::from_str(&json).ok())
                             .unwrap_or(serde_json::json!([]))
                     });
+            let records: Option<Vec<String>> = crate::dns_records::load(&state.store)
+                .await
+                .ok()
+                .map(|records| records.iter().map(|record| record.key()).collect());
             for event in &mut events {
                 let id = &event.subject.id;
                 event.subject.available = match event.subject.kind.as_str() {
@@ -248,6 +252,7 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
                         .as_ref()
                         .and_then(Value::as_array)
                         .map(|rows| rows.iter().any(|row| field(row, "/id") == *id)),
+                    "dns-record" => records.as_ref().map(|ids| ids.contains(id)),
                     _ => Some(false),
                 };
             }
@@ -290,6 +295,9 @@ fn action(method: &str, route: &str, body: &Value) -> Option<(&'static str, &'st
         ("DELETE", "/custom-images/{id}") => ("delete", "custom-image"),
         ("POST", "/api-keys") => ("create", "api-key"),
         ("DELETE", "/api-keys/{id}") => ("delete", "api-key"),
+        ("POST", "/dns/records") => ("create", "dns-record"),
+        ("PUT", "/dns/records/{name}/{type}") => ("configure", "dns-record"),
+        ("DELETE", "/dns/records/{name}/{type}") => ("delete", "dns-record"),
         _ => return None,
     })
 }
@@ -387,6 +395,25 @@ async fn subject<S: StateStore>(
             .and_then(|keys| keys.into_iter().find(|key| key.id == id))
             .map(|key| key.label)
             .unwrap_or_else(|| field(body, "/label"));
+    } else if kind == "dns-record" {
+        // The key as the API would normalize it, so `nas.home.lan` and `NAS`
+        // land on the same subject as `nas`. A name that does not parse is
+        // kept as typed: the event says what was attempted.
+        let (typed_name, typed_type) = if route.contains("{name}") {
+            (parts[2].to_owned(), parts[3].to_owned())
+        } else {
+            (field(body, "/name"), field(body, "/type"))
+        };
+        let suffix = state
+            .store
+            .get_state("dns_suffix")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        name = crate::dns_records::parse_name(&typed_name, &suffix)
+            .unwrap_or_else(|_| typed_name.trim().to_ascii_lowercase());
+        id = crate::dns_records::key(&name, &typed_type.trim().to_ascii_uppercase());
     }
     if name.is_empty() {
         name = if id.is_empty() {
@@ -674,6 +701,9 @@ mod tests {
             ("DELETE", "/custom-images/{id}", "delete"),
             ("POST", "/api-keys", "create"),
             ("DELETE", "/api-keys/{id}", "delete"),
+            ("POST", "/dns/records", "create"),
+            ("PUT", "/dns/records/{name}/{type}", "configure"),
+            ("DELETE", "/dns/records/{name}/{type}", "delete"),
         ] {
             assert_eq!(action(method, route, &Value::Null).unwrap().0, expected);
         }

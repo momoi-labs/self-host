@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { eventSubjectHref, filterEvents, normalizeEvent, eventUpdatedAt } from "../src/lib/platformEvents.ts";
+import { eventActionLabel, eventSubjectHref, filterEvents, normalizeEvent, eventUpdatedAt } from "../src/lib/platformEvents.ts";
 
 test("resource links target existing console pages by stable ID", () => {
   assert.equal(eventSubjectHref({ kind: "application", id: "app-123", name: "renamed" }), "/console/#app-app-123");
@@ -8,6 +8,13 @@ test("resource links target existing console pages by stable ID", () => {
   assert.equal(eventSubjectHref({ kind: "custom-image", id: "image-123", name: "image" }), "/console/#custom-image-image-123");
   assert.equal(eventSubjectHref({ kind: "application", id: "old-id", name: "removed", available: false }), null);
   assert.equal(eventSubjectHref({ kind: "application", id: "", name: "failed creation" }), null);
+});
+
+test("a DNS record event is labelled but has no screen to link to yet", () => {
+  const subject = { kind: "dns-record", id: "nas/A", name: "nas", available: true };
+  assert.equal(eventSubjectHref(subject), null);
+  assert.equal(eventActionLabel({ action: "create", subject }), "Create DNS record");
+  assert.equal(eventActionLabel({ action: "configure", subject }), "Configure DNS record");
 });
 
 test("filters by resource or service and status, then orders newest first", () => {

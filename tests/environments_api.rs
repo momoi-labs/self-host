@@ -11,6 +11,7 @@ use axum::{
 use http_body_util::BodyExt;
 use self_host::{
     build_app_with_vm_runtime,
+    dns_records::FakeZone,
     docker::FakeDocker,
     environments::{RunnerObservation, VmConfig, VmRuntime, VmState},
     metrics::Metrics,
@@ -135,6 +136,7 @@ async fn app(runtime: FakeRuntime) -> (Router, FakeStateStore) {
         Arc::new(FakeRoutes::new()),
         Metrics::new(),
         Arc::new(runtime),
+        Arc::new(FakeZone::new()),
     );
     (app, store)
 }
@@ -307,6 +309,7 @@ async fn app_with_store(store: FakeStateStore, runtime: FakeRuntime) -> (Router,
         Arc::new(FakeRoutes::new()),
         Metrics::new(),
         Arc::new(runtime),
+        Arc::new(FakeZone::new()),
     );
     (app, store)
 }
@@ -399,6 +402,7 @@ async fn completion_save_failure_is_persisted_as_failed_and_keeps_record() {
         Arc::new(FakeRoutes::new()),
         Metrics::new(),
         Arc::new(runtime),
+        Arc::new(FakeZone::new()),
     );
     let (_, created) = request(
         &app,
