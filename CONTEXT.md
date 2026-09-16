@@ -39,7 +39,7 @@ The Operator action that makes an Application available on the LAN from its defi
 _Avoid_: release, publish, ship (as official synonyms)
 
 **Application Hostname**:
-The DNS name Consumers use to reach an Application on the LAN, usually `name.<suffix>` with an optional explicit override.
+The DNS name Consumers use to reach an Application on the LAN, usually `name.<suffix>` with an optional explicit override. Served by a Record the Platform manages.
 _Avoid_: URL (URLs include scheme/path), public domain
 
 **Hostname Alias**:
@@ -48,7 +48,23 @@ _Avoid_: CNAME, redirect (an alias serves the Application, it does not forward)
 
 **DNS Suffix**:
 The configurable local zone suffix for the Platform under which Application Hostnames are derived. The MVP has a single DNS Suffix, set via `self-host init --dns` (default **`home.lan`**, intentionally not `.local` because of mDNS conflicts). Multiple suffixes are out of MVP scope.
-_Avoid_: domain, TLD, zone (as raw DNS jargon in the glossary), home.local (as default)
+_Avoid_: domain, TLD, home.local (as default)
+
+**Zone**:
+Everything the Platform answers for under the DNS Suffix: the wildcard, the Records it manages for itself, for Applications and for Virtual machines, and the Records the Operator typed. One Zone per Platform, served by the Platform's own DNS (ADR-0017, ADR-0025).
+_Avoid_: domain, DNS config, the resolver (that is what asks the Zone)
+
+**Record**:
+One answer in the Zone: a name under the DNS Suffix, a Record Type, a value, a TTL, an optional description and an owner. A Record with an explicit name wins over the wildcard. Owners are the Platform (the wildcard, `admin`), an Application (its Hostname and Aliases), a Virtual machine (its name), or the Operator, who creates, edits and deletes their own.
+_Avoid_: entry, mapping, DNS rule
+
+**Record Type**:
+The DNS type of a Record. `A` is the only type the Operator can create today; the Zone is keyed by name and type so others slot in later.
+_Avoid_: address family, IP version (as the type of a Record)
+
+**TTL**:
+How long a resolver may cache a Record. Fixed at 60 seconds for every Record the Platform serves, so an address change reaches Consumers within a minute.
+_Avoid_: expiry, cache time
 
 **Compose Application**:
 An Application defined by a Docker Compose file the Operator supplies. The Platform runs a rendered project named after the Application, one container per service, and routes the Hostname to the Application's Web Target.
@@ -63,5 +79,5 @@ Components the Platform once started for itself, as containers, rather than Oper
 _Avoid_: dependencies (ambiguous with app deps), sidecars
 
 **Platform State**:
-Everything the Operator configured, as the Platform records it: settings, credentials, and each Application's identity, publication, definition and environment. Authoritative, owned by the daemon, and separate from anything generated from it.
+Everything the Operator configured, as the Platform records it: settings, credentials, the Zone's Records, and each Application's identity, publication, definition and environment. Authoritative, owned by the daemon, and separate from anything generated from it.
 _Avoid_: database, cache, the state store (as a component that runs)
