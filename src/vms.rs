@@ -20,6 +20,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
@@ -36,6 +37,15 @@ const PROVISION: &str = include_str!("vms/bootstrap.sh");
 /// Lima belongs to the Operator and is never touched.
 const PREFIX: &str = "sf-dev-";
 const CONFIG_DIR: &str = "/etc/self-host-environment";
+
+/// A locally administered unicast MAC, pinned to the machine's durable ID.
+fn mac_address(id: &str) -> String {
+    let digest = Sha256::digest(id.as_bytes());
+    format!(
+        "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        digest[0], digest[1], digest[2], digest[3], digest[4]
+    )
+}
 
 /// Canonical's images, one per architecture. Lima picks the one that matches
 /// the Host and verifies the digest before it boots anything.
@@ -293,7 +303,7 @@ impl LimaRuntime {
 
     /// The Lima instance template. Nothing from the Host is mounted into the
     /// machine, and containerd stays out: this is a workspace, not a runtime.
-    fn template(&self, config: &VmConfig, host_port: u16) -> String {
+    fn template(&self, id: &str, config: &VmConfig, host_port: u16) -> String {
         let images: String = IMAGES
             .iter()
             .map(|(arch, location, digest)| {
@@ -311,7 +321,7 @@ impl LimaRuntime {
         // a forward to port zero.
         let forwards = if config.web_port > 0 {
             format!(
-                "portForwards:\n  - guestPort: {}\n    hostPort: {host_port}\n",
+                "portForwards:\n  - guestPort: {}\n    hostPort: {host_port}\n    hostIP: 127.0.0.1\n",
                 config.web_port
             )
         } else {
@@ -324,6 +334,7 @@ impl LimaRuntime {
              memory: \"{memory}GiB\"\n\
              disk: \"{disk}GiB\"\n\
              mounts: []\n\
+             networks:\n  - socket: /var/run/self-host-vmnet.sock\n    interface: lima0\n    macAddress: \"{mac}\"\n\
              containerd:\n  system: false\n  user: false\n\
              ssh:\n  loadDotSSHPubKeys: false\n\
              {forwards}\
@@ -331,6 +342,7 @@ impl LimaRuntime {
             cpus = config.cpus,
             memory = config.memory_gib,
             disk = config.disk_gib,
+            mac = mac_address(id),
         )
     }
 
@@ -492,6 +504,30 @@ impl LimaRuntime {
         self.versions.lock().ok()?.get(id).cloned()
     }
 
+    async fn lan_address(&self, id: &str) -> Option<String> {
+        let text = self
+            .guest(id, "ip -j -4 addr show dev lima0", Duration::from_secs(2))
+            .await
+            .ok()?;
+        let interfaces: Value = serde_json::from_str(&text).ok()?;
+        interfaces
+            .as_array()?
+            .iter()
+            .filter(|interface| interface["ifname"] == "lima0")
+            .filter_map(|interface| interface["addr_info"].as_array())
+            .flatten()
+            .filter(|address| address["family"] == "inet" && address["scope"] == "global")
+            .filter_map(|address| address["local"].as_str()?.parse::<Ipv4Addr>().ok())
+            .find(|address| {
+                !address.is_unspecified()
+                    && !address.is_loopback()
+                    && !address.is_link_local()
+                    && !address.is_multicast()
+                    && !address.is_broadcast()
+            })
+            .map(|address| address.to_string())
+    }
+
     /// What the console shows about a machine Lima already knows.
     fn describe(&self, id: &str, instance: &Value) -> RunnerObservation {
         let state = match instance["status"].as_str() {
@@ -522,6 +558,16 @@ impl LimaRuntime {
             web_url: host_port.map(|port| format!("http://127.0.0.1:{port}")),
             base_image: image,
             installed_versions: self.cached_versions(id),
+            mac_address: instance["config"]["networks"]
+                .as_array()
+                .and_then(|networks| {
+                    networks
+                        .iter()
+                        .find(|network| network["interface"] == "lima0")
+                })
+                .and_then(|network| network["macAddress"].as_str())
+                .map(str::to_owned),
+            lan_address: None,
         }
     }
 }
@@ -586,9 +632,20 @@ impl VmRuntime for LimaRuntime {
         };
         let mut observation = self.describe(id, &instance);
         if observation.state == VmState::Running {
-            observation.service_ready = answering(observation.web_url.as_ref()).await;
+            let (service_ready, lan_address) = tokio::join!(
+                answering(observation.web_url.as_ref()),
+                self.lan_address(id),
+            );
+            observation.service_ready = service_ready;
+            observation.lan_address = lan_address;
             if observation.installed_versions.is_none() {
-                observation.installed_versions = self.read_versions(id).await;
+                // Optional metadata must not consume the API's five-second
+                // inspect budget after the current lease has already arrived.
+                observation.installed_versions =
+                    tokio::time::timeout(Duration::from_millis(500), self.read_versions(id))
+                        .await
+                        .ok()
+                        .flatten();
             }
         }
         Ok(observation)
@@ -638,7 +695,7 @@ impl VmRuntime for LimaRuntime {
 
         if action == "create" && instance.is_none() {
             stage("creating");
-            let template = self.template(config, free_port()?);
+            let template = self.template(id, config, free_port()?);
             let path = std::env::temp_dir().join(format!("{name}.yaml"));
             tokio::fs::write(&path, template)
                 .await
@@ -728,6 +785,7 @@ impl VmRuntime for LimaRuntime {
         let mut observation = self.describe(id, &instance);
         if observation.state == VmState::Running {
             observation.service_ready = answering(observation.web_url.as_ref()).await;
+            observation.lan_address = self.lan_address(id).await;
             observation.installed_versions = self.read_versions(id).await;
         }
         observation.step = Some("ready".into());
@@ -948,7 +1006,7 @@ mod tests {
     /// forwarded port for the web service, and nothing of the Host mounted in.
     #[test]
     fn the_template_carries_the_sizes_and_forwards_the_web_port() {
-        let template = LimaRuntime::default().template(&config(), 45123);
+        let template = LimaRuntime::default().template("env-workbench", &config(), 45123);
 
         assert!(template.contains("vmType: vz"));
         assert!(template.contains("cpus: 4"));
@@ -957,6 +1015,16 @@ mod tests {
         assert!(template.contains("mounts: []"));
         assert!(template.contains("- guestPort: 3000"));
         assert!(template.contains("hostPort: 45123"));
+        let yaml: Value = serde_yaml::from_str(&template).unwrap();
+        assert_eq!(
+            yaml["networks"][0]["socket"],
+            "/var/run/self-host-vmnet.sock"
+        );
+        assert_eq!(yaml["networks"][0]["interface"], "lima0");
+        let mac = yaml["networks"][0]["macAddress"].as_str().unwrap();
+        assert_eq!(mac.len(), 17);
+        assert_eq!(u8::from_str_radix(&mac[..2], 16).unwrap() & 3, 2);
+        assert_eq!(yaml["portForwards"][0]["hostIP"], "127.0.0.1");
         // Provisioning travels in the template, so the first boot is the one
         // that installs the recipe.
         assert!(template.contains("provision:"));
@@ -970,13 +1038,111 @@ mod tests {
         let mut bare = config();
         bare.command = String::new();
         bare.web_port = 0;
-        let template = LimaRuntime::default().template(&bare, 45123);
+        let template = LimaRuntime::default().template("env-workbench", &bare, 45123);
 
         assert!(!template.contains("portForwards"));
         assert!(!template.contains("guestPort"));
         // It is still a machine: sized, provisioned and bootable.
         assert!(template.contains("cpus: 4"));
         assert!(template.contains("provision:"));
+    }
+
+    #[test]
+    fn recreating_the_same_machine_keeps_its_mac() {
+        let runtime = LimaRuntime::default();
+        let network = |id: &str, config: &VmConfig, port| {
+            let yaml: Value = serde_yaml::from_str(&runtime.template(id, config, port)).unwrap();
+            yaml["networks"][0]["macAddress"].clone()
+        };
+        let first = network("env-workbench", &config(), 45123);
+        let mut changed = config();
+        changed.name = "renamed".into();
+        assert_eq!(first, network("env-workbench", &changed, 45124));
+        assert_ne!(first, network("env-other", &config(), 45123));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inspect_reads_the_lan_lease_without_changing_loopback_access() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "lima-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let executable = dir.join("limactl");
+        std::fs::write(
+            &executable,
+            r#"#!/bin/bash
+cd "$(dirname "$0")"
+if [ "$1" = list ]; then
+  cat instance.json
+else
+  script=$(cat)
+  case "$script" in
+    *'ip -j -4 addr show dev lima0'*) cat lease.json ;;
+    *versions.json*) sleep 6; echo '{}' ;;
+    *) exit 1 ;;
+  esac
+fi
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut instance = serde_json::json!({
+            "name": "sf-dev-env-workbench", "status": "Running", "sshLocalPort": 60022,
+            "config": {"portForwards": [{"hostPort": port}], "networks": [{
+                "interface": "lima0", "macAddress": "02:11:22:33:44:55"
+            }]}
+        });
+        std::fs::write(dir.join("instance.json"), instance.to_string()).unwrap();
+        let runtime = LimaRuntime {
+            executable: executable.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        for address in [Some("192.168.1.41"), Some("192.168.1.42"), None] {
+            let entries = address
+                .map(|ip| serde_json::json!([{"family":"inet", "local":ip, "scope":"global"}]))
+                .unwrap_or(serde_json::json!([]));
+            let lease = serde_json::json!([
+                {"ifname":"eth0", "addr_info":[{"family":"inet", "local":"192.168.5.15", "scope":"global"}]},
+                {"ifname":"lima0", "addr_info":entries}
+            ]);
+            std::fs::write(dir.join("lease.json"), lease.to_string()).unwrap();
+            let observation =
+                tokio::time::timeout(Duration::from_secs(5), runtime.inspect("env-workbench"))
+                    .await
+                    .expect("lease inspection must not wait for versions")
+                    .unwrap();
+            assert_eq!(observation.lan_address.as_deref(), address);
+            assert_eq!(
+                observation.mac_address.as_deref(),
+                Some("02:11:22:33:44:55")
+            );
+            assert!(observation.service_ready);
+            assert_eq!(
+                observation.ssh_command.as_deref(),
+                Some("ssh -p 60022 dev@127.0.0.1")
+            );
+            assert_eq!(
+                observation.web_url,
+                Some(format!("http://127.0.0.1:{port}"))
+            );
+        }
+        instance["status"] = "Stopped".into();
+        std::fs::write(dir.join("instance.json"), instance.to_string()).unwrap();
+        let stopped = runtime.inspect("env-workbench").await.unwrap();
+        assert!(stopped.lan_address.is_none());
+        assert!(!stopped.service_ready);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Every image Lima may pick must carry a digest, or a machine would boot

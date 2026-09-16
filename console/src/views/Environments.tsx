@@ -773,6 +773,12 @@ export function Environments({
               <TabsTrigger value="connect">Terminal</TabsTrigger>
             </TabsList>
             <TabsContent value="configuration">
+            <dl>
+              <dt>MAC address</dt>
+              <dd>{current.mac_address ? <code>{current.mac_address}</code> : "Not available"}</dd>
+              <dt>LAN address</dt>
+              <dd>{current.lan_address ? <code>{current.lan_address}</code> : "No lease"}</dd>
+            </dl>
             <EnvironmentEditor
               config={config}
               failure={null}
