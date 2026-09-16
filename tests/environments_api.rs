@@ -31,6 +31,7 @@ struct FakeRuntime {
     fail_delete: bool,
     calls: Arc<Mutex<Vec<String>>>,
     release: Option<Arc<Notify>>,
+    network: Arc<Mutex<(Option<String>, Option<String>)>>,
 }
 
 impl FakeRuntime {
@@ -41,6 +42,7 @@ impl FakeRuntime {
             fail_delete: false,
             calls: Arc::new(Mutex::new(Vec::new())),
             release: None,
+            network: Arc::new(Mutex::new((None, None))),
         }
     }
 
@@ -61,8 +63,11 @@ impl VmRuntime for FakeRuntime {
         if self.unknown_state {
             return Ok(RunnerObservation::default());
         }
+        let (mac_address, lan_address) = self.network.lock().await.clone();
         Ok(RunnerObservation {
             state: VmState::Stopped,
+            mac_address,
+            lan_address,
             ..RunnerObservation::default()
         })
     }
@@ -164,6 +169,42 @@ async fn request(
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, value)
+}
+
+#[tokio::test]
+async fn inspection_persists_the_current_lan_lease_and_clears_an_absent_one() {
+    let runtime = FakeRuntime::new();
+    let network = runtime.network.clone();
+    let (app, store) = app(runtime.clone()).await;
+    let (_, created) = request(
+        &app,
+        Method::POST,
+        "/environments",
+        Some(json!({
+            "request_id":"lan-1", "config":config("lan-machine")
+        })),
+    )
+    .await;
+    let uri = format!("/environments/{}", created["id"].as_str().unwrap());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    for address in [Some("192.168.1.41"), Some("192.168.1.42"), None] {
+        *network.lock().await = (Some("02:11:22:33:44:55".into()), address.map(str::to_owned));
+        let (status, current) = request(&app, Method::GET, &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(current["lan_address"], json!(address));
+        assert_eq!(current["mac_address"], "02:11:22:33:44:55");
+        let (restarted, _) = app_with_store(
+            store.clone(),
+            FakeRuntime {
+                inspect_error: true,
+                ..runtime.clone()
+            },
+        )
+        .await;
+        let (_, persisted) = request(&restarted, Method::GET, &uri, None).await;
+        assert_eq!(persisted["lan_address"], json!(address));
+        assert_eq!(persisted["mac_address"], "02:11:22:33:44:55");
+    }
 }
 
 #[tokio::test]
@@ -390,6 +431,7 @@ async fn completion_save_failure_is_persisted_as_failed_and_keeps_record() {
         fail_delete: false,
         calls: Arc::new(Mutex::new(Vec::new())),
         release: Some(release.clone()),
+        ..FakeRuntime::new()
     };
     let calls = runtime.calls.clone();
     let store = FailOnceStore {

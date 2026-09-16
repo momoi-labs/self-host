@@ -138,6 +138,10 @@ pub struct EnvironmentRecord {
     pub base_image: Option<String>,
     #[serde(default)]
     pub installed_versions: Option<Value>,
+    #[serde(default)]
+    pub mac_address: Option<String>,
+    #[serde(default)]
+    pub lan_address: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -172,6 +176,8 @@ pub struct RunnerObservation {
     pub web_url: Option<String>,
     pub base_image: Option<String>,
     pub installed_versions: Option<Value>,
+    pub mac_address: Option<String>,
+    pub lan_address: Option<String>,
 }
 
 /// Which of the machine's own logs to read.
@@ -513,6 +519,8 @@ async fn refresh<S: StateStore>(state: &AppState<S>, id: &str) {
             record.web_url = observation.web_url;
             record.base_image = observation.base_image;
             record.installed_versions = observation.installed_versions;
+            record.mac_address = observation.mac_address;
+            record.lan_address = observation.lan_address;
         }
         Ok(Err(_)) | Err(_) => {
             record.state = VmState::Unknown;
@@ -582,6 +590,8 @@ pub(crate) async fn create<S: StateStore>(
         web_url: None,
         base_image: None,
         installed_versions: None,
+        mac_address: None,
+        lan_address: None,
     };
     let mut next = records.as_ref().unwrap().clone();
     next.push(record.clone());
@@ -847,6 +857,8 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
                 record.web_url = observation.web_url;
                 record.base_image = observation.base_image;
                 record.installed_versions = observation.installed_versions;
+                record.mac_address = observation.mac_address;
+                record.lan_address = observation.lan_address;
                 if action == "create" || action == "bootstrap" || action == "update" {
                     record.applied_config = Some(config);
                 }
@@ -992,6 +1004,8 @@ mod running_tests {
             web_url: None,
             base_image: None,
             installed_versions: None,
+            mac_address: None,
+            lan_address: None,
         }
     }
 

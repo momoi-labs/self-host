@@ -181,5 +181,7 @@ export type Environment = {
   ssh_command: string;
   tunnel_command?: string;
   web_url: string | null;
+  mac_address?: string | null;
+  lan_address?: string | null;
   installed_versions?: unknown;
 };
