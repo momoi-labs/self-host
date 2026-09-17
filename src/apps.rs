@@ -194,6 +194,7 @@ async fn validate_routing(
         .await?
         .ok_or(DeployError::NotInitialized)?;
     let records = crate::dns_records::load(store).await?;
+    let machines = crate::environments::load(store).await?;
     for hostname in crate::routes::hostnames(record) {
         validate_hostname(hostname)?;
         if hostname == suffix {
@@ -208,6 +209,12 @@ async fn validate_routing(
             return Err(DeployError::InvalidHostname(format!(
                 "'{hostname}' is already answered by Record '{}'",
                 taken.key()
+            )));
+        }
+        if let Some(machine) = machines.iter().find(|machine| machine.hostname == hostname) {
+            return Err(DeployError::InvalidHostname(format!(
+                "'{hostname}' is already answered by Virtual machine '{}'",
+                machine.config.name
             )));
         }
     }
