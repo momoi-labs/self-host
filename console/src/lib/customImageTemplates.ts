@@ -26,8 +26,9 @@ export const customImageTemplates: CustomImageTemplate[] = [{
     "t3 --help",
     "claude --version",
     "codex --version",
-    // Resolve through T3's real package directory, including mise's symlinks.
-    `node -e 'const {realpathSync}=require("node:fs"); const {createRequire}=require("node:module"); const r=createRequire(realpathSync(process.argv[1]+"/node_modules/t3/package.json")); r("node-pty").spawn("/bin/true",[],{name:"xterm",cols:80,rows:24}).onExit(e=>process.exit(e.exitCode))' "$(mise where npm:t3)"`,
+    // Resolve the way the t3 launcher does: through the platform package that
+    // owns node-pty, by real path so mise's symlinks do not get in the way.
+    `node -e 'const {realpathSync}=require("node:fs"); const {createRequire}=require("node:module"); const t3=createRequire(realpathSync(process.argv[1]+"/node_modules/t3/package.json")); const r=createRequire(realpathSync(t3.resolve("@t3code/t3-"+process.platform+"-"+process.arch+"/package.json"))); r("node-pty").spawn("/bin/true",[],{name:"xterm",cols:80,rows:24}).onExit(e=>process.exit(e.exitCode))' "$(mise where npm:t3)"`,
   ],
   application: {
     command: "t3 serve --host 0.0.0.0 --port 3000 --base-dir /data/t3home",
