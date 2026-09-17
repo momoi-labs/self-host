@@ -184,6 +184,9 @@ machines and the LAN. Multiple DNS Suffixes. Record types other than `A`.
 
 **Status:** accepted
 
+**Amended by:**
+[ADR-0026](0026-a-machine-is-its-record-a-record-can-move-and-a-name-is-a-label.md),
+which records how the epic read this decision where it was silent.
 **Extends:** [ADR-0023](0023-virtual-machines-run-on-apple-virtualization.md),
 closing its open question on reaching a machine by name.
 **Amends:** the wildcard-only zone in [ADR-0017](0017-host-native-dns.md),

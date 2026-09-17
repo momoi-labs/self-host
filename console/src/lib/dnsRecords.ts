@@ -16,6 +16,9 @@ export type RecordRow = DnsRecord & {
   origin: string;
   originHref: string | null;
   editable: boolean;
+  /** Whether the edit dialog offers a new name. `admin` keeps its own, so
+   *  the row stays where the Operator looks for it. */
+  renamable: boolean;
 };
 
 export function recordRows(
@@ -32,20 +35,27 @@ export function recordRows(
     } else {
       const application = applications.find(app => app.id === record.application_id);
       const machine = machines.find(vm => vm.id === record.virtual_machine_id);
+      // `admin` is an ordinary Record `init` created; the Operator edits it
+      // by hand when the Host's address moves (ADR-0025). The wildcard is
+      // rebuilt from the interfaces and has nothing to edit.
+      const admin = record.owner === "platform" && record.name === "admin";
       rows.set(key, {
         ...record,
         values: [record.value],
+        // The Owner column says what kind of thing holds the Record, so the
+        // origin is the thing itself: the Application's or machine's name.
         origin: record.owner === "application"
-          ? `App/${application?.name ?? record.application_id ?? "Unavailable"}`
+          ? application?.name ?? record.application_id ?? "Unavailable"
           : record.owner === "virtual-machine"
-            ? `VM/${machine?.config.name ?? record.virtual_machine_id ?? "Unavailable"}`
-            : record.name === "*" ? "Wildcard" : record.name === "admin" ? "admin" : "Operator",
+            ? machine?.config.name ?? record.virtual_machine_id ?? "Unavailable"
+            : record.name === "*" ? "Wildcard" : admin ? "admin" : "Operator",
         originHref: record.owner === "application" && record.application_id
           ? `/console/#app-${record.application_id}`
           : record.owner === "virtual-machine" && record.virtual_machine_id
             ? `/console/#environment-${record.virtual_machine_id}`
             : null,
-        editable: record.owner === "operator",
+        editable: record.owner === "operator" || admin,
+        renamable: record.owner === "operator",
       });
     }
   }
