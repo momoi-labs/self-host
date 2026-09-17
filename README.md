@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
 ```
 
 The installer resolves `latest` on its own. Naming a version, as in
-`bash -s -- v0.2.0`, pins the install.
+`bash -s -- v0.3.0`, pins the install.
 
 Supported platforms: macOS (Intel / Apple Silicon) and Linux (amd64 / arm64).
 
