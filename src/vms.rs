@@ -11,10 +11,7 @@ use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     process::Stdio,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -416,7 +413,7 @@ impl LimaRuntime {
         &self,
         id: &str,
         progress: mpsc::UnboundedSender<RuntimeProgress>,
-        caught: Arc<AtomicBool>,
+        followed: Arc<Mutex<Followed>>,
     ) -> FollowGuard {
         let executable = self.executable.clone();
         let Ok(name) = instance_name(id) else {
@@ -458,23 +455,14 @@ impl LimaRuntime {
                 let mut seen = false;
                 while let Ok(Some(line)) = lines.next_line().await {
                     seen = true;
-                    let step = line.strip_prefix("SF_STEP ").filter(|step| {
-                        step.len() < 80
-                            && step
-                                .bytes()
-                                .all(|b| b.is_ascii_lowercase() || b"-:".contains(&b))
-                    });
                     // Only a step counts as having followed the provisioning.
                     // cloud-init writes its own chatter early and the script's
                     // own output late, so reading lines proves nothing.
-                    if step.is_some() {
-                        caught.store(true, Ordering::Relaxed);
+                    if let Some(marker) = relay(&line, &progress)
+                        && let Ok(mut followed) = followed.lock()
+                    {
+                        followed.note(marker);
                     }
-                    let _ = progress.send(RuntimeProgress {
-                        step: step.map(Into::into),
-                        log: step.map(|step| format!("{step}\n")).unwrap_or_default(),
-                        output: format!("{line}\n"),
-                    });
                 }
                 if seen {
                     return;
@@ -592,6 +580,83 @@ async fn ssh_target(executable: &str, name: &str) -> Option<(String, u64)> {
                 instance["sshLocalPort"].as_u64().unwrap_or(0),
             )
         })
+}
+
+/// A line the recipe prints to mark its progress: `SF_STEP <step>` as it
+/// reaches each step, `SF_STEP failed:<step>` when one fails.
+enum Marker {
+    Step(String),
+    Failed(String),
+}
+
+/// What following the guest's account taught the Host.
+#[derive(Default)]
+struct Followed {
+    /// Whether any step was seen, which is the proof the provisioning was
+    /// followed rather than missed.
+    caught: bool,
+    /// Whether the recipe's last word was seen: `ready`, or the failed step.
+    /// The end of the boot cuts the follower off wherever it happens to be,
+    /// so a run caught but not seen to its end is read back instead.
+    ended: bool,
+    /// The step the recipe reported failing on, if it did.
+    failed: Option<String>,
+}
+
+impl Followed {
+    fn note(&mut self, marker: Marker) {
+        self.caught = true;
+        match marker {
+            Marker::Step(step) => self.ended = step == "ready",
+            Marker::Failed(step) => {
+                self.ended = true;
+                self.failed = Some(step);
+            }
+        }
+    }
+}
+
+/// Forwards one line of the guest's account and returns what it marks, if
+/// anything. The step reaches the record either way: a failed step is still
+/// the step the machine is on.
+fn relay(line: &str, progress: &mpsc::UnboundedSender<RuntimeProgress>) -> Option<Marker> {
+    let payload = line.strip_prefix("SF_STEP ").filter(|payload| {
+        payload.len() < 80
+            && payload
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b"-:".contains(&b))
+    });
+    // The recipe reports a failure as `failed:<step>`; the machine is on that
+    // step either way, so the step alone is what the record keeps.
+    let marker = payload.map(|payload| match payload.strip_prefix("failed:") {
+        Some(step) => (true, step),
+        None => (false, payload),
+    });
+    let _ = progress.send(RuntimeProgress {
+        step: marker.map(|(_, step)| step.to_owned()),
+        log: payload
+            .map(|payload| format!("{payload}\n"))
+            .unwrap_or_default(),
+        output: format!("{line}\n"),
+    });
+    marker.map(|(failed, step)| {
+        if failed {
+            Marker::Failed(step.to_owned())
+        } else {
+            Marker::Step(step.to_owned())
+        }
+    })
+}
+
+/// The error a failed recipe run reports, at the step the guest named when
+/// it named one.
+fn provisioning_failed(step: Option<&str>) -> String {
+    match step {
+        Some(step) => {
+            format!("Provisioning failed at {step}. The output above is the machine's own account.")
+        }
+        None => "Provisioning failed. The output above is the machine's own account.".into(),
+    }
 }
 
 /// Stops following the guest's log when the operation that started it ends.
@@ -721,8 +786,8 @@ impl VmRuntime for LimaRuntime {
             "create" => {
                 if !running {
                     stage("booting");
-                    let caught = Arc::new(AtomicBool::new(false));
-                    let follow = self.follow(id, progress.clone(), caught.clone());
+                    let followed = Arc::new(Mutex::new(Followed::default()));
+                    let follow = self.follow(id, progress.clone(), followed.clone());
                     let started = self
                         .stream(&["start", &name], &progress, Duration::from_secs(2400))
                         .await;
@@ -732,9 +797,26 @@ impl VmRuntime for LimaRuntime {
                     // which a machine with nothing to install usually does.
                     // Read the guest's own account so the record is complete
                     // either way.
-                    if !caught.load(Ordering::Relaxed) {
-                        self.replay_provisioning(id, &progress).await;
+                    let followed = followed
+                        .lock()
+                        .map(|mut followed| std::mem::take(&mut *followed))
+                        .unwrap_or_default();
+                    let failed = if followed.caught && followed.ended {
+                        followed.failed
+                    } else {
+                        self.replay_provisioning(id, &progress).await
+                    };
+                    // Lima only warns when the script fails and reports the
+                    // machine ready anyway. The guest's account decides.
+                    if let Some(step) = failed {
+                        return Err(provisioning_failed(Some(&step)));
                     }
+                } else {
+                    // A machine that is already up is a retry after a failed
+                    // provisioning. cloud-init only fires once, so the recipe
+                    // runs again over a shell, the way an update does.
+                    stage("provisioning");
+                    self.run_provisioning(id, config, &progress).await?;
                 }
             }
             "start" => {
@@ -844,12 +926,13 @@ impl VmRuntime for LimaRuntime {
 impl LimaRuntime {
     /// Reports the provisioning the Host was not there to watch. The guest
     /// keeps its own log, so a run nobody followed is recorded rather than
-    /// lost: the steps in the order they happened, then the output.
+    /// lost: the steps in the order they happened, then the output. Returns
+    /// the step the run failed on, if it did.
     async fn replay_provisioning(
         &self,
         id: &str,
         progress: &mpsc::UnboundedSender<RuntimeProgress>,
-    ) {
+    ) -> Option<String> {
         let text = match self
             .guest(
                 id,
@@ -861,7 +944,7 @@ impl LimaRuntime {
             Ok(text) => text,
             Err(error) => {
                 tracing::warn!(machine = id, %error, "could not replay provisioning");
-                return;
+                return None;
             }
         };
         tracing::info!(
@@ -869,19 +952,13 @@ impl LimaRuntime {
             lines = text.lines().count(),
             "replaying provisioning"
         );
+        let mut failed = None;
         for line in text.lines() {
-            let step = line.strip_prefix("SF_STEP ").filter(|step| {
-                step.len() < 80
-                    && step
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b"-:".contains(&b))
-            });
-            let _ = progress.send(RuntimeProgress {
-                step: step.map(Into::into),
-                log: step.map(|step| format!("{step}\n")).unwrap_or_default(),
-                output: format!("{line}\n"),
-            });
+            if let Some(Marker::Failed(step)) = relay(line, progress) {
+                failed = Some(step);
+            }
         }
+        failed
     }
 
     /// Pipes the provisioning script into the machine and forwards each line,
@@ -918,19 +995,12 @@ impl LimaRuntime {
                 });
             }
         });
+        let mut failed = None;
         let wait = async {
             while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
-                let step = line.strip_prefix("SF_STEP ").filter(|step| {
-                    step.len() < 80
-                        && step
-                            .bytes()
-                            .all(|b| b.is_ascii_lowercase() || b"-:".contains(&b))
-                });
-                let _ = progress.send(RuntimeProgress {
-                    step: step.map(Into::into),
-                    log: step.map(|step| format!("{step}\n")).unwrap_or_default(),
-                    output: format!("{line}\n"),
-                });
+                if let Some(Marker::Failed(step)) = relay(&line, progress) {
+                    failed = Some(step);
+                }
             }
             child.wait().await.map_err(|error| error.to_string())
         };
@@ -942,9 +1012,7 @@ impl LimaRuntime {
         let _ = write.await;
         let _ = drain.await;
         if !status.success() {
-            return Err(
-                "Provisioning failed. The output above is the machine's own account.".into(),
-            );
+            return Err(provisioning_failed(failed.as_deref()));
         }
         Ok(())
     }
@@ -1142,6 +1210,115 @@ fi
         let stopped = runtime.inspect("env-workbench").await.unwrap();
         assert!(stopped.lan_address.is_none());
         assert!(!stopped.service_ready);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A `limactl` that answers from files next to it, so a create can be
+    /// driven without a hypervisor. `list` reports the instance, `start`
+    /// records that it ran, and a shell answers the scripts the runner sends.
+    /// The recipe is matched first: its own text mentions the log it writes.
+    fn fake_lima(instance: &Value, provisioning_log: &str) -> (std::path::PathBuf, LimaRuntime) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "lima-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let executable = dir.join("limactl");
+        std::fs::write(
+            &executable,
+            r#"#!/bin/bash
+cd "$(dirname "$0")"
+case "$1" in
+  list) if [ -e started ]; then sed 's/"Stopped"/"Running"/' instance.json; else cat instance.json; fi ;;
+  start) touch started; echo 'INFO[0001] READY. Run `limactl shell` to open the shell.' >&2 ;;
+  stop) touch stopped ;;
+  shell)
+    script=$(cat)
+    case "$script" in
+      *SELF_HOST_MISE_TOML_B64*) touch provisioned; echo 'SF_STEP ready' ;;
+      *cloud-init-output.log*) cat provisioning.log ;;
+      *'ip -j -4 addr show dev lima0'*) echo '[]' ;;
+      *versions.json*) echo '{}' ;;
+      *) exit 1 ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(dir.join("instance.json"), instance.to_string()).unwrap();
+        std::fs::write(dir.join("provisioning.log"), provisioning_log).unwrap();
+        let runtime = LimaRuntime {
+            executable: executable.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        (dir, runtime)
+    }
+
+    /// Lima only warns when the first boot's script fails, and reports the
+    /// machine ready anyway. The guest's own `SF_STEP failed:<step>` is what
+    /// says the create failed, and it says at which step.
+    #[tokio::test]
+    async fn a_create_whose_guest_fails_a_step_ends_failed_at_that_step() {
+        let instance = serde_json::json!({
+            "name": "sf-dev-env-workbench", "status": "Stopped", "sshLocalPort": 0,
+            "config": {"portForwards": [], "networks": []}
+        });
+        let log = "SF_STEP system-packages\nSF_STEP mise\nSF_STEP checks\n\
+                   Error: Cannot find module 'node-pty'\nSF_STEP failed:checks\n\
+                   Cloud-init v. 24.4 finished\n";
+        let (dir, runtime) = fake_lima(&instance, log);
+        let (progress, mut received) = mpsc::unbounded_channel();
+
+        let result = runtime
+            .execute_with_progress("env-workbench", "create", &config(), progress)
+            .await;
+
+        let error = result.expect_err("a failed provisioning must fail the create");
+        assert!(error.contains("checks"), "{error}");
+        let mut steps = Vec::new();
+        while let Ok(progress) = received.try_recv() {
+            steps.extend(progress.step);
+        }
+        assert_eq!(steps.first().map(String::as_str), Some("booting"));
+        assert_eq!(steps.last().map(String::as_str), Some("checks"));
+        assert!(!steps.iter().any(|step| step == "ready"));
+        // The machine stays up: the Operator reads its log and runs an update.
+        assert!(!dir.join("stopped").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A create that finds its machine already up is a retry after a failed
+    /// provisioning. cloud-init only fires once, so the runner runs the recipe
+    /// over a shell, the way an update does, rather than calling the machine
+    /// ready because it is on.
+    #[tokio::test]
+    async fn retrying_a_create_on_a_running_machine_reprovisions_it() {
+        let instance = serde_json::json!({
+            "name": "sf-dev-env-workbench", "status": "Running", "sshLocalPort": 0,
+            "config": {"portForwards": [], "networks": []}
+        });
+        let (dir, runtime) = fake_lima(&instance, "SF_STEP failed:checks\n");
+        let (progress, mut received) = mpsc::unbounded_channel();
+
+        let observation = runtime
+            .execute_with_progress("env-workbench", "create", &config(), progress)
+            .await
+            .unwrap();
+
+        assert!(dir.join("provisioned").exists());
+        assert_eq!(observation.step.as_deref(), Some("ready"));
+        let mut steps = Vec::new();
+        while let Ok(progress) = received.try_recv() {
+            steps.extend(progress.step);
+        }
+        assert_eq!(steps, ["provisioning", "ready"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
