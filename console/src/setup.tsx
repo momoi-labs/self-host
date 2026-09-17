@@ -15,6 +15,7 @@ import {
 
 import { Shell } from "./components/Shell.js";
 import { getJson, requireKey } from "./lib/api.js";
+import { useEnvironments } from "./lib/useEnvironments.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { DeviceSetup } from "./device-setup.js";
 import "./console.css";
@@ -186,11 +187,14 @@ fi`}
 
 function SettingsShell({ crumb, children }: { crumb: string; children: React.ReactNode }) {
   const { apps, dnsSuffix, healthy } = usePlatform();
+  const { environments } = useEnvironments();
   return (
     <Shell
       crumb={crumb}
       dnsSuffix={dnsSuffix}
       apps={apps}
+      environments={environments}
+      virtualMachine={(machine) => ({ href: `/console/#environment-${machine.id}`, active: false })}
       healthy={healthy}
       overview={{ href: "/console/", active: false }}
       deploy={{ href: "/console/#new", active: false }}

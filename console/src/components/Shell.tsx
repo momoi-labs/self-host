@@ -10,7 +10,13 @@ import {
   BreadcrumbSeparator,
   Button,
   Dot,
-  Separator,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  NavigationItem,
+  NavigationLink,
+  NavigationList,
   TerminalIcon,
   ThemeSelector,
 } from "@momoi-labs/kiso-react";
@@ -18,7 +24,8 @@ import {
 import { logout } from "../lib/api.js";
 import { statusTone } from "../lib/status.js";
 import { useTheme } from "../lib/theme.js";
-import type { App } from "../lib/types.js";
+import type { App, Environment } from "../lib/types.js";
+import { CreateResource } from "./CreateResource.js";
 import { Icon } from "./Icon.js";
 
 /** Where a sidebar entry points, and how it knows it is the current one. */
@@ -40,37 +47,43 @@ export function Shell({
   crumb,
   dnsSuffix,
   apps,
+  environments,
   healthy,
   overview,
   deploy,
+  newMachine = { href: "/console/#new-environment", active: false },
   customImages = { href: "/console/#custom-images", active: false },
   dns = { href: "/console/#dns", active: false },
   events = { href: "/console/#events", active: false },
   application,
+  virtualMachine,
   children,
 }: {
   crumb: string;
   dnsSuffix: string;
   apps: App[];
+  environments: Environment[];
   healthy: boolean;
   overview: Destination;
   deploy: Destination;
+  newMachine?: Destination;
   customImages?: Destination;
   events?: Destination;
   dns?: Destination;
   application: (app: App) => Destination;
+  virtualMachine: (machine: Environment) => Destination;
   children: ReactNode;
 }) {
   const [theme, setTheme] = useTheme();
 
-  const follow = (destination: Destination) => (event: React.MouseEvent) => {
-    if (!destination.onClick) return;
-    event.preventDefault();
-    destination.onClick();
+  const navigate = (destination: Destination) => {
+    if (destination.onClick) destination.onClick();
+    else window.location.assign(destination.href);
   };
 
   return (
     <ApplicationShell
+      className="console-shell"
       brand={
         <div className="brand">
           <BrandMark>
@@ -83,12 +96,7 @@ export function Shell({
         </div>
       }
       primaryAction={
-        <Button variant="primary" size="sm" className="btn-block" asChild>
-          <a href={deploy.href} onClick={follow(deploy)}>
-            <Icon name="plus" />
-            Deploy application
-          </a>
-        </Button>
+        <CreateResource onDeploy={() => navigate(deploy)} onCreateMachine={() => navigate(newMachine)} />
       }
       navigation={[
         {
@@ -104,48 +112,47 @@ export function Shell({
           ],
         },
         {
-          label: "Applications",
-          empty: <p className="nav-item muted">None yet</p>,
-          destinations: apps.map((candidate) => {
-            const tone = statusTone(candidate.status);
-            return {
-              ...application(candidate),
-              label: candidate.name,
-              leading: (
-                <Dot
-                  variant={tone}
-                  className={tone === "neutral" ? "subtle" : undefined}
-                />
-              ),
-            };
-          }),
+          destinations: [],
+          empty: (
+            <>
+              {apps.length > 0 && (
+                <ResourceLinks label="Applications" items={apps.map((app) => ({
+                  ...application(app), name: app.name, status: app.status,
+                }))} />
+              )}
+              {environments.length > 0 && (
+                <ResourceLinks label="Virtual machines" items={environments.map((machine) => ({
+                  ...virtualMachine(machine), name: machine.config.name, status: machine.state,
+                }))} />
+              )}
+            </>
+          ),
         },
       ]}
       footer={
-        <>
-          <a
-            className="nav-item"
-            href="/console/setup.html"
-            aria-current={crumb === "DNS setup" ? "page" : undefined}
-          >
-            <Icon name="globe" />
-            DNS setup
-          </a>
-          <a
-            className="nav-item"
-            href="/console/api-keys.html"
-            aria-current={crumb === "API keys" ? "page" : undefined}
-          >
-            <Icon name="key" />
-            API keys
-          </a>
+        <div className="sidebar-controls">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm">Settings<span aria-hidden="true">⌄</span></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start">
+              <DropdownMenuItem asChild>
+                <a href="/console/setup.html" aria-current={crumb === "DNS setup" ? "page" : undefined}>
+                  <Icon name="globe" />DNS setup
+                </a>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <a href="/console/api-keys.html" aria-current={crumb === "API keys" ? "page" : undefined}>
+                  <Icon name="key" />API keys
+                </a>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <ThemeSelector theme={theme} onChange={setTheme} />
-          <Separator />
-          <button type="button" className="nav-item" onClick={logout}>
+          <Button variant="ghost" size="sm" className="btn-icon" aria-label="Lock" title="Lock" onClick={logout}>
             <Icon name="lock" />
-            Lock
-          </button>
-        </>
+          </Button>
+        </div>
       }
       header={
         <>
@@ -177,5 +184,43 @@ export function Shell({
     >
       {children}
     </ApplicationShell>
+  );
+}
+
+/** Resource groups disappear entirely until they have something to navigate to. */
+function ResourceLinks({ label, items }: {
+  label: string;
+  items: (Destination & { name: string; status: string })[];
+}) {
+  return (
+    <section className="resource-navigation" aria-label={label}>
+      <div className="resource-navigation-heading">
+        <span>{label}</span><span>{items.length}</span>
+      </div>
+      <NavigationList>
+        {items.map((item) => {
+          const tone = statusTone(item.status);
+          return (
+            <NavigationItem key={item.href}>
+              <NavigationLink href={item.href} active={item.active} title={`${item.name}: ${item.status}`}
+                onClick={(event) => {
+                  if (!item.onClick) return;
+                  event.preventDefault();
+                  item.onClick();
+                }}>
+                <Dot
+                  variant={tone}
+                  className={tone === "neutral" ? "subtle" : undefined}
+                  role="img"
+                  aria-label={item.status}
+                  aria-hidden={false}
+                />
+                <span className="grow truncate">{item.name}</span>
+              </NavigationLink>
+            </NavigationItem>
+          );
+        })}
+      </NavigationList>
+    </section>
   );
 }
