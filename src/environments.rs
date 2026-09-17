@@ -9,12 +9,18 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::net::Ipv4Addr;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
 
 use sha2::{Digest, Sha256};
 
-use crate::{AppState, custom_images::Recipe, error::ErrorReport, store::StateStore};
+use crate::{
+    AppState,
+    custom_images::Recipe,
+    error::ErrorReport,
+    store::{StateStore, StoreError},
+};
 
 pub mod events;
 
@@ -120,6 +126,13 @@ pub struct Operation {
 pub struct EnvironmentRecord {
     pub id: String,
     pub config: VmConfig,
+    /// The name the machine answers on, `<name>.<suffix>`, kept here rather
+    /// than in the configuration so it never recreates the machine
+    /// (ADR-0025). Empty only for a machine from before names that could not
+    /// be given one on load: no DNS Suffix yet, or a name no DNS name can be
+    /// made from.
+    #[serde(default)]
+    pub hostname: String,
     #[serde(default)]
     pub applied_config: Option<VmConfig>,
     pub state: VmState,
@@ -142,6 +155,38 @@ pub struct EnvironmentRecord {
     pub mac_address: Option<String>,
     #[serde(default)]
     pub lan_address: Option<String>,
+}
+
+impl EnvironmentRecord {
+    /// The lease the machine holds on the LAN, as the Zone answers with it.
+    pub fn lease(&self) -> Option<Ipv4Addr> {
+        self.lan_address.as_deref()?.parse().ok()
+    }
+
+    /// How the Operator reaches the machine: by its name, straight to its LAN
+    /// address (ADR-0025). The runtime reports loopback forwards, which say
+    /// the machine is there to be reached; the name is what gets copied. A
+    /// machine without a name keeps the forwards.
+    fn reach_by_name(&mut self, ssh_command: Option<String>, web_url: Option<String>) {
+        if self.hostname.is_empty() {
+            self.ssh_command = ssh_command;
+            self.web_url = web_url;
+            return;
+        }
+        self.ssh_command = ssh_command.map(|_| format!("ssh dev@{}", self.hostname));
+        let web_port = self
+            .applied_config
+            .as_ref()
+            .unwrap_or(&self.config)
+            .web_port;
+        self.web_url = web_url.map(|_| format!("http://{}:{web_port}", self.hostname));
+    }
+}
+
+/// A machine's name under the DNS Suffix, or why it cannot be one.
+fn default_hostname(name: &str, suffix: &str) -> Result<String, String> {
+    let name = crate::dns_records::parse_name(name, suffix)?;
+    Ok(format!("{name}.{suffix}"))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -300,6 +345,33 @@ impl Environments {
                 Err(error) => return Err(error.to_string()),
             };
             let mut dirty = false;
+            // A machine from before names gets its own, so the Operator does
+            // not recreate it to reach it by name. Claimed like a new one: a
+            // name someone already answers on stays with them.
+            if let Some(suffix) = store
+                .get_state("dns_suffix")
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                for index in 0..loaded.len() {
+                    if !loaded[index].hostname.is_empty() {
+                        continue;
+                    }
+                    let Ok(hostname) = default_hostname(&loaded[index].config.name, &suffix) else {
+                        continue;
+                    };
+                    match holder(store, &loaded, &hostname, &suffix).await? {
+                        None => {
+                            loaded[index].hostname = hostname;
+                            dirty = true;
+                        }
+                        Some(holder) => tracing::warn!(
+                            machine = %loaded[index].config.name,
+                            "not named '{hostname}': already answered by {holder}"
+                        ),
+                    }
+                }
+            }
             for record in &mut loaded {
                 let old_log_len = record.log.len();
                 append_log(&mut record.log, "");
@@ -349,6 +421,17 @@ impl VmRuntime for FakeVmRuntime {
         _config: &VmConfig,
     ) -> Result<RunnerObservation, String> {
         Err("No hypervisor is configured on this Host.".into())
+    }
+}
+
+/// Every machine, read straight from the store. For the Records and the
+/// Applications, which check names against machines while holding their own
+/// lock, and for the start sequence, which runs before the API does.
+pub async fn load<S: StateStore>(store: &S) -> Result<Vec<EnvironmentRecord>, StoreError> {
+    match store.get_state(STATE_KEY).await? {
+        None => Ok(Vec::new()),
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|e| StoreError::Serialize(format!("could not read the machines: {e}"))),
     }
 }
 
@@ -514,22 +597,29 @@ async fn refresh<S: StateStore>(state: &AppState<S>, id: &str) {
             if !observation.log.is_empty() {
                 append_log(&mut record.log, &observation.log);
             }
-            record.ssh_command = observation.ssh_command;
             record.tunnel_command = observation.tunnel_command;
-            record.web_url = observation.web_url;
             record.base_image = observation.base_image;
             record.installed_versions = observation.installed_versions;
             record.mac_address = observation.mac_address;
             record.lan_address = observation.lan_address;
+            record.reach_by_name(observation.ssh_command, observation.web_url);
         }
         Ok(Err(_)) | Err(_) => {
             record.state = VmState::Unknown;
             record.service_ready = false;
         }
     }
-    if save(&state.store, &next).await.is_ok() {
-        *records = Some(next);
+    let (hostname, lease) = (record.hostname.clone(), record.lease());
+    if save(&state.store, &next).await.is_err() {
+        return;
     }
+    *records = Some(next);
+    // State first, Zone second, and both under the lock, so the Zone sees
+    // saves in the order they happened.
+    state
+        .dns_records
+        .follow_lease(&state.store, &hostname, lease)
+        .await;
 }
 
 pub(crate) async fn create<S: StateStore>(
@@ -542,6 +632,23 @@ pub(crate) async fn create<S: StateStore>(
     if let Err(message) = request.config.validate() {
         return error(StatusCode::BAD_REQUEST, message);
     }
+    let suffix = match state.store.get_state("dns_suffix").await {
+        Ok(Some(suffix)) => suffix,
+        Ok(None) => {
+            return error(
+                StatusCode::PRECONDITION_FAILED,
+                "The Platform is not initialized; run 'self-host init' first.",
+            );
+        }
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let hostname = match default_hostname(&request.config.name, &suffix) {
+        Ok(hostname) => hostname,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    // Held until the record is saved, so a Record or an Application cannot
+    // claim the name in between.
+    let namespace = state.dns_records.lock_namespace().await;
     let mut records = match state.environments.records(&state.store).await {
         Ok(records) => records,
         Err(message) => return error(StatusCode::INTERNAL_SERVER_ERROR, message),
@@ -572,9 +679,20 @@ pub(crate) async fn create<S: StateStore>(
             ),
         );
     }
+    match holder(&state.store, records.as_ref().unwrap(), &hostname, &suffix).await {
+        Ok(None) => {}
+        Ok(Some(holder)) => {
+            return error(
+                StatusCode::CONFLICT,
+                format!("'{hostname}' is already answered by {holder}."),
+            );
+        }
+        Err(message) => return error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
     let record = EnvironmentRecord {
         id: id.clone(),
         config: request.config.clone(),
+        hostname,
         applied_config: None,
         state: VmState::Missing,
         service_ready: false,
@@ -600,8 +718,46 @@ pub(crate) async fn create<S: StateStore>(
     }
     *records = Some(next);
     drop(records);
+    drop(namespace);
     spawn_operation(state, id, "create".into());
     (StatusCode::ACCEPTED, Json(record)).into_response()
+}
+
+/// Who already answers on `hostname`, if anyone: a Record, an Application or
+/// another machine. One namespace, checked from every side (ADR-0025); the
+/// Records and the Applications run the same check against machines.
+async fn holder<S: StateStore>(
+    store: &S,
+    machines: &[EnvironmentRecord],
+    hostname: &str,
+    suffix: &str,
+) -> Result<Option<String>, String> {
+    let name = hostname
+        .strip_suffix(&format!(".{suffix}"))
+        .unwrap_or(hostname);
+    if let Some(record) = crate::dns_records::load(store)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|record| record.name == name)
+    {
+        return Ok(Some(format!("Record '{}'", record.key())));
+    }
+    for application in store.list_applications().await.map_err(|e| e.to_string())? {
+        if crate::routes::hostnames(&application).contains(&hostname) {
+            return Ok(Some(format!(
+                "Application '{}' ({})",
+                application.name, application.id
+            )));
+        }
+    }
+    if let Some(machine) = machines.iter().find(|machine| machine.hostname == hostname) {
+        return Ok(Some(format!(
+            "Virtual machine '{}' ({})",
+            machine.config.name, machine.id
+        )));
+    }
+    Ok(None)
 }
 
 fn request_id(request_id: &str) -> String {
@@ -852,9 +1008,7 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
                 record.service_ready = observation.service_ready;
                 let step = observation.step.or(progress_step);
                 append_log(&mut record.log, &observation.log);
-                record.ssh_command = observation.ssh_command;
                 record.tunnel_command = observation.tunnel_command;
-                record.web_url = observation.web_url;
                 record.base_image = observation.base_image;
                 record.installed_versions = observation.installed_versions;
                 record.mac_address = observation.mac_address;
@@ -862,6 +1016,7 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
                 if action == "create" || action == "bootstrap" || action == "update" {
                     record.applied_config = Some(config);
                 }
+                record.reach_by_name(observation.ssh_command, observation.web_url);
                 record.operation = Some(Operation {
                     action: action.clone(),
                     status: OperationStatus::Succeeded,
@@ -887,6 +1042,8 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
                 });
             }
         }
+        // A deleted machine has no lease, so the same step withdraws its name.
+        let (hostname, lease) = (record.hostname.clone(), record.lease());
         if remove {
             next.retain(|record| record.id != id);
             events::discard(&id).await;
@@ -920,6 +1077,12 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
             }
         } else {
             *records = Some(next);
+            // Under the lock, so the Zone sees saves in the order they
+            // happened.
+            state
+                .dns_records
+                .follow_lease(&state.store, &hostname, lease)
+                .await;
         }
         drop(records);
         crate::audit::record(
@@ -994,6 +1157,7 @@ mod running_tests {
                 command: "t3 serve".into(),
                 web_port: 3000,
             },
+            hostname: format!("{id}.home.lan"),
             applied_config: None,
             state,
             service_ready: false,

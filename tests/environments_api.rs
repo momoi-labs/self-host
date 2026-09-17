@@ -64,8 +64,12 @@ impl VmRuntime for FakeRuntime {
             return Ok(RunnerObservation::default());
         }
         let (mac_address, lan_address) = self.network.lock().await.clone();
+        // Lima reports its loopback forwards; the record turns them into the
+        // machine's own name.
         Ok(RunnerObservation {
             state: VmState::Stopped,
+            ssh_command: Some("ssh -p 60022 dev@127.0.0.1".into()),
+            web_url: Some("http://127.0.0.1:54321".into()),
             mac_address,
             lan_address,
             ..RunnerObservation::default()
@@ -132,18 +136,25 @@ fn use_a_disposable_event_log() {
 }
 
 async fn app(runtime: FakeRuntime) -> (Router, FakeStateStore) {
+    let (app, store, _) = app_with_zone(runtime).await;
+    (app, store)
+}
+
+async fn app_with_zone(runtime: FakeRuntime) -> (Router, FakeStateStore, Arc<FakeZone>) {
     use_a_disposable_event_log();
     let store = FakeStateStore::new();
     store.store_state("api_key", KEY).await.unwrap();
+    store.store_state("dns_suffix", "home.lan").await.unwrap();
+    let zone = Arc::new(FakeZone::new());
     let app = build_app_with_vm_runtime(
         store.clone(),
         Arc::new(FakeDocker::new()),
         Arc::new(FakeRoutes::new()),
         Metrics::new(),
         Arc::new(runtime),
-        Arc::new(FakeZone::new()),
+        zone.clone(),
     );
-    (app, store)
+    (app, store, zone)
 }
 
 async fn request(
@@ -205,6 +216,235 @@ async fn inspection_persists_the_current_lan_lease_and_clears_an_absent_one() {
         assert_eq!(persisted["lan_address"], json!(address));
         assert_eq!(persisted["mac_address"], "02:11:22:33:44:55");
     }
+}
+
+/// A machine's name is its own under the DNS Suffix, and what the Operator
+/// copies reaches the machine by that name (ADR-0025). Lima reports loopback
+/// forwards; the record says `foo.home.lan`.
+#[tokio::test]
+async fn a_machine_is_named_under_the_suffix_and_reached_by_that_name() {
+    let (app, _) = app(FakeRuntime::new()).await;
+    let (status, created) = request(
+        &app,
+        Method::POST,
+        "/environments",
+        Some(json!({"request_id":"named-1", "config":config("foo")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{created}");
+    assert_eq!(created["hostname"], "foo.home.lan");
+    let uri = format!("/environments/{}", created["id"].as_str().unwrap());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let (_, current) = request(&app, Method::GET, &uri, None).await;
+    assert_eq!(current["hostname"], "foo.home.lan");
+    assert_eq!(current["web_url"], "http://foo.home.lan:3000");
+    assert_eq!(current["ssh_command"], "ssh dev@foo.home.lan");
+}
+
+/// The machine's Record answers with its lease, moves when the lease does,
+/// is absent while there is none, survives a restart, and goes with the
+/// machine.
+#[tokio::test]
+async fn a_machine_record_follows_the_lease_and_goes_with_the_machine() {
+    let runtime = FakeRuntime::new();
+    let network = runtime.network.clone();
+    let (app, store, zone) = app_with_zone(runtime).await;
+    let (_, created) = request(
+        &app,
+        Method::POST,
+        "/environments",
+        Some(json!({"request_id":"lease-1", "config":config("foo")})),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_owned();
+    let uri = format!("/environments/{id}");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    for lease in [
+        Some("192.168.1.41"),
+        Some("192.168.1.42"),
+        None,
+        Some("192.168.1.41"),
+    ] {
+        *network.lock().await = (Some("02:11:22:33:44:55".into()), lease.map(str::to_owned));
+        request(&app, Method::GET, &uri, None).await;
+        assert_eq!(
+            zone.answer("foo"),
+            lease.map(|address| address.parse().unwrap()),
+            "{lease:?}"
+        );
+        let (_, inventory) = request(&app, Method::GET, "/dns/records", None).await;
+        let published: Vec<&Value> = inventory
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| record["name"] == "foo")
+            .collect();
+        match lease {
+            Some(address) => assert_eq!(
+                published,
+                vec![&json!({
+                    "name": "foo", "type": "A", "value": address, "ttl": 60,
+                    "owner": "virtual-machine", "virtual_machine_id": id
+                })]
+            ),
+            None => assert!(published.is_empty()),
+        }
+    }
+
+    // The Zone is memory; the machine's last lease is state, and answers
+    // again before the first inspect after a restart.
+    let restarted = FakeZone::new();
+    self_host::dns_records::rebuild(&store, &restarted)
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted.answer("foo"),
+        Some("192.168.1.41".parse().unwrap())
+    );
+
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        &format!("{uri}/actions"),
+        Some(json!({"action":"delete", "confirm_name":"foo"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let mut status = StatusCode::ACCEPTED;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        status = request(&app, Method::GET, &uri, None).await.0;
+        if status == StatusCode::NOT_FOUND {
+            break;
+        }
+    }
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(zone.answer("foo"), None);
+    let (_, inventory) = request(&app, Method::GET, "/dns/records", None).await;
+    assert!(
+        inventory
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|record| record["name"] != "foo")
+    );
+}
+
+/// One namespace: a machine cannot take a name a Record, `admin`, or an
+/// Application already answers on, and the refusal names the holder. The
+/// apex and a name that is not a DNS name are refused before anyone is asked.
+#[tokio::test]
+async fn a_machine_cannot_take_a_name_that_is_answered_already() {
+    let (app, _) = app(FakeRuntime::new()).await;
+    for name in ["nas", "admin"] {
+        let (status, _) = request(
+            &app,
+            Method::POST,
+            "/dns/records",
+            Some(json!({"name": name, "type": "A", "value": "192.168.1.30"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/apps",
+        Some(json!({"name": "blog", "image": "nginx:alpine", "aliases": ["news.home.lan"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    for (name, holder) in [
+        ("nas", "Record 'nas/A'"),
+        ("NAS.home.lan", "Record 'nas/A'"),
+        ("admin", "Record 'admin/A'"),
+        ("blog", "Application 'blog'"),
+        ("news", "Application 'blog'"),
+    ] {
+        let (status, error) = request(
+            &app,
+            Method::POST,
+            "/environments",
+            Some(json!({"request_id": format!("take-{name}"), "config": config(name)})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{name}: {error}");
+        let message = error["error"].as_str().unwrap();
+        assert!(message.contains(holder), "{name}: {message}");
+    }
+    for (name, reason) in [("home.lan", "apex"), ("my box", "DNS name")] {
+        let (status, error) = request(
+            &app,
+            Method::POST,
+            "/environments",
+            Some(json!({"request_id": format!("take-{name}"), "config": config(name)})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {error}");
+        assert!(error["error"].as_str().unwrap().contains(reason), "{error}");
+    }
+    let (_, machines) = request(&app, Method::GET, "/environments", None).await;
+    assert_eq!(machines, json!([]));
+}
+
+/// A machine made before it had a name is given one when the Platform reads
+/// it back, so the Operator does not have to recreate it to reach it by name.
+/// A name someone already answers on stays with them: the machine goes
+/// without, rather than taking over a Record.
+#[tokio::test]
+async fn a_machine_from_before_names_is_given_its_own_on_load() {
+    let store = FakeStateStore::new();
+    store.store_state("api_key", KEY).await.unwrap();
+    store.store_state("dns_suffix", "home.lan").await.unwrap();
+    let legacy = |id: &str, name: &str| {
+        json!({
+            "id": id, "config": config(name), "applied_config": null,
+            "state": "stopped", "service_ready": false, "operation": null,
+            "log": "", "ssh_command": null, "tunnel_command": null, "web_url": null,
+            "base_image": null, "installed_versions": null
+        })
+    };
+    store
+        .store_state(
+            "environments_v1",
+            &json!([legacy("env-old", "Old-Box"), legacy("env-nas", "nas")]).to_string(),
+        )
+        .await
+        .unwrap();
+    store
+        .store_state(
+            "dns_records_v1",
+            &json!([{"name": "nas", "type": "A", "value": "192.168.1.30", "ttl": 60, "owner": "operator"}])
+                .to_string(),
+        )
+        .await
+        .unwrap();
+    let (app, _) = app_with_store(store.clone(), FakeRuntime::new()).await;
+    let (status, current) = request(&app, Method::GET, "/environments/env-old", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(current["hostname"], "old-box.home.lan");
+    assert!(
+        store
+            .get_state("environments_v1")
+            .await
+            .unwrap()
+            .unwrap()
+            .contains("old-box.home.lan")
+    );
+    let (_, unnamed) = request(&app, Method::GET, "/environments/env-nas", None).await;
+    assert_eq!(unnamed["hostname"], "");
+    assert_eq!(unnamed["web_url"], "http://127.0.0.1:54321");
+    let (_, inventory) = request(&app, Method::GET, "/dns/records", None).await;
+    let nas: Vec<&Value> = inventory
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|record| record["name"] == "nas")
+        .collect();
+    assert_eq!(nas.len(), 1);
+    assert_eq!(nas[0]["owner"], "operator");
 }
 
 #[tokio::test]
@@ -431,6 +671,7 @@ impl StateStore for FailOnceStore {
 async fn completion_save_failure_is_persisted_as_failed_and_keeps_record() {
     let inner = FakeStateStore::new();
     inner.store_state("api_key", KEY).await.unwrap();
+    inner.store_state("dns_suffix", "home.lan").await.unwrap();
     let fail_next = Arc::new(AtomicBool::new(false));
     let release = Arc::new(Notify::new());
     let runtime = FakeRuntime {

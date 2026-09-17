@@ -687,15 +687,20 @@ export function Environments({
         <div className="between">
           <PageHeader>
             <PageHeaderTitle>{current.config.name}</PageHeaderTitle>
-            {/* A machine whose service is not answering has no URL to link,
-                so the line is absent rather than empty. */}
-            {current.web_url ? (
-              <PageHeaderDescription>
+            {/* Where the machine is on the LAN, the way an Application's
+                screen shows its Hostnames: the name, linked to the service
+                when there is one, and the address its lease gave it. */}
+            <PageHeaderDescription>
+              {current.web_url ? (
                 <a href={current.web_url} target="_blank" rel="noreferrer" className="mono">
                   {current.web_url.replace(/^https?:\/\//, "")}
                 </a>
-              </PageHeaderDescription>
-            ) : null}
+              ) : (
+                <span className="mono">{current.hostname || "No name"}</span>
+              )}
+              {" · "}
+              {current.lan_address ? <span className="mono">{current.lan_address}</span> : "No lease"}
+            </PageHeaderDescription>
             {samples ? <Glance samples={samples} /> : null}
           </PageHeader>
           {/* Neither badge moves during a create, so while one runs the row
@@ -773,12 +778,6 @@ export function Environments({
               <TabsTrigger value="connect">Terminal</TabsTrigger>
             </TabsList>
             <TabsContent value="configuration">
-            <dl>
-              <dt>MAC address</dt>
-              <dd>{current.mac_address ? <code>{current.mac_address}</code> : "Not available"}</dd>
-              <dt>LAN address</dt>
-              <dd>{current.lan_address ? <code>{current.lan_address}</code> : "No lease"}</dd>
-            </dl>
             <EnvironmentEditor
               config={config}
               failure={null}

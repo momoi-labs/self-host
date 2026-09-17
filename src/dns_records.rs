@@ -71,6 +71,7 @@ pub enum Owner {
     Operator,
     Platform,
     Application,
+    VirtualMachine,
 }
 
 /// One answer in the Zone, as it is stored and as the API returns it.
@@ -254,6 +255,11 @@ pub enum RecordError {
         application: String,
         id: String,
     },
+    MachineOwned {
+        name: String,
+        machine: String,
+        id: String,
+    },
     NotFound(String, RecordType),
     Store(StoreError),
 }
@@ -276,6 +282,12 @@ impl std::fmt::Display for RecordError {
                 write!(
                     f,
                     "'{name}' is owned by Application '{application}' ({id}); edit the Application instead"
+                )
+            }
+            RecordError::MachineOwned { name, machine, id } => {
+                write!(
+                    f,
+                    "'{name}' is owned by Virtual machine '{machine}' ({id}); it goes when the machine does"
                 )
             }
             RecordError::NotFound(name, record_type) => {
@@ -336,14 +348,34 @@ pub(crate) async fn initialize_admin(
     Ok(())
 }
 
-/// Publishes every stored Record into the Zone. Run on start, after the state
-/// is open: the Zone is memory, and only the state survives a restart.
+/// Publishes every stored Record into the Zone, and every Virtual machine's
+/// last lease. Run on start, after the state is open: the Zone is memory,
+/// and only the state survives a restart.
 pub async fn rebuild<S: StateStore>(store: &S, zone: &dyn Zone) -> Result<usize, StoreError> {
     let records = load(store).await?;
     for record in &records {
         zone.publish(&record.name, record.value).await;
     }
-    Ok(records.len())
+    let mut published = records.len();
+    // A machine's Record is the machine's hostname and lease; it lives on
+    // the machine, and the next inspect corrects it if the lease moved.
+    if let Some(suffix) = store.get_state("dns_suffix").await? {
+        for machine in crate::environments::load(store).await? {
+            if let Some(name) = machine_name(&machine.hostname, &suffix)
+                && let Some(lease) = machine.lease()
+            {
+                zone.publish(name, lease).await;
+                published += 1;
+            }
+        }
+    }
+    Ok(published)
+}
+
+/// A Virtual machine's hostname made relative to the DNS Suffix, or `None`
+/// when it is not under the Suffix and so not an answer in this Zone.
+fn machine_name<'a>(hostname: &'a str, suffix: &str) -> Option<&'a str> {
+    hostname.strip_suffix(&format!(".{suffix}"))
 }
 
 #[derive(Deserialize)]
@@ -377,7 +409,8 @@ pub(crate) struct Records {
 }
 
 impl Records {
-    /// Shares the Record writer with Application name claims until their row is saved.
+    /// Shares the Record writer with Application and Virtual machine name
+    /// claims until their row is saved.
     pub(crate) async fn lock_namespace(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.write.lock().await
     }
@@ -406,7 +439,37 @@ impl Records {
                 });
             }
         }
+        for machine in crate::environments::load(store).await? {
+            if machine.hostname == hostname {
+                return Err(RecordError::MachineOwned {
+                    name: name.into(),
+                    machine: machine.config.name,
+                    id: machine.id,
+                });
+            }
+        }
         Ok(())
+    }
+
+    /// Keeps a Virtual machine's name answering with its lease, and lets the
+    /// wildcard take the name back while it has none (ADR-0025). Called once
+    /// the lease is saved on the machine, so a restart republishes the same.
+    pub(crate) async fn follow_lease<S: StateStore>(
+        &self,
+        store: &S,
+        hostname: &str,
+        lease: Option<Ipv4Addr>,
+    ) {
+        let Ok(suffix) = self.suffix(store).await else {
+            return;
+        };
+        let Some(name) = machine_name(hostname, &suffix) else {
+            return;
+        };
+        match lease {
+            Some(address) => self.zone.publish(name, address).await,
+            None => self.zone.withdraw(name, RecordType::A).await,
+        }
     }
 
     pub(crate) fn new(zone: Arc<dyn Zone>) -> Self {
@@ -518,6 +581,8 @@ struct InventoryRecord {
     record: Record,
     #[serde(skip_serializing_if = "Option::is_none")]
     application_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    virtual_machine_id: Option<String>,
 }
 
 impl Records {
@@ -532,6 +597,7 @@ impl Records {
             .map(|record| InventoryRecord {
                 record,
                 application_id: None,
+                virtual_machine_id: None,
             })
             .collect();
         let addresses = self.zone.addresses().await;
@@ -546,6 +612,7 @@ impl Records {
                     owner: Owner::Platform,
                 },
                 application_id: None,
+                virtual_machine_id: None,
             });
         }
         for application in store.list_applications().await? {
@@ -565,8 +632,28 @@ impl Records {
                             owner: Owner::Application,
                         },
                         application_id: Some(application.id.clone()),
+                        virtual_machine_id: None,
                     });
                 }
+            }
+        }
+        // A machine without a lease has no Record; the wildcard answers.
+        for machine in crate::environments::load(store).await? {
+            if let Some(name) = machine_name(&machine.hostname, &suffix)
+                && let Some(lease) = machine.lease()
+            {
+                records.push(InventoryRecord {
+                    record: Record {
+                        name: name.into(),
+                        record_type: RecordType::A,
+                        value: lease,
+                        ttl: TTL,
+                        description: None,
+                        owner: Owner::VirtualMachine,
+                    },
+                    application_id: None,
+                    virtual_machine_id: Some(machine.id),
+                });
             }
         }
         records.sort_by(|a, b| {
@@ -587,9 +674,9 @@ fn error_response(error: RecordError) -> Response {
     let status = match &error {
         RecordError::NotInitialized => StatusCode::PRECONDITION_FAILED,
         RecordError::Invalid(_) => StatusCode::BAD_REQUEST,
-        RecordError::AlreadyExists(..) | RecordError::ApplicationOwned { .. } => {
-            StatusCode::CONFLICT
-        }
+        RecordError::AlreadyExists(..)
+        | RecordError::ApplicationOwned { .. }
+        | RecordError::MachineOwned { .. } => StatusCode::CONFLICT,
         RecordError::NotFound(..) => StatusCode::NOT_FOUND,
         RecordError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -892,6 +979,60 @@ mod tests {
                     "{message}"
                 );
             }
+        }
+    }
+
+    /// The namespace runs the other way too: a Virtual machine's name is
+    /// refused to the Operator's Records and to Applications, naming the
+    /// machine that holds it.
+    #[tokio::test]
+    async fn a_machine_name_cannot_be_taken_by_a_record_or_an_application() {
+        let (app, _, _) = setup().await;
+        let (status, machine) = call(
+            &app,
+            "POST",
+            "/environments",
+            json!({"request_id": "m-1", "config": {
+                "name": "foo", "cpus": 2, "memory_gib": 4, "disk_gib": 20,
+                "ssh_public_key": "", "command": "", "web_port": 0,
+                "recipe": {"name": "", "dependencies": []}
+            }}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{machine}");
+        let id = machine["id"].as_str().unwrap();
+        for (method, path, body) in [
+            (
+                "POST",
+                "/dns/records".to_string(),
+                json!({"name": "foo", "type": "A", "value": "192.168.1.30"}),
+            ),
+            (
+                "PUT",
+                "/dns/records/foo/A".to_string(),
+                json!({"value": "192.168.1.30"}),
+            ),
+            ("DELETE", "/dns/records/foo/A".to_string(), Value::Null),
+        ] {
+            let (status, error) = call(&app, method, &path, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{method} {error}");
+            let message = error["error"].as_str().unwrap();
+            assert!(message.contains("Virtual machine 'foo'"), "{message}");
+            assert!(message.contains(id), "{message}");
+        }
+        for body in [
+            json!({"name": "foo", "image": "nginx:alpine"}),
+            json!({"name": "other", "image": "nginx:alpine", "aliases": ["foo.home.lan"]}),
+        ] {
+            let (status, error) = call(&app, "POST", "/apps", body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+            assert!(
+                error["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Virtual machine 'foo'"),
+                "{error}"
+            );
         }
     }
 
