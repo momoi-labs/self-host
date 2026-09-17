@@ -6,6 +6,26 @@ its own name, `https://<name>.home.lan`, with HTTPS the machines in the house
 trust. Docker runs the Applications and nothing else. There is no control
 plane anywhere else.
 
+## What the Platform does
+
+- **Applications.** Deploy a container image or a Compose file; each one
+  answers at its own `https://<name>.home.lan` with HTTPS the machines in the
+  house trust.
+- **DNS records.** The Operator sees and edits the zone from the console: a
+  name points where a record says, and a record can move
+  ([ADR-0025](docs/adr/0025-names-are-records-and-a-machine-joins-the-lan.md),
+  [ADR-0026](docs/adr/0026-a-machine-is-its-record-a-record-can-move-and-a-name-is-a-label.md)).
+- **Machines.** A Virtual machine is a persistent Ubuntu workspace with a name
+  and an address of its own on the LAN, and the installer bridges virtual
+  machines onto the LAN
+  ([ADR-0023](docs/adr/0023-virtual-machines-run-on-apple-virtualization.md)).
+- **Event history.** The console keeps a history of platform events, and every
+  list and detail screen shares one layout
+  ([ADR-0024](docs/adr/0024-detail-and-list-screens-share-one-layout.md)).
+- **Custom images.** An image recipe carries its own Dockerfile, setup
+  commands run during the build, and the generated Dockerfile can be edited by
+  hand ([ADR-0022](docs/adr/0022-custom-images-hand-over-their-dockerfile.md)).
+
 ## Install
 
 ```bash
