@@ -6,6 +6,7 @@ import { useMetrics } from "./lib/useMetrics.js";
 import { useEnvironments } from "./lib/useEnvironments.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
+import { Dns } from "./views/Dns.js";
 import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
@@ -32,7 +33,9 @@ export function App() {
   }, [ready, view, app, go]);
 
   const crumb =
-    view.view === "events"
+    view.view === "dns"
+      ? "DNS"
+      : view.view === "events"
       ? "Events"
       : view.view === "app"
       ? (app?.name ?? "Application")
@@ -62,6 +65,7 @@ export function App() {
         active: view.view === "overview",
         onClick: () => go({ view: "overview", id: null }),
       }}
+      dns={{ href: "/console/#dns", active: view.view === "dns", onClick: () => go({ view: "dns", id: null }) }}
       events={{
         href: "/console/#events",
         active: view.view === "events",
@@ -86,7 +90,11 @@ export function App() {
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}
       <section className="page" id="detail" aria-live="polite">
-        {view.view === "events" ? (
+        {view.view === "dns" ? (
+          <Dns applications={apps} machines={environments}
+            onOpenApplication={id => go({ view: "app", id })}
+            onOpenVirtualMachine={id => go({ view: "environments", id })} />
+        ) : view.view === "events" ? (
           <EventsPage onOpenSubject={(subject) => {
             if (subject.kind === "api-key") { location.href = "/console/api-keys.html"; return; }
             go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });

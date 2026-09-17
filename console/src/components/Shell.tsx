@@ -44,6 +44,7 @@ export function Shell({
   overview,
   deploy,
   customImages = { href: "/console/#custom-images", active: false },
+  dns = { href: "/console/#dns", active: false },
   events = { href: "/console/#events", active: false },
   application,
   children,
@@ -56,6 +57,7 @@ export function Shell({
   deploy: Destination;
   customImages?: Destination;
   events?: Destination;
+  dns?: Destination;
   application: (app: App) => Destination;
   children: ReactNode;
 }) {
@@ -92,6 +94,7 @@ export function Shell({
         {
           destinations: [
             { ...overview, label: "Overview", leading: <Icon name="chart" /> },
+            { ...dns, label: "DNS", leading: <Icon name="globe" /> },
             { ...events, label: "Events", leading: <Icon name="history" /> },
             {
               ...customImages,

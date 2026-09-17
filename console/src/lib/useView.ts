@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 export type View =
   | { view: "overview"; id: null }
   | { view: "events"; id: null }
+  | { view: "dns"; id: null }
   | { view: "app"; id: string }
   | { view: "new"; id: null }
   | { view: "custom-image"; id: string | null }
@@ -19,6 +20,7 @@ const overview: View = { view: "overview", id: null };
  */
 function fromHash(): View | null {
   const hash = location.hash;
+  if (hash === "#dns") return { view: "dns", id: null };
   if (hash === "#events") return { view: "events", id: null };
   if (hash === "#new") return { view: "new", id: null };
   if (hash === "#custom-images") return { view: "custom-images", id: null };
@@ -34,6 +36,7 @@ function fromHash(): View | null {
 
 function fromHistory(): View {
   const state = history.state as View | null;
+  if (state?.view === "dns") return { view: "dns", id: null };
   if (state?.view === "events") return { view: "events", id: null };
   if (state?.view === "app") return state;
   if (state?.view === "new") return { view: "new", id: null };
@@ -73,8 +76,12 @@ export function useView(): [View, (next: View) => void] {
   const go = useCallback((next: View) => {
     const state = history.state as View | null;
     if (!state) history.replaceState(next, "");
-    else if (state.view !== next.view || state.id !== next.id)
-      history.pushState(next, "");
+    else if (state.view !== next.view || state.id !== next.id) {
+      const url = next.view === "dns"
+        ? "#dns"
+        : location.hash === "#dns" ? location.pathname + location.search : undefined;
+      history.pushState(next, "", url);
+    }
     setCurrent(next);
   }, []);
 
