@@ -390,10 +390,12 @@ pub struct CreateRequest {
     pub description: Option<String>,
 }
 
-/// `PUT` replaces the value and the description; the name and the Record
-/// Type are the key, and live in the path.
+/// `PUT` addresses the current key in the path. An optional name moves the
+/// Record to a new key; omitting it keeps the current name.
 #[derive(Deserialize)]
 pub struct UpdateRequest {
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub value: String,
     #[serde(default)]
@@ -537,20 +539,40 @@ impl Records {
         request: UpdateRequest,
     ) -> Result<Record, RecordError> {
         let (name, record_type) = self.key(store, name, record_type).await?;
+        let new_name = match request.name {
+            Some(typed) => {
+                parse_name(&typed, &self.suffix(store).await?).map_err(RecordError::Invalid)?
+            }
+            None => name.clone(),
+        };
         let value = parse_value(&request.value).map_err(RecordError::Invalid)?;
         let description = parse_description(request.description).map_err(RecordError::Invalid)?;
         let _guard = self.write.lock().await;
         self.require_unowned(store, &name).await?;
         let mut records = load(store).await?;
-        let record = records
-            .iter_mut()
-            .find(|existing| existing.is(&name, record_type))
+        let index = records
+            .iter()
+            .position(|existing| existing.is(&name, record_type))
             .ok_or(RecordError::NotFound(name.clone(), record_type))?;
+        if new_name != name {
+            self.require_unowned(store, &new_name).await?;
+            if records
+                .iter()
+                .any(|existing| existing.is(&new_name, record_type))
+            {
+                return Err(RecordError::AlreadyExists(new_name, record_type));
+            }
+        }
+        let record = &mut records[index];
+        record.name = new_name;
         record.value = value;
         record.description = description;
         let record = record.clone();
         save(store, &records).await?;
         self.zone.publish(&record.name, record.value).await;
+        if name != record.name {
+            self.zone.withdraw(&name, record_type).await;
+        }
         Ok(record)
     }
 
@@ -1245,6 +1267,158 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn renaming_a_record_moves_its_answer_and_survives_a_rebuild() {
+        let (app, store, zone) = setup().await;
+        call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "nas", "type": "A", "value": "192.168.1.30"}),
+        )
+        .await;
+
+        let (status, updated) = call(&app, "PUT", "/dns/records/nas/A",
+            json!({"name": " STORAGE.home.lan. ", "value": "192.168.1.40", "description": "storage"})).await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["name"], "storage");
+        assert_eq!(updated["owner"], "operator");
+        assert_eq!(updated["ttl"], 60);
+        assert_eq!(updated["description"], "storage");
+        let (_, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
+        assert_eq!(inventory, json!([updated]));
+        assert_eq!(zone.answer("nas"), None);
+        assert_eq!(zone.answer("storage"), Some(Ipv4Addr::new(192, 168, 1, 40)));
+        let restarted = FakeZone::new();
+        rebuild(&store, &restarted).await.unwrap();
+        assert_eq!(restarted.answer("nas"), None);
+        assert_eq!(
+            restarted.answer("storage"),
+            Some(Ipv4Addr::new(192, 168, 1, 40))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rename_collision_preserves_both_records_and_application_names() {
+        let (app, _, zone) = setup().await;
+        for (name, value) in [("nas", "192.168.1.30"), ("storage", "192.168.1.40")] {
+            call(
+                &app,
+                "POST",
+                "/dns/records",
+                json!({"name": name, "type": "A", "value": value}),
+            )
+            .await;
+        }
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({"name": "blog", "image": "nginx:alpine", "aliases": ["news.home.lan"]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let (_, before) = call(&app, "GET", "/dns/records", Value::Null).await;
+        for (target, reason) in [
+            ("STORAGE.home.lan", "already has"),
+            ("blog", "owned by Application"),
+            ("news", "owned by Application"),
+        ] {
+            let (status, error) = call(&app, "PUT", "/dns/records/nas/A",
+                json!({"name": target, "value": "192.168.1.99", "description": "must not be saved"})).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{target}: {error}");
+            assert!(error["error"].as_str().unwrap().contains(reason), "{error}");
+            assert_eq!(
+                call(&app, "GET", "/dns/records", Value::Null).await.1,
+                before
+            );
+            assert_eq!(zone.answer("nas"), Some(Ipv4Addr::new(192, 168, 1, 30)));
+            assert_eq!(zone.answer("storage"), Some(Ipv4Addr::new(192, 168, 1, 40)));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rename_event_identifies_the_record_at_its_new_name() {
+        let (app, _, _) = setup().await;
+        call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "nas", "type": "A", "value": "192.168.1.30"}),
+        )
+        .await;
+        call(
+            &app,
+            "PUT",
+            "/dns/records/nas/A",
+            json!({"name": "storage", "value": "192.168.1.30"}),
+        )
+        .await;
+        let (_, events) = call(&app, "GET", "/events", Value::Null).await;
+        let event = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["action"] == "configure")
+            .unwrap();
+        assert_eq!(event["subject"]["id"], "storage/A");
+        assert_eq!(event["subject"]["name"], "storage");
+        assert_eq!(event["subject"]["available"], true);
+    }
+
+    #[tokio::test]
+    async fn invalid_rename_names_preserve_the_original_record() {
+        let (app, _, zone) = setup().await;
+        let (_, original) = call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "nas", "type": "A", "value": "192.168.1.30"}),
+        )
+        .await;
+        for target in ["", "home.lan", "outside.example", "*", "bad name"] {
+            let (status, error) = call(
+                &app,
+                "PUT",
+                "/dns/records/nas/A",
+                json!({"name": target, "value": "192.168.1.99"}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{target}: {error}");
+            assert_eq!(
+                call(&app, "GET", "/dns/records", Value::Null).await.1,
+                json!([original])
+            );
+            assert_eq!(zone.answer("nas"), Some(Ipv4Addr::new(192, 168, 1, 30)));
+        }
+    }
+
+    #[tokio::test]
+    async fn keeping_the_same_normalized_name_does_not_collide_with_itself() {
+        let (app, _, zone) = setup().await;
+        call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "nas", "type": "A", "value": "192.168.1.30"}),
+        )
+        .await;
+        let (status, updated) = call(
+            &app,
+            "PUT",
+            "/dns/records/nas/A",
+            json!({"name": " NAS.home.lan. ", "value": "192.168.1.40"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["name"], "nas");
+        assert_eq!(zone.answer("nas"), Some(Ipv4Addr::new(192, 168, 1, 40)));
+        assert_eq!(
+            call(&app, "GET", "/dns/records", Value::Null).await.1,
+            json!([updated])
+        );
     }
 
     #[tokio::test]

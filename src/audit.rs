@@ -476,6 +476,9 @@ pub(crate) async fn capture<S: StateStore>(
         let id = field(&result, "/id");
         if !id.is_empty() {
             entry.subject.id = id;
+        } else if kind == "dns-record" && result.get("name").is_some() {
+            entry.subject.id =
+                crate::dns_records::key(&field(&result, "/name"), &field(&result, "/type"));
         }
         for pointer in ["/name", "/config/name", "/recipe/name", "/label"] {
             let name = field(&result, pointer);
