@@ -579,7 +579,7 @@ impl Records {
 pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Response {
     match state.dns_records.inventory(&state.store).await {
         Ok(records) => Json(records).into_response(),
-        Err(error) => error_response(error.into()),
+        Err(error) => error_response(error),
     }
 }
 
