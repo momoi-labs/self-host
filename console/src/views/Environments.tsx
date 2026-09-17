@@ -689,7 +689,8 @@ export function Environments({
             <PageHeaderTitle>{current.config.name}</PageHeaderTitle>
             {/* Where the machine is on the LAN, the way an Application's
                 screen shows its Hostnames: the name, linked to the service
-                when there is one, and the address its lease gave it. */}
+                when there is one, the address its lease gave it, and the MAC
+                a reservation on the router is keyed on. */}
             <PageHeaderDescription>
               {current.web_url ? (
                 <a href={current.web_url} target="_blank" rel="noreferrer" className="mono">
@@ -700,6 +701,12 @@ export function Environments({
               )}
               {" · "}
               {current.lan_address ? <span className="mono">{current.lan_address}</span> : "No lease"}
+              {current.mac_address ? (
+                <>
+                  {" · "}
+                  <span className="mono">{current.mac_address}</span>
+                </>
+              ) : null}
             </PageHeaderDescription>
             {samples ? <Glance samples={samples} /> : null}
           </PageHeader>

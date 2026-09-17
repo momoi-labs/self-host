@@ -204,7 +204,7 @@ async fn validate_routing(
         }
         if let Some(taken) = records
             .iter()
-            .find(|entry| hostname == format!("{}.{}", entry.name, suffix))
+            .find(|existing| hostname == format!("{}.{}", existing.name, suffix))
         {
             return Err(DeployError::InvalidHostname(format!(
                 "'{hostname}' is already answered by Record '{}'",

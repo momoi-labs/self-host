@@ -110,6 +110,7 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
     && `${row.name} ${row.values.join(" ")} ${row.description ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()));
   const filtering = query !== "" || owner !== "all";
   const action = editor?.mode === "delete" ? "Delete record" : editor?.mode === "edit" ? "Save record" : "Create record";
+  const renamable = editor?.mode === "create" || (editor?.mode === "edit" && editor.record.renamable);
 
   return (
     <>
@@ -188,8 +189,8 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
           <form onSubmit={submit}>
             <DialogBody>
               {editor?.mode !== "delete" ? <>
-                <FormField id="record-name" label="Name" required autoFocus disabled={saving} value={name} onChange={event => setName(event.target.value)} placeholder="nas" />
-                <FormField id="record-value" label="IPv4 address" required disabled={saving} value={value} onChange={event => setValue(event.target.value)} placeholder="192.168.1.30" />
+                {renamable ? <FormField id="record-name" label="Name" required autoFocus disabled={saving} value={name} onChange={event => setName(event.target.value)} placeholder="nas" /> : null}
+                <FormField id="record-value" label="IPv4 address" required autoFocus={!renamable} disabled={saving} value={value} onChange={event => setValue(event.target.value)} placeholder="192.168.1.30" />
                 <FormField id="record-description" label="Description" disabled={saving} value={description} onChange={event => setDescription(event.target.value)} />
               </> : null}
               {failure ? <Failure failure={failure} /> : null}

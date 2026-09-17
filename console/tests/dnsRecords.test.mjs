@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recordRows } from "../src/lib/dnsRecords.ts";
 
-test("groups published addresses and preserves ownership, origin and application links", () => {
+test("groups published addresses and preserves ownership, origin, editability and application links", () => {
   const record = { type: "A", ttl: 60 };
   const rows = recordRows([
     { ...record, name: "*", value: "192.168.1.2", owner: "platform" },
@@ -12,13 +12,13 @@ test("groups published addresses and preserves ownership, origin and application
     { ...record, name: "pictures", value: "192.168.1.2", owner: "application", application_id: "app-1" },
     { ...record, name: "nas", value: "192.168.1.30", owner: "operator" },
   ], [{ id: "app-1", name: "Photo library" }]);
-  assert.deepEqual(rows.map(({ name, owner, origin, editable, application_id, values }) =>
-    ({ name, owner, origin, editable, application_id, values })), [
-    { name: "*", owner: "platform", origin: "Wildcard", editable: false, application_id: undefined, values: ["192.168.1.2", "10.0.0.2"] },
-    { name: "admin", owner: "platform", origin: "admin", editable: false, application_id: undefined, values: ["192.168.1.2"] },
-    { name: "photos", owner: "application", origin: "App/Photo library", editable: false, application_id: "app-1", values: ["192.168.1.2"] },
-    { name: "pictures", owner: "application", origin: "App/Photo library", editable: false, application_id: "app-1", values: ["192.168.1.2"] },
-    { name: "nas", owner: "operator", origin: "Operator", editable: true, application_id: undefined, values: ["192.168.1.30"] },
+  assert.deepEqual(rows.map(({ name, owner, origin, editable, renamable, application_id, values }) =>
+    ({ name, owner, origin, editable, renamable, application_id, values })), [
+    { name: "*", owner: "platform", origin: "Wildcard", editable: false, renamable: false, application_id: undefined, values: ["192.168.1.2", "10.0.0.2"] },
+    { name: "admin", owner: "platform", origin: "admin", editable: true, renamable: false, application_id: undefined, values: ["192.168.1.2"] },
+    { name: "photos", owner: "application", origin: "Photo library", editable: false, renamable: false, application_id: "app-1", values: ["192.168.1.2"] },
+    { name: "pictures", owner: "application", origin: "Photo library", editable: false, renamable: false, application_id: "app-1", values: ["192.168.1.2"] },
+    { name: "nas", owner: "operator", origin: "Operator", editable: true, renamable: true, application_id: undefined, values: ["192.168.1.30"] },
   ]);
 });
 
@@ -41,7 +41,7 @@ test("an Application using admin still identifies its owning resource", () => {
   const [row] = recordRows([
     { type: "A", ttl: 60, value: "192.168.1.30", name: "admin", owner: "application", application_id: "app-1" },
   ], [{ id: "app-1", name: "Dashboard" }]);
-  assert.equal(row.origin, "App/Dashboard");
+  assert.equal(row.origin, "Dashboard");
   assert.equal(row.application_id, "app-1");
   assert.equal(row.editable, false);
 });
@@ -50,7 +50,7 @@ test("a machine record links to its machine by ID and cannot be edited as an Ope
   const [row] = recordRows([
     { name: "dev", type: "A", value: "192.168.1.41", ttl: 60, owner: "virtual-machine", virtual_machine_id: "vm-1" },
   ], [], [{ id: "vm-1", config: { name: "Workspace" } }]);
-  assert.equal(row.origin, "VM/Workspace");
+  assert.equal(row.origin, "Workspace");
   assert.equal(row.originHref, "/console/#environment-vm-1");
   assert.equal(row.owner, "virtual-machine");
   assert.equal(row.editable, false);
