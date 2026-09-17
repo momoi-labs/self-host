@@ -59,6 +59,7 @@ export function App() {
       crumb={crumb}
       dnsSuffix={dnsSuffix}
       apps={apps}
+      environments={environments}
       healthy={healthy}
       overview={{
         href: "/console/",
@@ -76,6 +77,16 @@ export function App() {
         active: view.view === "new",
         onClick: () => go({ view: "new", id: null }),
       }}
+      newMachine={{
+        href: "/console/#new-environment",
+        active: view.view === "environment-new",
+        onClick: () => go({ view: "environment-new", id: null }),
+      }}
+      virtualMachine={(machine) => ({
+        href: `/console/#environment-${machine.id}`,
+        active: view.view === "environments" && view.id === machine.id,
+        onClick: () => go({ view: "environments", id: machine.id }),
+      })}
       customImages={{
         href: "/console/#custom-images",
         active: view.view === "custom-images" || view.view === "custom-image",

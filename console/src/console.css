@@ -451,3 +451,15 @@
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
+
+/* The resource menu uses spacing between groups and reserves the footer for
+   Settings, the native theme selector and Lock on one line. */
+.console-shell [data-slot="sidebar-header"],
+.console-shell [data-slot="sidebar-footer"] { border-block: 0; }
+.resource-navigation { margin-top: 24px; }
+.resource-navigation-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 12px; font-weight: 600; color: var(--color-muted-foreground); }
+.sidebar-controls { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.sidebar-controls > * { flex-shrink: 0; }
+.sidebar-controls > [data-slot="button"] { padding-inline: 7px; }
+.sidebar-controls .theme-row { padding: 0; margin: 0; }
+.sidebar-controls .theme-row > .t-label { display: none; }
