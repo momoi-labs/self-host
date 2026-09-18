@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
-  Badge, Button, Card, FormField, Label,
+  Badge, Button, Card, Form, FormActions, FormField, Label,
   Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
   ChipName, ChipOption, ChipOptionAdd, ChipRemove, ChipScope, ChipValue,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
+  Tabs, TabsContent, TabsList, TabsTrigger,
   ValidationMessage,
 } from "@momoi-labs/kiso-react";
 
@@ -25,8 +26,6 @@ import {
 type Dependency = ImageDependency;
 type MiseTool = { name: string; description?: string; backends: string[] };
 
-/** How much of the card the build log takes: none, the lower half, or all. */
-type Dock = "closed" | "half" | "full";
 
 let toolCatalog: Promise<MiseTool[]> | null = null;
 
@@ -204,11 +203,14 @@ function Dependencies({ value, onChange, disabled }: {
 }
 
 /**
- * The recipe for one image, in either mode, with its build log docked below.
- * The listing owns the records and the polling; this owns the fields, which
- * is why a poll can refresh the log without touching an edit in progress.
+ * The recipe for one image, in either mode. A saved image is a detail screen
+ * with the one card of tabs every detail screen has: its recipe, and the log
+ * of its last build. A new one is a form in a card, the way a new Application
+ * is. The listing owns the records and the polling; this owns the fields,
+ * which is why a poll can refresh the log without touching an edit in
+ * progress.
  */
-export function CustomImageEditor({ current, selected, building, loaded, loadFailure, onSaved, onDelete, deleteReason, deleting }: {
+export function CustomImageEditor({ current, selected, building, loaded, loadFailure, onSaved, onCancel, onDelete, deleteReason, deleting }: {
   current: CustomImage | undefined;
   selected: string | null;
   /** Any image on the Host is building, so this one cannot start. */
@@ -216,6 +218,8 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
   loaded: boolean;
   loadFailure: Report | null;
   onSaved: (image: CustomImage) => void;
+  /** Back to the list, for a new image that is not going to be saved. */
+  onCancel: () => void;
   /** Deleting is the list's business — it owns the records — so the header
    *  only asks. Absent while the image has not been saved yet. */
   onDelete?: () => void;
@@ -232,29 +236,49 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
   const [dockerfile, setDockerfile] = useState<string | null>(null);
   const [takingOver, setTakingOver] = useState(false);
   const [discarding, setDiscarding] = useState(false);
-  const [dock, setDock] = useState<Dock>("closed");
+  const [tab, setTab] = useState("configuration");
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<Report | null>(null);
   const [editorKey, setEditorKey] = useState(0);
   const editingDisabled = submitting || current?.status === "building";
   const manual = dockerfile !== null;
-  const buildable = dependencies.length > 0 && dependencies.every((dep) => isVersion(dep.version));
+  // Something to build: a mise tool or a custom command, and every tool with
+  // a version. The Host asks the same before it renders a file.
+  const buildable =
+    (dependencies.length > 0 || setup.trim().length > 0) &&
+    dependencies.every((dep) => isVersion(dep.version));
   const ready = manual ? !!dockerfile.trim() : buildable;
-  const lastLine = current?.log.trimEnd().split("\n").at(-1) ?? "No build yet.";
 
-  useEffect(() => {
-    setName(current?.name ?? "");
-    setTemplateId(current?.template_id ?? "");
-    setDependencies(current?.dependencies ?? []);
-    setSetup((current?.setup ?? []).join("\n"));
-    setBuildChecks((current?.build_checks ?? []).join("\n"));
-    setDockerfile(current?.dockerfile ?? null);
+  /** The fields as the record has them: what the form loads, and what an
+   *  edit is measured against. */
+  const saved = {
+    name: current?.name ?? "",
+    templateId: current?.template_id ?? "",
+    dependencies: current?.dependencies ?? [],
+    setup: (current?.setup ?? []).join("\n"),
+    buildChecks: (current?.build_checks ?? []).join("\n"),
+    dockerfile: current?.dockerfile ?? null,
+  };
+  const dirty =
+    !!current &&
+    JSON.stringify({ name, dependencies, setup, buildChecks, dockerfile }) !==
+      JSON.stringify({ name: saved.name, dependencies: saved.dependencies, setup: saved.setup, buildChecks: saved.buildChecks, dockerfile: saved.dockerfile });
+
+  function load() {
+    setName(saved.name);
+    setTemplateId(saved.templateId);
+    setDependencies(saved.dependencies);
+    setSetup(saved.setup);
+    setBuildChecks(saved.buildChecks);
+    setDockerfile(saved.dockerfile);
     setDiscarding(false);
     setFailure(null);
     setEditorKey((value) => value + 1);
-    // Load the recipe when opening it; log polls must not overwrite edits.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, current?.id]);
+  }
+
+  // Load the recipe when opening it; log polls must not overwrite edits.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [selected, current?.id]);
 
   function chooseTemplate(id: string) {
     const template = customImageTemplate(id);
@@ -268,9 +292,9 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
   }
 
   // A build the Operator just started is the one thing worth interrupting the
-  // form for. A dock they closed since stays closed.
+  // form for. Every move after that is theirs to keep.
   useEffect(() => {
-    if (current?.status === "building") setDock((dock) => dock === "closed" ? "half" : dock);
+    if (current?.status === "building") setTab("log");
   }, [current?.status]);
 
   /**
@@ -317,38 +341,19 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
     }
   }
 
-  return (
-    <div className="custom-images-page">
-      {/* The same header row every detail screen carries. An image is built,
-          not run, so it offers no lifecycle verbs — the middle group is
-          absent rather than empty. */}
-      <div className="between">
-        <PageHeader>
-          <PageHeaderTitle>{selected ? current?.name ?? "Image" : "New image"}</PageHeaderTitle>
-          <PageHeaderDescription>Save your image's dependencies and build it on this Host.</PageHeaderDescription>
-        </PageHeader>
-        {current ? (
-          <Lifecycle
-            status={<StatusBadge tone={buildTone(current)}>{buildLabel(current)}</StatusBadge>}
-            destructive={
-              <Button type="button" size="sm" variant="ghost" className="btn-danger-ghost"
-                aria-label={`Delete ${current.name}`}
-                title={deleteReason ?? undefined}
-                disabled={deleting || !!deleteReason || !onDelete}
-                onClick={onDelete}>
-                {deleting ? "Deleting..." : "Delete image"}
-              </Button>
-            }
-          />
-        ) : null}
-      </div>
-      {loadFailure ? <Failure failure={loadFailure} /> : null}
-      <Card className="custom-images-panel" data-dock={dock}>
-        <form className="custom-image-form" onSubmit={submit}>
-          <div className="row">
-            <p className="t-caps grow">{manual ? "Dockerfile" : "Configuration"}</p>
-            {manual ? <Badge variant="warning">Edited by hand</Badge> : null}
-          </div>
+  const form = (
+        <Form className="custom-image-form" onSubmit={submit}>
+          <div className="form-body">
+          {/* The tab already says Configuration; the caption only appears
+              when the form is something else, a file taken over by hand. */}
+          {manual ? (
+            <div className="row">
+              <p className="t-caps grow">Dockerfile</p>
+              <Badge variant="warning">Edited by hand</Badge>
+            </div>
+          ) : !selected ? (
+            <p className="t-caps">Configuration</p>
+          ) : null}
           {manual ? (
             <>
               <FormField id="custom-image-name" label="Image name" placeholder="web-dev"
@@ -431,33 +436,98 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
             </>
           )}
           {failure ? <Failure failure={failure} /> : null}
-          {current?.last_error ? <Failure failure={current.last_error} /> : null}
-          {building ? <p className="muted t-label">A build is running on this Host.</p> : null}
-          <div className="form-actions">
-            <Button type="submit" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
+          </div>
+          {/* The footer says where the recipe stands: saved and built, edited
+              and not, or built and failed. Saving always builds, so the one
+              verb stays the same and the message is what changes. */}
+          <FormActions
+            sticky
+            tone={dirty ? "warning" : !building && current?.status === "failed" ? "danger" : "neutral"}
+            message={
+              !selected ? undefined
+                : building ? "A build is running on this Host."
+                : dirty ? <><strong>Unsaved changes.</strong> Applications keep the last build until you save and build again.</>
+                : current?.status === "failed" ? <><strong>The last build failed.</strong> Fix the recipe, then save and build again.</>
+                : "Saved and built. Saving again rebuilds the image."
+            }
+          >
+            {!selected ? (
+              <Button type="button" size="sm" onClick={onCancel}>Cancel</Button>
+            ) : dirty ? (
+              <Button type="button" size="sm" onClick={load} disabled={editingDisabled}>Discard</Button>
+            ) : current?.status === "failed" && !building ? (
+              <Button type="button" size="sm" onClick={() => setTab("log")}>Open build log</Button>
+            ) : null}
+            <Button type="submit" size="sm" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
               {submitting ? "Saving..." : current?.status === "building" ? "Building..." : "Save and build"}
             </Button>
-          </div>
-        </form>
-        <div className="custom-image-dock" role="region" aria-label="Build logs">
-          <div className="custom-image-dock-head">
-            <Button type="button" size="sm" variant="ghost" aria-expanded={dock !== "closed"}
-              onClick={() => setDock(dock === "closed" ? "half" : "closed")}>Logs</Button>
-            {current ? <StatusBadge tone={buildTone(current)}>{buildLabel(current)}</StatusBadge> : null}
-            <span className="grow mono muted t-label custom-image-lastline">{lastLine}</span>
-            {dock !== "closed" ? (
-              <Button type="button" size="sm" variant="ghost"
-                onClick={() => setDock(dock === "full" ? "half" : "full")}>
-                {dock === "full" ? "Restore" : "Expand"}
-              </Button>
-            ) : null}
-          </div>
-          {dock !== "closed" ? (
-            <LogSurface key={current?.id ?? "new"} label="Build logs" text={current?.log}
-              placeholder="Save and build to see the output here." />
+          </FormActions>
+        </Form>
+  );
+
+  if (!selected)
+    return (
+      <>
+        <PageHeader>
+          <PageHeaderTitle>New image</PageHeaderTitle>
+          <PageHeaderDescription>Save your image's dependencies and build it on this Host.</PageHeaderDescription>
+        </PageHeader>
+        {loadFailure ? <Failure failure={loadFailure} /> : null}
+        <Card className="form-page">
+          {form}
+        </Card>
+      </>
+    );
+
+  return (
+    <>
+      {loadFailure ? <Failure failure={loadFailure} /> : null}
+      {/* A failed build is the page's news, above the header the way a
+          machine's failed run is, and the log is the way into it. */}
+      {current?.last_error ? (
+        <Failure failure={current.last_error} actionLabel="Open build log" onAction={() => setTab("log")} />
+      ) : null}
+      {/* The same header row every detail screen carries. An image is built,
+          not run, so it offers no lifecycle verbs — the middle group is
+          absent rather than empty. The tag is the image's address, the way a
+          hostname is an Application's. */}
+      <div className="between">
+        <PageHeader>
+          <PageHeaderTitle>{current?.name ?? "Image"}</PageHeaderTitle>
+          {current ? (
+            <PageHeaderDescription>
+              <span className="mono custom-image-tag">{current.image}</span>
+            </PageHeaderDescription>
           ) : null}
-        </div>
+        </PageHeader>
+        {current ? (
+          <Lifecycle
+            status={<StatusBadge tone={buildTone(current)} pulse={current.status === "building"}>{buildLabel(current)}</StatusBadge>}
+            destructive={
+              <Button type="button" size="sm" variant="ghost" className="btn-danger-ghost"
+                aria-label={`Delete ${current.name}`}
+                title={deleteReason ?? undefined}
+                disabled={deleting || !!deleteReason || !onDelete}
+                onClick={onDelete}>
+                {deleting ? "Deleting..." : "Delete image"}
+              </Button>
+            }
+          />
+        ) : null}
+      </div>
+      <Card className="detail-tabs">
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList aria-label="Custom image details">
+            <TabsTrigger value="configuration">Configuration</TabsTrigger>
+            <TabsTrigger value="log">Build log</TabsTrigger>
+          </TabsList>
+          <TabsContent value="configuration">{form}</TabsContent>
+          <TabsContent value="log" className="detail-logs">
+            <LogSurface key={current?.id ?? "new"} label="Build log" text={current?.log}
+              placeholder="Save and build to see the output here." />
+          </TabsContent>
+        </Tabs>
       </Card>
-    </div>
+    </>
   );
 }

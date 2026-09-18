@@ -2,7 +2,7 @@ import { LogView, LogViewLine } from "@momoi-labs/kiso-react";
 
 /**
  * A log that is the whole panel: flush with its edges, filling its height, and
- * scrolling itself. The image builder's dock established the surface and the
+ * scrolling itself. The image builder established the surface and the
  * machine screen wants the same one, so the rendering lives here instead of in
  * both.
  *

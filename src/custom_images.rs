@@ -133,10 +133,10 @@ impl Recipe {
         self.validate_builder(true)
     }
 
-    /// The same recipe read as a machine's. A machine may install no mise
-    /// tools at all: plain Ubuntu with a couple of custom commands is a
-    /// workspace an Operator may well have asked for, while an image with
-    /// nothing to install has nothing to build.
+    /// The same recipe read as a machine's. A machine may install nothing at
+    /// all: plain Ubuntu is a workspace an Operator may well have asked for,
+    /// while an image with nothing to install and nothing to run has nothing
+    /// to build.
     pub(crate) fn validate_machine(&self) -> Result<(), String> {
         if self
             .template_id
@@ -175,7 +175,7 @@ impl Recipe {
         Ok(())
     }
 
-    fn validate_builder(&self, require_dependencies: bool) -> Result<(), String> {
+    fn validate_builder(&self, require_something: bool) -> Result<(), String> {
         if !valid_commands(&self.build_checks) {
             return Err(
                 "Use at most 16 build checks, each a single command of 1 to 4096 bytes.".into(),
@@ -186,8 +186,13 @@ impl Recipe {
                 "Use at most 16 setup commands, each a single command of 1 to 4096 bytes.".into(),
             );
         }
-        if (require_dependencies && self.dependencies.is_empty()) || self.dependencies.len() > 64 {
-            return Err("Select at least one dependency, with one version per tool.".into());
+        // A custom command is as much a build step as a mise tool: an image
+        // with an apt package and no mise tool is still an image.
+        if require_something && self.dependencies.is_empty() && self.setup.is_empty() {
+            return Err("Add at least one dependency or one custom command.".into());
+        }
+        if self.dependencies.len() > 64 {
+            return Err("Select at most 64 dependencies, with one version per tool.".into());
         }
         let mut seen = BTreeSet::new();
         for dep in &self.dependencies {
@@ -935,6 +940,27 @@ mod tests {
         assert_eq!(restored.mise_toml(), recipe.mise_toml());
         recipe.dependencies[0].tool = "node".into();
         assert!(recipe.validate().is_err());
+    }
+
+    #[test]
+    fn a_custom_command_is_enough_to_build() {
+        let mut recipe = Recipe {
+            build_checks: vec![],
+            setup: vec!["apt-get install -y ripgrep".into()],
+            dockerfile: None,
+            template_id: None,
+            name: "tools".into(),
+            dependencies: vec![],
+        };
+        assert!(recipe.validate().is_ok());
+        assert!(
+            recipe
+                .dockerfile_text()
+                .contains("RUN apt-get install -y ripgrep")
+        );
+        recipe.setup.clear();
+        assert!(recipe.validate().is_err());
+        assert!(recipe.validate_machine().is_ok());
     }
 
     #[test]

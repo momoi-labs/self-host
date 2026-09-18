@@ -21,10 +21,11 @@ import { buildLabel, buildTone } from "../lib/status.js";
  * The saved images and their latest build. This owns the records and the
  * poll that refreshes them; the editor owns one recipe's fields.
  */
-export function CustomImages({ listing, selected, onOpen }: {
+export function CustomImages({ listing, selected, onOpen, onList }: {
   listing: boolean;
   selected: string | null;
   onOpen: (id: string | null) => void;
+  onList: () => void;
 }) {
   const [images, setImages] = useState<CustomImage[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -158,7 +159,7 @@ export function CustomImages({ listing, selected, onOpen }: {
                           : image.dependencies.map((dep) => `${dep.tool}@${dep.version}`).join(", ")}
                       </TableCell>
                       <TableCell className="mono">{image.image}</TableCell>
-                      <TableCell><StatusBadge tone={buildTone(image)}>{buildLabel(image)}</StatusBadge></TableCell>
+                      <TableCell><StatusBadge tone={buildTone(image)} pulse={image.status === "building"}>{buildLabel(image)}</StatusBadge></TableCell>
                       <TableCell onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
                         <Button type="button" size="sm" variant="ghost" className="btn-danger-ghost"
                           aria-label={`Delete ${image.name}`} disabled={!!deleting || !!deleteReason(image)}
@@ -183,7 +184,7 @@ export function CustomImages({ listing, selected, onOpen }: {
   return (
     <>
       <CustomImageEditor current={current} selected={selected} building={building}
-        loaded={loaded} loadFailure={loadFailure} onSaved={saved}
+        loaded={loaded} loadFailure={loadFailure} onSaved={saved} onCancel={onList}
         onDelete={current ? () => setConfirming(current) : undefined}
         deleteReason={current ? deleteReason(current) : null}
         deleting={!!deleting} />

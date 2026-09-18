@@ -117,6 +117,13 @@ The random port hid this until now; a stable name shows it.
 
 ## What the machine reports
 
+The machine's screen opens on its Summary: whether what it runs is what was
+saved, each tool the recipe asks for against the version mise reports, how
+the last run went, and what it serves. The Last run tab lists the steps of the
+last lifecycle action with their timing, read from the Platform event log, and
+opens a failed step on the output the guest printed just before it gave up.
+While an action runs, that tab is its progress.
+
 The Logs tab reads three sources. **Boot** is `journalctl -b` inside the
 machine, the kernel and systemd coming up. **Provisioning** is
 `/var/log/cloud-init-output.log`, what cloud-init ran. **Platform** is the

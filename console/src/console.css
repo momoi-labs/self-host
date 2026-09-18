@@ -4,6 +4,10 @@
    block, or a rule kiso deliberately leaves to the product. Anything a second
    Momoi product would also want belongs upstream in the blueprint, not here. */
 @import "@momoi-labs/kiso-react/styles.css";
+/* The appearance the gallery writes on <html>: accent, border style, corner
+   marks. Only the accent is a published kiso token; the rest is the
+   gallery's study, copied until kiso ships it. */
+@import "./appearance.css";
 
 /* Login. kiso specifies the login pattern but ships no block for it. */
 .auth-shell { display: grid; min-height: 100vh; place-items: center; padding: var(--spacing-xl); }
@@ -156,8 +160,14 @@
 #detail { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 #detail > .stack { grid-template-columns: minmax(0, 1fr); }
 
-/* The form's footer, on every detail screen. */
-.form-actions { display: flex; justify-content: flex-end; gap: var(--spacing-sm); }
+/* The form's footer is kiso's FormActions, sticky to whatever scrolls. A
+   tab panel that holds a form gives its padding to the form's body, so the
+   bar spans the panel and rests on its bottom edge; a form shorter than the
+   panel still ends at that edge, because the form fills it. */
+.detail-tabs [role="tabpanel"]:has(> .form) { padding: 0; }
+.detail-tabs .form-body { padding: var(--spacing-xl); }
+/* A form that is the whole card: the footer's corners follow the card's. */
+.form-page > .form { border-radius: inherit; }
 
 /* Per-platform DNS instructions: a stack of disclosures, not a stack of
    cards, because only one of them is ever relevant to the reader. */
@@ -195,15 +205,6 @@
 
 .custom-image-list { min-width: 0; }
 .custom-image-list > .table-wrap { min-width: 0; }
-.custom-images-page { display: flex; flex-direction: column; gap: var(--spacing-lg); min-height: 0; min-width: 0; flex: 1; }
-/* The editor is one scrolling column of sections in Dockerfile order, with
-   the build log docked at the bottom of the card: closed until a build
-   starts, then half the card, then all of it. A form this tall has no room
-   left for a side-by-side split. */
-.custom-images-panel { display: grid; grid-template-rows: minmax(0, 1fr) auto; flex: 1; min-height: 0; overflow: hidden; }
-.custom-images-panel[data-dock="half"] { grid-template-rows: minmax(0, 1fr) 40%; }
-.custom-images-panel[data-dock="full"] { grid-template-rows: 0 minmax(0, 1fr); }
-.custom-image-form { overflow: auto; padding: var(--spacing-lg); display: grid; gap: var(--spacing-lg); align-content: start; }
 .form-steps { counter-reset: form-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
 .form-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
 .form-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
@@ -226,31 +227,17 @@
 .custom-image-takeover { display: flex; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); }
 .custom-image-takeover p { margin: 0; }
 #custom-image-dockerfile { min-height: calc(24 * 1lh + var(--spacing-md)); }
-.custom-image-dock { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-block-start: 1px solid var(--color-border); }
-.custom-image-dock-head { display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--spacing-xs) var(--spacing-md); }
-/* A log that is the whole panel, in the dock and on a machine's Logs tab
-   alike: no frame of its own, because the panel is already the frame. */
+/* A log that is the whole panel, on every Logs tab: no frame of its own,
+   because the panel is already the frame. */
 .logview-flush { border: 0; border-radius: 0; min-height: 0; height: 100%; --corner-mark: 0; }
-.custom-image-lastline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (min-width: 1024px) {
-  .app-shell:has(.custom-images-page) { height: 100vh; }
-  /* A column, because the page now carries the header row above the panel and
-     the panel is the only child that should take the leftover height. */
-  #detail:has(.custom-images-page) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  #detail:has(.custom-images-page) > .custom-images-page { flex: 1; min-height: 0; }
-}
-@media (max-width: 1023px) {
-  .custom-images-panel[data-dock="half"], .custom-images-panel[data-dock="full"] { grid-template-rows: minmax(0, 1fr) 60vh; }
-}
 .custom-image-code { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--type-family-mono); font-size: var(--type-size-label); }
 .custom-image-tag { overflow-wrap: anywhere; user-select: all; }
 
 .environment-page { display: flex; flex-direction: column; gap: var(--spacing-lg); min-width: 0; }
-.environment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spacing-sm); }
-.environment-editor { max-width: 760px; }
+/* A stepped form keeps a readable measure; its footer reaches the edges. */
+.environment-editor .form-body > *, .custom-image-form .form-body > * { max-width: 760px; }
 .environment-editor .field-row { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 .environment-editor textarea.input { resize: vertical; }
-.environment-subheading { margin-block-start: var(--spacing-xl); }
 .demo-banner { margin: 0; padding: var(--spacing-md) var(--spacing-lg); border: 1px solid var(--color-warning); border-radius: var(--radius-md); background: var(--color-warning-surface); }
 
 /* The detail screen's header row: what it is, what you can do to it, and the
@@ -352,6 +339,10 @@
 .detail-log-pane > :not(:last-child) { flex: none; padding: var(--spacing-lg); }
 .detail-log-pane > :last-child { flex: 1; min-height: 0; }
 .detail-tabs .logview { min-height: 0; border: 0; border-radius: 0; --corner-mark: 0; }
+/* The corner marks are drawn by pseudo-elements that reach outside the frame;
+   hidden by opacity they still overflow the pane by their inset, and a pane
+   that scrolls by 3px grows a second pair of scrollbars. */
+.detail-tabs .logview::before, .detail-tabs .logview::after { display: none; }
 .detail-tabs .log-scroll { padding: var(--spacing-lg); }
 
 .container-terminal { position: relative; height: 100%; min-height: 320px; }
@@ -375,7 +366,12 @@
    zero: beside a panel asking for the rest of the column it collapses to
    nothing. The `auto` track keeps its own height; the panel takes what is
    left. */
-.detail-tabs [role="tablist"] { max-width: 100%; overflow-x: auto; padding-inline: var(--spacing-xl); }
+/* The strip scrolls sideways when the tabs do not fit. The selected tab's
+   underline reaches 1px past the buttons into the strip's border, and a
+   scroller counts that as overflow: on a browser that draws scrollbars
+   (Firefox on Linux) the strip grew one. The padding gives the underline
+   that pixel inside the box. */
+.detail-tabs [role="tablist"] { max-width: 100%; overflow-x: auto; padding-inline: var(--spacing-xl); padding-block-end: 1px; }
 .detail-tabs > [data-slot="tabs"] > [role="tablist"] { min-height: min-content; }
 /* The form scrolls; the log and the terminal bring their own scroller and
    take the panel out to the card's edges. */
@@ -405,12 +401,14 @@
 @media (max-width: 1023px) {
   .detail-tabs { grid-template-rows: auto; }
   .detail-tabs [role="tabpanel"] { overflow: visible; }
+  .detail-tabs [role="tabpanel"].detail-run:not([hidden]) { display: block; overflow: visible; }
   .detail-tabs [role="tabpanel"].detail-logs,
   .detail-tabs [role="tabpanel"].detail-terminal { height: 60vh; }
 }
 @media (max-width: 720px) {
   .detail-tabs [role="tablist"] { padding-inline: var(--spacing-lg); }
   .detail-tabs [role="tabpanel"] { padding: var(--spacing-lg); }
+  .detail-tabs .form-body { padding: var(--spacing-lg); }
   .detail-tabs [role="tabpanel"].detail-logs,
   .detail-tabs [role="tabpanel"].detail-terminal { padding: 0; }
 }
@@ -419,30 +417,57 @@
 .advanced > summary { cursor: pointer; font-weight: 600; padding-block: var(--spacing-sm); }
 .advanced[open] > summary { margin-block-end: var(--spacing-md); }
 
-/* The progress inside the operation toast. The toast's own title and
-   description already name the machine and the step, so the bar keeps only its
-   count. */
-.operation-track { margin-block-start: var(--spacing-sm); }
-.operation-track .meter-label > :first-child { display: none; }
-.operation-track .meter-label > :last-child { margin-inline-start: auto; }
-.operation-track .meter-track > span,
-.operation-steps .meter-track > span { transition: width 200ms ease-out; }
+/* A detail screen's Summary: a few sections read top to bottom, each a
+   caption and one line or one table. It is the tab a screen opens on, so it
+   says the state of the record before the form is asked to. */
+.summary { display: grid; gap: var(--spacing-lg); max-width: 860px; }
+.summary > section { display: grid; gap: var(--spacing-sm); }
+.summary > section + section { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
+.summary .t-caps { margin: 0; }
+.summary-state { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-sm) var(--spacing-md); }
+.summary-facts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: var(--spacing-xs) var(--spacing-lg); }
+.summary-facts dt { color: var(--color-muted-foreground); }
+.summary-facts dd { margin: 0; overflow-wrap: anywhere; }
+/* The run as one segment per step, while it goes or after it failed. */
+.summary-bar { max-width: 360px; }
+/* The same bar in a table cell, one line beside the badge, no ticker. */
+.activity-cell { display: inline-flex; align-items: center; gap: var(--spacing-sm); white-space: nowrap; }
+.activity-cell .step-bar { width: 88px; }
 
-/* The same progress, on the machine's own screen, where the status badges sit
-   when nothing is running. One step is named at a time and the label changes
-   under the bar. The action reads as the eyebrow the sections beside it use. */
-.operation-steps .meter-label > :first-child {
-  font-size: var(--type-size-metadata); font-weight: var(--type-weight-semibold);
-  letter-spacing: var(--type-letter-spacing-caps); text-transform: uppercase;
-  color: var(--color-subtle-foreground);
-}
-/* In the header row it stands where the badges stood, and takes what the
-   action buttons leave. Below that width it gets the line to itself. */
-.environment-actions > .operation-steps { flex: 1 1 20rem; min-width: 0; }
-.operation-step {
-  margin: var(--spacing-sm) 0 0;
-  font-family: var(--type-family-mono); font-size: var(--type-size-label);
-  color: light-dark(var(--color-accent-base), var(--color-accent-600));
+/* The machine's last run is a workspace: the title with its state, then a
+   split that takes the rest of the panel, the steps as kiso's StepList on
+   the left and the selected step's output as a LogView on the right. The
+   panel gives up its padding so the split reaches the card's edges. Below
+   1024px the panel has no height, so the output opens under the step's row
+   instead. `:not([hidden])`, because a display of our own would otherwise
+   beat the `hidden` the tab you left keeps, and a hidden panel that is still
+   a flex block takes the card's one row from the tab you opened. */
+.detail-tabs [role="tabpanel"].detail-run:not([hidden]) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.run { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.run-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--spacing-md); padding: var(--spacing-xl) var(--spacing-xl) var(--spacing-lg); }
+.run-head p { margin: 0; }
+.run-title { font-size: var(--type-size-title); font-weight: 600; display: flex; align-items: center; gap: var(--spacing-sm); margin-block-end: var(--spacing-2xs); }
+.run-actions { display: inline-flex; flex-wrap: wrap; gap: var(--spacing-sm); }
+.run-split { flex: 1; min-height: 0; border-block-start: 1px solid var(--color-border); }
+.run-steps { display: grid; gap: var(--spacing-sm); align-content: start; justify-items: start; padding: var(--spacing-lg) var(--spacing-xl); }
+.run-steps > .step-list { justify-self: stretch; }
+.split > .pane.run-output { display: flex; flex-direction: column; overflow: hidden; }
+.run-output > .logview { flex: 1 1 auto; min-height: 0; }
+/* A step's output is read in half a panel, so its lines wrap: the Logs tab
+   keeps a log's columns, this pane keeps the reader from scrolling sideways
+   for the end of a line. */
+.run .logview [data-slot="log-view-line"] { white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-output > p { margin: 0; padding: var(--spacing-md) var(--spacing-lg); }
+.run-note { margin: 0; padding: var(--spacing-sm) var(--spacing-lg); border-block-start: 1px solid var(--color-border); }
+.run-list { padding: 0 var(--spacing-xl) var(--spacing-xl); }
+.run-empty { padding: var(--spacing-xl); }
+.run-detail { display: grid; gap: var(--spacing-sm); justify-items: start; padding-block-end: var(--spacing-sm); }
+.run-detail > .logview { justify-self: stretch; max-height: 24em; border-radius: var(--radius-md); }
+.run-detail > p { margin: 0; }
+.run-detail > .run-note { padding: 0; border: 0; }
+@media (max-width: 720px) {
+  .run-head { padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-md); }
+  .run-list { padding: 0 var(--spacing-lg) var(--spacing-lg); }
 }
 
 /* A heading the document needs and the layout does not: the breadcrumb is

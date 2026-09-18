@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
     process::Command,
     sync::mpsc,
@@ -408,7 +408,11 @@ impl LimaRuntime {
     /// `limactl shell` refuses until the instance is ready, and ready is
     /// exactly when provisioning ends, so it would only ever report the past.
     /// SSH answers as soon as the guest's sshd does, which is well before
-    /// the boot scripts finish.
+    /// the boot scripts finish. The guest drops that session at least once
+    /// while it provisions (cloud-init reloads sshd, the recipe restarts it),
+    /// so the follower keeps reattaching until the boot ends and picks the
+    /// log up from the line after the last one it received: the log only
+    /// grows, so a count is an address into it.
     fn follow(
         &self,
         id: &str,
@@ -419,8 +423,10 @@ impl LimaRuntime {
         let Ok(name) = instance_name(id) else {
             return FollowGuard(None);
         };
+        let machine = id.to_owned();
         FollowGuard(Some(tokio::spawn(async move {
-            for _ in 0..200 {
+            let mut received: usize = 0;
+            loop {
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 let Some((dir, port)) = ssh_target(&executable, &name).await else {
                     continue;
@@ -441,20 +447,29 @@ impl LimaRuntime {
                         "-o",
                         "LogLevel=ERROR",
                         &format!("lima-{name}"),
-                        "sudo tail -n +1 -F /var/log/cloud-init-output.log",
+                        &format!(
+                            "sudo tail -n +{} -F /var/log/cloud-init-output.log",
+                            received + 1
+                        ),
                     ])
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
+                    .stderr(Stdio::piped())
                     .kill_on_drop(true)
                     .spawn()
                 else {
                     continue;
                 };
+                let mut errors = BufReader::new(child.stderr.take().unwrap());
+                let complaint = tokio::spawn(async move {
+                    let mut text = String::new();
+                    let _ = errors.read_to_string(&mut text).await;
+                    text
+                });
                 let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-                let mut seen = false;
+                let before = received;
                 while let Ok(Some(line)) = lines.next_line().await {
-                    seen = true;
+                    received += 1;
                     // Only a step counts as having followed the provisioning.
                     // cloud-init writes its own chatter early and the script's
                     // own output late, so reading lines proves nothing.
@@ -464,8 +479,20 @@ impl LimaRuntime {
                         followed.note(marker);
                     }
                 }
-                if seen {
-                    return;
+                let complaint = complaint.await.unwrap_or_default();
+                let complaint = complaint.trim();
+                // A session that delivered nothing is the guest not answering
+                // yet; one that delivered and ended is the guest dropping it.
+                if received > before {
+                    tracing::info!(
+                        machine,
+                        lines = received,
+                        delivered = received - before,
+                        complaint,
+                        "the guest dropped its log stream, following again"
+                    );
+                } else {
+                    tracing::debug!(machine, complaint, "the guest's log is not answering yet");
                 }
             }
         })))

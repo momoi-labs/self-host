@@ -1,0 +1,175 @@
+/* Copied from the blueprint, apps/kiso-gallery/src/appearance.css at main
+   (1134ca8): the border style and corner mark study behind the attributes the
+   gallery's Appearance page writes on <html>. kiso 0.11 publishes the accent
+   (data-accent) only; these rules are the rest of the snippet. Delete this
+   file when kiso ships them as tokens. Nothing here is the console's own. */
+
+/* Gallery appearance study. These overrides are not published package tokens. */
+:root {
+  --appearance-scale: 1;
+  --appearance-square-scale: 1;
+  --appearance-panel-shadow: 0 0 transparent;
+  --appearance-panel-border: solid;
+}
+[data-corner-size="off"] { --appearance-scale: 0; --appearance-square-scale: 0; }
+[data-corner-size="small"] { --appearance-scale: .5; }
+[data-corner-size="medium"] { --appearance-scale: 1; }
+[data-corner-size="large"] { --appearance-scale: 1.5; }
+[data-border-style] {
+  --appearance-base-radius: 8px;
+  --appearance-control-base: 4px;
+  --appearance-panel-border: solid;
+  --appearance-panel-shadow: 0 0 transparent;
+  --appearance-overlay-inset: 0;
+  --appearance-overlay-border: 0;
+  --appearance-overlay-radius: var(--appearance-corners);
+  --radius-surface: calc(var(--appearance-base-radius) * var(--appearance-scale));
+  --radius-md: calc(var(--appearance-control-base) * var(--appearance-scale));
+  --radius-xs: calc(var(--radius-md) / 2);
+  --radius-sm: calc(var(--radius-md) * .75);
+  --radius-lg: calc(var(--radius-md) * 1.25);
+  --appearance-corners: var(--radius-surface);
+  --appearance-control-corners: var(--radius-md);
+}
+[data-border-style="square"] {
+  --appearance-base-radius: 0px;
+  --radius-xs: calc(2px * var(--appearance-square-scale));
+  --radius-sm: calc(3px * var(--appearance-square-scale));
+  --radius-md: calc(4px * var(--appearance-square-scale));
+  --radius-lg: calc(5px * var(--appearance-square-scale));
+}
+[data-border-style="round"] { --appearance-base-radius: 16px; --appearance-control-base: 8px; }
+[data-border-style="asym"] {
+  --appearance-base-radius: 12px;
+  --appearance-control-base: 6px;
+  --appearance-corners: var(--radius-surface) calc(3px * var(--appearance-scale));
+  --appearance-control-corners: var(--radius-md) calc(2px * var(--appearance-scale));
+}
+[data-border-style="rail"] { --appearance-base-radius: 6px; --appearance-control-base: 3px; --appearance-panel-shadow: inset 3px 0 var(--color-border-strong); }
+[data-border-style="dash"] { --appearance-panel-border: dashed; }
+[data-border-style="bevel"] { --appearance-panel-shadow: inset 1px 1px 1px var(--color-shadow-contact), inset -1px -1px var(--color-border-strong); }
+[data-border-style="double"] { --appearance-overlay-inset: 3px; --appearance-overlay-border: 1px solid var(--color-border); --appearance-overlay-radius: max(0px, calc(var(--radius-surface) - 3px)); }
+[data-border-style="base"] {
+  /* Match the outer frame so the thick base covers its bottom hairline. */
+  --appearance-overlay-inset: -1px;
+  --appearance-panel-shadow: inset 0 -3px var(--color-border-strong);
+}
+[data-border-style="offset"] {
+  --appearance-overlay-inset: -1px;
+  /* An opaque, hard shadow keeps underlying content out of the offset. */
+  --appearance-panel-shadow: 3px 3px 0 0 var(--color-border-strong);
+}
+
+:is(.card, .dialog, .table-wrap, .logview, .marked, .palette, pre) {
+  border-radius: var(--appearance-corners);
+  border-style: var(--appearance-panel-border);
+}
+/* Paint decorative edges above table headers and panel footers. */
+:is(.card, .dialog, .table-wrap, .logview, .marked, .palette, pre)::before {
+  content: "";
+  position: absolute;
+  inset: var(--appearance-overlay-inset);
+  border: var(--appearance-overlay-border);
+  border-radius: var(--appearance-overlay-radius);
+  box-shadow: var(--appearance-panel-shadow);
+  pointer-events: none;
+  z-index: 1;
+}
+.palette { overflow: visible; }
+.palette-list { border-end-start-radius: var(--radius-surface); border-end-end-radius: var(--radius-surface); }
+:is(.card-footer, .dialog-footer) {
+  border-end-start-radius: min(var(--radius-surface), calc(3px * var(--appearance-scale)));
+  border-end-end-radius: var(--radius-surface);
+}
+html:not([data-border-style="asym"]) :is(.card-footer, .dialog-footer) {
+  border-end-start-radius: var(--radius-surface);
+}
+:is(.btn:not(.btn-xs), .input, .select, .textarea, .nav-item, .menu-item) {
+  border-radius: var(--appearance-control-corners);
+}
+
+[data-mark-size="small"] { --corner-mark-tick: 2px; --corner-mark-gap: 1px; }
+[data-mark-size="medium"] { --corner-mark-tick: 4px; --corner-mark-gap: 2px; }
+[data-mark-size="large"] { --corner-mark-tick: 8px; --corner-mark-gap: 4px; }
+[data-corner-marks] {
+  --corner-mark: 1;
+  --appearance-mark-mask: none;
+  --appearance-mark-bg: transparent;
+  --appearance-mark-inset: calc(-1 * (var(--corner-mark-tick) + var(--corner-mark-gap)));
+  --appearance-mark-images:
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark)),
+    linear-gradient(var(--color-corner-mark), var(--color-corner-mark));
+}
+[data-corner-marks="none"] { --corner-mark: 0; }
+:is(.card, .dialog, .table-wrap, .logview, .marked, .palette, pre)::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  opacity: var(--corner-mark);
+  background-repeat: no-repeat;
+  background-size:
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick),
+    var(--corner-mark-tick) 1px, 1px var(--corner-mark-tick);
+  background-position:
+    left 0 top calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    left calc(var(--corner-mark-tick) + var(--corner-mark-gap)) top 0,
+    right 0 top calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    right calc(var(--corner-mark-tick) + var(--corner-mark-gap)) top 0,
+    left 0 bottom calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    left calc(var(--corner-mark-tick) + var(--corner-mark-gap)) bottom 0,
+    right 0 bottom calc(var(--corner-mark-tick) + var(--corner-mark-gap)),
+    right calc(var(--corner-mark-tick) + var(--corner-mark-gap)) bottom 0;
+  inset: var(--appearance-mark-inset);
+  background-image: var(--appearance-mark-images);
+  background-color: var(--appearance-mark-bg);
+  mask-image: var(--appearance-mark-mask);
+  mask-size: calc(var(--corner-mark-tick) + 1px) calc(var(--corner-mark-tick) + 1px);
+  mask-position: left top, right top, left bottom, right bottom;
+  mask-repeat: no-repeat;
+}
+
+[data-corner-marks="brackets"] {
+  --appearance-mark-images: none;
+  --appearance-mark-bg: var(--color-corner-mark);
+  --appearance-mark-inset: calc(-1 * (var(--corner-mark-gap) + 1px));
+  --appearance-mark-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5V.5H9.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%2810%200%29%20scale%28-1%201%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5V.5H9.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%280%2010%29%20scale%281%20-1%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5V.5H9.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%2810%2010%29%20scale%28-1%20-1%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5V.5H9.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+}
+
+[data-corner-marks="arcs"] {
+  --appearance-mark-images: none;
+  --appearance-mark-bg: var(--color-corner-mark);
+  --appearance-mark-inset: calc(-1 * (var(--corner-mark-gap) + 1px));
+  --appearance-mark-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5Q.5%20.5%209.5%20.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%2810%200%29%20scale%28-1%201%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5Q.5%20.5%209.5%20.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%280%2010%29%20scale%281%20-1%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5Q.5%20.5%209.5%20.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%2810%2010%29%20scale%28-1%20-1%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Cpath%20d%3D%22M.5%209.5Q.5%20.5%209.5%20.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+}
+
+[data-corner-marks="dots"] {
+  --appearance-mark-images: none;
+  --appearance-mark-bg: var(--color-corner-mark);
+  --appearance-mark-inset: calc(-1 * (var(--corner-mark-gap) + 1px));
+  --appearance-mark-mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Ccircle%20cx%3D%225%22%20cy%3D%225%22%20r%3D%223%22%20fill%3D%22black%22%20stroke%3D%22none%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%2810%200%29%20scale%28-1%201%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Ccircle%20cx%3D%225%22%20cy%3D%225%22%20r%3D%223%22%20fill%3D%22black%22%20stroke%3D%22none%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%280%2010%29%20scale%281%20-1%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Ccircle%20cx%3D%225%22%20cy%3D%225%22%20r%3D%223%22%20fill%3D%22black%22%20stroke%3D%22none%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2010%2010%22%3E%3Cg%20transform%3D%22translate%2810%2010%29%20scale%28-1%20-1%29%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20%3E%3Ccircle%20cx%3D%225%22%20cy%3D%225%22%20r%3D%223%22%20fill%3D%22black%22%20stroke%3D%22none%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+}
+
+/* Offset outlines need contrast against the modal scrim, not the page canvas. */
+html[data-border-style="offset"] :is(.kiso-react-dialog, .kiso-react-drawer, .kiso-react-palette) {
+  box-shadow: none;
+}
+html[data-border-style="offset"] :is(.kiso-react-dialog, .kiso-react-drawer, .kiso-react-palette)::before {
+  box-shadow: 3px 3px 0 0 var(--color-foreground);
+}

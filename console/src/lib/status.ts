@@ -3,8 +3,9 @@ import type { App, CustomImage, HttpReadiness } from "./types.js";
 export type Tone = "success" | "danger" | "neutral";
 
 /**
- * running is the only good outcome; pending and failed both need attention,
- * but only failed is an error.
+ * Green is alive: running, and a run that is going. Red is failed. Neutral is
+ * what is not happening, pending or stopped, which needs a look but is not
+ * an error.
  */
 export function statusTone(status: string): Tone {
   if (status === "running") return "success";
@@ -14,7 +15,7 @@ export function statusTone(status: string): Tone {
 
 /** A custom image's status is its latest build, so it reads as one. */
 export function buildTone(image: CustomImage): Tone {
-  if (image.status === "ready") return "success";
+  if (image.status === "ready" || image.status === "building") return "success";
   if (image.status === "failed") return "danger";
   return "neutral";
 }
