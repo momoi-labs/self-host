@@ -70,6 +70,40 @@ has four fields, a machine has a five-step recipe, and a custom image has four
 steps. These describe different things and there is nothing to gain by making
 them look alike.
 
+### The form's footer is a save bar
+
+Every detail form ends in `SaveBar`, and the bar sticks to the bottom of
+whatever scrolls. It says where the record stands and offers the one move
+that follows: save what changed, apply what was saved, retry what failed. The
+tone is the state: nothing to say, edits not saved, saved and waiting for the
+machine, the last attempt failed.
+
+The machine's form used to end in a row of three buttons and a grey caption
+that read "Saved configuration" whether or not anything was pending, five
+steps below the fold. An Operator who edited a port and left the tab had no
+way to know they had not saved it. The bar is read without scrolling, and it
+only offers Discard when there is something to discard.
+
+### A screen that derives facts gets a Summary tab first
+
+A record that the Host reads back, such as which tools a machine actually
+has against which it was asked for, or how its last run went, puts those
+facts in a Summary tab ahead of Configuration, and the screen opens on it.
+They are not configuration and do not belong under the form: the installed
+versions used to sit under the machine's fifth step, past the Save, where
+nobody scrolled to find them.
+
+### A run is a tab, not a bar in the header
+
+A machine's lifecycle action walks a dozen steps over several minutes. The
+header row used to swap its badges for a progress bar while one ran, and a
+failure left the Operator with a cause chain and a two-thousand-line log to
+search. The Last run tab lists the steps with their timing, opens the failed
+one on the output the guest printed just before it gave up, and offers the
+retry. The header keeps its badges and adds one that names the action and
+its fraction, so something still moves while the run goes; the screen opens
+on the run when one starts.
+
 ## What this removed
 
 The machine's screen had no heading: the breadcrumb said its name and the room
@@ -90,6 +124,9 @@ says about collection, retention and how the numbers are drawn still holds.
 in `console/src/components/Glance.tsx` is the line under it. Both take
 slots rather than data, so a screen keeps its own conditions — which verbs are
 disabled, whether the machine is mid-operation — without the component
-learning about any of them.
+learning about any of them. `SaveBar` in `console/src/components/SaveBar.tsx`
+is the form's footer, on the same terms: a tone, a message and an actions
+slot. `LastRun` in `console/src/components/LastRun.tsx` draws a run parsed
+out of the machine's event log by `console/src/lib/runSteps.ts`.
 
 The `/add-page` skill walks a new screen through these rules.

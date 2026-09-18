@@ -156,8 +156,46 @@
 #detail { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 #detail > .stack { grid-template-columns: minmax(0, 1fr); }
 
-/* The form's footer, on every detail screen. */
-.form-actions { display: flex; justify-content: flex-end; gap: var(--spacing-sm); }
+/* The form's footer, on every detail screen: where the record stands and
+   what to do next. It sticks to the bottom of whatever scrolls, so a form
+   taller than the panel never hides its Save under the fold. The inset
+   matches the padding of the container it reaches the edges of. */
+.save-bar {
+  --save-bar-inset: var(--spacing-xl);
+  /* The sticky edge counts the scroller's own padding, so the offset undoes
+     it: a tab panel pads itself, the document does not. */
+  --save-bar-scroll-padding: var(--spacing-xl);
+  position: sticky; inset-block-end: calc(-1 * var(--save-bar-scroll-padding)); z-index: 1;
+  margin-inline: calc(-1 * var(--save-bar-inset));
+  margin-block-end: calc(-1 * var(--save-bar-inset));
+  padding: var(--spacing-md) var(--save-bar-inset);
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: var(--spacing-sm) var(--spacing-lg);
+  border-block-start: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow: 0 -8px 16px -12px rgb(0 0 0 / 0.3);
+}
+.save-bar-message { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--spacing-xs); }
+.save-bar-message:empty { display: none; }
+.save-bar-actions { display: inline-flex; gap: var(--spacing-sm); margin-inline-start: auto; }
+.save-bar-neutral .save-bar-message { color: var(--color-muted-foreground); }
+/* Tinted surfaces are translucent; the card colour underneath keeps the
+   form from showing through while the bar floats over it. */
+.save-bar-warning { background: linear-gradient(var(--color-warning-surface), var(--color-warning-surface)), var(--color-card); border-block-start-color: var(--color-warning-border); }
+.save-bar-accent { background: linear-gradient(var(--color-info-surface), var(--color-info-surface)), var(--color-card); border-block-start-color: var(--color-info-border); }
+.save-bar-danger { background: linear-gradient(var(--color-danger-surface), var(--color-danger-surface)), var(--color-card); border-block-start-color: var(--color-danger-border); }
+.custom-image-form .save-bar { --save-bar-inset: var(--spacing-lg); --save-bar-scroll-padding: var(--spacing-lg); }
+/* A card on a page that scrolls as a document: the bar reaches the card's
+   edges and, at rest, is its bottom edge, corners included. */
+.card-body .save-bar {
+  --save-bar-inset: var(--spacing-lg); --save-bar-scroll-padding: 0px;
+  border-end-start-radius: calc(var(--radius-surface) - 1px);
+  border-end-end-radius: calc(var(--radius-surface) - 1px);
+}
+/* A form shorter than its panel still ends at the panel's bottom edge: the
+   footer is the panel's, not the last field's. */
+.detail-tabs [role="tabpanel"] > form:has(> .save-bar) { min-height: 100%; display: flex; flex-direction: column; }
+.detail-tabs [role="tabpanel"] > form:has(> .save-bar) > .save-bar { margin-block-start: auto; }
 
 /* Per-platform DNS instructions: a stack of disclosures, not a stack of
    cards, because only one of them is ever relevant to the reader. */
@@ -247,7 +285,7 @@
 
 .environment-page { display: flex; flex-direction: column; gap: var(--spacing-lg); min-width: 0; }
 .environment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spacing-sm); }
-.environment-editor { max-width: 760px; }
+.environment-editor > :not(.save-bar) { max-width: 760px; }
 .environment-editor .field-row { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 .environment-editor textarea.input { resize: vertical; }
 .environment-subheading { margin-block-start: var(--spacing-xl); }
@@ -426,23 +464,68 @@
 .operation-track .meter-label > :first-child { display: none; }
 .operation-track .meter-label > :last-child { margin-inline-start: auto; }
 .operation-track .meter-track > span,
-.operation-steps .meter-track > span { transition: width 200ms ease-out; }
+.run-track .meter-track > span { transition: width 200ms ease-out; }
+/* The run's title already names the action above the bar. */
+.run-track .meter-label > :first-child { display: none; }
+.run-track .meter-label > :last-child { margin-inline-start: auto; }
 
-/* The same progress, on the machine's own screen, where the status badges sit
-   when nothing is running. One step is named at a time and the label changes
-   under the bar. The action reads as the eyebrow the sections beside it use. */
-.operation-steps .meter-label > :first-child {
-  font-size: var(--type-size-metadata); font-weight: var(--type-weight-semibold);
-  letter-spacing: var(--type-letter-spacing-caps); text-transform: uppercase;
-  color: var(--color-subtle-foreground);
+/* A detail screen's Summary: a few sections read top to bottom, each a
+   caption and one line or one table. It is the tab a screen opens on, so it
+   says the state of the record before the form is asked to. */
+.summary { display: grid; gap: var(--spacing-lg); max-width: 860px; }
+.summary > section { display: grid; gap: var(--spacing-sm); }
+.summary > section + section { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
+.summary .t-caps { margin: 0; }
+.summary-state { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-sm) var(--spacing-md); }
+.summary-facts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: var(--spacing-xs) var(--spacing-lg); }
+.summary-facts dt { color: var(--color-muted-foreground); }
+.summary-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+/* The machine's last run: the steps its action walks, one line each, with
+   the failed one opened on its own output. While the run goes this is the
+   progress; the bar under the title carries the fraction the toast shows. */
+.run { display: grid; gap: var(--spacing-lg); max-width: 860px; }
+.run-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--spacing-md); }
+.run-head p { margin: 0; }
+.run-title { font-size: var(--type-size-title); font-weight: 600; display: flex; align-items: center; gap: var(--spacing-sm); margin-block-end: var(--spacing-2xs); }
+.run-actions { display: inline-flex; gap: var(--spacing-sm); }
+.run-steps { margin: 0; padding: 0; list-style: none; display: grid; }
+.run-steps > li { border-block-start: 1px solid var(--color-border); }
+.run-steps > li:first-child { border-block-start: 0; }
+/* One row per step: the mark, the name, and the timing. A step that printed
+   something is a disclosure whose summary is that same row, with no marker
+   of its own: the line count in the timing column is what says it opens. */
+.run-step {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; column-gap: var(--spacing-md); align-items: center;
+  padding: var(--spacing-sm) 0;
 }
-/* In the header row it stands where the badges stood, and takes what the
-   action buttons leave. Below that width it gets the line to itself. */
-.environment-actions > .operation-steps { flex: 1 1 20rem; min-width: 0; }
-.operation-step {
-  margin: var(--spacing-sm) 0 0;
-  font-family: var(--type-family-mono); font-size: var(--type-size-label);
-  color: light-dark(var(--color-accent-base), var(--color-accent-600));
+summary.run-step { list-style: none; cursor: pointer; }
+summary.run-step::-webkit-details-marker { display: none; }
+summary.run-step:hover .run-step-name { text-decoration: underline; text-underline-offset: 3px; }
+/* The newest line under the name of the step that is going, one line and no
+   more: the row is a ticker, the disclosure is the reading. */
+.run-step-last {
+  grid-column: 2 / -1; font-size: var(--type-size-label);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.run-step-mark {
+  width: 20px; height: 20px; border-radius: 999px; display: grid; place-items: center;
+  border: 1px solid var(--color-border); color: var(--color-muted-foreground);
+}
+.is-done .run-step-mark { background: var(--color-success-surface); border-color: var(--color-success); color: var(--color-success); }
+.is-failed .run-step-mark { background: var(--color-danger-surface); border-color: var(--color-danger); color: var(--color-danger); }
+/* The step that is going carries the colour of the bar above it. */
+.is-running .run-step-mark { border-color: var(--color-chart-1); box-shadow: inset 0 0 0 1px var(--color-chart-1); }
+.is-running .run-step-name { font-weight: 600; }
+.is-pending, .is-skipped { color: var(--color-muted-foreground); }
+.is-failed .run-step-name { font-weight: 600; }
+.run-step-meta { font-size: var(--type-size-label); }
+.run-step-detail { display: grid; gap: var(--spacing-sm); padding: 0 0 var(--spacing-md) calc(20px + var(--spacing-md)); }
+.run-step-detail p { margin: 0; }
+.run-excerpt {
+  margin: 0; padding: var(--spacing-md); border-radius: var(--radius-md);
+  background: #121116; color: #dedbd7; font: var(--type-size-label)/1.5 var(--font-mono);
+  max-height: 24em; overflow: auto; white-space: pre;
 }
 
 /* A heading the document needs and the layout does not: the breadcrumb is
