@@ -8,6 +8,7 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "./Failure.js";
+import { SaveBar } from "./SaveBar.js";
 import { Lifecycle } from "./Lifecycle.js";
 import { LogSurface } from "./LogSurface.js";
 import { Step, Steps } from "./Steps.js";
@@ -432,12 +433,14 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
           )}
           {failure ? <Failure failure={failure} /> : null}
           {current?.last_error ? <Failure failure={current.last_error} /> : null}
-          {building ? <p className="muted t-label">A build is running on this Host.</p> : null}
-          <div className="form-actions">
-            <Button type="submit" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
-              {submitting ? "Saving..." : current?.status === "building" ? "Building..." : "Save and build"}
-            </Button>
-          </div>
+          <SaveBar
+            message={building ? "A build is running on this Host." : undefined}
+            actions={
+              <Button type="submit" size="sm" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
+                {submitting ? "Saving..." : current?.status === "building" ? "Building..." : "Save and build"}
+              </Button>
+            }
+          />
         </form>
         <div className="custom-image-dock" role="region" aria-label="Build logs">
           <div className="custom-image-dock-head">

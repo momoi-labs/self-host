@@ -73,10 +73,24 @@ Rules:
 <Card className="detail-tabs">
   <Tabs value={tab} onValueChange={setTab}>
     <TabsList aria-label="Thing details">
+      {/* only when the Host reads facts back about the record */}
+      <TabsTrigger value="summary">Summary</TabsTrigger>
       <TabsTrigger value="configuration">Configuration</TabsTrigger>
       <TabsTrigger value="logs">Logs</TabsTrigger>
     </TabsList>
-    <TabsContent value="configuration">…the form…</TabsContent>
+    <TabsContent value="configuration">
+      <form className="stack" onSubmit={save}>
+        …the fields…
+        <SaveBar
+          tone={dirty ? "warning" : "neutral"}
+          message={dirty ? <><b>Unsaved changes.</b> …</> : "Saved."}
+          actions={<>
+            {dirty ? <Button size="sm" type="button" onClick={reset}>Discard</Button> : null}
+            <Button size="sm" type="submit" variant="primary">Save</Button>
+          </>}
+        />
+      </form>
+    </TabsContent>
     <TabsContent value="logs" className="detail-logs">…the log…</TabsContent>
   </Tabs>
 </Card>
@@ -101,6 +115,15 @@ Rules:
 - The tab already names the panel. Do not caption the panel with the same
   word: the Application's log pane said "Logs" under a tab called Logs.
 - A single tab means no tab bar. A lone tab is not a choice.
+- The form ends in `SaveBar` from `console/src/components/SaveBar.js`, never
+  in a `.form-actions` row. Its tone is the record's state (neutral, warning
+  for unsaved edits, accent for saved-not-applied, danger for a failed
+  attempt) and Discard renders only when there is something to discard.
+- Facts the Host reads back about the record (what is installed, how the last
+  run went) go in a Summary tab before Configuration, and the screen opens
+  on it. They are not configuration and do not go under the form.
+- A long-running action is a tab (`LastRun`), not a progress bar in the
+  header. The header adds a badge naming the action and its fraction.
 
 What goes **inside** the Configuration tab is the screen's own business. The
 Application has four fields, a machine has a five-step `Steps` recipe. Do not
@@ -112,8 +135,8 @@ Work through these against the screen you just wrote or are reviewing. Each
 one is a question with a yes or no answer — if it is no, fix it or say why the
 screen is the exception.
 
-1. Does it reuse `PageHeader`, `Lifecycle`, `Glance`, `.table-wrap`,
-   `.detail-tabs` rather than restating them in new CSS?
+1. Does it reuse `PageHeader`, `Lifecycle`, `Glance`, `SaveBar`,
+   `.table-wrap`, `.detail-tabs` rather than restating them in new CSS?
 2. Is every new class in `console/src/console.css` a rule kiso leaves to the
    product? If a second Momoi product would want it, it belongs upstream in
    the blueprint.

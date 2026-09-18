@@ -17,6 +17,7 @@ import { isCompose, parseAliases } from "../lib/status.js";
 import type { App, ComposeService, Inspection, Report } from "../lib/types.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
+import { SaveBar } from "./SaveBar.js";
 import { customImageTemplate } from "../lib/customImageTemplates.js";
 
 export type Submission = {
@@ -45,6 +46,35 @@ type Errors = {
 };
 
 /**
+ * The fields as the Application has them, so the form can tell an edit from
+ * the record it started with. Editing is against this; creating has nothing
+ * to compare to.
+ */
+function fieldsOf(app?: App) {
+  return {
+    name: app?.name ?? "",
+    image: app?.image ?? "",
+    customImageId: app?.development?.image_id ?? "",
+    customImageTag: app?.development?.tag ?? "",
+    startCommand: app?.development?.command ?? "",
+    devPort: app?.development ? String(app.development.web_port) : "",
+    persistData: app?.development?.persist_data ?? false,
+    compose: app?.compose ?? "",
+    hostname: app?.hostname ?? "",
+    aliases: (app?.aliases ?? []).join(", "),
+    webService: app?.web_service ?? "",
+    port: app?.web_port ? String(app.web_port) : "",
+  };
+}
+type Fields = ReturnType<typeof fieldsOf>;
+
+/** Whitespace and alias order are not edits. */
+function same(a: Fields, b: Fields) {
+  const norm = (f: Fields) => JSON.stringify({ ...f, aliases: parseAliases(f.aliases), name: f.name.trim(), hostname: f.hostname.trim(), image: f.image.trim(), startCommand: f.startCommand.trim(), port: f.port.trim() });
+  return norm(a) === norm(b);
+}
+
+/**
  * The same form serves "New application" and the detail page. Creating offers
  * the choice between an image and a Compose file; editing keeps the definition
  * the Application already has.
@@ -61,23 +91,43 @@ export function AppForm({
   onCancel?: () => void;
 }) {
   const creating = !app;
+  const saved = fieldsOf(app);
   const [source, setSource] = useState(creating ? "image" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
-  const [name, setName] = useState(app?.name ?? "");
-  const [image, setImage] = useState(app?.image ?? "");
-  const [customImageId, setCustomImageId] = useState(app?.development?.image_id ?? "");
-  const [customImageTag, setCustomImageTag] = useState(app?.development?.tag ?? "");
-  const [startCommand, setStartCommand] = useState(app?.development?.command ?? "");
-  const [devPort, setDevPort] = useState(app?.development ? String(app.development.web_port) : "");
-  const [persistData, setPersistData] = useState(app?.development?.persist_data ?? false);
+  const [name, setName] = useState(saved.name);
+  const [image, setImage] = useState(saved.image);
+  const [customImageId, setCustomImageId] = useState(saved.customImageId);
+  const [customImageTag, setCustomImageTag] = useState(saved.customImageTag);
+  const [startCommand, setStartCommand] = useState(saved.startCommand);
+  const [devPort, setDevPort] = useState(saved.devPort);
+  const [persistData, setPersistData] = useState(saved.persistData);
   const runtimeEdited = useRef(false);
   const [customImages, setCustomImages] = useState<CustomImage[]>([]);
   const [customImagesLoading, setCustomImagesLoading] = useState(false);
   const [customImagesFailure, setCustomImagesFailure] = useState<Report | null>(null);
-  const [compose, setCompose] = useState(app?.compose ?? "");
-  const [hostname, setHostname] = useState(app?.hostname ?? "");
-  const [aliases, setAliases] = useState((app?.aliases ?? []).join(", "));
-  const [webService, setWebService] = useState(app?.web_service ?? "");
-  const [port, setPort] = useState(app?.web_port ? String(app.web_port) : "");
+  const [compose, setCompose] = useState(saved.compose);
+  const [hostname, setHostname] = useState(saved.hostname);
+  const [aliases, setAliases] = useState(saved.aliases);
+  const [webService, setWebService] = useState(saved.webService);
+  const [port, setPort] = useState(saved.port);
+  const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port };
+  const dirty = !creating && !same(fields, saved);
+
+  /** Back to the record, field by field, the way Discard is read. */
+  function reset() {
+    setName(saved.name);
+    setImage(saved.image);
+    setCustomImageId(saved.customImageId);
+    setCustomImageTag(saved.customImageTag);
+    setStartCommand(saved.startCommand);
+    setDevPort(saved.devPort);
+    setPersistData(saved.persistData);
+    setCompose(saved.compose);
+    setHostname(saved.hostname);
+    setAliases(saved.aliases);
+    setWebService(saved.webService);
+    setPort(saved.port);
+    setErrors({});
+  }
   const [other, setOther] = useState(false);
   const [inspected, setInspected] = useState<Inspection | null>(null);
   const [errors, setErrors] = useState<Errors>({});
@@ -468,25 +518,41 @@ export function AppForm({
 
       {failure ? <Failure failure={failure} /> : null}
 
-      <div className="form-actions">
-        {creating ? (
-          <>
-            <Button size="sm" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button size="sm" variant="primary" type="submit"
-              disabled={source === "custom-image" && (!customImageId || !customImageTag || customImagesLoading || !!customImagesFailure)}>
-              Deploy
-            </Button>
-          </>
-        ) : (
-          /* Removing lives in the header row with the other lifecycle verbs,
-             so the form's footer is only about saving. */
-          <Button size="sm" variant="primary" type="submit">
-            Save and redeploy
-          </Button>
-        )}
-      </div>
+      {creating ? (
+        <SaveBar
+          actions={
+            <>
+              <Button size="sm" type="button" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button size="sm" variant="primary" type="submit"
+                disabled={source === "custom-image" && (!customImageId || !customImageTag || customImagesLoading || !!customImagesFailure)}>
+                Deploy
+              </Button>
+            </>
+          }
+        />
+      ) : (
+        /* Removing lives in the header row with the other lifecycle verbs,
+           so the form's footer is only about saving. A redeploy without an
+           edit is still an ask: it pulls the image again. */
+        <SaveBar
+          tone={dirty ? "warning" : "neutral"}
+          message={dirty ? <><b>Unsaved changes.</b> The Application keeps running as it is until you save.</> : "Saved. Redeploying pulls the image again."}
+          actions={
+            <>
+              {dirty ? (
+                <Button size="sm" type="button" onClick={reset}>
+                  Discard
+                </Button>
+              ) : null}
+              <Button size="sm" variant="primary" type="submit">
+                Save and redeploy
+              </Button>
+            </>
+          }
+        />
+      )}
     </form>
   );
 }
