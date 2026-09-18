@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { OperationProgress } from "./components/OperationProgress.js";
+import { OperationOutcomes } from "./components/OperationOutcomes.js";
 import { Shell } from "./components/Shell.js";
 import { useMetrics } from "./lib/useMetrics.js";
 import { useEnvironments } from "./lib/useEnvironments.js";
@@ -124,6 +124,7 @@ export function App() {
             listing={view.view === "custom-images"}
             selected={view.id}
             onOpen={(id) => go({ view: "custom-image", id })}
+            onList={() => go({ view: "custom-images", id: null })}
           />
         ) : view.view === "new" ? (
           <NewApp
@@ -162,13 +163,10 @@ export function App() {
           />
         )}
       </section>
-      {/* The toast follows an operation to wherever the Operator went. On the
-          machine's own screen the header already carries it, and two bars
-          counting the same steps are one too many. */}
-      <OperationProgress
-        environments={environments}
-        watching={view.view === "environments" ? view.id : null}
-      />
+      {/* A run is watched on the Overview's table or the machine's own
+          screen; the toast only says how it ended, wherever the Operator
+          went meanwhile. */}
+      <OperationOutcomes environments={environments} />
     </Shell>
   );
 }

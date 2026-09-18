@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -8,16 +8,26 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  Badge,
   Button,
   Card,
   EmptyState,
   EmptyStateActions,
   EmptyStateTitle,
+  Form,
+  FormActions,
   FormField,
   Label,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
+  StepBar,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
   Tabs,
   TabsContent,
   TabsList,
@@ -27,11 +37,11 @@ import {
 import { Dependencies } from "../components/Dependencies.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
+import { LastRun } from "../components/LastRun.js";
 import { Lifecycle } from "../components/Lifecycle.js";
 import { ShellEditor } from "../components/ShellEditor.js";
 import { Step, Steps } from "../components/Steps.js";
 import { LogSurface } from "../components/LogSurface.js";
-import { OperationSteps } from "../components/OperationProgress.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { Terminal } from "../components/Terminal.js";
 import { api, asReport, failureOf } from "../lib/api.js";
@@ -40,6 +50,18 @@ import {
   customImageTemplates,
 } from "../lib/customImageTemplates.js";
 import { isVersion } from "../lib/dependencies.js";
+import {
+  NOUNS,
+  TITLES,
+  formatSeconds,
+  parseRun,
+  phase,
+  position,
+  seconds,
+  stepLabel,
+  stepViews,
+  type Run,
+} from "../lib/runSteps.js";
 import { machineSeriesFor } from "../lib/useMetrics.js";
 import type {
   Environment,
@@ -82,10 +104,10 @@ const demoEnvironments: Environment[] = [
     tunnel_command: "ssh -N -L 3000:127.0.0.1:3000 operator@host -p 2222",
     web_url: "http://127.0.0.1:3000",
     installed_versions: {
-      node: "24.8.0",
-      t3: "0.4.1",
-      claude: "1.2.0",
-      codex: "0.31.0",
+      node: "24.21.0",
+      "npm:t3": "0.0.42",
+      "claude-code": "2.1.274",
+      "npm:@openai/codex": "0.154.0",
     },
   },
   {
@@ -96,7 +118,7 @@ const demoEnvironments: Environment[] = [
     operation: {
       action: "bootstrap",
       status: "running",
-      step: "Checking service readiness",
+      step: "health",
     },
     log: "Virtual machine booted\nInstalling tools\nChecking service readiness...",
     ssh_command: "ssh operator@host -p 2223",
@@ -112,9 +134,9 @@ const demoEnvironments: Environment[] = [
     operation: {
       action: "bootstrap",
       status: "failed",
-      step: "Installing mise dependencies",
+      step: "tools",
       error: {
-        error: "Bootstrap failed",
+        error: "Provisioning failed at tools. The output above is the machine's own account.",
         caused_by: ["npm:t3 could not be downloaded"],
       },
     },
@@ -125,6 +147,63 @@ const demoEnvironments: Environment[] = [
     installed_versions: {},
   },
 ];
+
+/// The Host's event log for the demo machines, so the demo has a last run
+/// to draw: a bootstrap that reached the end, one still going, and one that
+/// stopped at its tools. Each line is seconds after the run started.
+function demoLog(startedAt: string, lines: [number, string][]) {
+  const start = Date.parse(startedAt);
+  return lines
+    .map(([after, text]) => {
+      const at = new Date(start + after * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+      return `${at} bootstrap ${text}`;
+    })
+    .join("\n");
+}
+const demoBootstrap: [number, string][] = [
+  [0, "--- bootstrap started ---"],
+  [0, "starting"],
+  [6, "provisioning"],
+  [7, "SF_STEP system-packages"],
+  [8, "Get:1 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]"],
+  [12, "Get:2 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]"],
+  [40, "Setting up curl (8.5.0-2ubuntu10.6) ..."],
+  [54, "Setting up git (1:2.43.0-1ubuntu7.2) ..."],
+  [55, "SF_STEP user-and-ssh"],
+  [57, "SF_STEP mise"],
+  [58, "mise 2025.9.1 installed to /home/dev/.local/bin/mise"],
+  [66, "SF_STEP tools"],
+];
+const demoEvents: Record<string, string> = {
+  "demo-running": demoLog("2026-09-18T14:00:00Z", [
+    ...demoBootstrap,
+    [178, "SF_STEP setup"],
+    [182, "SF_STEP checks"],
+    [193, "SF_STEP service"],
+    [196, "SF_STEP health"],
+    [203, "SF_STEP ready"],
+    [203, "--- bootstrap succeeded ---"],
+  ]),
+  "demo-starting": demoLog("2026-09-18T16:00:00Z", [
+    ...demoBootstrap,
+    [178, "SF_STEP setup"],
+    [182, "SF_STEP checks"],
+    [193, "SF_STEP service"],
+    [196, "SF_STEP health"],
+    [196, "curl: (7) Failed to connect to 127.0.0.1 port 3000 after 0 ms: Couldn't connect to server"],
+    [199, "curl: (7) Failed to connect to 127.0.0.1 port 3000 after 0 ms: Couldn't connect to server"],
+    [202, "curl: (56) Recv failure: Connection reset by peer"],
+  ]),
+  "demo-failed": demoLog("2026-09-18T15:00:00Z", [
+    ...demoBootstrap,
+    [66, "mise install node@24 ... done"],
+    [100, "mise install npm:t3@latest"],
+    [178, "npm ERR! network request to https://registry.npmjs.org/t3 failed"],
+    [178, "mise ERROR failed to install npm:t3@latest"],
+    [178, "SF_STEP failed:tools"],
+    [179, "--- bootstrap failed: Provisioning failed at tools. ---"],
+  ]),
+};
 
 /// A machine starts empty. A template is an offer, not a default, so nothing
 /// is installed and no service runs until the Operator asks for one.
@@ -245,7 +324,8 @@ export function Environments({
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Environment | null>(null);
   const [logs, setLogs] = useState("");
-  const [tab, setTab] = useState("configuration");
+  const [events, setEvents] = useState("");
+  const [tab, setTab] = useState("summary");
   const [confirmName, setConfirmName] = useState("");
   const requestId = useRef<string | null>(null);
   const opened = useRef<string | null>(null);
@@ -257,6 +337,9 @@ export function Environments({
     !!savedConfig &&
     !!appliedConfig &&
     !equalConfig(savedConfig, appliedConfig);
+  // The event log is read again every few seconds while a run goes; the
+  // record polls faster than that, so the parse waits for the log to change.
+  const run = useMemo(() => parseRun(events), [events]);
 
   useEffect(() => {
     if (demo) return;
@@ -324,9 +407,46 @@ export function Environments({
   }, [demo, selected, current?.operation?.status]);
 
   /*
+   * The Host's own account of the machine: every line each lifecycle action
+   * printed, with the step markers the run panel is drawn from. It is read
+   * again while an action runs and once more when it ends, so the last step
+   * and the closing line are not missed.
+   */
+  useEffect(() => {
+    if (!selected) {
+      setEvents("");
+      return;
+    }
+    if (demo) {
+      setEvents(demoEvents[selected] ?? "");
+      return;
+    }
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const running = current?.operation?.status === "running";
+    const path = `/environments/${encodeURIComponent(selected)}/events`;
+    const poll = async () => {
+      try {
+        const response = await api(path);
+        if (!active) return;
+        setEvents(response.ok ? await response.text() : "");
+      } catch {
+        if (active) setEvents("");
+      } finally {
+        if (active && running) timer = setTimeout(poll, 3000);
+      }
+    };
+    void poll();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [demo, selected, current?.operation?.status]);
+
+  /*
    * Where the Operator lands. A machine with something happening to it opens on
-   * its log, and a create that starts while they are reading something else
-   * takes them there once, the way the image builder's dock opens on a build.
+   * its run, and a create that starts while they are reading something else
+   * takes them there once, the way an image opens on its build log.
    * Every move after that is theirs to keep.
    */
   useEffect(() => {
@@ -335,10 +455,10 @@ export function Environments({
     if (opened.current !== selected) {
       opened.current = selected;
       wasRunning.current = running;
-      setTab(running ? "logs" : "configuration");
+      setTab(running ? "run" : "summary");
       return;
     }
-    if (running && !wasRunning.current) setTab("logs");
+    if (running && !wasRunning.current) setTab("run");
     wasRunning.current = running;
   }, [selected, current?.operation?.status]);
 
@@ -632,18 +752,31 @@ export function Environments({
     }
   }
 
+  // The same shape as a new Application: the screen says what it is, and the
+  // form sits in a card, so the footer has an edge to reach.
   if (mode === "new")
     return (
-      <EnvironmentEditor
-        config={config}
-        failure={failure}
-        busy={busy}
-        onChange={patch}
-        onRecipeChange={patchRecipe}
-        onTemplate={chooseTemplate}
-        onCancel={() => onOpen(null)}
-        onSubmit={submitCreate}
-      />
+      <>
+        <PageHeader>
+          <PageHeaderTitle>New virtual machine</PageHeaderTitle>
+          <PageHeaderDescription>
+            A workspace of your own on this Host, with the tools you pick and a
+            service you can reach by name.
+          </PageHeaderDescription>
+        </PageHeader>
+        <Card className="form-page">
+          <EnvironmentEditor
+            config={config}
+            failure={failure}
+            busy={busy}
+            onChange={patch}
+            onRecipeChange={patchRecipe}
+            onTemplate={chooseTemplate}
+            onCancel={() => onOpen(null)}
+            onSubmit={submitCreate}
+          />
+        </Card>
+      </>
     );
   if (!current)
     return (
@@ -657,7 +790,7 @@ export function Environments({
       </Card>
     );
   const operation = current.operation;
-  const versions = installedVersions(current.installed_versions);
+  const running = operation?.status === "running";
   // A half-provisioned guest reports numbers that read as a machine sitting
   // idle, so the glance waits for the service to answer. What it is using is
   // measured inside it: the Host only sees one hypervisor process.
@@ -710,110 +843,136 @@ export function Environments({
             </PageHeaderDescription>
             {samples ? <Glance samples={samples} /> : null}
           </PageHeader>
-          {/* Neither badge moves during a create, so while one runs the row
-              carries the operation instead: a bar that walks is the only thing
-              on this screen that says the minutes are passing. */}
-          {operation?.status === "running" ? (
-            <div className="lifecycle">
-              <OperationSteps operation={operation} />
-            </div>
-          ) : (
-            <Lifecycle
-              status={
-                <>
-                  <StatusBadge tone={tone(current.state)}>
-                    VM {current.state}
-                  </StatusBadge>
-                  {/* A machine nobody signed into has a T3 service that is off,
-                      which is the normal state and not an error to report. */}
+          {/* Neither badge moves during a run, so a third one says what is
+              happening and how far along it is. The steps themselves walk in
+              the Last run tab, which is where a run opens. */}
+          <Lifecycle
+            status={
+              <>
+                <StatusBadge tone={tone(current.state)}>
+                  VM {current.state}
+                </StatusBadge>
+                {/* A machine nobody signed into has a T3 service that is off,
+                    which is the normal state and not an error to report. One
+                    still being created has no service yet to call disabled,
+                    so the reading is not drawn until the create is over. */}
+                {running && operation.action === "create" && !current.service_ready ? null : (
                   <StatusBadge tone={current.service_ready ? "success" : "neutral"}>
                     Service {current.service_ready ? "ready" : "disabled"}
                   </StatusBadge>
-                </>
-              }
-              actions={
-                <>
-                  <Button
-                    size="sm"
-                    onClick={() => void perform("start")}
-                    disabled={busy || actionBusy(current) || current.state === "running"}
-                  >
-                    Start
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => void perform("stop")}
-                    disabled={busy || actionBusy(current) || current.state !== "running"}
-                  >
-                    Stop
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => void perform("restart")}
-                    disabled={busy || actionBusy(current) || current.state !== "running"}
-                  >
-                    Restart
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => void perform("bootstrap")}
-                    disabled={busy || actionBusy(current)}
-                  >
-                    Bootstrap
-                  </Button>
-                </>
-              }
-              destructive={
+                )}
+                {/* The one reading that says the Host is at work: the phase
+                    the run is in, pulsing. The run tab has the steps. */}
+                {running ? (
+                  <StatusBadge tone="success" pulse>
+                    {phase(operation.action, operation.step)}
+                  </StatusBadge>
+                ) : null}
+              </>
+            }
+            actions={
+              <>
                 <Button
                   size="sm"
-                  variant="ghost"
-                  className="btn-danger-ghost"
-                  onClick={() => setConfirming(current)}
+                  onClick={() => void perform("start")}
+                  disabled={busy || actionBusy(current) || current.state === "running"}
+                >
+                  Start
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void perform("stop")}
+                  disabled={busy || actionBusy(current) || current.state !== "running"}
+                >
+                  Stop
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void perform("restart")}
+                  disabled={busy || actionBusy(current) || current.state !== "running"}
+                >
+                  Restart
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void perform("bootstrap")}
                   disabled={busy || actionBusy(current)}
                 >
-                  Delete virtual machine
+                  Bootstrap
                 </Button>
-              }
-            />
-          )}
+              </>
+            }
+            destructive={
+              <Button
+                size="sm"
+                variant="ghost"
+                className="btn-danger-ghost"
+                onClick={() => setConfirming(current)}
+                disabled={busy || actionBusy(current)}
+              >
+                Delete virtual machine
+              </Button>
+            }
+          />
         </div>
         <Card className="detail-tabs">
           <Tabs key={current.id} value={tab} onValueChange={setTab}>
             <TabsList aria-label="Virtual machine details">
+              <TabsTrigger value="summary">Summary</TabsTrigger>
               <TabsTrigger value="configuration">Configuration</TabsTrigger>
+              <TabsTrigger value="run">Last run</TabsTrigger>
               <TabsTrigger value="logs">Logs</TabsTrigger>
               <TabsTrigger value="connect">Terminal</TabsTrigger>
             </TabsList>
+            <TabsContent value="summary">
+              <Summary
+                environment={current}
+                saved={savedConfig ?? current.config}
+                applied={appliedConfig ?? current.config}
+                dirty={configDirty}
+                pendingApply={pendingApply}
+                run={run}
+                busy={busy || actionBusy(current)}
+                onOpen={setTab}
+                onApply={() => void perform("apply_update")}
+                onRetry={() => void perform("retry")}
+              />
+            </TabsContent>
             <TabsContent value="configuration">
-            <EnvironmentEditor
-              config={config}
-              failure={null}
-              busy={busy}
-              onChange={patch}
-              onRecipeChange={patchRecipe}
-              onTemplate={chooseTemplate}
-              onCancel={() => onOpen(null)}
-              onSubmit={(event) => {
-                event.preventDefault();
-                void saveConfig();
-              }}
-              onApplyUpdate={() => void perform("apply_update")}
-              existing
-              dirty={configDirty}
-              pendingApply={pendingApply}
-            />
-            {versions.length ? (
-              <>
-                <p className="t-caps environment-subheading">Installed versions</p>
-                <ul>
-                  {versions.map(([key, value]) => (
-                    <li key={key}>
-                      <code>{key}</code> {value}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
+              <EnvironmentEditor
+                config={config}
+                failure={null}
+                busy={busy}
+                onChange={patch}
+                onRecipeChange={patchRecipe}
+                onTemplate={chooseTemplate}
+                onCancel={() => onOpen(null)}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveConfig();
+                }}
+                onDiscard={() => setConfig(structuredClone(savedConfig ?? current.config))}
+                onApplyUpdate={() => void perform("apply_update")}
+                onRetry={() => void perform("retry")}
+                onOpenRun={() => setTab("run")}
+                existing
+                dirty={configDirty}
+                pendingApply={pendingApply}
+                failedAt={
+                  operation?.status === "failed" && operation.step
+                    ? stepLabel(operation.step)
+                    : null
+                }
+              />
+            </TabsContent>
+            <TabsContent value="run" className="detail-run">
+              <LastRun
+                run={run}
+                operation={operation}
+                busy={busy || actionBusy(current)}
+                onRetry={() => void perform("retry")}
+                onOpenLog={() => setTab("logs")}
+              />
             </TabsContent>
             <TabsContent value="logs" className="detail-logs">
             <LogSurface label="Virtual machine log" text={logs}
@@ -870,6 +1029,199 @@ export function Environments({
   );
 }
 
+/**
+ * What the machine is, read without opening the form: whether what it runs
+ * is what was saved, which tools it was asked for against which it has, how
+ * its last run went, and what it serves. The versions used to sit under the
+ * five-step form, past the Save, where nobody scrolled to find them.
+ */
+function Summary({
+  environment,
+  saved,
+  applied,
+  dirty,
+  pendingApply,
+  run,
+  busy,
+  onOpen,
+  onApply,
+  onRetry,
+}: {
+  environment: Environment;
+  saved: EnvironmentConfig;
+  applied: EnvironmentConfig;
+  dirty: boolean;
+  pendingApply: boolean;
+  run: Run | null;
+  busy: boolean;
+  onOpen: (tab: string) => void;
+  onApply: () => void;
+  onRetry: () => void;
+}) {
+  const operation = environment.operation;
+  const failed = operation?.status === "failed";
+  const running = operation?.status === "running";
+  const installed = Object.fromEntries(
+    installedVersions(environment.installed_versions),
+  );
+  const appliedTools = new Set(applied.recipe.dependencies.map((d) => d.tool));
+  const tools = saved.recipe.dependencies.map((dependency) => ({
+    ...dependency,
+    installed: installed[dependency.tool] as string | undefined,
+    state: installed[dependency.tool]
+      ? ("installed" as const)
+      : appliedTools.has(dependency.tool)
+        ? ("missing" as const)
+        : ("pending" as const),
+  }));
+  const steps = run ? stepViews(run) : [];
+  const stopped = steps.find((step) => step.state === "failed");
+  const place = stopped ? position(run!.action, stopped.name) : null;
+  return (
+    <div className="summary">
+      <section>
+        <p className="t-caps">Configuration</p>
+        {dirty ? (
+          <p className="summary-state">
+            <Badge variant="warning">Unsaved edits</Badge>
+            <span>The configuration has changes that are not saved.</span>
+            <Button size="sm" onClick={() => onOpen("configuration")}>
+              Open configuration
+            </Button>
+          </p>
+        ) : failed ? (
+          <p className="summary-state">
+            <Badge variant="danger">{NOUNS[operation.action] ?? operation.action} failed</Badge>
+            <span>
+              {pendingApply
+                ? "The saved configuration could not be applied. The machine still runs the previous one."
+                : "The machine may not have everything the configuration asks for."}
+            </span>
+            <Button size="sm" onClick={() => onOpen("run")}>
+              Open last run
+            </Button>
+            <Button size="sm" variant="primary" onClick={onRetry} disabled={busy}>
+              Retry {(NOUNS[operation.action] ?? operation.action).toLowerCase()}
+            </Button>
+          </p>
+        ) : pendingApply ? (
+          <p className="summary-state">
+            <Badge variant="warning">Saved, not applied</Badge>
+            <span>The machine still runs the previous configuration.</span>
+            <Button size="sm" variant="primary" onClick={onApply} disabled={busy}>
+              Apply update
+            </Button>
+          </p>
+        ) : (
+          <p className="summary-state">
+            <Badge variant="success">Applied</Badge>
+            <span>The machine runs the saved configuration.</span>
+          </p>
+        )}
+      </section>
+      <section>
+        <p className="t-caps">Tools</p>
+        {tools.length ? (
+          <div className="table-wrap">
+            <div className="table-scroll">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tool</TableHead>
+                    <TableHead>Requested</TableHead>
+                    <TableHead>Installed</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tools.map((tool) => (
+                    <TableRow key={tool.tool}>
+                      <TableCell>
+                        <code>{tool.tool}</code>
+                      </TableCell>
+                      <TableCell className="mono">
+                        {tool.version}
+                        {tool.allow_builds?.length ? (
+                          <span className="muted"> allow_builds={tool.allow_builds.join(",")}</span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="mono">{tool.installed ?? "—"}</TableCell>
+                      <TableCell>
+                        {tool.state === "installed" ? (
+                          <Badge variant="success">Installed</Badge>
+                        ) : tool.state === "missing" ? (
+                          <Badge variant="danger">Missing</Badge>
+                        ) : (
+                          <Badge variant="warning">Not applied yet</Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        ) : (
+          <p className="muted">No tools in the recipe. This is a plain Ubuntu.</p>
+        )}
+      </section>
+      <section>
+        <p className="t-caps">Last run</p>
+        {run ? (
+          <>
+          <p className="summary-state">
+            {running ? (
+              <StatusBadge tone="success" pulse>Running</StatusBadge>
+            ) : run.status === "failed" ? (
+              <StatusBadge tone="danger">Failed</StatusBadge>
+            ) : (
+              <StatusBadge tone="success">Succeeded</StatusBadge>
+            )}
+            <span>
+              {running
+                ? TITLES[run.action] ?? run.action
+                : NOUNS[run.action] ?? run.action}
+              {run.status === "failed" && stopped
+                ? ` · stopped at ${place ? `step ${place.at} of ${place.of}, ` : ""}${stepLabel(stopped.name)}`
+                : run.endedAt
+                  ? ` · ${formatSeconds(seconds(run.startedAt, run.endedAt))}`
+                  : ""}
+            </span>
+            <Button size="sm" onClick={() => onOpen("run")}>
+              Open last run
+            </Button>
+          </p>
+          {/* One segment per step while it goes or after it failed; a run
+              that ended well is the badge alone. */}
+          {running || run.status === "failed" ? (
+            <StepBar
+              className="summary-bar"
+              label={running ? TITLES[run.action] ?? run.action : NOUNS[run.action] ?? run.action}
+              steps={steps.map((step) => ({ key: step.name, label: stepLabel(step.name), state: step.state }))}
+            />
+          ) : null}
+          </>
+        ) : (
+          <p className="muted">Nothing has run on this machine yet.</p>
+        )}
+      </section>
+      <section>
+        <p className="t-caps">Service</p>
+        <dl className="summary-facts">
+          <dt>Command</dt>
+          <dd className="mono">{applied.command || "None"}</dd>
+          <dt>Web port</dt>
+          <dd className="mono">{applied.web_port || "None"}</dd>
+          <dt>Machine</dt>
+          <dd>
+            {applied.cpus} CPUs · {applied.memory_gib} GiB memory · {applied.disk_gib} GiB disk
+          </dd>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
 export function EnvironmentEditor({
   config,
   failure,
@@ -879,10 +1231,14 @@ export function EnvironmentEditor({
   onTemplate,
   onCancel,
   onSubmit,
+  onDiscard,
   onApplyUpdate,
+  onRetry,
+  onOpenRun,
   existing = false,
   dirty = false,
   pendingApply = false,
+  failedAt = null,
 }: {
   config: EnvironmentConfig;
   failure: Report | null;
@@ -892,10 +1248,15 @@ export function EnvironmentEditor({
   onTemplate: (id: string) => void;
   onCancel: () => void;
   onSubmit: (event: FormEvent) => void;
+  onDiscard?: () => void;
   onApplyUpdate?: () => void;
+  onRetry?: () => void;
+  onOpenRun?: () => void;
   existing?: boolean;
   dirty?: boolean;
   pendingApply?: boolean;
+  /** The step the last run stopped at, when it failed. */
+  failedAt?: string | null;
 }) {
   // A machine needs a name and a size. Everything else is an offer: no
   // template, no tools and no service is a plain Ubuntu, which is a thing an
@@ -909,7 +1270,8 @@ export function EnvironmentEditor({
       isVersion(dependency.version),
     );
   return (
-    <form className="stack environment-editor" onSubmit={onSubmit}>
+    <Form className="environment-editor" onSubmit={onSubmit}>
+      <div className="form-body">
       <Steps>
         <Step title="Machine">
           <div className="field-row">
@@ -1085,38 +1447,76 @@ export function EnvironmentEditor({
         </FormField>
       </details>
       {failure ? <Failure failure={failure} /> : null}
-      <div className="form-actions">
-        <Button type="button" size="sm" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          size="sm"
-          variant="primary"
-          disabled={busy || !valid}
+      </div>
+      {/* The footer says where the configuration stands and offers the one
+          move that follows: save what changed, apply what was saved, or retry
+          what failed. It sticks to the bottom of the panel, so the state is
+          read without scrolling past five steps to find it. */}
+      {!existing ? (
+        <FormActions sticky>
+          <Button type="button" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="submit" size="sm" variant="primary" disabled={busy || !valid}>
+            Create virtual machine
+          </Button>
+        </FormActions>
+      ) : dirty ? (
+        <FormActions
+          sticky
+          tone="warning"
+          message={
+            <>
+              <strong>Unsaved changes.</strong> The machine keeps running as it is until you save and apply.
+            </>
+          }
         >
-          {existing ? "Save configuration" : "Create virtual machine"}
-        </Button>
-        {existing && pendingApply ? (
-          <Button
-            type="button"
-            size="sm"
-            onClick={onApplyUpdate}
-            disabled={busy}
-          >
+          <Button type="button" size="sm" onClick={onDiscard} disabled={busy}>
+            Discard
+          </Button>
+          <Button type="submit" size="sm" variant="primary" disabled={busy || !valid}>
+            Save configuration
+          </Button>
+        </FormActions>
+      ) : failedAt ? (
+        <FormActions
+          sticky
+          tone="danger"
+          message={
+            <>
+              <strong>The last run failed</strong> at {failedAt}.{" "}
+              {pendingApply
+                ? "The machine still runs the previous configuration."
+                : "The machine may not have everything this configuration asks for."}
+            </>
+          }
+        >
+          <Button type="button" size="sm" onClick={onOpenRun}>
+            Open last run
+          </Button>
+          <Button type="button" size="sm" variant="primary" onClick={onRetry} disabled={busy}>
+            Retry
+          </Button>
+        </FormActions>
+      ) : pendingApply ? (
+        /* Saved and not yet on the machine is the same warning the Summary
+           shows for it: the machine is not running what is written here. */
+        <FormActions
+          sticky
+          tone="warning"
+          message={
+            <>
+              <strong>Saved, not applied.</strong> The machine still runs the previous configuration.
+            </>
+          }
+        >
+          <Button type="button" size="sm" variant="primary" onClick={onApplyUpdate} disabled={busy}>
             Apply update
           </Button>
-        ) : null}
-        {existing ? (
-          <span className="muted t-label">
-            {dirty
-              ? "Pending changes. Save configuration before applying."
-              : pendingApply
-                ? "Saved changes are ready to apply."
-                : "Saved configuration"}
-          </span>
-        ) : null}
-      </div>
-    </form>
+        </FormActions>
+      ) : (
+        <FormActions sticky message="Saved and applied." />
+      )}
+    </Form>
   );
 }

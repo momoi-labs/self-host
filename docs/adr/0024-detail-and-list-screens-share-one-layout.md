@@ -27,6 +27,19 @@ is how its create action ended up on a line of its own.
 Creating from a list is a dialog, not a card parked above the table. API keys
 kept a "Create a key" panel on screen permanently for a form of one field.
 
+## The create screen
+
+A record with a recipe (an Application, a custom image, a machine) is too
+much for a dialog, so it gets a page of its own: a `PageHeader` that says
+what is about to be made, and the same form the detail screen edits, inside
+`Card.form-page`. No lifecycle row, because there is nothing to start or
+delete yet, and no tabs, because there is nothing to print yet. The footer is
+the same `FormActions`, with Cancel and the one primary verb.
+
+The machine's create form used to sit bare on the page, the only one of its
+kind: with no card there was no edge for the footer to reach, and the sticky
+bar floated over the fields.
+
 ## The detail screen
 
 One header row, then one card.
@@ -35,6 +48,16 @@ The row is three groups, in this order: status, the lifecycle verbs, and the
 destructive action.
 
     [ VM running │ Service ready ]  [ Start │ Stop │ Restart │ Bootstrap ]   Delete
+
+Status is a `StatusBadge` in one of three tones, and the tones mean what a
+light on a device means. Green is alive: a running machine, a build or a run
+that is going, a run that ended well. Red is failed. Neutral is what is not
+happening: pending, stopped, disabled. A fourth colour for "in progress" (the
+blue the tokens offer as "info") is a colour the rest of the console never
+uses, and grey for it read as switched off. Work in progress is told apart
+from merely being up by the dot: it pulses while a run or a build goes, and
+the badge says which phase it is in ("Provisioning", "Building"), not that
+something is "running".
 
 Status is one object and the verbs are another because they are different
 kinds of thing, and eight controls in a line said they were the same kind.
@@ -70,11 +93,53 @@ has four fields, a machine has a five-step recipe, and a custom image has four
 steps. These describe different things and there is nothing to gain by making
 them look alike.
 
+### The form's footer is a save bar
+
+Every detail form is kiso's `Form` and ends in its `FormActions`, sticky to
+the bottom of whatever scrolls. It says where the record stands and offers
+the one move that follows: save what changed, apply what was saved, retry
+what failed. The tone is the state: nothing to say, edits not saved or saved
+and waiting for the machine, the last attempt failed. The bar started here
+as `SaveBar`; kiso 0.8 took it upstream (blueprint #99), along with the
+step list the run tab draws (blueprint #98).
+
+The machine's form used to end in a row of three buttons and a grey caption
+that read "Saved configuration" whether or not anything was pending, five
+steps below the fold. An Operator who edited a port and left the tab had no
+way to know they had not saved it. The bar is read without scrolling, and it
+only offers Discard when there is something to discard.
+
+### A screen that derives facts gets a Summary tab first
+
+A record that the Host reads back, such as which tools a machine actually
+has against which it was asked for, or how its last run went, puts those
+facts in a Summary tab ahead of Configuration, and the screen opens on it.
+They are not configuration and do not belong under the form: the installed
+versions used to sit under the machine's fifth step, past the Save, where
+nobody scrolled to find them.
+
+### A run is a tab, not a bar in the header
+
+A machine's lifecycle action walks a dozen steps over several minutes. The
+header row used to swap its badges for a progress bar while one ran, and a
+failure left the Operator with a cause chain and a two-thousand-line log to
+search. The Last run tab lists the steps with their timing beside the output
+of the selected one, the failed step by itself with the reason at the end of
+what the guest printed, and offers the retry. The header keeps its badges
+and adds one that names the phase the run is in, Creating, Starting,
+Provisioning, Ready, pulsing; the screen opens on the run when one starts.
+
 ## What this removed
 
 The machine's screen had no heading: the breadcrumb said its name and the room
 went to the action row. With the row grouped, the room is there, and a screen
 with no heading was the only one of its kind.
+
+The custom image's build log dock is gone. It sat under the form, closed
+until a build started, then took half the card and then all of it, which was
+a split by another name and a third answer to "where does the log go". The
+log is a Build log tab now, opened when a build starts, the way the machine
+opens on its run.
 
 The Application's Resources tab and the machine's metrics card are both gone.
 Both restated what the glance already says, and the per-container breakdown
@@ -90,6 +155,9 @@ says about collection, retention and how the numbers are drawn still holds.
 in `console/src/components/Glance.tsx` is the line under it. Both take
 slots rather than data, so a screen keeps its own conditions — which verbs are
 disabled, whether the machine is mid-operation — without the component
-learning about any of them.
+learning about any of them. The form's footer is kiso's `FormActions`, on
+the same terms: a tone, a message and the buttons. `LastRun` in
+`console/src/components/LastRun.tsx` lays a run parsed out of the machine's
+event log by `console/src/lib/runSteps.ts` over kiso's `StepList`.
 
 The `/add-page` skill walks a new screen through these rules.

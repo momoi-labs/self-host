@@ -16,7 +16,7 @@ import "./events.css";
 
 const states = {
   pending: { label: "Pending", tone: "neutral" },
-  running: { label: "Running", tone: "info" },
+  running: { label: "Running", tone: "success" },
   completed: { label: "Completed", tone: "success" },
   failed: { label: "Failed", tone: "danger" },
 } as const;

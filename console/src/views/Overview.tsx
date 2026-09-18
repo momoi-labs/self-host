@@ -12,6 +12,7 @@ import {
   PageHeaderTitle,
   Search,
   Sparkline,
+  StepBar,
   Table,
   TableBody,
   TableCell,
@@ -23,6 +24,7 @@ import {
 import { Icon } from "../components/Icon.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { formatBytes } from "../lib/format.js";
+import { NOUNS, TITLES, barSteps, phase, position } from "../lib/runSteps.js";
 import { statusTone } from "../lib/status.js";
 import { hostNetworkSeries, hostTotals, machineSeriesFor, seriesFor } from "../lib/useMetrics.js";
 import type { App, AppSample, Environment, Metrics } from "../lib/types.js";
@@ -285,22 +287,33 @@ export function Overview({
                             </StatusBadge>
                           </TableCell>
                           <TableCell>
-                            <StatusBadge
-                              tone={one.service_ready ? "success" : "neutral"}
-                            >
-                              {one.service_ready ? "Ready" : "Disabled"}
-                            </StatusBadge>
+                            {/* No service yet on a machine still being created:
+                                "disabled" would say something that is not so. */}
+                            {one.operation?.status === "running" &&
+                            one.operation.action === "create" &&
+                            !one.service_ready ? (
+                              <span className="muted">—</span>
+                            ) : (
+                              <StatusBadge
+                                tone={one.service_ready ? "success" : "neutral"}
+                              >
+                                {one.service_ready ? "Ready" : "Disabled"}
+                              </StatusBadge>
+                            )}
                           </TableCell>
                           {/* What it is doing right now is the only reason to
-                              look at a machine mid-bootstrap. An operation that
-                              ended is history: it said "create: ready" at a
-                              machine being deleted. */}
+                              look at a machine mid-bootstrap: the action, one
+                              segment per step, and how far. An operation that
+                              ended well is history: it said "create: ready" at
+                              a machine being deleted. A failed one stays until
+                              the retry, with its red segment where it stopped. */}
                           <TableCell>
-                            {one.operation?.status === "running"
-                              ? `${one.operation.action}: ${one.operation.step ?? "starting"}`
-                              : one.operation?.status === "failed"
-                                ? `${one.operation.action} failed`
-                                : "Idle"}
+                            {one.operation?.status === "running" ||
+                            one.operation?.status === "failed" ? (
+                              <Activity operation={one.operation} />
+                            ) : (
+                              <span className="muted">Idle</span>
+                            )}
                           </TableCell>
                           <Usage
                             samples={machineSeriesFor(metrics, one.id)}
@@ -413,6 +426,39 @@ function GroupedSummary({ apps, environments, metrics }: {
  * of the window under it. A dash until the collector's first tick, which is
  * up to a minute after the Application starts.
  */
+/**
+ * A running or failed operation in a table cell: the badge says the phase
+ * the run is in ("Starting", "Provisioning") or what went wrong ("Bootstrap
+ * failed"), the bar shows where it is, the count says how far. No ticker
+ * here; the machine's own screen has the output.
+ */
+function Activity({ operation }: { operation: NonNullable<Environment["operation"]> }) {
+  const failed = operation.status === "failed";
+  const said = failed
+    ? `${NOUNS[operation.action] ?? operation.action} failed`
+    : phase(operation.action, operation.step);
+  const place = position(operation.action, operation.step);
+  return (
+    <span
+      className="activity-cell"
+      title={operation.step ? `${said}: ${operation.step}` : said}
+    >
+      <StatusBadge tone={failed ? "danger" : "success"} pulse={!failed}>
+        {said}
+      </StatusBadge>
+      <StepBar
+        label={TITLES[operation.action] ?? operation.action}
+        steps={barSteps(operation.action, operation.step, failed)}
+      />
+      {place ? (
+        <span className="mono muted t-label">
+          {place.at}/{place.of}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function Usage({
   samples,
   value,
