@@ -210,11 +210,9 @@ function Dependencies({ value, onChange, disabled }: {
  * which is why a poll can refresh the log without touching an edit in
  * progress.
  */
-export function CustomImageEditor({ current, selected, building, loaded, loadFailure, onSaved, onCancel, onDelete, deleteReason, deleting }: {
+export function CustomImageEditor({ current, selected, loaded, loadFailure, onSaved, onCancel, onDelete, deleteReason, deleting }: {
   current: CustomImage | undefined;
   selected: string | null;
-  /** Any image on the Host is building, so this one cannot start. */
-  building: boolean;
   loaded: boolean;
   loadFailure: Report | null;
   onSaved: (image: CustomImage) => void;
@@ -240,7 +238,10 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<Report | null>(null);
   const [editorKey, setEditorKey] = useState(0);
-  const editingDisabled = submitting || current?.status === "building";
+  // This image is building. Other images build beside it; a save now would
+  // queue another build of this one, so the form waits instead.
+  const building = current?.status === "building";
+  const editingDisabled = submitting || building;
   const manual = dockerfile !== null;
   // Something to build: a mise tool or a custom command, and every tool with
   // a version. The Host asks the same before it renders a file.
@@ -445,7 +446,7 @@ export function CustomImageEditor({ current, selected, building, loaded, loadFai
             tone={dirty ? "warning" : !building && current?.status === "failed" ? "danger" : "neutral"}
             message={
               !selected ? undefined
-                : building ? "A build is running on this Host."
+                : building ? "This image is building."
                 : dirty ? <><strong>Unsaved changes.</strong> Applications keep the last build until you save and build again.</>
                 : current?.status === "failed" ? <><strong>The last build failed.</strong> Fix the recipe, then save and build again.</>
                 : "Saved and built. Saving again rebuilds the image."

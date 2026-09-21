@@ -37,6 +37,7 @@ pub mod ports;
 pub mod proxy;
 pub mod routes;
 pub mod store;
+pub mod tasks;
 pub mod terminal;
 pub mod tls;
 pub mod vms;
@@ -58,6 +59,7 @@ struct AppState<S: StateStore> {
     dns_records: Arc<dns_records::Records>,
     metrics: metrics::Metrics,
     audit: Arc<audit::Journal>,
+    tasks: Arc<tasks::Scheduler>,
 }
 
 pub fn build_app<S: StateStore>(
@@ -77,7 +79,8 @@ pub fn build_app<S: StateStore>(
 }
 
 /// Builds the API with an injected environment runtime and Zone for isolated
-/// testing.
+/// testing. What a restart left in the task queue is settled the first time
+/// a task is queued; `boot_app_with_vm_runtime` does it before serving.
 pub fn build_app_with_vm_runtime<S: StateStore>(
     store: S,
     docker: Arc<dyn DockerRuntime>,
@@ -86,6 +89,33 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
     vm_runtime: Arc<dyn VmRuntime>,
     zone: Arc<dyn dns_records::Zone>,
 ) -> Router {
+    build_platform(store, docker, routes, metrics, vm_runtime, zone).0
+}
+
+/// Builds the API the way `serve` does: the tasks a restart interrupted are
+/// failed and the ones it never started are queued again before the first
+/// request can add to them.
+pub async fn boot_app_with_vm_runtime<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
+    metrics: metrics::Metrics,
+    vm_runtime: Arc<dyn VmRuntime>,
+    zone: Arc<dyn dns_records::Zone>,
+) -> Router {
+    let (router, state) = build_platform(store, docker, routes, metrics, vm_runtime, zone);
+    tasks::recover(&state).await;
+    router
+}
+
+fn build_platform<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
+    metrics: metrics::Metrics,
+    vm_runtime: Arc<dyn VmRuntime>,
+    zone: Arc<dyn dns_records::Zone>,
+) -> (Router, AppState<S>) {
     let state = AppState {
         audit: Arc::new(audit::Journal::default()),
         store,
@@ -96,6 +126,7 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
         vm_runtime,
         dns_records: Arc::new(dns_records::Records::new(zone)),
         metrics,
+        tasks: Arc::new(tasks::Scheduler::default()),
     };
 
     let api_routes = Router::new()
@@ -171,11 +202,12 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
             "/environments/{id}/terminal",
             get(terminal::upgrade_environment::<S>),
         )
-        .with_state(state);
+        .with_state(state.clone());
 
-    console::console_router()
+    let router = console::console_router()
         .merge(public_ca_router(tls::ca_cert_path()))
-        .merge(api_routes)
+        .merge(api_routes);
+    (router, state)
 }
 
 fn public_ca_router(path: std::path::PathBuf) -> Router {
@@ -384,6 +416,9 @@ struct ApplicationResponse {
     /// has been asked.
     #[serde(default)]
     services: Vec<ServiceStateResponse>,
+    /// The task carrying the action out, on a `202`. Its id is the event's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -424,6 +459,7 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             web_port: app.web_port,
             development: app.development.map(Into::into),
             services: Vec::new(),
+            task_id: None,
         }
     }
 }
@@ -810,7 +846,7 @@ async fn update_app<S: StateStore>(
     }
 }
 
-/// Answers with the `pending` row and finishes the deploy on a task. A
+/// Answers with the `pending` row and hands the deploy to the scheduler. A
 /// `docker pull` of a large image takes minutes, and holding the request open
 /// for it leaves the console with nothing to show.
 ///
@@ -821,7 +857,7 @@ async fn accept_deploy<S: StateStore>(
     pending: apps::PendingDeploy,
     action: &'static str,
 ) -> Response {
-    let body = Json(ApplicationResponse::from(pending.record.clone()));
+    let mut body = ApplicationResponse::from(pending.record.clone());
 
     // A settled deploy is only a route rewrite — fast enough to finish before
     // answering, so the caller's next request already sees the new Hostname.
@@ -834,53 +870,30 @@ async fn accept_deploy<S: StateStore>(
         )
         .await
         {
-            Ok(_) => (StatusCode::OK, body).into_response(),
+            Ok(_) => (StatusCode::OK, Json(body)).into_response(),
             Err(e) => deploy_error_response(e),
         };
     }
 
-    let store = state.store.clone();
-    let docker = state.docker.clone();
-    let routes = state.routes.clone();
-    let audit_state = state.clone();
-    let actor = audit::actor();
-    let subject = audit::Subject {
-        kind: "application".into(),
-        id: pending.record.id.clone(),
-        name: pending.record.name.clone(),
-        available: None,
-    };
-    tokio::spawn(
-        crate::audit::EVENT_ID.scope(crate::audit::event_id(), async move {
-            let result =
-                apps::finish_deploy(&store, docker.as_ref(), routes.as_ref(), pending).await;
-            let status = if result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            };
-            if let Err(error) = result {
-                tracing::warn!(
-                    "deploy of Application '{}' failed: {}",
-                    subject.name,
-                    ErrorReport::new(&error)
-                );
-            }
-            audit::record(
-                &audit_state,
-                audit::event(
-                    action,
-                    subject,
-                    status,
-                    actor,
-                    format!("Application deployment {status}."),
-                ),
-            )
-            .await;
-        }),
+    let subject = audit::Subject::new(
+        "application",
+        pending.record.id.clone(),
+        pending.record.name.clone(),
     );
-
-    (StatusCode::ACCEPTED, body).into_response()
+    match tasks::enqueue(
+        state,
+        action,
+        subject,
+        tasks::Work::DeployApplication { pending },
+    )
+    .await
+    {
+        Ok(task_id) => {
+            body.task_id = Some(task_id);
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
 }
 
 async fn get_app<S: StateStore>(
@@ -893,22 +906,15 @@ async fn get_app<S: StateStore>(
     }
 }
 
-/// Start, stop and restart act on what is already deployed, and answer
-/// with the Application as it stands afterwards.
+/// Start, stop and restart act on what is already deployed. Each answers
+/// `202` with the Application as it stands now and the task that changes it.
 async fn start_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    lifecycle_response(
-        &state,
-        apps::start_application(
-            &state.store,
-            state.docker.as_ref(),
-            state.routes.as_ref(),
-            &id,
-        )
-        .await,
-    )
+    lifecycle_response(&state, "start", id, |id| tasks::Work::StartApplication {
+        id,
+    })
     .await
 }
 
@@ -916,43 +922,37 @@ async fn stop_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    lifecycle_response(
-        &state,
-        apps::stop_application(
-            &state.store,
-            state.docker.as_ref(),
-            state.routes.as_ref(),
-            &id,
-        )
-        .await,
-    )
-    .await
+    lifecycle_response(&state, "stop", id, |id| tasks::Work::StopApplication { id }).await
 }
 
 async fn restart_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    lifecycle_response(
-        &state,
-        apps::restart_application(
-            &state.store,
-            state.docker.as_ref(),
-            state.routes.as_ref(),
-            &id,
-        )
-        .await,
-    )
+    lifecycle_response(&state, "restart", id, |id| {
+        tasks::Work::RestartApplication { id }
+    })
     .await
 }
 
 async fn lifecycle_response<S: StateStore>(
     state: &AppState<S>,
-    result: Result<apps::ApplicationRecord, DeployError>,
+    action: &'static str,
+    id: String,
+    job: fn(String) -> tasks::Work,
 ) -> Response {
-    match result {
-        Ok(app) => (StatusCode::OK, Json(observed(state, app).await)).into_response(),
-        Err(e) => deploy_error_response(e),
+    let app = match apps::get_application(&state.store, &id).await {
+        Ok(app) => app,
+        Err(e) => return deploy_error_response(e),
+    };
+    let subject = audit::Subject::new("application", app.id.clone(), app.name.clone());
+    match tasks::enqueue(state, action, subject, job(id)).await {
+        Ok(task_id) => {
+            let mut body = observed(state, app).await;
+            body.task_id = Some(task_id);
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
@@ -1060,16 +1060,45 @@ async fn remove_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
-    match apps::remove_application(
-        &state.store,
-        state.docker.as_ref(),
-        state.routes.as_ref(),
-        &name,
+    let app = match application_named(&state, &name).await {
+        Ok(app) => app,
+        Err(response) => return response,
+    };
+    let subject = audit::Subject::new("application", app.id.clone(), app.name);
+    accepted_task(
+        tasks::enqueue(
+            &state,
+            "delete",
+            subject,
+            tasks::Work::RemoveApplication { id: app.id },
+        )
+        .await,
     )
-    .await
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => remove_error_response(err),
+}
+
+/// The Application a name refers to, or the response that says why not.
+/// Checked before the task is queued, so a typo is refused now and not later.
+async fn application_named<S: StateStore>(
+    state: &AppState<S>,
+    name: &str,
+) -> Result<apps::ApplicationRecord, Response> {
+    match state.store.is_initialized().await {
+        Ok(true) => {}
+        Ok(false) => return Err(remove_error_response(RemoveError::NotInitialized)),
+        Err(e) => return Err(remove_error_response(RemoveError::Store(e))),
+    }
+    match state.store.find_application_by_name(name).await {
+        Ok(Some(app)) => Ok(app),
+        Ok(None) => Err(remove_error_response(RemoveError::NotFound(name.into()))),
+        Err(e) => Err(remove_error_response(RemoveError::Store(e))),
+    }
+}
+
+/// `202` with the task, or the reason the task could not be recorded.
+fn accepted_task(task: Result<String, StoreError>) -> Response {
+    match task {
+        Ok(task_id) => (StatusCode::ACCEPTED, Json(tasks::Accepted { task_id })).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 
@@ -1099,18 +1128,23 @@ async fn set_env<S: StateStore>(
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(body): Json<SetEnvRequest>,
 ) -> Response {
-    match apps::set_env(
-        &state.store,
-        state.docker.as_ref(),
-        &name,
-        &body.key,
-        &body.value,
+    let app = match application_named(&state, &name).await {
+        Ok(app) => app,
+        Err(response) => return response,
+    };
+    accepted_task(
+        tasks::enqueue(
+            &state,
+            "configure",
+            audit::Subject::new("application", app.id, app.name),
+            tasks::Work::SetEnvironment {
+                name,
+                key: body.key,
+                value: body.value,
+            },
+        )
+        .await,
     )
-    .await
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => env_error_response(err),
-    }
 }
 
 async fn get_env<S: StateStore>(
@@ -1127,10 +1161,19 @@ async fn unset_env<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path((name, key)): axum::extract::Path<(String, String)>,
 ) -> Response {
-    match apps::unset_env(&state.store, state.docker.as_ref(), &name, &key).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => env_error_response(err),
-    }
+    let app = match application_named(&state, &name).await {
+        Ok(app) => app,
+        Err(response) => return response,
+    };
+    accepted_task(
+        tasks::enqueue(
+            &state,
+            "configure",
+            audit::Subject::new("application", app.id, app.name),
+            tasks::Work::UnsetEnvironment { name, key },
+        )
+        .await,
+    )
 }
 
 fn env_error_response(err: apps::EnvError) -> Response {
@@ -1561,6 +1604,32 @@ mod tests {
 
     /// A deploy finishes on a task now, so a test that wants to see its
     /// outcome has to wait for it the same way the console does.
+    /// The task's event once the scheduler has run it, whichever way it went.
+    async fn finished(store: &FakeStateStore, task_id: &str) -> audit::Event {
+        for _ in 0..200 {
+            if let Some(event) = audit::read(store).await.unwrap().into_iter().find(|event| {
+                event.id == task_id && matches!(event.status.as_str(), "completed" | "failed")
+            }) {
+                return event;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("task '{task_id}' never finished");
+    }
+
+    /// Answers with the task id of a `202`, once the task has finished.
+    async fn accepted_and_finished(
+        store: &FakeStateStore,
+        response: Response,
+    ) -> (Value, audit::Event) {
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        let task_id = parsed["task_id"].as_str().expect("a 202 names its task");
+        let event = finished(store, task_id).await;
+        (parsed, event)
+    }
+
     async fn settle(store: &FakeStateStore, name: &str) -> apps::ApplicationRecord {
         for _ in 0..200 {
             let found = store.find_application_by_name(name).await.unwrap();
@@ -1765,7 +1834,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_start_and_restart_answer_with_the_application_as_it_stands() {
+    async fn stop_start_and_restart_are_tasks_that_leave_the_application_as_asked() {
         let (app, store) = setup_initialized_app("test-key", "home.lan").await;
         post_json(
             &app,
@@ -1783,7 +1852,11 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        let (parsed, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(parsed["id"], json!(record.id));
+        assert_eq!(event.status, "completed");
+        assert_eq!(event.action, "stop");
+        let response = send(&app, &format!("/apps/id/{}", record.id), Some("test-key")).await;
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["status"], json!("stopped"));
@@ -1797,7 +1870,9 @@ mod tests {
                 json!({}),
             )
             .await;
-            assert_eq!(response.status(), StatusCode::OK);
+            let (_, event) = accepted_and_finished(&store, response).await;
+            assert_eq!(event.status, "completed", "{verb}");
+            let response = send(&app, &format!("/apps/id/{}", record.id), Some("test-key")).await;
             let body = to_bytes(response.into_body(), 4096).await.unwrap();
             let parsed: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(parsed["status"], json!("running"), "{verb}");
@@ -2662,8 +2737,49 @@ mod tests {
         assert_eq!(hostnames, vec!["blog.home.lan", "files.home.lan"]);
     }
 
+    /// Two actions on one Application run in the order they arrived, each
+    /// with its own task, and the second waits for the first.
     #[tokio::test]
-    async fn remove_application_returns_204_and_cleans_docker() {
+    async fn actions_on_one_application_run_in_order() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+        post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": HERMES}),
+        )
+        .await;
+        let record = settle(&store, "hermes").await;
+        let mut ids = vec![];
+        for verb in ["stop", "start"] {
+            let response = post_json(
+                &app,
+                &format!("/apps/id/{}/{verb}", record.id),
+                Some("test-key"),
+                json!({}),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            let body = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+            let parsed: Value = serde_json::from_slice(&body).unwrap();
+            ids.push(parsed["task_id"].as_str().unwrap().to_owned());
+        }
+        assert_ne!(ids[0], ids[1]);
+        let stop = finished(&store, &ids[0]).await;
+        let start = finished(&store, &ids[1]).await;
+        assert_eq!(
+            (stop.status.as_str(), start.status.as_str()),
+            ("completed", "completed")
+        );
+        assert!(stop.finished_at.unwrap() <= start.started_at.unwrap());
+        let response = send(&app, &format!("/apps/id/{}", record.id), Some("test-key")).await;
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["status"], json!("running"));
+    }
+
+    #[tokio::test]
+    async fn remove_application_is_a_task_that_cleans_docker() {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         store.store_state("dns_suffix", "home.lan").await.unwrap();
@@ -2686,7 +2802,8 @@ mod tests {
         settle(&store, "blog").await;
 
         let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let (_, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
 
         let list = send(&app, "/apps", Some("test-key")).await;
         let body = to_bytes(list.into_body(), 1024).await.unwrap();
@@ -2769,7 +2886,8 @@ mod tests {
         assert!(deployed[0].starts_with(apps::APP_PREFIX));
 
         let response = delete_req(&app, "/apps/blog", Some("test-key")).await;
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let (_, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
 
         assert!(docker.deployed_apps().is_empty());
     }

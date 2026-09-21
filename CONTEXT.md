@@ -78,6 +78,10 @@ _Avoid_: backend, main service, entrypoint
 Components the Platform once started for itself, as containers, rather than Operator Applications. There are none left: the Platform keeps its state in files it owns (ADR-0018) and serves DNS (ADR-0017) and HTTP (ADR-0019) from its own process. Docker runs Applications.
 _Avoid_: dependencies (ambiguous with app deps), sidecars
 
+**Task**:
+One console action the Platform carries out on its own worker after accepting the request: create, delete, stop, start, restart or configure an Application, a Virtual machine or a custom image. A Task is `pending`, then `running`, then `completed` or `failed`; the audit event with the same id is its record. Tasks on one object run one at a time, oldest first (ADR-0027).
+_Avoid_: job, background operation, cron (a Task is not scheduled for a time)
+
 **Platform State**:
 Everything the Operator configured, as the Platform records it: settings, credentials, the Zone's Records, and each Application's identity, publication, definition and environment. Authoritative, owned by the daemon, and separate from anything generated from it.
 _Avoid_: database, cache, the state store (as a component that runs)

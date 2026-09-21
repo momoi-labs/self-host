@@ -719,8 +719,32 @@ pub(crate) async fn create<S: StateStore>(
     *records = Some(next);
     drop(records);
     drop(namespace);
-    spawn_operation(state, id, "create".into());
-    (StatusCode::ACCEPTED, Json(record)).into_response()
+    accept_operation(&state, record, "create".into()).await
+}
+
+/// Queues the operation and answers `202` with the record and the task id.
+async fn accept_operation<S: StateStore>(
+    state: &AppState<S>,
+    record: EnvironmentRecord,
+    action: String,
+) -> Response {
+    let subject = crate::audit::Subject::new(
+        "virtual-machine",
+        record.id.clone(),
+        record.config.name.clone(),
+    );
+    let work = crate::tasks::Work::OperateVirtualMachine {
+        id: record.id.clone(),
+        action: action.clone(),
+    };
+    match crate::tasks::enqueue(state, crate::audit::machine_action(&action), subject, work).await {
+        Ok(task_id) => {
+            let mut body = serde_json::to_value(&record).unwrap_or(Value::Null);
+            body["task_id"] = Value::String(task_id);
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 /// Who already answers on `hostname`, if anyone: a Record, an Application or
@@ -866,24 +890,16 @@ pub(crate) async fn action<S: StateStore>(
         return error(StatusCode::NOT_FOUND, "Environment not found.");
     };
     if action == "retry"
-        && record
-            .operation
-            .as_ref()
-            .is_some_and(|operation| operation.status == OperationStatus::Succeeded)
+        && record.operation.as_ref().is_some_and(|operation| {
+            matches!(
+                operation.status,
+                OperationStatus::Succeeded | OperationStatus::Running
+            )
+        })
     {
         return error(
             StatusCode::CONFLICT,
             "Only failed or interrupted operations can be retried.",
-        );
-    }
-    if record
-        .operation
-        .as_ref()
-        .is_some_and(|op| op.status == OperationStatus::Running)
-    {
-        return error(
-            StatusCode::CONFLICT,
-            "An operation is already running for this environment.",
         );
     }
     let effective_action = if action == "retry" {
@@ -906,37 +922,65 @@ pub(crate) async fn action<S: StateStore>(
             "Type the environment name to confirm deletion.",
         );
     }
+    // The record shows the operation that is executing. When one is, this
+    // one waits its turn in the queue and the worker writes it when it starts.
     let mut next = records.as_ref().unwrap().clone();
-    let item = next.iter_mut().find(|r| r.id == id).unwrap();
-    item.operation = Some(Operation {
-        action: effective_action.clone(),
-        status: OperationStatus::Running,
-        step: None,
-        error: None,
-    });
-    let accepted = item.clone();
-    if let Err(message) = save(&state.store, &next).await {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, message);
+    let index = next.iter().position(|r| r.id == id).unwrap();
+    if !next[index]
+        .operation
+        .as_ref()
+        .is_some_and(|op| op.status == OperationStatus::Running)
+    {
+        next[index].operation = Some(Operation {
+            action: effective_action.clone(),
+            status: OperationStatus::Running,
+            step: None,
+            error: None,
+        });
+        if let Err(message) = save(&state.store, &next).await {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, message);
+        }
     }
+    let accepted = next[index].clone();
     *records = Some(next);
     drop(records);
-    spawn_operation(state, id, effective_action);
-    (StatusCode::ACCEPTED, Json(accepted)).into_response()
+    accept_operation(&state, accepted, effective_action).await
 }
 
-fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String) {
-    let actor = crate::audit::actor();
-    tokio::spawn(crate::audit::EVENT_ID.scope(crate::audit::event_id(), async move {
-        let config = match state.environments.records(&state.store).await {
-            Ok(records) => records
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|r| r.id == id)
-                .map(|r| r.config.clone()),
-            Err(_) => None,
+/// Carries one operation out on a machine, on the scheduler's worker. The
+/// record says `running` from here until the runtime answers, then carries
+/// the outcome; the audit event belongs to the task.
+pub(crate) async fn run_operation<S: StateStore>(
+    state: &AppState<S>,
+    id: &str,
+    action: &str,
+) -> Result<(), ErrorReport> {
+    let id = id.to_owned();
+    let action = action.to_owned();
+    let config = {
+        let mut records = state
+            .environments
+            .records(&state.store)
+            .await
+            .map_err(ErrorReport::plain)?;
+        let mut next = records.as_ref().unwrap().clone();
+        let Some(record) = next.iter_mut().find(|r| r.id == id) else {
+            return Err(ErrorReport::plain("Environment not found."));
         };
-        let Some(config) = config else { return };
+        record.operation = Some(Operation {
+            action: action.clone(),
+            status: OperationStatus::Running,
+            step: None,
+            error: None,
+        });
+        let config = record.config.clone();
+        save(&state.store, &next)
+            .await
+            .map_err(ErrorReport::plain)?;
+        *records = Some(next);
+        config
+    };
+    {
         tracing::info!(environment = %id, %action, name = %config.name, "environment operation started");
         events::append(&id, &action, &format!("--- {action} started ---")).await;
         // Inspect before create so an unknown runner state fails safely. The
@@ -972,31 +1016,26 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
                 result = &mut run => break result,
                 progress = progress_rx.recv(), if progress_open => {
                     let Some(progress) = progress else { progress_open = false; continue };
-                    persist_progress(&state, &id, &action, progress).await;
+                    persist_progress(state, &id, &action, progress).await;
                 }
             }
         };
         while let Ok(progress) = progress_rx.try_recv() {
-            persist_progress(&state, &id, &action, progress).await;
+            persist_progress(state, &id, &action, progress).await;
         }
-        let Ok(mut records) = state.environments.records(&state.store).await else {
-            return;
-        };
+        let mut records = state
+            .environments
+            .records(&state.store)
+            .await
+            .map_err(ErrorReport::plain)?;
         let mut next = records.as_ref().unwrap().clone();
         let Some(record) = next.iter_mut().find(|r| r.id == id) else {
-            return;
+            return Err(ErrorReport::plain("Environment not found."));
         };
-        let subject = crate::audit::Subject {
-            kind: "virtual-machine".into(),
-            id: id.clone(),
-            name: config.name.clone(),
-            available: None,
-        };
-        let mut outcome = if result.is_ok() {
-            "completed"
-        } else {
-            "failed"
-        };
+        let mut outcome = result
+            .as_ref()
+            .map(drop)
+            .map_err(|message| ErrorReport::plain(message.clone()));
         let mut remove = false;
         match result {
             Ok(observation) => {
@@ -1049,7 +1088,9 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
             events::discard(&id).await;
         }
         if let Err(error) = save(&state.store, &next).await {
-            outcome = "failed";
+            outcome = Err(ErrorReport::plain(format!(
+                "Could not save operation result: {error}"
+            )));
             tracing::error!(%error, "Could not save environment operation result");
             // A completed side effect must never leave a durable `running`
             // operation. Keep the record for retry when persistence fails.
@@ -1085,18 +1126,8 @@ fn spawn_operation<S: StateStore>(state: AppState<S>, id: String, action: String
                 .await;
         }
         drop(records);
-        crate::audit::record(
-            &state,
-            crate::audit::event(
-                crate::audit::machine_action(&action),
-                subject,
-                outcome,
-                actor,
-                format!("Virtual machine operation {outcome}."),
-            ),
-        )
-        .await;
-    }));
+        outcome
+    }
 }
 
 async fn persist_progress<S: StateStore>(

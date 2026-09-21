@@ -208,6 +208,15 @@ reason. When Docker itself cannot be reached the deploy stays pending and stays
 visible, because an executor that answers nothing has observed nothing. A
 Docker outage never turns an Application into a stopped one.
 
+Every console action on an Application, a machine or a custom image is a task
+the daemon runs on its own worker, one at a time per object and oldest first
+(ADR-0027). A restart settles the queue before the daemon serves: a task that
+was still waiting runs again, with the same id and the same actor in
+`GET /events`; a task that was running fails with "The Platform restarted
+before this task finished." and is not repeated, because a half-done Docker or
+Lima operation cannot be resumed. Nothing is retried on its own. Ask again from
+the console; that is a new task.
+
 State that does not parse, or that a newer Platform wrote, stops the daemon
 with the file's path and the reason. It is never read as an empty installation.
 Restore from a backup, or `self-host reset` and start over.

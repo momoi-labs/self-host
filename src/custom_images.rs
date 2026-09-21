@@ -522,13 +522,13 @@ pub(crate) async fn remove<S: StateStore>(
     State(state): State<AppState<S>>,
     Path(id): Path<String>,
 ) -> Response {
-    let mut records = match state.custom_images.records(&state.store).await {
+    let records = match state.custom_images.records(&state.store).await {
         Ok(records) => records,
         Err(error) => {
             return crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, error.as_ref());
         }
     };
-    let mut next = records.as_ref().unwrap().clone();
+    let next = records.as_ref().unwrap().clone();
     let Some(image) = next.iter().find(|image| image.id == id) else {
         return (
             StatusCode::NOT_FOUND,
@@ -536,15 +536,6 @@ pub(crate) async fn remove<S: StateStore>(
         )
             .into_response();
     };
-    if image.status == "building" {
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorReport::plain(
-                "Wait for the build to finish before deleting this image.",
-            )),
-        )
-            .into_response();
-    }
     let references = match referenced_images(&state).await {
         Ok(references) => references,
         Err(error) => {
@@ -560,19 +551,61 @@ pub(crate) async fn remove<S: StateStore>(
         )
             .into_response();
     }
-    if let Err(error) = state
+    let subject =
+        crate::audit::Subject::new("custom-image", image.id.clone(), image.recipe.name.clone());
+    drop(records);
+    match crate::tasks::enqueue(
+        &state,
+        "delete",
+        subject,
+        crate::tasks::Work::RemoveCustomImage { id },
+    )
+    .await
+    {
+        Ok(task_id) => (
+            StatusCode::ACCEPTED,
+            Json(crate::tasks::Accepted { task_id }),
+        )
+            .into_response(),
+        Err(error) => crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
+/// Removes the image from Docker and then from the record, on the scheduler's
+/// worker. Queued behind a build of the same image, it waits for the build.
+pub(crate) async fn run_remove<S: StateStore>(
+    state: &AppState<S>,
+    id: &str,
+) -> Result<(), ErrorReport> {
+    let mut records = state
+        .custom_images
+        .records(&state.store)
+        .await
+        .map_err(|error| ErrorReport::new(error.as_ref()))?;
+    let mut next = records.as_ref().unwrap().clone();
+    let Some(image) = next.iter().find(|image| image.id == id) else {
+        return Err(ErrorReport::plain("Image not found."));
+    };
+    // Checked again here: a deploy accepted while this waited may use it now.
+    let references = referenced_images(state)
+        .await
+        .map_err(|error| ErrorReport::new(error.as_ref()))?;
+    if is_in_use(image, &references) {
+        return Err(ErrorReport::plain(
+            "This image is in use by an application or container.",
+        ));
+    }
+    state
         .docker
         .remove_image_repository(repository(&image.image))
         .await
-    {
-        return crate::error_response(StatusCode::CONFLICT, &error);
-    }
+        .map_err(|error| ErrorReport::new(&error))?;
     next.retain(|image| image.id != id);
-    if let Err(error) = save(&state.store, &next).await {
-        return crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, error.as_ref());
-    }
+    save(&state.store, &next)
+        .await
+        .map_err(|error| ErrorReport::new(error.as_ref()))?;
     *records = Some(next);
-    StatusCode::NO_CONTENT.into_response()
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -598,15 +631,6 @@ pub(crate) async fn create<S: StateStore>(
         }
     };
     let mut next = records.as_ref().unwrap().clone();
-    if next.iter().any(|image| image.status == "building") {
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorReport::plain(
-                "An image is already building. Wait for it to finish.",
-            )),
-        )
-            .into_response();
-    }
     let audit_action = if request.id.is_some() {
         "configure"
     } else {
@@ -651,68 +675,93 @@ pub(crate) async fn create<S: StateStore>(
     }
     *records = Some(next);
     drop(records);
-    let accepted = image.clone();
-    let actor = crate::audit::actor();
-    tokio::spawn(
-        crate::audit::EVENT_ID.scope(crate::audit::event_id(), async move {
-            let result = build(&state, &image).await;
-            let mut outcome = if result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            };
-            let mut records = state.custom_images.records.lock().await;
-            let images = records.as_mut().unwrap();
-            let record = images
-                .iter_mut()
-                .find(|record| record.id == image.id)
-                .unwrap();
-            match result {
-                Ok(()) => {
-                    record.status = "ready".into();
-                    append_log(
-                        &mut record.log,
-                        &format!("\nImage built: {}\n", record.image),
-                    );
-                }
-                Err(error) => {
-                    record.status = "failed".into();
-                    append_log(&mut record.log, &format!("\nBuild failed: {error:#}\n"));
-                    record.last_error = Some(ErrorReport::new(error.as_ref()));
-                }
+    let subject =
+        crate::audit::Subject::new("custom-image", image.id.clone(), image.recipe.name.clone());
+    let mut accepted = serde_json::to_value(&image).unwrap_or_default();
+    match crate::tasks::enqueue(
+        &state,
+        audit_action,
+        subject,
+        crate::tasks::Work::BuildCustomImage { image },
+    )
+    .await
+    {
+        Ok(task_id) => {
+            accepted["task_id"] = serde_json::Value::String(task_id);
+            (StatusCode::ACCEPTED, Json(accepted)).into_response()
+        }
+        Err(error) => crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
+/// Builds the image on the scheduler's worker and writes the result on its
+/// record. A build queued behind another of the same image starts from the
+/// recipe it was asked to build, not from whatever the record says by then.
+pub(crate) async fn run_build<S: StateStore>(
+    state: &AppState<S>,
+    image: Image,
+) -> Result<(), ErrorReport> {
+    {
+        let mut records = state
+            .custom_images
+            .records(&state.store)
+            .await
+            .map_err(|error| ErrorReport::new(error.as_ref()))?;
+        let images = records.as_mut().unwrap();
+        let Some(record) = images.iter_mut().find(|record| record.id == image.id) else {
+            return Err(ErrorReport::plain("Image not found."));
+        };
+        record.status = "building".into();
+        record.last_error = None;
+        record.log = String::from("Starting Docker build...\n");
+        save(&state.store, images)
+            .await
+            .map_err(|error| ErrorReport::new(error.as_ref()))?;
+    }
+    let result = build(state, &image).await;
+    let mut outcome = result
+        .as_ref()
+        .map(drop)
+        .map_err(|error| ErrorReport::new(error.as_ref()));
+    let mut records = state.custom_images.records.lock().await;
+    let images = records.as_mut().unwrap();
+    let Some(record) = images.iter_mut().find(|record| record.id == image.id) else {
+        return Err(ErrorReport::plain("Image not found."));
+    };
+    // A save made while this built replaced the tag; the record stays
+    // `building` for the build that is queued behind, and only the log says
+    // how this one went.
+    let superseded = record.image != image.image;
+    match result {
+        Ok(()) => {
+            if !superseded {
+                record.status = "ready".into();
             }
-            if let Err(error) = save(&state.store, images).await {
-                outcome = "failed";
-                tracing::error!(%error, "Could not save custom image build result");
-                let record = images
-                    .iter_mut()
-                    .find(|record| record.id == image.id)
-                    .unwrap();
+            append_log(
+                &mut record.log,
+                &format!("\nImage built: {}\n", image.image),
+            );
+        }
+        Err(error) => {
+            if !superseded {
                 record.status = "failed".into();
-                record.last_error = Some(ErrorReport::plain(format!(
-                    "Could not save the build result: {error}"
-                )));
+                record.last_error = Some(ErrorReport::new(error.as_ref()));
             }
-            drop(records);
-            crate::audit::record(
-                &state,
-                crate::audit::event(
-                    audit_action,
-                    crate::audit::Subject {
-                        kind: "custom-image".into(),
-                        id: image.id.clone(),
-                        name: image.recipe.name.clone(),
-                        available: None,
-                    },
-                    outcome,
-                    actor,
-                    format!("Custom image build {outcome}."),
-                ),
-            )
-            .await;
-        }),
-    );
-    (StatusCode::ACCEPTED, Json(accepted)).into_response()
+            append_log(&mut record.log, &format!("\nBuild failed: {error:#}\n"));
+        }
+    }
+    if let Err(error) = save(&state.store, images).await {
+        tracing::error!(%error, "Could not save custom image build result");
+        let report = ErrorReport::plain(format!("Could not save the build result: {error}"));
+        let record = images
+            .iter_mut()
+            .find(|record| record.id == image.id)
+            .unwrap();
+        record.status = "failed".into();
+        record.last_error = Some(report.clone());
+        outcome = Err(report);
+    }
+    outcome
 }
 
 /// Renders the file a builder recipe would build. The console calls this when

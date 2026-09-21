@@ -14,8 +14,10 @@ import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
-import type { CustomImage, Report } from "../lib/types.js";
 import { buildLabel, buildTone } from "../lib/status.js";
+import { waitForTask } from "../lib/tasks.js";
+import type { CustomImage, Report } from "../lib/types.js";
+import { fetchEvents } from "../lib/useEvents.js";
 
 /**
  * The saved images and their latest build. This owns the records and the
@@ -35,7 +37,6 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
   const [confirming, setConfirming] = useState<CustomImage | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
-  const building = images.some((image) => image.status === "building");
   const current = images.find((image) => image.id === selected);
 
   useEffect(() => {
@@ -77,6 +78,10 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
     try {
       const response = await api(`/custom-images/${encodeURIComponent(image.id)}`, { method: "DELETE" });
       if (!response.ok) throw await failureOf(response);
+      // Queued behind a build of the same image, if one is running.
+      const { task_id } = (await response.json()) as { task_id: string };
+      const outcome = await waitForTask(task_id, { events: fetchEvents });
+      if (outcome.status === "failed") throw outcome.error ?? new Error("Could not delete the image.");
       setImages((images) => images.filter((item) => item.id !== image.id));
       setRefresh((value) => value + 1);
     } catch (cause) {
@@ -88,7 +93,6 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
   }
 
   function deleteReason(image: CustomImage) {
-    if (image.status === "building") return "Build in progress";
     if (image.in_use) return "In use";
     if (image.in_use !== false) return "Usage unavailable";
     return null;
@@ -183,7 +187,7 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
 
   return (
     <>
-      <CustomImageEditor current={current} selected={selected} building={building}
+      <CustomImageEditor current={current} selected={selected}
         loaded={loaded} loadFailure={loadFailure} onSaved={saved} onCancel={onList}
         onDelete={current ? () => setConfirming(current) : undefined}
         deleteReason={current ? deleteReason(current) : null}

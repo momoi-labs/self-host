@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
-import { normalizeEvent } from "./platformEvents.js";
-import type { PlatformEvent, PlatformEventResponse } from "./platformEvents.js";
+import type { PlatformEvent } from "./platformEvents.js";
+
+/** The whole history, newest first, as the API answers it. */
+export async function fetchEvents(): Promise<PlatformEvent[]> {
+  const response = await api("/events");
+  if (!response.ok) throw new Error("Could not load event history.");
+  return (await response.json()) as PlatformEvent[];
+}
 
 export function useEvents() {
   const [events, setEvents] = useState<PlatformEvent[]>([]);
@@ -17,8 +23,8 @@ export function useEvents() {
       try {
         const response = await api("/events", { signal: controller.signal });
         if (!response.ok) throw new Error("Could not load event history.");
-        const next: PlatformEventResponse[] = await response.json();
-        if (!controller.signal.aborted) { setEvents(next.map(normalizeEvent)); setError(null); }
+        const next: PlatformEvent[] = await response.json();
+        if (!controller.signal.aborted) { setEvents(next); setError(null); }
       } catch {
         if (!controller.signal.aborted) setError("Could not load event history. The displayed events may be out of date.");
       } finally {

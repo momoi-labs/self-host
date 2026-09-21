@@ -1,9 +1,15 @@
-//! A small, durable history of authenticated mutations and background results.
-//! Only action metadata is recorded. Request bodies, credentials, environment
-//! values, build output and error reports never enter the audit history.
+//! A small, durable history of authenticated mutations and task results.
+//! Only action metadata and the failure's own words are recorded. Request
+//! bodies, credentials, environment values and build output never enter the
+//! audit history.
+//!
+//! An event is the record of a task: it is `pending` from the moment the
+//! request is accepted, `running` once the scheduler starts it, and
+//! `completed` or `failed` when the work is done (see `tasks`).
 
 use crate::{
     AppState,
+    error::ErrorReport,
     store::{StateStore, StoreError},
 };
 use axum::{
@@ -40,6 +46,17 @@ pub struct Subject {
     pub available: Option<bool>,
 }
 
+impl Subject {
+    pub fn new(kind: &str, id: impl Into<String>, name: impl Into<String>) -> Self {
+        Subject {
+            kind: kind.into(),
+            id: id.into(),
+            name: name.into(),
+            available: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
@@ -56,6 +73,9 @@ pub struct Event {
     pub api_name: Option<String>,
     pub description: String,
     pub subject: Subject,
+    /// Why a `failed` task failed, in the shape every error leaves the API in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorReport>,
 }
 
 pub fn event(
@@ -71,7 +91,11 @@ pub fn event(
         action: action.into(),
         status: status.into(),
         occurred_at: at.clone(),
-        started_at: Some(at.clone()),
+        started_at: if status == "pending" {
+            None
+        } else {
+            Some(at.clone())
+        },
         finished_at: if is_terminal(status) {
             Some(at.clone())
         } else {
@@ -81,13 +105,25 @@ pub fn event(
         api_name,
         description: description.into(),
         subject,
+        error: None,
     }
 }
 
 fn is_terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed")
 }
-fn timestamp() -> String {
+
+/// A task only moves forward: `pending`, `running`, then `completed` or
+/// `failed`. A write that would move it back is a late acknowledgement or a
+/// duplicate result, and is ignored.
+fn rank(status: &str) -> u8 {
+    match status {
+        "pending" => 0,
+        "running" => 1,
+        _ => 2,
+    }
+}
+pub(crate) fn timestamp() -> String {
     let now = time::OffsetDateTime::now_utc();
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
@@ -112,11 +148,12 @@ impl Journal {
         if let Some(existing) = events.iter_mut().find(|existing| existing.id == event.id) {
             // A fast worker can finish before the HTTP handler returns 202.
             // The later acknowledgement must not overwrite its final result.
-            if !is_terminal(&existing.status) {
+            if rank(&event.status) > rank(&existing.status) {
                 existing.status = event.status;
                 existing.description = event.description;
                 existing.updated_at = event.updated_at;
                 existing.finished_at = event.finished_at;
+                existing.error = event.error;
             }
             if !event.subject.id.is_empty() {
                 existing.subject = event.subject;
@@ -136,7 +173,7 @@ impl Journal {
             .await
     }
 }
-async fn read<S: StateStore>(store: &S) -> Result<Vec<Event>, StoreError> {
+pub(crate) async fn read<S: StateStore>(store: &S) -> Result<Vec<Event>, StoreError> {
     match store.get_state(STATE_KEY).await? {
         None => Ok(vec![]),
         Some(json) => serde_json::from_str(&json)
@@ -147,6 +184,8 @@ async fn read<S: StateStore>(store: &S) -> Result<Vec<Event>, StoreError> {
 
 /// Old background work had separate acceptance and completion records. Merge
 /// only unambiguous pairs; a rejected second request is not a worker result.
+/// An acceptance left on its own becomes `pending`: it is history, and the
+/// scheduler never picks it up (see `tasks::recover`).
 fn migrate_legacy(mut events: Vec<Event>) -> Vec<Event> {
     events.sort_by(|a, b| a.occurred_at.cmp(&b.occurred_at));
     let mut result: Vec<Event> = Vec::new();
@@ -181,6 +220,7 @@ fn migrate_legacy(mut events: Vec<Event>) -> Vec<Event> {
                 let start = &mut result[*index];
                 start.status = event.status;
                 start.description = event.description;
+                start.started_at = Some(start.occurred_at.clone());
                 start.finished_at = Some(event.occurred_at.clone());
                 start.updated_at = Some(event.occurred_at);
                 open.retain(|candidate| candidate != index);
@@ -189,8 +229,7 @@ fn migrate_legacy(mut events: Vec<Event>) -> Vec<Event> {
         }
         event.updated_at = Some(event.occurred_at.clone());
         if event.status == "accepted" {
-            event.status = "running".into();
-            event.started_at = Some(event.occurred_at.clone());
+            event.status = "pending".into();
             open.push(result.len());
         } else if completion {
             event.finished_at = Some(event.occurred_at.clone());
@@ -453,7 +492,7 @@ pub(crate) async fn capture<S: StateStore>(
     let payload: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let (action, kind) = action(&method, &route, &payload).unwrap();
     let subject = subject(&state, kind, &route, &path, &payload).await;
-    let mut entry = event(action, subject, "running", actor(), "Operation started.");
+    let mut entry = event(action, subject, "pending", actor(), "Operation queued.");
     if let Err(error) = state.audit.upsert(&state.store, entry.clone()).await {
         return crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, &error);
     }
@@ -487,9 +526,10 @@ pub(crate) async fn capture<S: StateStore>(
                 break;
             }
         }
-        if status == StatusCode::ACCEPTED {
-            entry.status = "running".into();
-            entry.description = "Operation is running in the background.".into();
+        // A handler that scheduled a task names it in the body. The task owns
+        // every transition from here; this write only settles the subject.
+        if status == StatusCode::ACCEPTED && field(&result, "/task_id") == entry.id {
+            entry.status = "pending".into();
         } else {
             entry.status = "completed".into();
             entry.description = "Action completed.".into();
@@ -497,6 +537,7 @@ pub(crate) async fn capture<S: StateStore>(
     } else {
         entry.status = "failed".into();
         entry.description = format!("Request failed (HTTP {}).", status.as_u16());
+        entry.error = serde_json::from_slice::<ErrorReport>(&bytes).ok();
     }
     if is_terminal(&entry.status) {
         let at = timestamp();
@@ -609,27 +650,29 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
-        for _ in 0..100 {
-            if read(&store).await.unwrap().iter().any(|event| {
-                event.subject.id == created["id"].as_str().unwrap() && event.status == "completed"
-            }) {
+        let task_id = created["task_id"].as_str().unwrap();
+        // The task keeps its id and the key that asked, from pending through
+        // running to the end.
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..200 {
+            let entries = read(&store).await.unwrap();
+            let task = entries.iter().find(|event| event.id == task_id).unwrap();
+            assert_eq!(task.api_name.as_deref(), Some("deploy-bot"));
+            assert_eq!(task.subject.id, created["id"].as_str().unwrap());
+            seen.insert(task.status.clone());
+            if task.status == "completed" {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        assert!(seen.contains("completed"), "{seen:?}");
         let entries = read(&store).await.unwrap();
         let deploys: Vec<_> = entries
             .iter()
             .filter(|e| e.subject.kind == "application")
             .collect();
         assert_eq!(deploys.len(), 1);
-        assert!(
-            deploys
-                .iter()
-                .all(|e| e.api_name.as_deref() == Some("deploy-bot"))
-        );
-
-        assert!(deploys.iter().any(|e| e.status == "completed"));
+        assert_eq!(deploys[0].id, task_id);
         call(
             &app,
             "POST",
@@ -762,6 +805,32 @@ mod tests {
         assert_eq!(events[0].updated_at, finish.updated_at);
     }
 
+    #[tokio::test]
+    async fn a_task_only_moves_forward() {
+        let store = FakeStateStore::new();
+        let journal = Journal::default();
+        let queued = sample("pending", "Operation queued.");
+        journal.upsert(&store, queued.clone()).await.unwrap();
+        assert_eq!(read(&store).await.unwrap()[0].started_at, None);
+        let mut running = sample("running", "Operation is running.");
+        running.id = queued.id.clone();
+        journal.upsert(&store, running.clone()).await.unwrap();
+        journal.upsert(&store, queued.clone()).await.unwrap();
+        let events = read(&store).await.unwrap();
+        assert_eq!(events[0].status, "running");
+        assert_eq!(events[0].started_at, running.started_at);
+        let mut failed = sample("failed", "Action failed.");
+        failed.id = queued.id.clone();
+        failed.error = Some(ErrorReport::plain("no such image"));
+        journal.upsert(&store, failed.clone()).await.unwrap();
+        journal.upsert(&store, running).await.unwrap();
+        let events = read(&store).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, "failed");
+        assert_eq!(events[0].error, failed.error);
+        assert_eq!(events[0].finished_at, failed.finished_at);
+    }
+
     #[test]
     fn legacy_pairs_merge_but_unrelated_failures_do_not() {
         let mut start = sample("accepted", "Request accepted.");
@@ -774,13 +843,27 @@ mod tests {
         finish.updated_at = None;
         finish.started_at = None;
         finish.finished_at = None;
-        let migrated = migrate_legacy(vec![start.clone(), rejected.clone(), finish.clone()]);
-        assert_eq!(migrated.len(), 2);
+        let mut alone = sample("accepted", "Request accepted.");
+        alone.subject.id = "vm-2".into();
+        alone.updated_at = None;
+        alone.started_at = None;
+        let migrated = migrate_legacy(vec![
+            start.clone(),
+            rejected.clone(),
+            finish.clone(),
+            alone.clone(),
+        ]);
+        assert_eq!(migrated.len(), 3);
         let operation = migrated.iter().find(|event| event.id == start.id).unwrap();
         assert_eq!(operation.status, "completed");
         assert_eq!(operation.started_at.as_ref(), Some(&start.occurred_at));
         assert_eq!(operation.finished_at.as_ref(), Some(&finish.occurred_at));
         assert!(migrated.iter().any(|event| event.id == rejected.id));
+        // An acceptance nothing answered is history, not work: it reads as
+        // `pending` and never starts.
+        let alone = migrated.iter().find(|event| event.id == alone.id).unwrap();
+        assert_eq!(alone.status, "pending");
+        assert_eq!(alone.started_at, None);
         let twice = migrate_legacy(migrated.clone());
         assert_eq!(
             serde_json::to_value(twice).unwrap(),

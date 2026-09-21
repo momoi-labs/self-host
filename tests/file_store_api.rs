@@ -158,6 +158,36 @@ async fn call_text(app: &Router, method: &str, path: &str, body: Value) -> (Stat
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+/// The task's event once the scheduler has run it, whichever way it went.
+async fn finished(app: &Router, task_id: &str) -> Value {
+    for _ in 0..200 {
+        let (_, events) = call(app, "GET", "/events", None).await;
+        if let Some(event) = events.as_array().and_then(|events| {
+            events.iter().find(|event| {
+                event["id"] == task_id
+                    && (event["status"] == "completed" || event["status"] == "failed")
+            })
+        }) {
+            return event.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("task '{task_id}' never finished");
+}
+
+/// Sends a mutation the scheduler carries out and waits for its task.
+async fn call_task(
+    app: &Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let (status, accepted) = call(app, method, path, body).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let task_id = accepted["task_id"].as_str().expect("a 202 names its task");
+    (status, finished(app, task_id).await)
+}
+
 /// Deploys settle on a background task in the handler the same way they do in the
 /// unit suite; the record is readable as soon as it is committed.
 async fn settled(app: &Router, id: &str) -> Value {
@@ -191,18 +221,19 @@ async fn a_host_with_no_database_keeps_what_the_operator_deployed_across_a_resta
     let blog_id = blog["id"].as_str().unwrap().to_string();
     settled(&app, &blog_id).await;
 
-    let (status, _) = call(
+    let (_, configured) = call_task(
         &app,
         "POST",
         "/apps/blog/env",
         Some(json!({ "key": "TOKEN", "value": "secret" })),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(configured["status"], "completed");
 
-    let (status, stopped) = call(&app, "POST", &format!("/apps/id/{blog_id}/stop"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(stopped["status"], "stopped");
+    let (_, stopped) = call_task(&app, "POST", &format!("/apps/id/{blog_id}/stop"), None).await;
+    assert_eq!(stopped["status"], "completed");
+    let (_, blog) = call(&app, "GET", &format!("/apps/id/{blog_id}"), None).await;
+    assert_eq!(blog["status"], "stopped");
 
     let (status, key) = call(
         &app,
@@ -656,7 +687,7 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
     let (_, apps) = call(&app, "GET", "/apps", None).await;
     let app_id = apps[0]["id"].as_str().unwrap();
     settled(&app, app_id).await;
-    call(&app, "POST", &format!("/apps/id/{app_id}/stop"), None).await;
+    call_task(&app, "POST", &format!("/apps/id/{app_id}/stop"), None).await;
     assert_eq!(
         call(&app, "DELETE", &format!("/custom-images/{id}"), None)
             .await
@@ -664,8 +695,8 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
         StatusCode::CONFLICT
     );
     assert_eq!(
-        call(&app, "DELETE", "/apps/using-image", None).await.0,
-        StatusCode::NO_CONTENT
+        call_task(&app, "DELETE", "/apps/using-image", None).await.1["status"],
+        "completed"
     );
 
     let (status, compose) = call(&app, "POST", "/apps", Some(json!({
@@ -680,14 +711,14 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
             .0,
         StatusCode::CONFLICT
     );
-    call(&app, "DELETE", "/apps/using-compose", None).await;
+    call_task(&app, "DELETE", "/apps/using-compose", None).await;
     let (_, records) = call(&app, "GET", "/custom-images", None).await;
     assert_eq!(records[0]["in_use"], false);
     assert_eq!(
-        call(&app, "DELETE", &format!("/custom-images/{id}"), None)
+        call_task(&app, "DELETE", &format!("/custom-images/{id}"), None)
             .await
-            .0,
-        StatusCode::NO_CONTENT
+            .1["status"],
+        "completed"
     );
     assert_eq!(call(&app, "GET", "/custom-images", None).await.1, json!([]));
 }
@@ -707,12 +738,8 @@ async fn audit_keeps_identity_and_history_after_deletion_and_restart() {
     let id = created["id"].as_str().unwrap();
     settled(&app, id).await;
     for action in ["stop", "start", "restart"] {
-        assert!(
-            call(&app, "POST", &format!("/apps/id/{id}/{action}"), None)
-                .await
-                .0
-                .is_success()
-        );
+        let (_, event) = call_task(&app, "POST", &format!("/apps/id/{id}/{action}"), None).await;
+        assert_eq!(event["status"], "completed", "{action}");
     }
     assert!(
         call(
@@ -726,8 +753,8 @@ async fn audit_keeps_identity_and_history_after_deletion_and_restart() {
         .is_success()
     );
     assert_eq!(
-        call(&app, "DELETE", "/apps/renamed", None).await.0,
-        StatusCode::NO_CONTENT
+        call_task(&app, "DELETE", "/apps/renamed", None).await.1["status"],
+        "completed"
     );
     let (status, before) = call(&app, "GET", "/events", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -757,4 +784,167 @@ async fn audit_keeps_identity_and_history_after_deletion_and_restart() {
     let (status, after) = call(&restarted, "GET", "/events", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(after, before);
+}
+
+/// Boots the way `serve` does, settling and requeuing the task queue first.
+async fn boot_recovered(state: &Path, docker: FakeDocker) -> (Router, FileStateStore) {
+    let store = FileStateStore::open(state).expect("open the Platform state");
+    store.initialize().await.unwrap();
+    let app = self_host::boot_app_with_vm_runtime(
+        store.clone(),
+        Arc::new(docker),
+        Arc::new(FakeRoutes::new()),
+        self_host::metrics::Metrics::new(),
+        Arc::new(self_host::vms::LimaRuntime::default()),
+        Arc::new(self_host::dns_records::UnservedZone),
+    )
+    .await;
+    (app, store)
+}
+
+/// A restart runs again what never started, and fails what was running: a
+/// half-done side effect is not repeated. Both keep their id and actor.
+#[tokio::test]
+async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
+    use self_host::audit::Subject;
+    use self_host::tasks::{Task, Work};
+    let dir = TempDir::new("task-recovery");
+    let (app, store) = boot(&dir.state()).await;
+    let (status, blog) = call(
+        &app,
+        "POST",
+        "/apps",
+        Some(json!({"name": "blog", "image": "nginx:alpine"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{blog}");
+    let id = blog["id"].as_str().unwrap().to_owned();
+    settled(&app, &id).await;
+    let subject = Subject {
+        kind: "application".into(),
+        id: id.clone(),
+        name: "blog".into(),
+        available: None,
+    };
+    let task = |task_id: &str, action: &str, status: &str, work: Work| Task {
+        id: task_id.into(),
+        action: action.into(),
+        subject: subject.clone(),
+        api_name: Some("laptop".into()),
+        status: status.into(),
+        work,
+    };
+    let queue = vec![
+        task(
+            "event-running",
+            "restart",
+            "running",
+            Work::RestartApplication { id: id.clone() },
+        ),
+        task(
+            "event-pending",
+            "stop",
+            "pending",
+            Work::StopApplication { id: id.clone() },
+        ),
+    ];
+    // What the daemon had on file when it went down: both events and both
+    // tasks, one of them mid-way.
+    let mut events: Vec<Value> = call(&app, "GET", "/events", None)
+        .await
+        .1
+        .as_array()
+        .unwrap()
+        .clone();
+    for (task, status, started) in [(&queue[0], "running", true), (&queue[1], "pending", false)] {
+        events.push(json!({
+            "id": task.id, "action": task.action, "status": status,
+            "occurredAt": "2026-09-21T10:00:00.000000000Z",
+            "startedAt": if started { json!("2026-09-21T10:00:01.000000000Z") } else { Value::Null },
+            "finishedAt": null, "updatedAt": "2026-09-21T10:00:01.000000000Z",
+            "apiName": "laptop", "description": "Operation queued.",
+            "subject": {"kind": "application", "id": id, "name": "blog"}
+        }));
+    }
+    events.push(json!({
+        "id": "event-orphan", "action": "create", "status": "running",
+        "occurredAt": "2026-09-21T09:00:00.000000000Z", "startedAt": "2026-09-21T09:00:00.000000000Z",
+        "finishedAt": null, "updatedAt": "2026-09-21T09:00:00.000000000Z",
+        "apiName": null, "description": "Operation is running in the background.",
+        "subject": {"kind": "custom-image", "id": "image-gone", "name": "old"}
+    }));
+    store
+        .store_state("audit_events_v1", &serde_json::to_string(&events).unwrap())
+        .await
+        .unwrap();
+    store
+        .store_state("tasks_v1", &serde_json::to_string(&queue).unwrap())
+        .await
+        .unwrap();
+    drop(app);
+    drop(store);
+
+    let docker = FakeDocker::new();
+    let (app, store) = boot_recovered(&dir.state(), docker.clone()).await;
+    let stopped = finished(&app, "event-pending").await;
+    assert_eq!(stopped["status"], "completed");
+    assert_eq!(stopped["apiName"], "laptop");
+    assert_eq!(stopped["subject"]["id"], id);
+    assert!(stopped["startedAt"].is_string());
+    let (_, blog) = call(&app, "GET", &format!("/apps/id/{id}"), None).await;
+    assert_eq!(blog["status"], "stopped");
+    assert_eq!(docker.stopped.lock().unwrap().len(), 1);
+
+    let interrupted = finished(&app, "event-running").await;
+    assert_eq!(interrupted["status"], "failed");
+    assert_eq!(interrupted["apiName"], "laptop");
+    assert_eq!(
+        interrupted["error"]["error"],
+        "The Platform restarted before this task finished."
+    );
+    assert_eq!(interrupted["startedAt"], "2026-09-21T10:00:01.000000000Z");
+    let orphan = finished(&app, "event-orphan").await;
+    assert_eq!(orphan["status"], "failed");
+    assert_eq!(
+        orphan["error"]["error"],
+        "The Platform restarted before this task finished."
+    );
+    assert_eq!(store.get_state("tasks_v1").await.unwrap().unwrap(), "[]");
+}
+
+/// A task that fails says why, in the same shape the API answers errors in.
+#[tokio::test]
+async fn a_failed_task_reports_its_reason() {
+    let dir = TempDir::new("task-failure");
+    let store = FileStateStore::open(dir.state()).expect("open the Platform state");
+    store.initialize().await.unwrap();
+    store.store_state("dns_suffix", "home.lan").await.unwrap();
+    store.store_state("api_key", API_KEY).await.unwrap();
+    let app = build_app(
+        store.clone(),
+        Arc::new(FakeDocker {
+            pull_failure: Some("manifest for nginx:nope not found".into()),
+            ..FakeDocker::new()
+        }),
+        Arc::new(FakeRoutes::new()),
+        self_host::metrics::Metrics::new(),
+    );
+    let (_, event) = call_task(
+        &app,
+        "POST",
+        "/apps",
+        Some(json!({"name": "blog", "image": "nginx:nope"})),
+    )
+    .await;
+    assert_eq!(event["status"], "failed");
+    assert_eq!(event["action"], "create");
+    assert_eq!(event["error"]["error"], "failed to deploy the Application");
+    assert!(
+        event["error"]["caused_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cause| cause.as_str().unwrap().contains("nginx:nope")),
+        "{event}"
+    );
 }

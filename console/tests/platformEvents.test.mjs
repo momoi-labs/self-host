@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { eventActionLabel, eventSubjectHref, filterEvents, normalizeEvent, eventUpdatedAt } from "../src/lib/platformEvents.ts";
+import { eventActionLabel, eventSubjectHref, filterEvents, eventUpdatedAt } from "../src/lib/platformEvents.ts";
 
 test("resource links target existing console pages by stable ID", () => {
   assert.equal(eventSubjectHref({ kind: "application", id: "app-123", name: "renamed" }), "/console/#app-app-123");
@@ -26,14 +26,6 @@ test("filters by resource or service and status, then orders newest first", () =
   assert.deepEqual(filterEvents(events, "database", "completed").map(event => event.id), ["older"]);
   assert.deepEqual(filterEvents(events, "database", "failed"), []);
   assert.deepEqual(events.map(event => event.id), ["older", "newer"]);
-});
-
-test("shows running for legacy operations that start immediately", () => {
-  const event = { id: "started", status: "accepted" };
-  assert.equal(normalizeEvent(event).status, "running");
-  for (const status of ["pending", "running", "completed", "failed"]) {
-    assert.equal(normalizeEvent({ ...event, status }).status, status);
-  }
 });
 
 test("the table orders and displays the last update while keeping start and finish", () => {
