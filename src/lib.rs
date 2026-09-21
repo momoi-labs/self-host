@@ -1062,7 +1062,7 @@ async fn remove_app<S: StateStore>(
 ) -> Response {
     let app = match application_named(&state, &name).await {
         Ok(app) => app,
-        Err(response) => return response,
+        Err(e) => return remove_error_response(e),
     };
     let subject = audit::Subject::new("application", app.id.clone(), app.name);
     accepted_task(
@@ -1076,22 +1076,20 @@ async fn remove_app<S: StateStore>(
     )
 }
 
-/// The Application a name refers to, or the response that says why not.
-/// Checked before the task is queued, so a typo is refused now and not later.
+/// The Application a name refers to, or why there is none. Checked before
+/// the task is queued, so a typo is refused now and not later.
 async fn application_named<S: StateStore>(
     state: &AppState<S>,
     name: &str,
-) -> Result<apps::ApplicationRecord, Response> {
-    match state.store.is_initialized().await {
-        Ok(true) => {}
-        Ok(false) => return Err(remove_error_response(RemoveError::NotInitialized)),
-        Err(e) => return Err(remove_error_response(RemoveError::Store(e))),
+) -> Result<apps::ApplicationRecord, RemoveError> {
+    if !state.store.is_initialized().await? {
+        return Err(RemoveError::NotInitialized);
     }
-    match state.store.find_application_by_name(name).await {
-        Ok(Some(app)) => Ok(app),
-        Ok(None) => Err(remove_error_response(RemoveError::NotFound(name.into()))),
-        Err(e) => Err(remove_error_response(RemoveError::Store(e))),
-    }
+    state
+        .store
+        .find_application_by_name(name)
+        .await?
+        .ok_or_else(|| RemoveError::NotFound(name.into()))
 }
 
 /// `202` with the task, or the reason the task could not be recorded.
@@ -1130,7 +1128,7 @@ async fn set_env<S: StateStore>(
 ) -> Response {
     let app = match application_named(&state, &name).await {
         Ok(app) => app,
-        Err(response) => return response,
+        Err(e) => return remove_error_response(e),
     };
     accepted_task(
         tasks::enqueue(
@@ -1163,7 +1161,7 @@ async fn unset_env<S: StateStore>(
 ) -> Response {
     let app = match application_named(&state, &name).await {
         Ok(app) => app,
-        Err(response) => return response,
+        Err(e) => return remove_error_response(e),
     };
     accepted_task(
         tasks::enqueue(
