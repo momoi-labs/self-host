@@ -335,10 +335,6 @@
 .detail-log-pane > :not(:last-child) { flex: none; padding: var(--spacing-lg); }
 .detail-log-pane > :last-child { flex: 1; min-height: 0; }
 .detail-tabs .logview { min-height: 0; border: 0; border-radius: 0; --corner-mark: 0; }
-/* The corner marks are drawn by pseudo-elements that reach outside the frame;
-   hidden by opacity they still overflow the pane by their inset, and a pane
-   that scrolls by 3px grows a second pair of scrollbars. */
-.detail-tabs .logview::before, .detail-tabs .logview::after { display: none; }
 .detail-tabs .log-scroll { padding: var(--spacing-lg); }
 
 .container-terminal { position: relative; height: 100%; min-height: 320px; }
@@ -362,12 +358,8 @@
    zero: beside a panel asking for the rest of the column it collapses to
    nothing. The `auto` track keeps its own height; the panel takes what is
    left. */
-/* The strip scrolls sideways when the tabs do not fit. The selected tab's
-   underline reaches 1px past the buttons into the strip's border, and a
-   scroller counts that as overflow: on a browser that draws scrollbars
-   (Firefox on Linux) the strip grew one. The padding gives the underline
-   that pixel inside the box. */
-.detail-tabs [role="tablist"] { max-width: 100%; overflow-x: auto; padding-inline: var(--spacing-xl); padding-block-end: 1px; }
+/* The strip scrolls sideways when the tabs do not fit. */
+.detail-tabs [role="tablist"] { max-width: 100%; overflow-x: auto; padding-inline: var(--spacing-xl); }
 .detail-tabs > [data-slot="tabs"] > [role="tablist"] { min-height: min-content; }
 /* The form scrolls; the log and the terminal bring their own scroller and
    take the panel out to the card's edges. */
