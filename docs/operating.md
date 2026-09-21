@@ -4,11 +4,10 @@ Everything the Operator configured lives in one directory on the Host:
 
 ```
 ~/.config/self-host/
-├── state/                 # authoritative: settings, credentials, Applications
-│   ├── platform.json      # settings, credentials, dns_records_v1
+├── state/                 # authoritative: everything the Operator configured
+│   ├── platform.db        # settings, credentials, Applications, Records, machines, images, audit
 │   ├── platform.lock
 │   └── applications/<application-id>/
-│       ├── application.json
 │       └── compose-<digest>.yaml
 ├── dns.json               # what DNS serves, under the address policy
 ├── config.json            # this machine's CLI credentials
@@ -26,9 +25,16 @@ up, so a restore onto a Host with a different address needs no edit at all.
 `--host-ip` on `init` pins a candidate into `include`; it is still served only
 while an interface has it.
 
-The Records the Operator adds to the Zone through `POST /dns/records` live in
-`platform.json` under `dns_records_v1`: one Record per name and Record Type,
-with the value, the TTL of 60 seconds, an optional description and the owner.
+`platform.db` is one SQLite file the daemon opens in-process (ADR-0027). The
+Records the Operator adds to the Zone through `POST /dns/records` are rows in
+it: one Record per name and Record Type, with the value, the TTL of 60
+seconds, an optional description and the owner. To look inside, with the
+daemon stopped or not:
+
+```bash
+sqlite3 ~/.config/self-host/state/platform.db 'select kind, id from records'
+```
+
 The served Zone is memory. The daemon publishes every stored Record again on
 start, so a restore brings the names back with everything else in `state/`.
 
@@ -40,6 +46,25 @@ it runs.
 Directories are `0700` and files `0600`. `state/` holds the Operator's API key
 and every Application's environment, secrets included. Do not loosen it, and do
 not copy it anywhere world-readable.
+
+## Settings
+
+The console's Settings page (the gear in the sidebar) has three tabs: General,
+API keys and DNS setup. General holds how long the audit history is kept. The
+default is 30 days. A value saved there is the Operator's setting; the daemon
+flag outranks it:
+
+```bash
+self-host serve --audit-events-max-age 90d
+```
+
+That is PostgreSQL's order, reduced to the levels that exist here: the default,
+then the setting (what `ALTER SYSTEM` is there), then the command line. While
+the flag is given the page shows the value it pins and disables the field; the
+setting stays saved and applies again once the flag is removed from the
+service. `GET /settings` reports the effective value and its source. Events
+older than the retention are deleted on the next write to the history, so a
+shorter value deletes history at once.
 
 ## Managing Records over the API
 
@@ -110,7 +135,7 @@ regenerated: the Application IDs, the Operator's credentials and the CA the
 Consumers on the LAN already trust.
 
 Take the copy with the daemon stopped. A running daemon can commit a change
-between two files being read, and the copy would then hold half of it:
+while the file is being read, and the copy would then hold half of it:
 
 ```bash
 # Linux
@@ -140,6 +165,36 @@ Restoring onto a Host with a different LAN address needs nothing special: the
 daemon scans and publishes what the interfaces have. If an address you pinned
 with `--host-ip` is gone for good, re-run `self-host init` or remove it from
 `include` in `dns.json`.
+
+## Upgrading from a Platform that kept its state in JSON files
+
+Platforms before 0.5.0 wrote `state/platform.json` and one
+`applications/<id>/application.json` per Application. This version keeps
+everything in `state/platform.db` and will not start while `platform.json` is
+still there: it stops and names the import script, and never reads the JSON as
+an empty installation.
+
+1. Stop the daemon and copy `~/.config/self-host/` somewhere else. That copy is
+   the whole rollback.
+2. Install the new version and start it once. It creates `platform.db`, then
+   stops with the message naming the script.
+3. Run the import with the daemon stopped:
+
+   ```bash
+   python3 scripts/import-json-state.py ~/.config/self-host/state
+   ```
+
+   It prints one line per collection with the row count, and moves the JSON
+   files to `state/imported-<date>/`. Audit events older than 30 days are not
+   imported.
+4. Start the daemon and check the console: Applications, machines, Records,
+   images and the event history are the ones you had.
+5. Delete `state/imported-<date>/` when you are comfortable.
+
+To roll back, stop the daemon, install the previous version, restore the copy
+from step 1 and start. Without that copy, move the files in
+`state/imported-<date>/` back to where they were and delete `platform.db`;
+changes made after the upgrade are lost.
 
 ## Upgrading from a Platform that used PostgreSQL
 
@@ -197,10 +252,11 @@ stays until the daemon is back.
 
 ## Failure and recovery
 
-A mutation is one file replaced atomically, so an interrupted write leaves the
-previously committed record in place. On start the daemon collects what an
-interrupted write left behind: a Compose file no record references, and an
-Application directory that never got a record.
+A mutation is one SQLite transaction, so an interrupted write leaves the
+previously committed state in place. The Compose definition is written to its
+file before the row that references it commits; on start the daemon collects
+what an interrupted write left behind: a Compose file no row references, and
+an Application directory that never got a row.
 
 A deploy interrupted by a restart is settled against what Docker is actually
 running: running means running, anything else is reported as failed with the
@@ -221,12 +277,11 @@ State that does not parse, or that a newer Platform wrote, stops the daemon
 with the file's path and the reason. It is never read as an empty installation.
 Restore from a backup, or `self-host reset` and start over.
 
-Durability is what the filesystem gives you. Each write is flushed, renamed
-over its destination, and the directory flushed after it; on macOS the flush is
-`F_FULLFSYNC`, which is what actually reaches the drive there. On a filesystem
-that will not flush a directory, the rename is still atomic for a reader but
-its survival across a power cut is not guaranteed. Network filesystems are not
-supported for `state/`.
+Durability is what the filesystem gives you. The database runs with
+`synchronous = FULL` and `fullfsync = ON`, so a commit is on the drive before
+it is acknowledged, on macOS too. Compose files are flushed, renamed over
+their destination, and the directory flushed after them. Network filesystems
+are not supported for `state/`.
 
 ## Running without Docker
 

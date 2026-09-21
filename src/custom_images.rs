@@ -12,9 +12,12 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::{AppState, error::ErrorReport, store::StateStore};
-
-const STATE_KEY: &str = "custom_images_v1";
+use crate::{
+    AppState,
+    collection::{IMAGES, Keyed},
+    error::ErrorReport,
+    store::StateStore,
+};
 
 fn valid_tool(tool: &str) -> bool {
     !tool.is_empty()
@@ -312,10 +315,7 @@ impl Builds {
     ) -> anyhow::Result<MutexGuard<'_, Option<Vec<Image>>>> {
         let mut records = self.records.lock().await;
         if records.is_none() {
-            let mut loaded: Vec<Image> = match store.get_state(STATE_KEY).await? {
-                Some(json) => serde_json::from_str(&json)?,
-                None => Vec::new(),
-            };
+            let mut loaded = IMAGES.list(store).await?;
             let mut interrupted = false;
             for image in &mut loaded {
                 if image.status == "building" {
@@ -336,10 +336,14 @@ impl Builds {
 }
 
 async fn save<S: StateStore>(store: &S, images: &[Image]) -> anyhow::Result<()> {
-    store
-        .store_state(STATE_KEY, &serde_json::to_string(images)?)
-        .await?;
+    IMAGES.replace_all(store, images).await?;
     Ok(())
+}
+
+impl Keyed for Image {
+    fn key(&self) -> String {
+        self.id.clone()
+    }
 }
 
 #[derive(Deserialize)]

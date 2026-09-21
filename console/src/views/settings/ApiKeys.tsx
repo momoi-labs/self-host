@@ -1,5 +1,4 @@
-import { StrictMode, useCallback, useEffect, useState, type FormEvent } from "react";
-import { createRoot } from "react-dom/client";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   Alert,
   AlertContent,
@@ -14,9 +13,6 @@ import {
   DialogHeader,
   DialogTitle,
   FormField,
-  PageHeader,
-  PageHeaderDescription,
-  PageHeaderTitle,
   Search,
   Table,
   TableBody,
@@ -24,18 +20,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Toasts,
 } from "@momoi-labs/kiso-react";
 
-import { Icon } from "./components/Icon.js";
-import { Shell } from "./components/Shell.js";
-import { api, getJson, requireKey } from "./lib/api.js";
-import { useEnvironments } from "./lib/useEnvironments.js";
-import { usePlatform } from "./lib/usePlatform.js";
-import type { ApiKey } from "./lib/types.js";
-import "./console.css";
+import { Icon } from "../../components/Icon.js";
+import { api, getJson, requireKey } from "../../lib/api.js";
+import type { ApiKey } from "../../lib/types.js";
 
-function ApiKeys() {
+/** The API keys tab of Settings. */
+export function ApiKeys() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [label, setLabel] = useState("");
   const [created, setCreated] = useState<string | null>(null);
@@ -82,18 +74,14 @@ function ApiKeys() {
   );
 
   return (
-    <section className="page">
-      <PageHeader
-        actions={
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-            <Icon name="plus" />
-            New key
-          </Button>
-        }
-      >
-        <PageHeaderTitle>API keys</PageHeaderTitle>
-        <PageHeaderDescription>Manage access for other operators.</PageHeaderDescription>
-      </PageHeader>
+    <div className="stack">
+      <div className="between">
+        <p className="muted t-label">Keys other operators and the CLI use to reach the API.</p>
+        <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+          <Icon name="plus" />
+          New key
+        </Button>
+      </div>
 
       {created ? (
         <Alert variant="info">
@@ -213,36 +201,6 @@ function ApiKeys() {
           </form>
         </DialogContent>
       </Dialog>
-    </section>
+    </div>
   );
 }
-
-function SettingsShell({ crumb, children }: { crumb: string; children: React.ReactNode }) {
-  const { apps, dnsSuffix, healthy } = usePlatform();
-  const { environments } = useEnvironments();
-  return (
-    <Shell
-      crumb={crumb}
-      dnsSuffix={dnsSuffix}
-      apps={apps}
-      environments={environments}
-      virtualMachine={(machine) => ({ href: `/console/#environment-${machine.id}`, active: false })}
-      healthy={healthy}
-      overview={{ href: "/console/", active: false }}
-      deploy={{ href: "/console/#new", active: false }}
-      application={(app) => ({ href: `/console/#app-${app.id}`, active: false })}
-    >
-      {children}
-    </Shell>
-  );
-}
-
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <Toasts>
-      <SettingsShell crumb="API keys">
-        <ApiKeys />
-      </SettingsShell>
-    </Toasts>
-  </StrictMode>,
-);

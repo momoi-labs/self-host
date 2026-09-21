@@ -9,8 +9,9 @@
 
 use crate::{
     AppState,
+    collection::{IMAGES, MACHINES},
     error::ErrorReport,
-    store::{StateStore, StoreError},
+    store::{AuditRow, StateStore, StoreError},
 };
 use axum::{
     Json,
@@ -24,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-const STATE_KEY: &str = "audit_events_v1";
 tokio::task_local! { pub static ACTOR: Option<String>; }
 tokio::task_local! { pub static EVENT_ID: Option<String>; }
 
@@ -76,6 +76,18 @@ pub struct Event {
     /// Why a `failed` task failed, in the shape every error leaves the API in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorReport>,
+    /// What a `configure` changed, setting by setting, so the history says
+    /// not only that something was changed but from what to what.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<Vec<Change>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Change {
+    pub setting: String,
+    pub from: String,
+    pub to: String,
 }
 
 pub fn event(
@@ -106,6 +118,7 @@ pub fn event(
         description: description.into(),
         subject,
         error: None,
+        changes: None,
     }
 }
 
@@ -142,105 +155,95 @@ pub struct Journal {
     write: Mutex<()>,
 }
 impl Journal {
-    pub async fn upsert<S: StateStore>(&self, store: &S, event: Event) -> Result<(), StoreError> {
+    /// Records `event`, merging it into the row with the same id, then drops
+    /// every event last updated more than `retention` ago. Retention rides on
+    /// every write so a changed setting applies on the next event.
+    pub async fn upsert<S: StateStore>(
+        &self,
+        store: &S,
+        event: Event,
+        retention: std::time::Duration,
+    ) -> Result<(), StoreError> {
         let _guard = self.write.lock().await;
-        let mut events = read(store).await?;
-        if let Some(existing) = events.iter_mut().find(|existing| existing.id == event.id) {
-            // A fast worker can finish before the HTTP handler returns 202.
-            // The later acknowledgement must not overwrite its final result.
-            if rank(&event.status) > rank(&existing.status) {
-                existing.status = event.status;
-                existing.description = event.description;
-                existing.updated_at = event.updated_at;
-                existing.finished_at = event.finished_at;
-                existing.error = event.error;
+        let merged = match store.get_audit_event(&event.id).await? {
+            Some(body) => {
+                let mut existing = parse(&body)?;
+                // A fast worker can finish before the HTTP handler returns 202.
+                // The later acknowledgement must not overwrite its final result.
+                if rank(&event.status) > rank(&existing.status) {
+                    existing.status = event.status;
+                    existing.description = event.description;
+                    existing.updated_at = event.updated_at;
+                    existing.finished_at = event.finished_at;
+                    existing.error = event.error;
+                }
+                if event.changes.is_some() {
+                    existing.changes = event.changes;
+                }
+                if !event.subject.id.is_empty() {
+                    existing.subject = event.subject;
+                }
+                if existing.started_at.is_none() {
+                    existing.started_at = event.started_at;
+                }
+                existing
             }
-            if !event.subject.id.is_empty() {
-                existing.subject = event.subject;
-            }
-            if existing.started_at.is_none() {
-                existing.started_at = event.started_at;
-            }
-        } else {
-            events.push(event);
-        }
-        store
-            .store_state(
-                STATE_KEY,
-                &serde_json::to_string(&events)
-                    .map_err(|e| StoreError::Serialize(e.to_string()))?,
-            )
-            .await
-    }
-}
-pub(crate) async fn read<S: StateStore>(store: &S) -> Result<Vec<Event>, StoreError> {
-    match store.get_state(STATE_KEY).await? {
-        None => Ok(vec![]),
-        Some(json) => serde_json::from_str(&json)
-            .map(migrate_legacy)
-            .map_err(|e| StoreError::Serialize(format!("could not read audit history: {e}"))),
+            None => event,
+        };
+        store.put_audit_event(&row(&merged)?).await?;
+        store.prune_audit_events(&cutoff(retention)).await?;
+        Ok(())
     }
 }
 
-/// Old background work had separate acceptance and completion records. Merge
-/// only unambiguous pairs; a rejected second request is not a worker result.
-/// An acceptance left on its own becomes `pending`: it is history, and the
-/// scheduler never picks it up (see `tasks::recover`).
-fn migrate_legacy(mut events: Vec<Event>) -> Vec<Event> {
-    events.sort_by(|a, b| a.occurred_at.cmp(&b.occurred_at));
-    let mut result: Vec<Event> = Vec::new();
-    let mut open: Vec<usize> = Vec::new();
-    for mut event in events {
-        if event.updated_at.is_some() {
-            result.push(event);
-            continue;
-        }
-        let completion = is_terminal(&event.status)
-            && [
-                "Virtual machine operation ",
-                "Application deployment ",
-                "Custom image build ",
-            ]
-            .iter()
-            .any(|prefix| event.description.starts_with(prefix));
-        if completion {
-            let matches: Vec<usize> = open
-                .iter()
-                .copied()
-                .filter(|&index| {
-                    let start = &result[index];
-                    start.action == event.action
-                        && start.subject.kind == event.subject.kind
-                        && !start.subject.id.is_empty()
-                        && start.subject.id == event.subject.id
-                        && start.api_name == event.api_name
-                })
-                .collect();
-            if let [index] = matches.as_slice() {
-                let start = &mut result[*index];
-                start.status = event.status;
-                start.description = event.description;
-                start.started_at = Some(start.occurred_at.clone());
-                start.finished_at = Some(event.occurred_at.clone());
-                start.updated_at = Some(event.occurred_at);
-                open.retain(|candidate| candidate != index);
-                continue;
-            }
-        }
-        event.updated_at = Some(event.occurred_at.clone());
-        if event.status == "accepted" {
-            event.status = "pending".into();
-            open.push(result.len());
-        } else if completion {
-            event.finished_at = Some(event.occurred_at.clone());
-        }
-        result.push(event);
-    }
-    result
+fn row(event: &Event) -> Result<AuditRow, StoreError> {
+    Ok(AuditRow {
+        id: event.id.clone(),
+        status: event.status.clone(),
+        subject_kind: event.subject.kind.clone(),
+        subject_id: event.subject.id.clone(),
+        occurred_at: event.occurred_at.clone(),
+        updated_at: event
+            .updated_at
+            .clone()
+            .unwrap_or_else(|| event.occurred_at.clone()),
+        body: serde_json::to_string(event).map_err(|e| StoreError::Serialize(e.to_string()))?,
+    })
+}
+
+fn parse(body: &str) -> Result<Event, StoreError> {
+    serde_json::from_str(body)
+        .map_err(|e| StoreError::Serialize(format!("could not read audit history: {e}")))
+}
+
+/// The timestamp `retention` before now, in the text form events carry, so
+/// the store compares it as text.
+fn cutoff(retention: std::time::Duration) -> String {
+    let at = time::OffsetDateTime::now_utc() - retention;
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+        at.year(),
+        at.month() as u8,
+        at.day(),
+        at.hour(),
+        at.minute(),
+        at.second(),
+        at.nanosecond()
+    )
+}
+
+pub(crate) async fn read<S: StateStore>(store: &S) -> Result<Vec<Event>, StoreError> {
+    store
+        .list_audit_events()
+        .await?
+        .iter()
+        .map(|body| parse(body))
+        .collect()
 }
 
 pub(crate) async fn record<S: StateStore>(state: &AppState<S>, event: Event) {
-    if let Err(error) = state.audit.upsert(&state.store, event).await {
+    let retention = crate::settings::audit_events_max_age(state).await;
+    if let Err(error) = state.audit.upsert(&state.store, event, retention).await {
         tracing::error!(%error, "Could not persist audit event");
     }
 }
@@ -250,26 +253,16 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
         Ok(mut events) => {
             let apps = state.store.list_applications().await.ok();
             let keys = state.store.list_api_keys().await.ok();
-            let machines: Option<Value> =
-                state
-                    .store
-                    .get_state("environments_v1")
-                    .await
-                    .ok()
-                    .map(|json| {
-                        json.and_then(|json| serde_json::from_str(&json).ok())
-                            .unwrap_or(serde_json::json!([]))
-                    });
-            let images: Option<Value> =
-                state
-                    .store
-                    .get_state("custom_images_v1")
-                    .await
-                    .ok()
-                    .map(|json| {
-                        json.and_then(|json| serde_json::from_str(&json).ok())
-                            .unwrap_or(serde_json::json!([]))
-                    });
+            let machines: Option<Vec<String>> = MACHINES
+                .list(&state.store)
+                .await
+                .ok()
+                .map(|rows| rows.into_iter().map(|row| row.id).collect());
+            let images: Option<Vec<String>> = IMAGES
+                .list(&state.store)
+                .await
+                .ok()
+                .map(|rows| rows.into_iter().map(|row| row.id).collect());
             let records: Option<Vec<String>> = crate::dns_records::load(&state.store)
                 .await
                 .ok()
@@ -283,14 +276,9 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
                     "api-key" => keys
                         .as_ref()
                         .map(|keys| keys.iter().any(|key| &key.id == id)),
-                    "virtual-machine" => machines
-                        .as_ref()
-                        .and_then(Value::as_array)
-                        .map(|rows| rows.iter().any(|row| field(row, "/id") == *id)),
-                    "custom-image" => images
-                        .as_ref()
-                        .and_then(Value::as_array)
-                        .map(|rows| rows.iter().any(|row| field(row, "/id") == *id)),
+                    "virtual-machine" => machines.as_ref().map(|ids| ids.contains(id)),
+                    "custom-image" => images.as_ref().map(|ids| ids.contains(id)),
+                    "settings" => Some(true),
                     "dns-record" => records.as_ref().map(|ids| ids.contains(id)),
                     _ => Some(false),
                 };
@@ -337,6 +325,7 @@ fn action(method: &str, route: &str, body: &Value) -> Option<(&'static str, &'st
         ("POST", "/dns/records") => ("create", "dns-record"),
         ("PUT", "/dns/records/{name}/{type}") => ("configure", "dns-record"),
         ("DELETE", "/dns/records/{name}/{type}") => ("delete", "dns-record"),
+        ("PUT", "/settings") => ("configure", "settings"),
         _ => return None,
     })
 }
@@ -398,33 +387,36 @@ async fn subject<S: StateStore>(
             name = record.name;
         }
     } else if kind == "virtual-machine" || kind == "custom-image" {
-        let key = if kind == "virtual-machine" {
-            "environments_v1"
-        } else {
-            "custom_images_v1"
-        };
         if id.is_empty() {
             id = field(body, "/id");
         }
-        let records: Value = state
-            .store
-            .get_state(key)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or(Value::Null);
-        let pointer = if kind == "virtual-machine" {
-            "/config/name"
+        let (found, pointer) = if kind == "virtual-machine" {
+            (
+                MACHINES
+                    .get(&state.store, &id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|machine| machine.config.name),
+                "/config/name",
+            )
         } else {
-            "/recipe/name"
+            (
+                IMAGES
+                    .get(&state.store, &id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|image| image.recipe.name),
+                "/recipe/name",
+            )
         };
-        name = records
-            .as_array()
-            .and_then(|records| records.iter().find(|record| field(record, "/id") == id))
-            .map(|record| field(record, pointer))
+        name = found
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| field(body, pointer));
+    } else if kind == "settings" {
+        id = crate::settings::AUDIT_EVENTS_MAX_AGE_SUBJECT.into();
+        name = "Audit history".into();
     } else if kind == "api-key" {
         name = state
             .store
@@ -493,7 +485,12 @@ pub(crate) async fn capture<S: StateStore>(
     let (action, kind) = action(&method, &route, &payload).unwrap();
     let subject = subject(&state, kind, &route, &path, &payload).await;
     let mut entry = event(action, subject, "pending", actor(), "Operation queued.");
-    if let Err(error) = state.audit.upsert(&state.store, entry.clone()).await {
+    let retention = crate::settings::audit_events_max_age(&state).await;
+    if let Err(error) = state
+        .audit
+        .upsert(&state.store, entry.clone(), retention)
+        .await
+    {
         return crate::error_response(StatusCode::INTERNAL_SERVER_ERROR, &error);
     }
     let response = EVENT_ID
@@ -681,7 +678,7 @@ mod tests {
             json!({"key":"PASSWORD", "value":"sensitive-env-value"}),
         )
         .await;
-        let stored = store.get_state(STATE_KEY).await.unwrap().unwrap();
+        let stored = store.list_audit_events().await.unwrap().join("\n");
         for secret in [token, "root-secret", "sensitive-env-value", "PASSWORD"] {
             assert!(!stored.contains(secret));
         }
@@ -772,6 +769,8 @@ mod tests {
             "configure"
         );
     }
+    const RETENTION: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+
     fn sample(status: &str, description: &str) -> Event {
         event(
             "create",
@@ -792,11 +791,20 @@ mod tests {
         let store = FakeStateStore::new();
         let journal = Journal::default();
         let start = sample("running", "Operation started.");
-        journal.upsert(&store, start.clone()).await.unwrap();
+        journal
+            .upsert(&store, start.clone(), RETENTION)
+            .await
+            .unwrap();
         let mut finish = sample("completed", "Virtual machine operation completed.");
         finish.id = start.id.clone();
-        journal.upsert(&store, finish.clone()).await.unwrap();
-        journal.upsert(&store, start.clone()).await.unwrap();
+        journal
+            .upsert(&store, finish.clone(), RETENTION)
+            .await
+            .unwrap();
+        journal
+            .upsert(&store, start.clone(), RETENTION)
+            .await
+            .unwrap();
         let events = read(&store).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, "completed");
@@ -810,20 +818,32 @@ mod tests {
         let store = FakeStateStore::new();
         let journal = Journal::default();
         let queued = sample("pending", "Operation queued.");
-        journal.upsert(&store, queued.clone()).await.unwrap();
+        journal
+            .upsert(&store, queued.clone(), RETENTION)
+            .await
+            .unwrap();
         assert_eq!(read(&store).await.unwrap()[0].started_at, None);
         let mut running = sample("running", "Operation is running.");
         running.id = queued.id.clone();
-        journal.upsert(&store, running.clone()).await.unwrap();
-        journal.upsert(&store, queued.clone()).await.unwrap();
+        journal
+            .upsert(&store, running.clone(), RETENTION)
+            .await
+            .unwrap();
+        journal
+            .upsert(&store, queued.clone(), RETENTION)
+            .await
+            .unwrap();
         let events = read(&store).await.unwrap();
         assert_eq!(events[0].status, "running");
         assert_eq!(events[0].started_at, running.started_at);
         let mut failed = sample("failed", "Action failed.");
         failed.id = queued.id.clone();
         failed.error = Some(ErrorReport::plain("no such image"));
-        journal.upsert(&store, failed.clone()).await.unwrap();
-        journal.upsert(&store, running).await.unwrap();
+        journal
+            .upsert(&store, failed.clone(), RETENTION)
+            .await
+            .unwrap();
+        journal.upsert(&store, running, RETENTION).await.unwrap();
         let events = read(&store).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, "failed");
@@ -831,43 +851,27 @@ mod tests {
         assert_eq!(events[0].finished_at, failed.finished_at);
     }
 
-    #[test]
-    fn legacy_pairs_merge_but_unrelated_failures_do_not() {
-        let mut start = sample("accepted", "Request accepted.");
-        start.updated_at = None;
-        start.started_at = None;
-        let mut rejected = sample("failed", "Request failed (HTTP 409).");
-        rejected.updated_at = None;
-        rejected.finished_at = None;
-        let mut finish = sample("completed", "Virtual machine operation completed.");
-        finish.updated_at = None;
-        finish.started_at = None;
-        finish.finished_at = None;
-        let mut alone = sample("accepted", "Request accepted.");
-        alone.subject.id = "vm-2".into();
-        alone.updated_at = None;
-        alone.started_at = None;
-        let migrated = migrate_legacy(vec![
-            start.clone(),
-            rejected.clone(),
-            finish.clone(),
-            alone.clone(),
-        ]);
-        assert_eq!(migrated.len(), 3);
-        let operation = migrated.iter().find(|event| event.id == start.id).unwrap();
-        assert_eq!(operation.status, "completed");
-        assert_eq!(operation.started_at.as_ref(), Some(&start.occurred_at));
-        assert_eq!(operation.finished_at.as_ref(), Some(&finish.occurred_at));
-        assert!(migrated.iter().any(|event| event.id == rejected.id));
-        // An acceptance nothing answered is history, not work: it reads as
-        // `pending` and never starts.
-        let alone = migrated.iter().find(|event| event.id == alone.id).unwrap();
-        assert_eq!(alone.status, "pending");
-        assert_eq!(alone.started_at, None);
-        let twice = migrate_legacy(migrated.clone());
-        assert_eq!(
-            serde_json::to_value(twice).unwrap(),
-            serde_json::to_value(migrated).unwrap()
-        );
+    #[tokio::test]
+    async fn events_older_than_the_retention_leave_on_the_next_write() {
+        let store = FakeStateStore::new();
+        let journal = Journal::default();
+        let mut old = sample("completed", "Virtual machine operation completed.");
+        old.occurred_at = "2020-01-01T00:00:00.000000000Z".into();
+        old.updated_at = Some(old.occurred_at.clone());
+        journal
+            .upsert(&store, old.clone(), RETENTION * 400)
+            .await
+            .unwrap();
+        assert_eq!(read(&store).await.unwrap().len(), 1);
+
+        let fresh = sample("completed", "Virtual machine operation completed.");
+        journal
+            .upsert(&store, fresh.clone(), RETENTION)
+            .await
+            .unwrap();
+
+        let events = read(&store).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, fresh.id);
     }
 }

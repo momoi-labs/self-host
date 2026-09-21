@@ -748,7 +748,7 @@ mod tests {
     #[tokio::test]
     async fn the_records_in_state_are_served_again_after_a_restart() {
         use crate::dns_records::{Owner, Record, RecordType as Type, TTL};
-        use crate::store::{FakeStateStore, StateStore};
+        use crate::store::FakeStateStore;
         let store = FakeStateStore::new();
         let records = vec![
             Record {
@@ -768,11 +768,8 @@ mod tests {
                 owner: Owner::Operator,
             },
         ];
-        store
-            .store_state(
-                crate::dns_records::STATE_KEY,
-                &serde_json::to_string(&records).unwrap(),
-            )
+        crate::collection::RECORDS
+            .replace_all(&store, &records)
             .await
             .unwrap();
         let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();

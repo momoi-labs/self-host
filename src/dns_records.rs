@@ -2,7 +2,7 @@
 //!
 //! A Record is one answer under the DNS Suffix: `nas` with value
 //! `192.168.1.30` makes `nas.<suffix>` resolve there, ahead of the wildcard.
-//! Records live in Platform State under `dns_records_v1`, keyed by name and
+//! Records live in Platform State as the `dns-record` collection, keyed by name and
 //! Record Type, and the served Zone is rebuilt from them on every start.
 //! Everything the API changes goes to the state first and to the Zone second,
 //! so a restart never serves a Record that was not saved.
@@ -21,9 +21,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::{AppState, error::ErrorReport, store::StateStore, store::StoreError};
-
-pub const STATE_KEY: &str = "dns_records_v1";
+use crate::{
+    AppState,
+    collection::{Keyed, RECORDS},
+    error::ErrorReport,
+    store::StateStore,
+    store::StoreError,
+};
 
 /// Every Record the Platform serves carries this TTL, so an address change
 /// reaches Consumers within a minute (CONTEXT.md: TTL).
@@ -314,16 +318,17 @@ impl From<StoreError> for RecordError {
 }
 
 pub async fn load<S: StateStore>(store: &S) -> Result<Vec<Record>, StoreError> {
-    match store.get_state(STATE_KEY).await? {
-        None => Ok(Vec::new()),
-        Some(json) => serde_json::from_str(&json)
-            .map_err(|e| StoreError::Serialize(format!("could not read the DNS Records: {e}"))),
-    }
+    RECORDS.list(store).await
 }
 
 async fn save<S: StateStore>(store: &S, records: &[Record]) -> Result<(), StoreError> {
-    let json = serde_json::to_string(records).map_err(|e| StoreError::Serialize(e.to_string()))?;
-    store.store_state(STATE_KEY, &json).await
+    RECORDS.replace_all(store, records).await
+}
+
+impl Keyed for Record {
+    fn key(&self) -> String {
+        Record::key(self)
+    }
 }
 
 pub(crate) async fn initialize_admin(

@@ -13,6 +13,7 @@ import { Overview } from "./views/Overview.js";
 import { CustomImages } from "./views/CustomImages.js";
 import { EventsPage } from "./views/Events.js";
 import { Environments } from "./views/Environments.js";
+import { Settings } from "./views/Settings.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
@@ -52,7 +53,9 @@ export function App() {
                 "Virtual machine")
               : view.view === "environment-new"
                 ? "New virtual machine"
-                : "Overview";
+                : view.view === "settings"
+                  ? "Settings"
+                  : "Overview";
 
   return (
     <Shell
@@ -92,6 +95,11 @@ export function App() {
         active: view.view === "custom-images" || view.view === "custom-image",
         onClick: () => go({ view: "custom-images", id: null }),
       }}
+      settings={{
+        href: "/console/#settings",
+        active: view.view === "settings",
+        onClick: () => go({ view: "settings", id: "general" }),
+      }}
       application={(candidate) => ({
         href: `/console/#app-${candidate.id}`,
         active: view.view === "app" && view.id === candidate.id,
@@ -107,9 +115,12 @@ export function App() {
             onOpenVirtualMachine={id => go({ view: "environments", id })} />
         ) : view.view === "events" ? (
           <EventsPage onOpenSubject={(subject) => {
-            if (subject.kind === "api-key") { location.href = "/console/api-keys.html"; return; }
+            if (subject.kind === "api-key") { go({ view: "settings", id: "api-keys" }); return; }
+            if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
             go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
           }} />
+        ) : view.view === "settings" ? (
+          <Settings tab={view.id} onTab={(tab) => go({ view: "settings", id: tab })} />
         ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
           <Environments
             metrics={metrics}

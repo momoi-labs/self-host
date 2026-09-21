@@ -10,10 +10,6 @@ import {
   BreadcrumbSeparator,
   Button,
   Dot,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
   NavigationItem,
   NavigationLink,
   NavigationList,
@@ -37,11 +33,6 @@ export type Destination = {
 
 /**
  * The console's frame: the sidebar, the breadcrumb and the health indicator.
- *
- * The DNS setup and API keys pages are separate documents rather than views of
- * the application, so the frame has to be a component both can mount. What
- * differs between them is only how a destination is reached — the application
- * changes a view in place, the settings pages follow a link.
  */
 export function Shell({
   crumb,
@@ -55,6 +46,7 @@ export function Shell({
   customImages = { href: "/console/#custom-images", active: false },
   dns = { href: "/console/#dns", active: false },
   events = { href: "/console/#events", active: false },
+  settings = { href: "/console/#settings", active: false },
   application,
   virtualMachine,
   children,
@@ -70,6 +62,7 @@ export function Shell({
   customImages?: Destination;
   events?: Destination;
   dns?: Destination;
+  settings?: Destination;
   application: (app: App) => Destination;
   virtualMachine: (machine: Environment) => Destination;
   children: ReactNode;
@@ -131,23 +124,15 @@ export function Shell({
       ]}
       footer={
         <div className="sidebar-controls">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm">Settings<span aria-hidden="true">⌄</span></Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="start">
-              <DropdownMenuItem asChild>
-                <a href="/console/setup.html" aria-current={crumb === "DNS setup" ? "page" : undefined}>
-                  <Icon name="globe" />DNS setup
-                </a>
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <a href="/console/api-keys.html" aria-current={crumb === "API keys" ? "page" : undefined}>
-                  <Icon name="key" />API keys
-                </a>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-current={settings.active ? "page" : undefined}
+            onClick={() => navigate(settings)}
+          >
+            <Icon name="gear" />
+            Settings
+          </Button>
           <ThemeSelector theme={theme} onChange={setTheme} />
           <Button variant="ghost" size="sm" className="btn-icon" aria-label="Lock" title="Lock" onClick={logout}>
             <Icon name="lock" />

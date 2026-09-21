@@ -34,18 +34,19 @@ pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 /// `s`, `m` or `h` on it.
 pub fn parse_duration(text: &str) -> Result<Duration, String> {
     let text = text.trim();
-    let (digits, unit) = match text.strip_suffix(['s', 'm', 'h']) {
+    let (digits, unit) = match text.strip_suffix(['s', 'm', 'h', 'd']) {
         Some(digits) => (digits, text.as_bytes()[text.len() - 1]),
         None => (text, b's'),
     };
     let value: u64 = digits
         .parse()
-        .map_err(|_| format!("'{text}' is not a duration like 30s, 5m or 2h"))?;
+        .map_err(|_| format!("'{text}' is not a duration like 30s, 5m, 2h or 30d"))?;
     Ok(Duration::from_secs(
         value
             * match unit {
                 b'm' => 60,
                 b'h' => 3600,
+                b'd' => 86_400,
                 _ => 1,
             },
     ))

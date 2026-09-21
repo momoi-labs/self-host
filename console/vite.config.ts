@@ -2,9 +2,9 @@ import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// The Platform serves the console from /console/, and the four pages keep the
-// URLs they already had: /console is login, /console/ is the application, and
-// the two settings pages stay linkable on their own.
+// The Platform serves the console from /console/: /console is login, /console/
+// is the application, and setup.html is the public page a device sees over
+// plain HTTP before it can log in.
 export default defineConfig({
   base: "/console/",
   plugins: [react()],
@@ -16,7 +16,6 @@ export default defineConfig({
         index: resolve(import.meta.dirname, "index.html"),
         login: resolve(import.meta.dirname, "login.html"),
         setup: resolve(import.meta.dirname, "setup.html"),
-        "api-keys": resolve(import.meta.dirname, "api-keys.html"),
       },
     },
   },
@@ -33,6 +32,7 @@ export default defineConfig({
         "/bootstrap",
         "/compose",
         "/api-keys",
+        "/settings",
         "/custom-images",
         "/metrics",
       ].map((path) => [

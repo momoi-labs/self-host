@@ -89,6 +89,16 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
     }
 }
 
+/// The API keys page moved into the console's Settings; a bookmark of the old
+/// document lands on its tab.
+async fn api_keys_redirect() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::TEMPORARY_REDIRECT)
+        .header(header::LOCATION, "/console/#settings/api-keys")
+        .body(Body::empty())
+        .unwrap()
+}
+
 /// Builds the public console router (no API key required).
 pub fn console_router() -> Router {
     Router::new()
@@ -96,6 +106,7 @@ pub fn console_router() -> Router {
         .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .route("/console", get(login_page))
         .route("/console/", get(index_page))
+        .route("/console/api-keys.html", get(api_keys_redirect))
         .route("/console/{*path}", get(static_asset))
 }
 

@@ -467,3 +467,19 @@
 .sidebar-controls > [data-slot="button"] { padding-inline: 7px; }
 .sidebar-controls .theme-row { padding: 0; margin: 0; }
 .sidebar-controls .theme-row > .t-label { display: none; }
+
+/* A change to the settings, as the confirmation and the event read it:
+   a git-style diff, one removed and one added line per setting. */
+.changes-diff { --corner-mark: 0; margin: 0; padding: var(--spacing-md) var(--spacing-lg); border: 1px solid var(--color-border); border-radius: var(--radius-sm, 4px); background: var(--color-muted); font-size: var(--type-size-label); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dialog-body > .changes-diff { margin-top: var(--spacing-lg); }
+.changes-diff-removed { color: var(--color-danger, #b42318); }
+.changes-diff-added { color: var(--color-success, #067647); }
+.events-changes { margin: 0 0 var(--spacing-xl); }
+
+/* Settings are short values; the section reads as a column, not a banner.
+   A duration is a number and a unit side by side, with the way back to the
+   default beside them rather than at the far edge of the page. */
+.settings-form .form-body > * { max-width: 640px; }
+.settings-duration { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
+.settings-duration > .input-group, .settings-duration > input { width: 7rem; flex: none; }
+.settings-duration > [data-slot="select-trigger"] { width: auto; min-width: 8rem; flex: none; }

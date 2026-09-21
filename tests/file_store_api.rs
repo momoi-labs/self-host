@@ -660,12 +660,13 @@ async fn development_image_delete_checks_usage_including_old_tags_and_compose() 
     let id = "abcdefgh2345";
     let tag = format!("sf-img-{id}:new-version");
     store
-        .store_state(
-            "custom_images_v1",
-            &json!([{
+        .put_record(
+            "custom-image",
+            id,
+            &json!({
                 "id": id, "name": "Saved image", "dependencies": [{"tool":"node","version":"24"}],
                 "image": tag, "status": "ready", "last_error": null, "log": ""
-            }])
+            })
             .to_string(),
         )
         .await
@@ -797,6 +798,7 @@ async fn boot_recovered(state: &Path, docker: FakeDocker) -> (Router, FileStateS
         self_host::metrics::Metrics::new(),
         Arc::new(self_host::vms::LimaRuntime::default()),
         Arc::new(self_host::dns_records::UnservedZone),
+        None,
     )
     .await;
     (app, store)
@@ -834,7 +836,7 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
         status: status.into(),
         work,
     };
-    let queue = vec![
+    let queue = [
         task(
             "event-running",
             "restart",
@@ -873,12 +875,28 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
         "apiName": null, "description": "Operation is running in the background.",
         "subject": {"kind": "custom-image", "id": "image-gone", "name": "old"}
     }));
+    for event in &events {
+        store
+            .put_audit_event(&self_host::store::AuditRow {
+                id: event["id"].as_str().unwrap().into(),
+                status: event["status"].as_str().unwrap().into(),
+                subject_kind: event["subject"]["kind"].as_str().unwrap().into(),
+                subject_id: event["subject"]["id"].as_str().unwrap().into(),
+                occurred_at: event["occurredAt"].as_str().unwrap().into(),
+                updated_at: event["updatedAt"].as_str().unwrap().into(),
+                body: event.to_string(),
+            })
+            .await
+            .unwrap();
+    }
     store
-        .store_state("audit_events_v1", &serde_json::to_string(&events).unwrap())
-        .await
-        .unwrap();
-    store
-        .store_state("tasks_v1", &serde_json::to_string(&queue).unwrap())
+        .replace_records(
+            "task",
+            &queue
+                .iter()
+                .map(|task| (task.id.clone(), serde_json::to_string(task).unwrap()))
+                .collect::<Vec<_>>(),
+        )
         .await
         .unwrap();
     drop(app);
@@ -909,7 +927,7 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
         orphan["error"]["error"],
         "The Platform restarted before this task finished."
     );
-    assert_eq!(store.get_state("tasks_v1").await.unwrap().unwrap(), "[]");
+    assert!(store.list_records("task").await.unwrap().is_empty());
 }
 
 /// A task that fails says why, in the same shape the API answers errors in.

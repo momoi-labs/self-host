@@ -19,6 +19,7 @@ use rand::Rng;
 pub mod apps;
 pub mod audit;
 pub mod bootstrap;
+pub mod collection;
 pub mod compose_app;
 pub mod config;
 pub mod console;
@@ -36,6 +37,8 @@ pub mod paths;
 pub mod ports;
 pub mod proxy;
 pub mod routes;
+pub mod schema;
+pub mod settings;
 pub mod store;
 pub mod tasks;
 pub mod terminal;
@@ -60,6 +63,9 @@ struct AppState<S: StateStore> {
     metrics: metrics::Metrics,
     audit: Arc<audit::Journal>,
     tasks: Arc<tasks::Scheduler>,
+    /// `--audit-events-max-age`, when the daemon was started with it. Pins the
+    /// retention over the Operator's setting (ADR-0027).
+    audit_events_max_age_flag: Option<std::time::Duration>,
 }
 
 pub fn build_app<S: StateStore>(
@@ -89,12 +95,12 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
     vm_runtime: Arc<dyn VmRuntime>,
     zone: Arc<dyn dns_records::Zone>,
 ) -> Router {
-    build_platform(store, docker, routes, metrics, vm_runtime, zone).0
+    build_platform(store, docker, routes, metrics, vm_runtime, zone, None).0
 }
 
 /// Builds the API the way `serve` does: the tasks a restart interrupted are
 /// failed and the ones it never started are queued again before the first
-/// request can add to them.
+/// request can add to them. `audit_events_max_age_flag` is `--audit-events-max-age`.
 pub async fn boot_app_with_vm_runtime<S: StateStore>(
     store: S,
     docker: Arc<dyn DockerRuntime>,
@@ -102,8 +108,17 @@ pub async fn boot_app_with_vm_runtime<S: StateStore>(
     metrics: metrics::Metrics,
     vm_runtime: Arc<dyn VmRuntime>,
     zone: Arc<dyn dns_records::Zone>,
+    audit_events_max_age_flag: Option<std::time::Duration>,
 ) -> Router {
-    let (router, state) = build_platform(store, docker, routes, metrics, vm_runtime, zone);
+    let (router, state) = build_platform(
+        store,
+        docker,
+        routes,
+        metrics,
+        vm_runtime,
+        zone,
+        audit_events_max_age_flag,
+    );
     tasks::recover(&state).await;
     router
 }
@@ -115,8 +130,10 @@ fn build_platform<S: StateStore>(
     metrics: metrics::Metrics,
     vm_runtime: Arc<dyn VmRuntime>,
     zone: Arc<dyn dns_records::Zone>,
+    audit_events_max_age_flag: Option<std::time::Duration>,
 ) -> (Router, AppState<S>) {
     let state = AppState {
+        audit_events_max_age_flag,
         audit: Arc::new(audit::Journal::default()),
         store,
         docker,
@@ -179,6 +196,10 @@ fn build_platform<S: StateStore>(
         .route("/metrics", get(get_metrics::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
+        .route(
+            "/settings",
+            get(settings::get::<S>).put(settings::update::<S>),
+        )
         .route(
             "/dns/records",
             get(dns_records::list::<S>).post(dns_records::create::<S>),
