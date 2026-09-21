@@ -8,9 +8,19 @@
 .events-action:hover { text-decoration: underline; text-underline-offset: 3px; }
 .events-row td { vertical-align: top; padding-block: var(--spacing-md); }
 .events-row th, .events-row time { white-space: nowrap; }
-.events-action, .events-title { display: flex; align-items: center; gap: var(--spacing-sm); }
-.events-action .dot, .events-title .dot { flex-shrink: 0; }
-.events-action .dot[data-variant="neutral"], .events-title .dot[data-variant="neutral"] { color: var(--color-muted-foreground); }
+.events-title { display: flex; align-items: center; gap: var(--spacing-sm); }
+/* The status is a glyph in a column of its own: a clock, a spinner, a check
+   or a crossed circle. It reads without colour, and the tone only confirms it. */
+.events-status { width: 2.5rem; padding-inline-end: 0 !important; }
+.events-glyph { display: inline-flex; align-items: center; flex-shrink: 0; vertical-align: -3px; }
+.events-glyph-pending { color: var(--color-muted-foreground); }
+.events-glyph-completed { color: var(--color-success); }
+.events-glyph-failed { color: var(--color-danger); }
+.events-row-failed td { background: var(--color-danger-surface); }
+.events-row-pending td:not(.events-status) { color: var(--color-muted-foreground); }
+.events-row[data-state="selected"] td { background: var(--color-selected); }
+.events-reason { color: var(--color-danger); overflow-wrap: anywhere; }
+.events-row[data-state="selected"] .events-reason { color: inherit; }
 .events-secondary { display: block; font-size: var(--type-size-metadata); color: var(--color-muted-foreground); margin-block-start: var(--spacing-xs); }
 .events-subject { color: var(--color-primary); text-decoration: underline; text-underline-offset: 3px; }
 .events-row[data-state="selected"] .events-subject { color: inherit; }
@@ -24,5 +34,22 @@
 .events-properties dt { color: var(--color-muted-foreground); }
 .events-properties dd { margin: 0; }
 @media (max-width: 1050px) { .events-layout-open { grid-template-columns: minmax(0, 1fr); } .events-details { grid-row: 1; } }
+
+/* The list fills the window like a detail screen does: the card takes the
+   height the header and filters leave, the rows scroll inside it, and the
+   footer with the pager rests on the card's bottom edge. The chain is the
+   one console.css builds for .detail-tabs, so both pages end at the same
+   place. Below 1024px the sidebar stacks and the document scrolls again. */
+@media (min-width: 1024px) {
+  .app-shell:has(.events-page) { height: 100vh; }
+  #detail:has(.events-page) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  #detail:has(.events-page) > .events-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .events-page > .events-layout { flex: 1; min-height: 0; align-items: stretch; grid-template-rows: minmax(0, 1fr); }
+  .events-list { grid-template-rows: auto minmax(0, 1fr); align-content: stretch; min-height: 0; }
+  .events-list > .table-wrap { display: flex; flex-direction: column; min-height: 0; }
+  .events-list > .table-wrap > .table-scroll { flex: 1; min-height: 0; overflow: auto; }
+  .events-list > .table-wrap > .table-footer { flex-shrink: 0; }
+  .events-details { min-height: 0; overflow: auto; }
+}
 
 .events-error { display: flex; gap: var(--spacing-md); align-items: center; margin-block-start: var(--spacing-lg); color: var(--color-danger); }

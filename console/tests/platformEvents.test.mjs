@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { eventActionLabel, eventSubjectHref, filterEvents, eventUpdatedAt } from "../src/lib/platformEvents.ts";
+import { eventActionLabel, eventSubjectHref, filterEvents, eventUpdatedAt, pageItems } from "../src/lib/platformEvents.ts";
 
 test("resource links target existing console pages by stable ID", () => {
   assert.equal(eventSubjectHref({ kind: "application", id: "app-123", name: "renamed" }), "/console/#app-app-123");
@@ -34,4 +34,11 @@ test("the table orders and displays the last update while keeping start and fini
   assert.equal(eventUpdatedAt(finished), finished.finishedAt);
   assert.deepEqual(filterEvents([running, finished], "", "all").map(event => event.id), ["finished", "running"]);
   assert.equal(finished.startedAt, "2026-09-14T08:00:00Z");
+});
+
+test("the pager keeps the ends and the current page's neighbours, with one gap per skip", () => {
+  assert.deepEqual(pageItems(1, 1), [1]);
+  assert.deepEqual(pageItems(1, 4), [1, 2, "gap", 4]);
+  assert.deepEqual(pageItems(5, 9), [1, "gap", 4, 5, 6, "gap", 9]);
+  assert.deepEqual(pageItems(9, 9), [1, "gap", 8, 9]);
 });
