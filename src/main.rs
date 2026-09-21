@@ -1270,14 +1270,15 @@ async fn run_api_server(
         }
     }
 
-    let app = self_host::build_app_with_vm_runtime(
+    let app = self_host::boot_app_with_vm_runtime(
         store.clone(),
         docker.clone(),
         routes,
         metrics.clone(),
         vm_runtime.clone(),
         zone,
-    );
+    )
+    .await;
 
     // Consumer traffic is the Platform's own listener now, so an upgrade has
     // to take the ports back from the container that used to hold them

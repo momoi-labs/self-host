@@ -4,6 +4,7 @@ use crate::error::ErrorReport;
 use crate::ports;
 use crate::routes::RouteStore;
 use crate::store::{DevelopmentApplication, StateStore, StoreError};
+use serde::{Deserialize, Serialize};
 
 pub const APP_CONTAINER_PORT: u16 = 80;
 
@@ -445,8 +446,9 @@ struct ComposeSpec {
 
 /// A deploy that is on record but not yet carried out. The row is already
 /// `pending`, so the caller can either finish it inline — the CLI, which must
-/// report the outcome — or hand it to a task and answer straight away.
-#[derive(Debug)]
+/// report the outcome — or hand it to a task and answer straight away. It
+/// serializes so a queued deploy survives a restart of the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingDeploy {
     pub record: ApplicationRecord,
     work: DeployWork,
@@ -460,7 +462,7 @@ impl PendingDeploy {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum DeployWork {
     /// Nothing for Docker to do: a rename, or a change of Hostname or
     /// aliases. The container is keyed by id and the route is a table entry,
@@ -777,8 +779,11 @@ pub async fn reconcile(
         );
     }
 
+    // A deploy still waiting in the task queue was never started, so there is
+    // nothing to settle: the scheduler carries it out after this.
+    let queued = crate::tasks::queued_application_ids(store).await?;
     for mut app in store.list_applications().await? {
-        if app.status == STATUS_PENDING && executor_available {
+        if app.status == STATUS_PENDING && executor_available && !queued.contains(&app.id) {
             let states = service_states(docker, &app).await;
             let running = !states.is_empty() && states.iter().all(|s| s.state == "running");
 

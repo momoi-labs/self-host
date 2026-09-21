@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::error::ErrorReport;
@@ -18,7 +19,7 @@ use crate::error::ErrorReport;
 /// The generated Compose definition remains the deploy input, but this record
 /// is authoritative for returning to the development form. Applications that
 /// only happen to have similar Compose text never receive this metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DevelopmentApplication {
     pub image_id: String,
     /// The exact custom image tag deployed by this Application.
@@ -28,7 +29,7 @@ pub struct DevelopmentApplication {
     pub persist_data: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplicationRecord {
     /// Stable identity. The container and the route are keyed on this, never
     /// on `name`, so renaming an Application touches only a record.

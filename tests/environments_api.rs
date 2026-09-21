@@ -702,13 +702,14 @@ async fn completion_save_failure_is_persisted_as_failed_and_keeps_record() {
         Some(json!({"request_id":"save-failure", "config":config("alpha")})),
     )
     .await;
-    fail_next.store(true, Ordering::SeqCst);
     for _ in 0..50 {
         if !calls.lock().await.is_empty() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    // The runtime is done and the worker is about to save its result.
+    fail_next.store(true, Ordering::SeqCst);
     release.notify_waiters();
     let mut current = Value::Null;
     for _ in 0..50 {
@@ -886,14 +887,14 @@ async fn audit_keeps_one_event_for_a_failed_vm_operation() {
 }
 
 #[tokio::test]
-async fn audit_updates_the_same_event_from_running_to_completed() {
+async fn audit_updates_the_same_event_from_pending_to_running_to_completed() {
     let release = Arc::new(Notify::new());
     let (app, _) = app(FakeRuntime {
         release: Some(release.clone()),
         ..FakeRuntime::new()
     })
     .await;
-    let (status, _) = request(
+    let (status, created) = request(
         &app,
         Method::POST,
         "/environments",
@@ -901,9 +902,21 @@ async fn audit_updates_the_same_event_from_running_to_completed() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let (_, started) = request(&app, Method::GET, "/events", None).await;
-    assert_eq!(started.as_array().unwrap().len(), 1);
+    let (_, queued) = request(&app, Method::GET, "/events", None).await;
+    assert_eq!(queued.as_array().unwrap().len(), 1);
+    assert_eq!(queued[0]["id"], created["task_id"]);
+    assert!(["pending", "running"].contains(&queued[0]["status"].as_str().unwrap()));
+    assert!(queued[0]["finishedAt"].is_null());
+    let mut started = Value::Null;
+    for _ in 0..100 {
+        started = request(&app, Method::GET, "/events", None).await.1;
+        if started[0]["status"] == "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     assert_eq!(started[0]["status"], "running");
+    assert_eq!(started[0]["id"], queued[0]["id"]);
     assert!(started[0]["startedAt"].is_string());
     assert!(started[0]["finishedAt"].is_null());
     release.notify_one();
@@ -924,4 +937,106 @@ async fn audit_updates_the_same_event_from_running_to_completed() {
     assert!(
         finished[0]["finishedAt"].as_str().unwrap() >= started[0]["startedAt"].as_str().unwrap()
     );
+}
+
+/// Two actions on one machine run one after the other, oldest first, while
+/// another machine's work goes on beside them. Each has its own task, and the
+/// queued one stays `pending` until the first is done.
+#[tokio::test]
+async fn actions_on_one_machine_queue_while_other_machines_run() {
+    let release = Arc::new(Notify::new());
+    let runtime = FakeRuntime {
+        release: Some(release.clone()),
+        ..FakeRuntime::new()
+    };
+    let calls = runtime.calls.clone();
+    let (app, _) = app(runtime).await;
+    let (status, alpha) = request(
+        &app,
+        Method::POST,
+        "/environments",
+        Some(json!({"request_id":"queue-alpha", "config":config("alpha")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let alpha_id = alpha["id"].as_str().unwrap().to_owned();
+    let create_alpha = alpha["task_id"].as_str().unwrap().to_owned();
+    for _ in 0..100 {
+        if calls.lock().await.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(*calls.lock().await, vec!["create"]);
+
+    let (status, queued) = request(
+        &app,
+        Method::POST,
+        &format!("/environments/{alpha_id}/actions"),
+        Some(json!({"action":"stop"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    let stop_alpha = queued["task_id"].as_str().unwrap().to_owned();
+    assert_ne!(stop_alpha, create_alpha);
+    // The record shows the operation executing, not the one waiting.
+    assert_eq!(queued["operation"]["action"], "create");
+
+    let (status, beta) = request(
+        &app,
+        Method::POST,
+        "/environments",
+        Some(json!({"request_id":"queue-beta", "config":config("beta")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let create_beta = beta["task_id"].as_str().unwrap().to_owned();
+    for _ in 0..100 {
+        if calls.lock().await.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(*calls.lock().await, vec!["create", "create"]);
+    let status_of = |events: &Value, id: &str| {
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["id"] == id)
+            .map(|event| event["status"].as_str().unwrap().to_owned())
+            .unwrap()
+    };
+    let (_, events) = request(&app, Method::GET, "/events", None).await;
+    assert_eq!(status_of(&events, &create_alpha), "running");
+    assert_eq!(status_of(&events, &stop_alpha), "pending");
+    assert_eq!(status_of(&events, &create_beta), "running");
+
+    release.notify_one();
+    release.notify_one();
+    release.notify_one();
+    let mut events = Value::Null;
+    for _ in 0..200 {
+        events = request(&app, Method::GET, "/events", None).await.1;
+        if [&create_alpha, &stop_alpha, &create_beta]
+            .iter()
+            .all(|id| status_of(&events, id) == "completed")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(*calls.lock().await, vec!["create", "create", "stop"]);
+    for id in [&create_alpha, &stop_alpha, &create_beta] {
+        assert_eq!(status_of(&events, id), "completed", "{id}");
+    }
+    let (_, alpha) = request(
+        &app,
+        Method::GET,
+        &format!("/environments/{alpha_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(alpha["operation"]["action"], "stop");
+    assert_eq!(alpha["operation"]["status"], "succeeded");
 }

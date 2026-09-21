@@ -322,6 +322,9 @@ export function Environments({
     null,
   );
   const [busy, setBusy] = useState(false);
+  // An action request on its way to the API. Separate from `busy`: an action
+  // may be asked for while an operation runs, and it queues behind it.
+  const [requesting, setRequesting] = useState(false);
   const [confirming, setConfirming] = useState<Environment | null>(null);
   const [logs, setLogs] = useState("");
   const [events, setEvents] = useState("");
@@ -668,8 +671,8 @@ export function Environments({
       });
       return;
     }
-    if (!environment || busy || actionBusy(environment)) return;
-    setBusy(true);
+    if (!environment || requesting) return;
+    setRequesting(true);
     setFailure(null);
     try {
       if (demo) {
@@ -748,7 +751,7 @@ export function Environments({
     } catch (cause) {
       setFailure(asReport(cause));
     } finally {
-      setBusy(false);
+      setRequesting(false);
     }
   }
 
@@ -875,28 +878,28 @@ export function Environments({
                 <Button
                   size="sm"
                   onClick={() => void perform("start")}
-                  disabled={busy || actionBusy(current) || current.state === "running"}
+                  disabled={requesting || current.state === "running"}
                 >
                   Start
                 </Button>
                 <Button
                   size="sm"
                   onClick={() => void perform("stop")}
-                  disabled={busy || actionBusy(current) || current.state !== "running"}
+                  disabled={requesting || current.state !== "running"}
                 >
                   Stop
                 </Button>
                 <Button
                   size="sm"
                   onClick={() => void perform("restart")}
-                  disabled={busy || actionBusy(current) || current.state !== "running"}
+                  disabled={requesting || current.state !== "running"}
                 >
                   Restart
                 </Button>
                 <Button
                   size="sm"
                   onClick={() => void perform("bootstrap")}
-                  disabled={busy || actionBusy(current)}
+                  disabled={requesting}
                 >
                   Bootstrap
                 </Button>
@@ -908,7 +911,7 @@ export function Environments({
                 variant="ghost"
                 className="btn-danger-ghost"
                 onClick={() => setConfirming(current)}
-                disabled={busy || actionBusy(current)}
+                disabled={requesting}
               >
                 Delete virtual machine
               </Button>
@@ -1015,7 +1018,7 @@ export function Environments({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="btn-danger"
-              disabled={confirmName !== confirming?.config.name || busy}
+              disabled={confirmName !== confirming?.config.name || requesting}
               onClick={() => {
                 if (confirming) void perform("delete", confirming, confirmName);
               }}

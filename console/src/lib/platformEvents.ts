@@ -1,4 +1,6 @@
-/** Display data for the event page. Transport mapping belongs at the API boundary. */
+import type { Report } from "./types.js";
+
+/** One task, as the Events page shows it. The id is the task's id. */
 export type PlatformEvent = {
   id: string;
   action: "create" | "delete" | "stop" | "start" | "restart" | "configure";
@@ -9,6 +11,8 @@ export type PlatformEvent = {
   updatedAt?: string | null;
   apiName?: string | null;
   description: string;
+  /** Why a failed task failed. */
+  error?: Report | null;
   subject: {
     kind: "application" | "virtual-machine" | "custom-image" | "api-key" | "dns-record";
     id: string;
@@ -40,15 +44,6 @@ export function eventActionLabel(event: PlatformEvent): string {
   const actions = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure" };
   const resources = { application: "application", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key", "dns-record": "DNS record" };
   return `${actions[event.action]} ${resources[event.subject.kind]}`;
-}
-
-/** The pre-scheduler backend starts background work immediately on acceptance. */
-export type PlatformEventResponse = Omit<PlatformEvent, "status"> & {
-  status: PlatformEvent["status"] | "accepted";
-};
-
-export function normalizeEvent(event: PlatformEventResponse): PlatformEvent {
-  return { ...event, status: event.status === "accepted" ? "running" : event.status };
 }
 
 export function eventUpdatedAt(event: PlatformEvent): string {

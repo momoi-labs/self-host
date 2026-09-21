@@ -19,6 +19,7 @@
 .events-details-top { display: flex; justify-content: space-between; align-items: center; gap: var(--spacing-sm); }
 .events-details h2, .events-description, .events-properties dd { overflow-wrap: anywhere; }
 .events-description { color: var(--color-muted-foreground); line-height: 1.6; margin: 0 0 var(--spacing-xl); }
+.events-failure { margin: 0 0 var(--spacing-xl); }
 .events-properties { display: grid; grid-template-columns: minmax(85px, auto) minmax(0, 1fr); gap: var(--spacing-lg); font-size: var(--type-size-label); margin: 0; }
 .events-properties dt { color: var(--color-muted-foreground); }
 .events-properties dd { margin: 0; }

@@ -20,6 +20,8 @@ export type App = {
   image: string;
   hostname: string;
   status: string;
+  /** The task carrying an accepted action out; only on a 202. */
+  task_id?: string;
   source?: string;
   aliases?: string[];
   restarts?: number | null;

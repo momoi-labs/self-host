@@ -8,6 +8,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
+import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
 import { eventActionLabel, eventSubjectHref, eventUpdatedAt, filterEvents } from "../lib/platformEvents.js";
 import type { PlatformEvent } from "../lib/platformEvents.js";
@@ -128,6 +129,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
           </CardHeader>
           <CardContent>
             <p className="events-description">{selected.description}</p>
+            {selected.error ? <div className="events-failure"><Failure failure={selected.error} /></div> : null}
             <dl className="events-properties">
               <dt>Affected service</dt><dd>{subjectLink(selected.subject)}</dd>
               <dt>Resource</dt><dd>{selected.subject.kind === "virtual-machine" ? "Virtual machine" : selected.subject.name}</dd>

@@ -30,7 +30,9 @@ import { StatusBadge } from "../components/StatusBadge.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
+import { waitForTask } from "../lib/tasks.js";
 import type { App, Metrics, Report } from "../lib/types.js";
+import { fetchEvents } from "../lib/useEvents.js";
 import { seriesFor } from "../lib/useMetrics.js";
 
 // xterm is a third of the console's JavaScript and only the Terminal tab needs
@@ -61,6 +63,8 @@ export function AppDetail({
   const canStop = app.status === "running" || app.status === "failed";
   const canStart = app.status === "stopped" || app.status === "failed";
 
+  // The API queues the action and answers with its task; the outcome comes
+  // from the task's event, which keeps the same id from start to finish.
   async function lifecycle(verb: string) {
     if (removalInFlight.current) return;
     try {
@@ -68,12 +72,18 @@ export function AppDetail({
       if (!res.ok) {
         notify("danger", `Could not ${verb} ${app.name}`, await failureOf(res));
       } else {
-        const updated = (await res.json()) as App;
-        notify(
-          updated.status === "failed" ? "danger" : "success",
-          `${app.name} is ${updated.status}`,
-          updated.status === "failed" ? updated.last_error : undefined,
-        );
+        const accepted = (await res.json()) as App;
+        if (!accepted.task_id) throw new Error("The API did not name the task.");
+        notify("neutral", `${app.name}: ${verb} queued`);
+        const outcome = await waitForTask(accepted.task_id, { events: fetchEvents });
+        const next = await reload();
+        const updated = next.find((candidate) => candidate.id === app.id);
+        if (outcome.status === "completed") {
+          notify("success", `${app.name} is ${updated?.status ?? "updated"}`);
+        } else {
+          notify("danger", `Could not ${verb} ${app.name}`, outcome.error ?? undefined);
+        }
+        return;
       }
     } catch (cause) {
       notify("danger", `Could not ${verb} ${app.name}`, (cause as Error).message);
@@ -128,6 +138,15 @@ export function AppDetail({
         notify("danger", `Could not remove ${app.name}`, failure);
         setRemoving(false);
         removalInFlight.current = false;
+        return;
+      }
+      const { task_id } = (await res.json()) as { task_id: string };
+      const outcome = await waitForTask(task_id, { events: fetchEvents });
+      if (outcome.status === "failed") {
+        notify("danger", `Could not remove ${app.name}`, outcome.error ?? undefined);
+        setRemoving(false);
+        removalInFlight.current = false;
+        await reload();
         return;
       }
       notify("success", "Application removed", {
