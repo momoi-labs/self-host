@@ -176,15 +176,6 @@
 .dns-instructions > section + section { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
 .dns-instructions p { max-width: 65ch; }
 
-/* ui.css hides the sidebar outright below 1024px. That is fine for a block
-   with four static links, but here the sidebar is the only way to reach the
-   Applications and the deploy action, and the Sidebar contract asks a narrow
-   viewport for "explicit compact navigation", not for nothing. Stack it above
-   the content instead. */
-@media (max-width: 1023px) {
-  .sidebar { display: flex; position: static; height: auto; max-height: 42vh; border-inline-end: 0; border-block-end: 1px solid var(--color-sidebar-border); }
-}
-
 /* The deploy dialog switches between an image and a Compose file. A Compose
    editor needs room and a monospace face; a fieldset of two radios needs to
    read as one field. */
