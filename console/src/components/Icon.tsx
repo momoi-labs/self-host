@@ -36,6 +36,18 @@ const paths: Record<string, React.ReactNode> = {
     </>
   ),
   check: <path d="M3 8.5l3.5 3.5L13 5" />,
+  clock: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M8 4.5V8l2.5 1.5" />
+    </>
+  ),
+  "x-circle": (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" />
+    </>
+  ),
   key: (
     <>
       <circle cx="5" cy="11" r="2.75" />
