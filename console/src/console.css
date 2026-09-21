@@ -4,10 +4,6 @@
    block, or a rule kiso deliberately leaves to the product. Anything a second
    Momoi product would also want belongs upstream in the blueprint, not here. */
 @import "@momoi-labs/kiso-react/styles.css";
-/* The appearance the gallery writes on <html>: accent, border style, corner
-   marks. Only the accent is a published kiso token; the rest is the
-   gallery's study, copied until kiso ships it. */
-@import "./appearance.css";
 
 /* Login. kiso specifies the login pattern but ships no block for it. */
 .auth-shell { display: grid; min-height: 100vh; place-items: center; padding: var(--spacing-xl); }
