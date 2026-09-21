@@ -13,6 +13,7 @@ import { Icon } from "../components/Icon.js";
 import { eventActionLabel, eventSubjectHref, eventUpdatedAt, filterEvents } from "../lib/platformEvents.js";
 import type { PlatformEvent } from "../lib/platformEvents.js";
 import { useEvents } from "../lib/useEvents.js";
+import { EventsPrototype } from "./prototype/EventsPrototype.js";
 import "./events.css";
 
 const states = {
@@ -31,6 +32,8 @@ function Timestamp({ value }: { value: string }) {
 
 export function EventsPage({ onOpenSubject }: { onOpenSubject: (subject: PlatformEvent["subject"]) => void }) {
   const { events, loading, error, reload } = useEvents();
+  // PROTOTYPE: `?variant=A..F` swaps the rendering. Dies with the branch.
+  if (new URLSearchParams(location.search).has("variant")) return <EventsPrototype events={events} onOpenSubject={onOpenSubject} />;
   return <Events events={events} onOpenSubject={onOpenSubject} loading={loading} error={error} onRetry={reload} />;
 }
 
