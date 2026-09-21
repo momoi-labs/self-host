@@ -53,6 +53,12 @@ enum Command {
         /// For a Host that already has something on port 53.
         #[arg(long)]
         no_dns: bool,
+        /// How long audit history is kept, as `30d`, `36h` or `90m`. Given
+        /// here it pins the value over the console's setting, the way a
+        /// command-line option outranks ALTER SYSTEM in PostgreSQL. Without
+        /// it the Operator's setting applies, then the default of 30d.
+        #[arg(long, value_parser = parse_audit_events_max_age)]
+        audit_events_max_age: Option<std::time::Duration>,
     },
     /// Manage Applications
     Apps {
@@ -249,11 +255,12 @@ async fn main() {
             monitoring_collect_interval,
             monitoring_max_age,
             no_dns,
+            audit_events_max_age,
         }) => {
             // The two flags only mean something together, so they are checked
             // against each other here rather than one value at a time.
             match self_host::metrics::Window::new(monitoring_collect_interval, monitoring_max_age) {
-                Ok(window) => run_server(window, no_dns).await,
+                Ok(window) => run_server(window, no_dns, audit_events_max_age).await,
                 Err(error) => {
                     eprintln!("error: {error}");
                     std::process::exit(2);
@@ -261,7 +268,7 @@ async fn main() {
             }
         }
         None => {
-            run_server(self_host::metrics::Window::default(), false).await;
+            run_server(self_host::metrics::Window::default(), false, None).await;
         }
     }
 }
@@ -1109,7 +1116,7 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
 /// starting an empty installation next to it would strand every Application
 /// the Operator deployed.
 async fn refuse_legacy_state(docker: &CliDocker) -> anyhow::Result<()> {
-    if file_store::state_dir().join("platform.json").exists() {
+    if file_store::state_dir().join(file_store::DB_FILE).exists() {
         return Ok(());
     }
 
@@ -1161,7 +1168,19 @@ fn save_cli_config(result: &BootstrapResult) -> anyhow::Result<()> {
 /// runtime is still coming up and the Platform Infra with it. Nothing here
 /// gives up: each dependency is waited for, out loud, for as long as it
 /// takes. Exiting would only make launchd start us again with less context.
-async fn run_server(window: self_host::metrics::Window, no_dns: bool) {
+fn parse_audit_events_max_age(text: &str) -> Result<std::time::Duration, String> {
+    let value = self_host::metrics::parse_duration(text)?;
+    if value < self_host::settings::MIN_AUDIT_EVENTS_MAX_AGE {
+        return Err("audit_events_max_age must be at least 1d".into());
+    }
+    Ok(value)
+}
+
+async fn run_server(
+    window: self_host::metrics::Window,
+    no_dns: bool,
+    audit_events_max_age: Option<std::time::Duration>,
+) {
     // One set of metrics for the whole daemon: DNS, the proxy, the collector
     // and the API all count and read from the same place (ADR-0020).
     let metrics = self_host::metrics::Metrics::with_window(window);
@@ -1175,6 +1194,7 @@ async fn run_server(window: self_host::metrics::Window, no_dns: bool) {
             run_api_server(
                 metrics.clone(),
                 Arc::new(self_host::dns_records::UnservedZone),
+                audit_events_max_age,
             )
             .await;
             return Ok::<(), anyhow::Error>(());
@@ -1186,7 +1206,7 @@ async fn run_server(window: self_host::metrics::Window, no_dns: bool) {
                 result?;
                 anyhow::bail!("DNS server stopped unexpectedly");
             }
-            () = run_api_server(metrics.clone(), Arc::new(zone)) => Ok::<(), anyhow::Error>(()),
+            () = run_api_server(metrics.clone(), Arc::new(zone), audit_events_max_age) => Ok::<(), anyhow::Error>(()),
         }
     }
     .await;
@@ -1199,6 +1219,7 @@ async fn run_server(window: self_host::metrics::Window, no_dns: bool) {
 async fn run_api_server(
     metrics: self_host::metrics::Metrics,
     zone: Arc<dyn self_host::dns_records::Zone>,
+    audit_events_max_age: Option<std::time::Duration>,
 ) {
     let (api_key, listen_addr) = resolve_server_config().await;
 
@@ -1277,6 +1298,7 @@ async fn run_api_server(
         metrics.clone(),
         vm_runtime.clone(),
         zone,
+        audit_events_max_age,
     )
     .await;
 

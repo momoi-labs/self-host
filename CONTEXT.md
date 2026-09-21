@@ -83,5 +83,5 @@ One console action the Platform carries out on its own worker after accepting th
 _Avoid_: job, background operation, cron (a Task is not scheduled for a time)
 
 **Platform State**:
-Everything the Operator configured, as the Platform records it: settings, credentials, the Zone's Records, and each Application's identity, publication, definition and environment. Authoritative, owned by the daemon, and separate from anything generated from it.
-_Avoid_: database, cache, the state store (as a component that runs)
+Everything the Operator configured, as the Platform records it: settings, credentials, the Zone's Records, Virtual machines, custom images, the audit history, and each Application's identity, publication, definition and environment. Authoritative, owned by the daemon, and separate from anything generated from it. Kept in one SQLite file the daemon opens in-process (ADR-0027); the Compose definitions stay verbatim on disk beside it.
+_Avoid_: database (as the name of a component that runs), cache, the state store (as a component that runs)

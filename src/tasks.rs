@@ -20,12 +20,12 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState, apps, audit,
     audit::Subject,
+    collection::{Keyed, TASKS},
     custom_images, environments,
     error::ErrorReport,
     store::{StateStore, StoreError},
 };
 
-const STATE_KEY: &str = "tasks_v1";
 const INTERRUPTED: &str = "The Platform restarted before this task finished.";
 
 /// What a task does, with everything it needs to do it after a restart.
@@ -171,9 +171,14 @@ pub(crate) async fn enqueue<S: StateStore>(
         status: "pending".into(),
         work,
     };
+    let retention = crate::settings::audit_events_max_age(state).await;
     state
         .audit
-        .upsert(&state.store, event(&task, "pending", "Operation queued."))
+        .upsert(
+            &state.store,
+            event(&task, "pending", "Operation queued."),
+            retention,
+        )
         .await?;
     persist(state, |tasks| tasks.push(task.clone())).await?;
     schedule(state, task.clone());
@@ -298,10 +303,12 @@ async fn execute<S: StateStore>(state: AppState<S>, work: Work) -> Result<(), Er
 }
 
 async fn load<S: StateStore>(store: &S) -> Result<Vec<Task>, StoreError> {
-    match store.get_state(STATE_KEY).await? {
-        None => Ok(Vec::new()),
-        Some(json) => serde_json::from_str(&json)
-            .map_err(|e| StoreError::Serialize(format!("could not read the task queue: {e}"))),
+    TASKS.list(store).await
+}
+
+impl Keyed for Task {
+    fn key(&self) -> String {
+        self.id.clone()
     }
 }
 
@@ -312,13 +319,7 @@ async fn persist<S: StateStore>(
     let _guard = state.tasks.write.lock().await;
     let mut tasks = load(&state.store).await?;
     change(&mut tasks);
-    state
-        .store
-        .store_state(
-            STATE_KEY,
-            &serde_json::to_string(&tasks).map_err(|e| StoreError::Serialize(e.to_string()))?,
-        )
-        .await
+    TASKS.replace_all(&state.store, &tasks).await
 }
 
 /// Applications with a deploy still waiting in the queue. `reconcile` leaves

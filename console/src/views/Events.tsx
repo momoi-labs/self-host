@@ -10,6 +10,7 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "../components/Failure.js";
+import { Changes } from "../components/Changes.js";
 import { Icon } from "../components/Icon.js";
 import { eventActionLabel, eventStatusLabel, eventSubjectHref, eventUpdatedAt, filterEvents, pageItems } from "../lib/platformEvents.js";
 import type { PlatformEvent } from "../lib/platformEvents.js";
@@ -127,7 +128,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
                   {event.status === "failed" && event.error ? <span className="events-secondary events-reason">{event.error.error}</span> : null}
                 </TableCell>
                 <TableCell>{subjectLink(event.subject)}<span className="events-secondary">
-                  {event.subject.kind === "virtual-machine" ? "Virtual machine" : event.subject.kind === "custom-image" ? "Custom image" : event.subject.kind === "api-key" ? "API key" : event.subject.kind === "dns-record" ? "DNS record" : event.subject.service ? event.subject.name : "Application"}
+                  {event.subject.kind === "virtual-machine" ? "Virtual machine" : event.subject.kind === "custom-image" ? "Custom image" : event.subject.kind === "api-key" ? "API key" : event.subject.kind === "dns-record" ? "DNS record" : event.subject.kind === "settings" ? "Settings" : event.subject.service ? event.subject.name : "Application"}
                 </span></TableCell>
                 <TableCell><span className={`mono${event.apiName ? "" : " muted"}`}>{event.apiName?.trim() || "system"}</span></TableCell>
                 <TableCell><Timestamp value={eventUpdatedAt(event)} /></TableCell>
@@ -161,6 +162,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
           <CardContent>
             <p className="events-description">{selected.description}</p>
             {selected.error ? <div className="events-failure"><Failure failure={selected.error} /></div> : null}
+            {selected.changes?.length ? <div className="events-changes"><Changes changes={selected.changes} /></div> : null}
             <dl className="events-properties">
               <dt>Status</dt><dd>{eventStatusLabel(selected.status)}</dd>
               <dt>Affected service</dt><dd>{subjectLink(selected.subject)}</dd>

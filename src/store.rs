@@ -83,6 +83,10 @@ pub enum StoreError {
         found: u32,
         supported: u32,
     },
+    /// State written before the Platform kept it in SQLite. It is imported by
+    /// a script, never read directly, and never mistaken for an empty
+    /// installation.
+    PreviousFormat(std::path::PathBuf),
     /// Another process already holds the state directory as its writer.
     Locked(std::path::PathBuf),
     /// A mutation was attempted on a handle opened only to read.
@@ -111,6 +115,12 @@ impl std::fmt::Display for StoreError {
                 f,
                 "{} was written by a newer Platform (format {found}, this one reads {supported}); \
                  upgrade the Platform binary",
+                path.display()
+            ),
+            StoreError::PreviousFormat(path) => write!(
+                f,
+                "{} is Platform state from a previous format; stop the daemon and run \
+                 scripts/import-json-state.py to move it into platform.db",
                 path.display()
             ),
             StoreError::Locked(path) => write!(
@@ -164,6 +174,41 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, StoreError>;
     async fn create_api_key(&self, id: &str, label: &str) -> Result<(), StoreError>;
     async fn revoke_api_key(&self, id: &str) -> Result<(), StoreError>;
+
+    /// One collection of records, keyed by `kind` and `id`, each a JSON body.
+    /// [`crate::collection::Collection`] is the typed face of these; nothing
+    /// else calls them directly.
+    async fn list_records(&self, kind: &str) -> Result<Vec<String>, StoreError>;
+    async fn get_record(&self, kind: &str, id: &str) -> Result<Option<String>, StoreError>;
+    async fn put_record(&self, kind: &str, id: &str, body: &str) -> Result<(), StoreError>;
+    async fn delete_record(&self, kind: &str, id: &str) -> Result<bool, StoreError>;
+    /// Replaces the whole collection in one commit.
+    async fn replace_records(
+        &self,
+        kind: &str,
+        items: &[(String, String)],
+    ) -> Result<(), StoreError>;
+
+    async fn get_audit_event(&self, id: &str) -> Result<Option<String>, StoreError>;
+    async fn put_audit_event(&self, row: &AuditRow) -> Result<(), StoreError>;
+    /// Every event body, most recently updated first.
+    async fn list_audit_events(&self) -> Result<Vec<String>, StoreError>;
+    /// Removes events last updated before `before` (a timestamp in the same
+    /// text form the events carry) and returns how many went.
+    async fn prune_audit_events(&self, before: &str) -> Result<u64, StoreError>;
+}
+
+/// One audit event as the store keeps it: the columns queries key on, and
+/// the whole event as JSON.
+#[derive(Debug, Clone)]
+pub struct AuditRow {
+    pub id: String,
+    pub status: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub occurred_at: String,
+    pub updated_at: String,
+    pub body: String,
 }
 
 #[derive(Debug, Clone)]
@@ -173,12 +218,17 @@ pub struct ApiKeyRecord {
     pub created_at: String,
 }
 
+/// One collection in the fake: `(id, body)` pairs in insertion order.
+type FakeRecords = HashMap<String, Vec<(String, String)>>;
+
 #[derive(Clone)]
 pub struct FakeStateStore {
     data: Arc<RwLock<HashMap<String, String>>>,
     apps: Arc<RwLock<HashMap<String, ApplicationRecord>>>,
     env: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
     api_keys: Arc<RwLock<Vec<ApiKeyRecord>>>,
+    records: Arc<RwLock<FakeRecords>>,
+    audit: Arc<RwLock<Vec<AuditRow>>>,
 }
 
 impl FakeStateStore {
@@ -188,6 +238,8 @@ impl FakeStateStore {
             apps: Arc::new(RwLock::new(HashMap::new())),
             env: Arc::new(RwLock::new(HashMap::new())),
             api_keys: Arc::new(RwLock::new(Vec::new())),
+            records: Arc::new(RwLock::new(HashMap::new())),
+            audit: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }
@@ -327,5 +379,88 @@ impl StateStore for FakeStateStore {
             return Err(StoreError::NotFound(id.to_string()));
         }
         Ok(())
+    }
+
+    async fn list_records(&self, kind: &str) -> Result<Vec<String>, StoreError> {
+        Ok(self
+            .records
+            .read()
+            .await
+            .get(kind)
+            .map(|items| items.iter().map(|(_, body)| body.clone()).collect())
+            .unwrap_or_default())
+    }
+
+    async fn get_record(&self, kind: &str, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.records.read().await.get(kind).and_then(|items| {
+            items
+                .iter()
+                .find(|(key, _)| key == id)
+                .map(|(_, body)| body.clone())
+        }))
+    }
+
+    async fn put_record(&self, kind: &str, id: &str, body: &str) -> Result<(), StoreError> {
+        let mut records = self.records.write().await;
+        let items = records.entry(kind.to_string()).or_default();
+        match items.iter_mut().find(|(key, _)| key == id) {
+            Some(item) => item.1 = body.to_string(),
+            None => items.push((id.to_string(), body.to_string())),
+        }
+        Ok(())
+    }
+
+    async fn delete_record(&self, kind: &str, id: &str) -> Result<bool, StoreError> {
+        let mut records = self.records.write().await;
+        let Some(items) = records.get_mut(kind) else {
+            return Ok(false);
+        };
+        let before = items.len();
+        items.retain(|(key, _)| key != id);
+        Ok(items.len() != before)
+    }
+
+    async fn replace_records(
+        &self,
+        kind: &str,
+        items: &[(String, String)],
+    ) -> Result<(), StoreError> {
+        self.records
+            .write()
+            .await
+            .insert(kind.to_string(), items.to_vec());
+        Ok(())
+    }
+
+    async fn get_audit_event(&self, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .audit
+            .read()
+            .await
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.body.clone()))
+    }
+
+    async fn put_audit_event(&self, row: &AuditRow) -> Result<(), StoreError> {
+        let mut audit = self.audit.write().await;
+        match audit.iter_mut().find(|existing| existing.id == row.id) {
+            Some(existing) => *existing = row.clone(),
+            None => audit.push(row.clone()),
+        }
+        Ok(())
+    }
+
+    async fn list_audit_events(&self) -> Result<Vec<String>, StoreError> {
+        let mut rows = self.audit.read().await.clone();
+        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(rows.into_iter().map(|row| row.body).collect())
+    }
+
+    async fn prune_audit_events(&self, before: &str) -> Result<u64, StoreError> {
+        let mut audit = self.audit.write().await;
+        let len = audit.len();
+        audit.retain(|row| row.updated_at.as_str() >= before);
+        Ok((len - audit.len()) as u64)
     }
 }

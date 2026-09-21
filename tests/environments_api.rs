@@ -16,7 +16,7 @@ use self_host::{
     environments::{RunnerObservation, VmConfig, VmRuntime, VmState},
     metrics::Metrics,
     routes::FakeRoutes,
-    store::{ApiKeyRecord, ApplicationRecord, FakeStateStore, StateStore, StoreError},
+    store::{ApiKeyRecord, ApplicationRecord, AuditRow, FakeStateStore, StateStore, StoreError},
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify};
@@ -407,17 +407,23 @@ async fn a_machine_from_before_names_is_given_its_own_on_load() {
         })
     };
     store
-        .store_state(
-            "environments_v1",
-            &json!([legacy("env-old", "Old-Box"), legacy("env-nas", "nas")]).to_string(),
+        .replace_records(
+            "virtual-machine",
+            &[
+                ("env-old".into(), legacy("env-old", "Old-Box").to_string()),
+                ("env-nas".into(), legacy("env-nas", "nas").to_string()),
+            ],
         )
         .await
         .unwrap();
     store
-        .store_state(
-            "dns_records_v1",
-            &json!([{"name": "nas", "type": "A", "value": "192.168.1.30", "ttl": 60, "owner": "operator"}])
-                .to_string(),
+        .replace_records(
+            "dns-record",
+            &[(
+                "nas/A".into(),
+                json!({"name": "nas", "type": "A", "value": "192.168.1.30", "ttl": 60, "owner": "operator"})
+                    .to_string(),
+            )],
         )
         .await
         .unwrap();
@@ -427,10 +433,10 @@ async fn a_machine_from_before_names_is_given_its_own_on_load() {
     assert_eq!(current["hostname"], "old-box.home.lan");
     assert!(
         store
-            .get_state("environments_v1")
+            .list_records("virtual-machine")
             .await
             .unwrap()
-            .unwrap()
+            .join("")
             .contains("old-box.home.lan")
     );
     let (_, unnamed) = request(&app, Method::GET, "/environments/env-nas", None).await;
@@ -558,15 +564,18 @@ async fn saving_a_draft_keeps_the_last_applied_configuration() {
 async fn restart_marks_running_operation_interrupted_without_resuming_it() {
     let store = FakeStateStore::new();
     store.store_state("api_key", KEY).await.unwrap();
-    let record = json!([{
+    let record = json!({
         "id":"env-recovered", "config":config("alpha"), "applied_config":null,
         "state":"missing", "service_ready":false,
         "operation":{"action":"create","status":"running","step":"creating","error":null},
         "log":"started", "ssh_command":null, "tunnel_command":null, "web_url":null,
         "base_image":null, "installed_versions":null
-    }]);
+    });
     store
-        .store_state("environments_v1", &record.to_string())
+        .replace_records(
+            "virtual-machine",
+            &[("env-recovered".into(), record.to_string())],
+        )
         .await
         .unwrap();
     let (app, _) = app_with_store(store.clone(), FakeRuntime::new()).await;
@@ -575,10 +584,10 @@ async fn restart_marks_running_operation_interrupted_without_resuming_it() {
     assert_eq!(current["operation"]["status"], "interrupted");
     assert!(
         store
-            .get_state("environments_v1")
+            .list_records("virtual-machine")
             .await
             .unwrap()
-            .unwrap()
+            .join("")
             .contains("interrupted")
     );
 }
@@ -610,9 +619,6 @@ impl StateStore for FailOnceStore {
         self.inner.is_initialized().await
     }
     async fn store_state(&self, key: &str, value: &str) -> Result<(), StoreError> {
-        if key == "environments_v1" && self.fail_next.swap(false, Ordering::SeqCst) {
-            return Err(StoreError::Io("test".into(), "injected failure".into()));
-        }
         self.inner.store_state(key, value).await
     }
     async fn get_state(&self, key: &str) -> Result<Option<String>, StoreError> {
@@ -664,6 +670,40 @@ impl StateStore for FailOnceStore {
     }
     async fn revoke_api_key(&self, id: &str) -> Result<(), StoreError> {
         self.inner.revoke_api_key(id).await
+    }
+    async fn list_records(&self, kind: &str) -> Result<Vec<String>, StoreError> {
+        self.inner.list_records(kind).await
+    }
+    async fn get_record(&self, kind: &str, id: &str) -> Result<Option<String>, StoreError> {
+        self.inner.get_record(kind, id).await
+    }
+    async fn put_record(&self, kind: &str, id: &str, body: &str) -> Result<(), StoreError> {
+        self.inner.put_record(kind, id, body).await
+    }
+    async fn delete_record(&self, kind: &str, id: &str) -> Result<bool, StoreError> {
+        self.inner.delete_record(kind, id).await
+    }
+    async fn replace_records(
+        &self,
+        kind: &str,
+        items: &[(String, String)],
+    ) -> Result<(), StoreError> {
+        if kind == "virtual-machine" && self.fail_next.swap(false, Ordering::SeqCst) {
+            return Err(StoreError::Io("test".into(), "injected failure".into()));
+        }
+        self.inner.replace_records(kind, items).await
+    }
+    async fn get_audit_event(&self, id: &str) -> Result<Option<String>, StoreError> {
+        self.inner.get_audit_event(id).await
+    }
+    async fn put_audit_event(&self, row: &AuditRow) -> Result<(), StoreError> {
+        self.inner.put_audit_event(row).await
+    }
+    async fn list_audit_events(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.list_audit_events().await
+    }
+    async fn prune_audit_events(&self, before: &str) -> Result<u64, StoreError> {
+        self.inner.prune_audit_events(before).await
     }
 }
 
@@ -729,10 +769,10 @@ async fn completion_save_failure_is_persisted_as_failed_and_keeps_record() {
     assert_eq!(current["operation"]["status"], "failed");
     assert!(
         inner
-            .get_state("environments_v1")
+            .list_records("virtual-machine")
             .await
             .unwrap()
-            .unwrap()
+            .join("")
             .contains("failed")
     );
 }

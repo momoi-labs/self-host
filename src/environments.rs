@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     AppState,
+    collection::{Keyed, MACHINES},
     custom_images::Recipe,
     error::ErrorReport,
     store::{StateStore, StoreError},
@@ -24,7 +25,6 @@ use crate::{
 
 pub mod events;
 
-const STATE_KEY: &str = "environments_v1";
 const MAX_LOG_BYTES: usize = 64 * 1024;
 /// How much of the event log one request returns. Enough to cover a whole
 /// bootstrap, short of asking the browser to render a machine's whole history.
@@ -339,11 +339,7 @@ impl Environments {
     ) -> Result<tokio::sync::MutexGuard<'_, Option<Vec<EnvironmentRecord>>>, String> {
         let mut records = self.records.lock().await;
         if records.is_none() {
-            let mut loaded: Vec<EnvironmentRecord> = match store.get_state(STATE_KEY).await {
-                Ok(Some(json)) => serde_json::from_str(&json).map_err(|e| e.to_string())?,
-                Ok(None) => Vec::new(),
-                Err(error) => return Err(error.to_string()),
-            };
+            let mut loaded = load(store).await.map_err(|e| e.to_string())?;
             let mut dirty = false;
             // A machine from before names gets its own, so the Operator does
             // not recreate it to reach it by name. Claimed like a new one: a
@@ -428,10 +424,12 @@ impl VmRuntime for FakeVmRuntime {
 /// Applications, which check names against machines while holding their own
 /// lock, and for the start sequence, which runs before the API does.
 pub async fn load<S: StateStore>(store: &S) -> Result<Vec<EnvironmentRecord>, StoreError> {
-    match store.get_state(STATE_KEY).await? {
-        None => Ok(Vec::new()),
-        Some(json) => serde_json::from_str(&json)
-            .map_err(|e| StoreError::Serialize(format!("could not read the machines: {e}"))),
+    MACHINES.list(store).await
+}
+
+impl Keyed for EnvironmentRecord {
+    fn key(&self) -> String {
+        self.id.clone()
     }
 }
 
@@ -439,10 +437,9 @@ pub async fn load<S: StateStore>(store: &S) -> Result<Vec<EnvironmentRecord>, St
 /// Read straight from the store, because the collector runs beside the API
 /// rather than inside a request.
 pub async fn running_ids<S: StateStore>(store: &S) -> Vec<String> {
-    let Ok(Some(raw)) = store.get_state(STATE_KEY).await else {
-        return Vec::new();
-    };
-    serde_json::from_str::<Vec<EnvironmentRecord>>(&raw)
+    MACHINES
+        .list(store)
+        .await
         .unwrap_or_default()
         .into_iter()
         .filter(|record| record.state == VmState::Running)
@@ -451,9 +448,8 @@ pub async fn running_ids<S: StateStore>(store: &S) -> Vec<String> {
 }
 
 async fn save<S: StateStore>(store: &S, records: &[EnvironmentRecord]) -> Result<(), String> {
-    let json = serde_json::to_string(records).map_err(|e| e.to_string())?;
-    store
-        .store_state(STATE_KEY, &json)
+    MACHINES
+        .replace_all(store, records)
         .await
         .map_err(|e| e.to_string())
 }
