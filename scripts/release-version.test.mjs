@@ -43,7 +43,7 @@ test("notes contains only the current release and requires an entry", (t) => {
   assert.notEqual(run(cwd, "notes").status, 0);
 });
 
-test("Changesets versions the private Rust package and tags it only once", (t) => {
+test("the version workflow pushes the tag and hands it to the release only once", (t) => {
   const cwd = fixture(t);
   for (const path of ["package.json", "package-lock.json", ".changeset/config.json", "scripts/release-version.mjs"]) {
     cpSync(resolve(path), join(cwd, path), { recursive: true });
@@ -70,13 +70,27 @@ test("Changesets versions the private Rust package and tags it only once", (t) =
   assert.equal(version, "0.4.0");
   assert.equal(run(cwd, "check", version).status, 0);
   assert.equal(run(cwd, "notes").status, 0);
-  const output = join(cwd, "events.ndjson");
-  const env = { CHANGESETS_OUTPUT: output, GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
-  exec("npm", ["run", "release:tag"], env);
-  const event = JSON.parse(readFileSync(output, "utf8").trim());
-  assert.deepEqual(event, { type: "git-tag", tag: "v0.4.0", packageName: "self-host" });
-  assert.match(exec("git", ["tag", "--list"]), /v0.4.0/);
+  exec("git", ["init", "--bare", join(cwd, "remote.git")]);
+  exec("git", ["remote", "add", "origin", join(cwd, "remote.git")]);
+  const workflow = readFileSync(resolve(".github/workflows/changesets.yml"), "utf8");
+  const match = workflow.match(/- name: Tag the merged version[\s\S]*?run: \|\n((?: {10}[^\n]*\n)+)/);
+  assert.ok(match, "The workflow must have an explicit tagging step");
+  const tagStep = match[1].replace(/^ {10}/gm, "");
+  const output = join(cwd, "github-output");
+  const env = { GITHUB_OUTPUT: output, GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
+  exec("bash", ["-e", "-c", tagStep], env);
+  assert.equal(readFileSync(output, "utf8"), "tag=v0.4.0\n");
+  assert.match(exec("git", ["ls-remote", "--tags", "origin"]), /refs\/tags\/v0.4.0/);
   writeFileSync(output, "");
-  exec("npm", ["run", "release:tag"], env);
+  exec("bash", ["-e", "-c", tagStep], env);
+  assert.equal(readFileSync(output, "utf8"), "");
+
+  // A tag created locally must not start a release if pushing it fails.
+  exec("git", ["tag", "-d", "v0.4.0"]);
+  exec("git", ["remote", "set-url", "origin", join(cwd, "missing.git")]);
+  const failed = spawnSync("bash", ["-e", "-c", tagStep], {
+    cwd, encoding: "utf8", env: { ...process.env, ...env },
+  });
+  assert.notEqual(failed.status, 0);
   assert.equal(readFileSync(output, "utf8"), "");
 });
