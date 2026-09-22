@@ -103,10 +103,13 @@ checksum:
   name_template: checksums.txt
 
 changelog:
-  disable: true
+  # This must stay enabled to load the Changesets --release-notes file.
+  disable: false
 
 release:
   github:
     owner: momoi-labs
     name: self-host
   prerelease: auto
+  footer: |
+    **Full changelog:** https://github.com/momoi-labs/self-host/compare/{{ .PreviousTag }}...{{ .Tag }}
