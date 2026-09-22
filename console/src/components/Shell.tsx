@@ -40,6 +40,7 @@ export function Shell({
   apps,
   environments,
   healthy,
+  version,
   overview,
   deploy,
   newMachine = { href: "/console/#new-environment", active: false },
@@ -56,6 +57,7 @@ export function Shell({
   apps: App[];
   environments: Environment[];
   healthy: boolean;
+  version: string | null;
   overview: Destination;
   deploy: Destination;
   newMachine?: Destination;
@@ -162,6 +164,12 @@ export function Shell({
               <span className="muted">
                 {healthy ? "Healthy" : "Checking health…"}
               </span>
+              {version ? (
+                <>
+                  <span className="muted" aria-hidden="true">·</span>
+                  <span className="muted mono">v{version}</span>
+                </>
+              ) : null}
             </span>
           </span>
         </>

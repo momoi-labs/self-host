@@ -16,7 +16,7 @@ import { Environments } from "./views/Environments.js";
 import { Settings } from "./views/Settings.js";
 
 export function App() {
-  const { apps, dnsSuffix, healthy, ready, reload } = usePlatform();
+  const { apps, dnsSuffix, healthy, version, ready, reload } = usePlatform();
   const { environments } = useEnvironments();
   const metrics = useMetrics();
   const [view, go] = useView();
@@ -64,6 +64,7 @@ export function App() {
       apps={apps}
       environments={environments}
       healthy={healthy}
+      version={version}
       overview={{
         href: "/console/",
         active: view.view === "overview",

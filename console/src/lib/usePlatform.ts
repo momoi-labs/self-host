@@ -8,6 +8,7 @@ export type Platform = {
   apps: App[];
   dnsSuffix: string;
   healthy: boolean;
+  version: string | null;
   ready: boolean;
   reload: () => Promise<App[]>;
 };
@@ -21,6 +22,7 @@ export function usePlatform(): Platform {
   const [apps, setApps] = useState<App[]>([]);
   const [dnsSuffix, setDnsSuffix] = useState("…");
   const [healthy, setHealthy] = useState(false);
+  const [version, setVersion] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const known = useRef<Record<string, string>>({});
 
@@ -59,7 +61,9 @@ export function usePlatform(): Platform {
       const status = await getJson<{ dns_suffix?: string }>("/bootstrap/status");
       if (cancelled) return;
       if (status?.dns_suffix) setDnsSuffix(status.dns_suffix);
-      setHealthy((await getJson<unknown>("/health")) !== null);
+      const health = await getJson<{ version?: string }>("/health");
+      setHealthy(health !== null);
+      setVersion(health?.version ?? null);
       await reload();
       if (!cancelled) setReady(true);
     })();
@@ -78,5 +82,5 @@ export function usePlatform(): Platform {
     return () => window.clearTimeout(timer);
   }, [apps, reload]);
 
-  return { apps, dnsSuffix, healthy, ready, reload };
+  return { apps, dnsSuffix, healthy, version, ready, reload };
 }

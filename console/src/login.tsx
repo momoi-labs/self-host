@@ -55,6 +55,7 @@ function Login() {
               <p className="muted t-label">Unlock the operator console</p>
             </div>
           </div>
+          <span className="t-metadata muted mono">v{import.meta.env.SELF_HOST_VERSION}</span>
         </div>
         <form className="card" onSubmit={unlock}>
           <CardContent>

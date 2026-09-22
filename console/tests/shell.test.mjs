@@ -26,7 +26,7 @@ const { Shell } = await import(pathToFileURL(join(outDir, "Shell.mjs")));
 
 function render(apps, environments, selected = "") {
   return renderToStaticMarkup(createElement(Shell, {
-    crumb: "Overview", dnsSuffix: "home.lan", healthy: true,
+    crumb: "Overview", dnsSuffix: "home.lan", healthy: true, version: "0.4.0",
     apps, environments,
     overview: { href: "/console/", active: !selected },
     deploy: { href: "/console/#new", active: false },
@@ -41,6 +41,12 @@ const vm = { id: "workspace", config: { name: "Workspace" }, state: "stopped" };
 test("empty inventory has no resource headings or placeholder", () => {
   const html = render([], []);
   assert.doesNotMatch(html, /Applications|Virtual machines|None yet|No resources/);
+});
+
+test("the header shows the running Host version", () => {
+  const html = render([], []);
+  assert.match(html, /Healthy/);
+  assert.match(html, /v0\.4\.0/);
 });
 
 test("VM-only inventory hides Applications and links to the VM", () => {

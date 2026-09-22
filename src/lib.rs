@@ -252,11 +252,13 @@ async fn public_ca_certificate(State(path): State<std::path::PathBuf>) -> Respon
 #[derive(Serialize)]
 struct HealthResponse {
     status: String,
+    version: &'static str,
 }
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".into(),
+        version: env!("CARGO_PKG_VERSION"),
     })
 }
 
@@ -2232,7 +2234,10 @@ mod tests {
 
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(parsed, json!({"status": "ok"}));
+        assert_eq!(
+            parsed,
+            json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")})
+        );
     }
 
     #[tokio::test]

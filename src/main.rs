@@ -13,7 +13,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "self-host", about = "LAN self-host PaaS platform")]
+#[command(name = "self-host", version, about = "LAN self-host PaaS platform")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -1447,6 +1447,19 @@ async fn resolve_server_config() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_flag_prints_the_package_version() {
+        let error = match Cli::try_parse_from(["self-host", "--version"]) {
+            Err(error) => error,
+            Ok(_) => panic!("expected --version to stop argument parsing"),
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string(),
+            format!("self-host {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
 
     #[test]
     fn init_accepts_an_optional_api_key() {
