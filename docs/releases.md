@@ -53,6 +53,12 @@ Review its changelog and version, wait for CI, then merge it. The PR updates
 `package.json`, `package-lock.json`, `Cargo.toml`, and `Cargo.lock` together.
 Do not bump these versions by hand.
 
+The release workflow extracts that version's summary from `CHANGELOG.md` and
+passes it to GoReleaser with `--release-notes`. GoReleaser publishes it as the
+GitHub release description, followed by a link to the full comparison between
+tags. Keep `changelog.disable` set to `false`: disabling the changelog also
+prevents GoReleaser from reading the supplied notes.
+
 ## Release outputs
 
 The Release workflow builds four targets in parallel, each on its own runner.
