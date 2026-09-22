@@ -4,6 +4,8 @@ project_name: self-host
 builds:
   - id: linux
     builder: rust
+    # CI supplies binaries from the parallel build jobs. Local runs use Cargo.
+    tool: '{{ if index .Env "SELF_HOST_PREBUILT_DIR" }}./scripts/release-cargo.sh{{ else }}cargo{{ end }}'
     binary: self-host
     flags: [--release, --locked]
     env:
@@ -13,6 +15,7 @@ builds:
       - aarch64-unknown-linux-gnu
   - id: macos
     builder: rust
+    tool: '{{ if index .Env "SELF_HOST_PREBUILT_DIR" }}./scripts/release-cargo.sh{{ else }}cargo{{ end }}'
     command: build
     binary: self-host
     flags: [--release, --locked]

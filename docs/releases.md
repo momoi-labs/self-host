@@ -30,7 +30,7 @@ The version workflow explicitly dispatches CI on its PR branch and calls the
 release workflow after tagging. GitHub does not trigger these workflows from
 events created with `GITHUB_TOKEN`.
 
-Stable releases fail early if `HOMEBREW_TAP_TOKEN` is missing. Snapshots and
+Stable releases require `HOMEBREW_TAP_TOKEN`. Snapshots and
 prereleases do not update Homebrew. No AUR key or account is required.
 GoReleaser still generates the AUR recipe under `dist/aur/`, with upload disabled.
 
@@ -55,8 +55,15 @@ Do not bump these versions by hand.
 
 ## Release outputs
 
-The Release workflow builds the console once on a macOS runner, compiles both
-Apple targets natively, and cross-compiles both Linux targets with Zig.
+The Release workflow builds four targets in parallel, each on its own runner.
+Each job builds the console and one Rust binary. Apple targets use macOS;
+Linux targets use Ubuntu with Zig. A final job downloads those binaries and
+runs GoReleaser to package and publish them without compiling again.
+
+CI sets `SELF_HOST_PREBUILT_DIR` to the downloaded artifacts. The Rust tool hook
+in `scripts/release-cargo.sh` imports each binary and fails if it is missing.
+Local GoReleaser runs use Cargo when that variable is unset.
+
 GoReleaser produces:
 
 - Four tarballs, named `self-host_v<version>_<rust-target>.tar.gz`, with the
@@ -76,10 +83,13 @@ Uninstalling removes the binary; it preserves Platform State.
 
 ## Retry or build a snapshot
 
-In **Actions > Release > Run workflow**, use an existing tag such as `v0.4.0`
+In **Actions > Release > Run workflow**, use an existing tag
 to retry a failed release. The workflow checks out that tag, checks the version,
 and uses its changelog. Re-running the Version workflow alone will not retry a
 tag it has already created.
+
+For tags before the parallel artifact workflow, including `v0.4.0`, re-run the
+original release run instead. Those tags have the older GoReleaser configuration.
 
 Leave the input as `snapshot` to replace the moving snapshot prerelease from
 the selected branch. It includes tarballs, Arch, Debian, RPM packages, and checksums, but
@@ -98,6 +108,8 @@ actionlint
 
 The version tests exercise Changesets in a temporary Git repository, check Cargo
 synchronization, and verify that tagging a version twice does not publish twice.
+The artifact tests verify that publishing preserves each target's binary and
+rejects missing or non-executable artifacts.
 On macOS with Rust, Zig 0.13.0, cargo-zigbuild, and GoReleaser 2.18.2 installed,
 build all packages without publishing:
 

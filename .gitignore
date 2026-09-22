@@ -36,3 +36,4 @@ console/dist/*
 /node_modules
 /dist
 /release-notes.md
+/prebuilt
