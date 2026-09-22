@@ -1,36 +1,109 @@
 version: 2
-
-before:
-  hooks:
-    - rustup default stable
-    - cargo install --locked cargo-zigbuild
+project_name: self-host
 
 builds:
-  - builder: rust
+  - id: linux
+    builder: rust
     binary: self-host
+    flags: [--release, --locked]
+    env:
+      - CARGO_PROFILE_RELEASE_LTO=thin
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
+  - id: macos
+    builder: rust
+    command: build
+    binary: self-host
+    flags: [--release, --locked]
+    env:
+      - CARGO_PROFILE_RELEASE_LTO=thin
+    targets:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
 
 archives:
-  - formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: linux
+    ids: [linux]
+    formats: [tar.gz]
+    # Keep the names consumed by install.sh, including the v prefix.
+    name_template: "{{ .ProjectName }}_{{ if .IsSnapshot }}snapshot{{ else }}{{ .Tag }}{{ end }}_{{ .Target }}"
+    files: [LICENSE]
+  - id: macos
+    ids: [macos]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ if .IsSnapshot }}snapshot{{ else }}{{ .Tag }}{{ end }}_{{ .Target }}"
+    files: [LICENSE]
+
+homebrew_casks:
+  - name: self-host
+    ids: [macos]
+    binaries: [self-host]
+    homepage: https://github.com/momoi-labs/self-host
+    description: Publish applications on your own LAN
+    skip_upload: auto
+    repository:
+      owner: momoi-labs
+      name: homebrew-packages
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    caveats: |
+      This package installs the binary only. It does not configure Docker,
+      DNS, or a launchd daemon. See the repository README for Host setup.
+    # These binaries are not Apple-notarized. Limit the hook to our binary.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/self-host"]
+          end
+
+aurs:
+  - name: self-host-bin
+    ids: [linux]
+    homepage: https://github.com/momoi-labs/self-host
+    description: Publish applications on your own LAN
+    license: MIT
+    # Generate the recipe locally, but do not publish until AUR access is ready.
+    skip_upload: true
+    depends: [glibc, gcc-libs]
+    optdepends:
+      - "docker: run Applications"
+      - "docker-compose: run Compose Applications"
+    provides: [self-host]
+    conflicts: [self-host]
+    package: |
+      install -Dm755 "self-host" "${pkgdir}/usr/bin/self-host"
+      install -Dm644 "LICENSE" "${pkgdir}/usr/share/licenses/self-host-bin/LICENSE"
+
+nfpms:
+  - ids: [linux]
+    package_name: self-host-bin
+    maintainer: momoi-labs
+    file_name_template: "{{ .ConventionalFileName }}"
+    homepage: https://github.com/momoi-labs/self-host
+    description: Publish applications on your own LAN
+    license: MIT
+    formats: [archlinux, deb, rpm]
+    dependencies: [glibc, gcc-libs]
+    overrides:
+      deb:
+        dependencies: [libc6, libgcc-s1]
+      rpm:
+        dependencies: [glibc, libgcc]
+    provides: [self-host]
+    conflicts: [self-host]
+    contents:
+      - src: LICENSE
+        dst: /usr/share/licenses/self-host-bin/LICENSE
 
 checksum:
-  name_template: "checksums.txt"
+  name_template: checksums.txt
 
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^ci:"
-      - "^chore:"
+  disable: true
 
 release:
   github:
     owner: momoi-labs
     name: self-host
+  prerelease: auto

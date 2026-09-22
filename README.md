@@ -28,6 +28,37 @@ plane anywhere else.
 
 ## Install
 
+Starting with `v0.4.0`, install the binary on macOS with Homebrew:
+
+```bash
+brew install --cask momoi-labs/packages/self-host
+```
+
+Upgrade with `brew upgrade --cask self-host`, or remove it with
+`brew uninstall --cask self-host`.
+
+On Linux, download the package for your distribution and architecture, plus
+`checksums.txt`, from [GitHub Releases](https://github.com/momoi-labs/self-host/releases).
+Verify it with `sha256sum --check --ignore-missing checksums.txt`, then install:
+
+```bash
+sudo pacman -U ./self-host-bin-<version>-1-<arch>.pkg.tar.zst # Arch / Omarchy
+sudo apt install ./self-host-bin_<version>_<arch>.deb       # Debian / Ubuntu
+sudo dnf install ./self-host-bin-<version>-1.<arch>.rpm      # Fedora
+```
+
+Install a newer release's file with the same command to upgrade. Remove it with
+`sudo pacman -R self-host-bin`, `sudo apt remove self-host-bin`, or
+`sudo dnf remove self-host-bin`. AUR publication is currently disabled.
+
+These packages preserve Platform State and install only the binary. Configure
+Docker, DNS, and daemon supervision separately. On Linux, grant bind privileges
+after installing or upgrading with
+`sudo setcap cap_net_bind_service=+ep /usr/bin/self-host`, or use the systemd
+capability setting described below.
+
+The script installer also prepares the Host on macOS:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash
 ```
@@ -52,6 +83,7 @@ self-host serve # keep running; use another terminal for the next command
 self-host setup-dns # Linux with systemd-resolved, macOS via /etc/resolver
 ```
 
+After a package manager install, use the same Quick start commands above.
 For development, choose a fixed API key during initialization:
 
 ```bash

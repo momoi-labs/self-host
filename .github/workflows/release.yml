@@ -3,35 +3,60 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: true
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to retry, or snapshot
+        default: snapshot
+        required: true
+        type: string
 
 permissions:
   contents: write
 
-# A tag push releases that tag. A manual run releases `snapshot`, one moving
-# pre-release used to exercise install.sh without minting a version.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 env:
-  VERSION: ${{ github.event_name == 'workflow_dispatch' && 'snapshot' || github.ref_name }}
+  VERSION: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
+  release:
+    # Native Apple builds and Zig cross-compilation for Linux share one run.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VERSION == 'snapshot' && github.sha || env.VERSION }}
+          fetch-depth: 0
 
-      # The console ships inside the binary. It is the same static output
-      # whatever the Rust target is, so it is built once, before cargo.
+      - name: Check release credentials
+        if: env.VERSION != 'snapshot' && !contains(env.VERSION, '-')
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          test -n "$HOMEBREW_TAP_TOKEN" || { echo "Missing HOMEBREW_TAP_TOKEN"; exit 1; }
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: console/package-lock.json
+
+      - name: Check version and prepare release notes
+        if: env.VERSION != 'snapshot'
+        run: |
+          node scripts/release-version.mjs check "${VERSION#v}"
+          node scripts/release-version.mjs notes > release-notes.md
 
       - run: npm ci && npm run build
         working-directory: console
@@ -44,92 +69,35 @@ jobs:
         with:
           version: 0.13.0
 
-      - run: rustup target add ${{ matrix.target }}
+      - run: cargo install --locked cargo-zigbuild
 
-      - run: cargo install cargo-zigbuild
-
-      - run: cargo zigbuild --release --target ${{ matrix.target }}
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2.18.2
+          args: release --clean ${{ env.VERSION == 'snapshot' && '--snapshot' || '--release-notes=release-notes.md' }}
         env:
-          CARGO_PROFILE_RELEASE_LTO: thin
+          GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
-      - run: |
-          cd target/${{ matrix.target }}/release
-          tar czf self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz self-host
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz
-
-  darwin:
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
-
-      # The console ships inside the binary. It is the same static output
-      # whatever the Rust target is, so it is built once, before cargo.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: console/package-lock.json
-
-      - run: npm ci && npm run build
-        working-directory: console
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-
-      - run: rustup target add ${{ matrix.target }}
-
-      - run: cargo build --release --target ${{ matrix.target }}
-        env:
-          CARGO_PROFILE_RELEASE_LTO: thin
-
-      - run: |
-          cd target/${{ matrix.target }}/release
-          tar czf self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz self-host
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/self-host_${{ env.VERSION }}_${{ matrix.target }}.tar.gz
-
-  publish:
-    needs: [linux, darwin]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: "*"
-          path: dist
-          merge-multiple: true
-
-      - run: cd dist && sha256sum *.tar.gz > checksums.txt
-
-      # There is only ever one snapshot. Removing the previous release and
-      # its tag is what lets the tag land on the commit that was just built.
-      - if: env.VERSION == 'snapshot'
+      - name: Replace the moving snapshot
+        if: env.VERSION == 'snapshot'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release delete snapshot --cleanup-tag --yes || true
+        run: |
+          if gh release view snapshot > /dev/null 2>&1; then
+            gh release delete snapshot --cleanup-tag --yes
+          fi
 
-      # A tag with a pre-release suffix, `v0.2.0-beta.1`, publishes as a
-      # pre-release, so it never becomes the `latest` the installer resolves
-      # on its own. It is installed by naming the version, and the snapshot
-      # is a pre-release for the same reason.
       - uses: softprops/action-gh-release@v2
+        if: env.VERSION == 'snapshot'
         with:
-          tag_name: ${{ env.VERSION }}
-          prerelease: ${{ env.VERSION == 'snapshot' || contains(env.VERSION, '-') }}
+          tag_name: snapshot
+          target_commitish: ${{ github.sha }}
+          prerelease: true
           files: |
             dist/*.tar.gz
+            dist/*.pkg.tar.zst
+            dist/*.deb
+            dist/*.rpm
             dist/checksums.txt
