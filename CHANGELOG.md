@@ -1,5 +1,11 @@
 # self-host
 
+## 0.4.1
+
+### Patch Changes
+
+- 4845b50: Show the installed version on the login screen and operator console, and expose it through `self-host --version`.
+
 ## 0.4.0
 
 ### Minor Changes
