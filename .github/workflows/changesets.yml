@@ -1,0 +1,56 @@
+name: Version
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: changesets-main
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+      packages: ${{ steps.changesets.outputs.publishedPackages }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: changesets/action@v1
+        id: changesets
+        with:
+          version: npm run version:packages
+          publish: npm run release:tag
+          title: "chore: release self-host"
+          commit: "chore: release self-host"
+          createGithubReleases: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Bot-created PRs do not trigger pull_request workflows with this token.
+      - name: Run CI on the version PR
+        if: steps.changesets.outputs.pullRequestNumber != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref changeset-release/main
+
+  # Tags pushed with GITHUB_TOKEN do not trigger the tag-push workflow.
+  release:
+    needs: version
+    if: needs.version.outputs.published == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: v${{ fromJSON(needs.version.outputs.packages)[0].version }}
+    secrets: inherit

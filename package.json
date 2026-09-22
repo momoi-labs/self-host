@@ -1,0 +1,14 @@
+{
+  "name": "self-host",
+  "version": "0.3.0",
+  "private": true,
+  "scripts": {
+    "changeset": "changeset",
+    "version:packages": "changeset version && node scripts/release-version.mjs sync && npm install --package-lock-only --ignore-scripts",
+    "release:tag": "node scripts/release-version.mjs check && changeset tag",
+    "test:release": "node --test scripts/release-version.test.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3"
+  }
+}
