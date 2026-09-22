@@ -17,8 +17,7 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      published: ${{ steps.changesets.outputs.published }}
-      packages: ${{ steps.changesets.outputs.publishedPackages }}
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,10 +31,8 @@ jobs:
         id: changesets
         with:
           version: npm run version:packages
-          publish: npm run release:tag
           title: "chore: release self-host"
           commit: "chore: release self-host"
-          createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -46,11 +43,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run ci.yml --ref changeset-release/main
 
+      # The action's publish detection expects CLI v2 output. Keep tagging
+      # explicit so CLI v3 output and GitHub release creation are independent.
+      - name: Tag the merged version
+        id: tag
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: |
+          node scripts/release-version.mjs check
+          tag="v$(node -p 'require("./package.json").version')"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            echo "Tag $tag already exists; use the Release workflow to retry it."
+            exit 0
+          fi
+          npm run release:tag
+          git push origin "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   # Tags pushed with GITHUB_TOKEN do not trigger the tag-push workflow.
   release:
     needs: version
-    if: needs.version.outputs.published == 'true'
+    if: needs.version.outputs.tag != ''
     uses: ./.github/workflows/release.yml
     with:
-      tag: v${{ fromJSON(needs.version.outputs.packages)[0].version }}
+      tag: ${{ needs.version.outputs.tag }}
     secrets: inherit
