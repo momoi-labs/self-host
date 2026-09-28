@@ -108,6 +108,26 @@ fn instance_name(id: &str) -> Result<String, String> {
     Ok(format!("{PREFIX}{id}"))
 }
 
+/// The name the guest calls itself: the first label of the machine's name,
+/// the same label its DNS name starts with. Empty when the name cannot be a
+/// hostname, and the guest keeps the one Lima gave it.
+fn guest_hostname(name: &str) -> String {
+    let name = name.trim().to_ascii_lowercase();
+    let label = name.split('.').next().unwrap_or_default();
+    let valid = !label.is_empty()
+        && label.len() <= 63
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if valid {
+        label.to_owned()
+    } else {
+        String::new()
+    }
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -283,12 +303,14 @@ impl LimaRuntime {
     fn payload(&self, config: &VmConfig) -> String {
         format!(
             "#!/usr/bin/env bash\n\
+             export SELF_HOST_HOSTNAME={}\n\
              export SELF_HOST_SSH_PUBLIC_KEY_B64={}\n\
              export SELF_HOST_MISE_TOML_B64={}\n\
              export SELF_HOST_SETUP_B64={}\n\
              export SELF_HOST_COMMAND_B64={}\n\
              export SELF_HOST_WEB_PORT={}\n\
              {}",
+            shell_quote(&guest_hostname(&config.name)),
             shell_quote(&encode(&config.ssh_public_key)),
             shell_quote(&encode(&config.recipe.mise_toml())),
             shell_quote(&encode(&config.recipe.setup.join("\n"))),
@@ -1095,6 +1117,20 @@ mod tests {
 
         assert!(!payload.contains("rm -rf /"));
         assert!(payload.contains("export SELF_HOST_COMMAND_B64='"));
+    }
+
+    /// The guest answers to the machine's own name rather than Lima's
+    /// `lima-<instance>`, and a name no hostname can be made from sets none.
+    #[test]
+    fn the_machine_is_named_after_its_name() {
+        let mut named = config();
+        named.name = "Net-Test".into();
+        let payload = LimaRuntime::default().payload(&named);
+        assert!(payload.contains("export SELF_HOST_HOSTNAME='net-test'"));
+
+        assert_eq!(guest_hostname("net-test.home.lan"), "net-test");
+        assert_eq!(guest_hostname("my machine"), "");
+        assert_eq!(guest_hostname("-edge"), "");
     }
 
     /// The template is the whole contract with Lima: the Operator's sizes, a

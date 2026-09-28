@@ -12,6 +12,7 @@ SELF_HOST_SSH_PUBLIC_KEY_B64="${SELF_HOST_SSH_PUBLIC_KEY_B64:-}"
 SELF_HOST_SETUP_B64="${SELF_HOST_SETUP_B64:-}"
 SELF_HOST_COMMAND_B64="${SELF_HOST_COMMAND_B64:-}"
 SELF_HOST_WEB_PORT="${SELF_HOST_WEB_PORT:-0}"
+SELF_HOST_HOSTNAME="${SELF_HOST_HOSTNAME:-}"
 
 readonly config_dir=/etc/self-host-environment
 readonly dev_user=dev
@@ -47,6 +48,13 @@ cleanup() {
 }
 trap cleanup EXIT
 progress() { step="$1"; printf 'SF_STEP %s\n' "$step"; }
+
+# The machine answers to its own name, not Lima's `lima-<instance>`.
+# cloud-init set that one from Lima's meta-data, and keeps it only if told to.
+if test -n "$SELF_HOST_HOSTNAME"; then
+    printf 'preserve_hostname: true\n' > /etc/cloud/cloud.cfg.d/99-self-host-hostname.cfg
+    hostnamectl set-hostname "$SELF_HOST_HOSTNAME"
+fi
 
 progress system-packages
 apt-get update
