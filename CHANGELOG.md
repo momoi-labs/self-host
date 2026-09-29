@@ -1,5 +1,18 @@
 # self-host
 
+## 0.4.1
+
+### Patch Changes
+
+- 4845b50: Show the installed version on the login screen and operator console, and expose it through `self-host --version`.
+- d7cff57: Name a Virtual machine's guest after the machine, so its shell shows `net-test` instead of `lima-sf-dev-env-...`. Existing machines take the name on their next update.
+- c4880a8: Upgrade the console to Kiso React 0.9.0 and use its shared status badges,
+  lifecycle controls, and screen layouts. This brings the upstream keyboard,
+  focus, touch-target, and select-menu fixes into the console while preserving
+  terminal and virtual machine detail layouts. Keep dependency searches intact
+  on Escape and event tables within narrow screens.
+- 2ee53ac: Fit the terminal to its pane again, so the last lines of a Virtual machine or container shell are no longer cut off and the scrollbar stays inside the terminal.
+
 ## 0.4.0
 
 ### Minor Changes
