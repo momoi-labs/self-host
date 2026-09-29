@@ -150,13 +150,13 @@ says about collection, retention and how the numbers are drawn still holds.
 
 ## Keeping it
 
-`.list-filters` in `console/src/console.css` is the filter row. `Lifecycle` in
-`console/src/components/Lifecycle.tsx` is the detail header row, and `Glance`
-in `console/src/components/Glance.tsx` is the line under it. Both take
-slots rather than data, so a screen keeps its own conditions — which verbs are
-disabled, whether the machine is mid-operation — without the component
-learning about any of them. The form's footer is kiso's `FormActions`, on
-the same terms: a tone, a message and the buttons. `LastRun` in
+Kiso React 0.9 supplies `Lifecycle`, `StatusBadge`, and the shared list,
+detail, and create layouts. The console imports them from
+`@momoi-labs/kiso-react` and uses `.detail-pane` for terminal panels.
+`Glance` in `console/src/components/Glance.tsx` remains the product's metrics
+line. Screens keep their own conditions, including which verbs are disabled
+and whether a machine is mid-operation. The form's footer is kiso's
+`FormActions`, on the same terms: a tone, a message and the buttons. `LastRun` in
 `console/src/components/LastRun.tsx` lays a run parsed out of the machine's
 event log by `console/src/lib/runSteps.ts` over kiso's `StepList`.
 

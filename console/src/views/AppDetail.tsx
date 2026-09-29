@@ -1,5 +1,7 @@
 import { Suspense, lazy, useRef, useState } from "react";
 import {
+  Lifecycle,
+  StatusBadge,
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -24,9 +26,7 @@ import { AppForm, type Submission } from "../components/AppForm.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
 import { HttpStatus } from "../components/HttpStatus.js";
-import { Lifecycle } from "../components/Lifecycle.js";
 import { AppLogPane } from "../components/LogPane.js";
-import { StatusBadge } from "../components/StatusBadge.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
@@ -256,7 +256,7 @@ export function AppDetail({
                 container picker above it, so the two share a wrapper. */}
             <div className="detail-log-pane"><AppLogPane id={app.id} /></div>
           </TabsContent>
-          <TabsContent value="terminal" className="detail-terminal" forceMount hidden={tab !== "terminal"}>
+          <TabsContent value="terminal" className="detail-pane" forceMount hidden={tab !== "terminal"}>
             {openedTerminal ? (
               <Suspense fallback={<Skeleton className="terminal-loading" />}>
                 <Terminal id={app.id} />

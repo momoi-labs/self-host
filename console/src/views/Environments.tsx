@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  Lifecycle,
+  StatusBadge,
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -38,11 +40,9 @@ import { Dependencies } from "../components/Dependencies.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
 import { LastRun } from "../components/LastRun.js";
-import { Lifecycle } from "../components/Lifecycle.js";
 import { ShellEditor } from "../components/ShellEditor.js";
 import { Step, Steps } from "../components/Steps.js";
 import { LogSurface } from "../components/LogSurface.js";
-import { StatusBadge } from "../components/StatusBadge.js";
 import { Terminal } from "../components/Terminal.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import {
@@ -800,7 +800,7 @@ export function Environments({
   const samples = current.service_ready ? machineSeriesFor(metrics, current.id) : null;
   return (
     <>
-      <div className="environment-page">
+      <>
         {demo ? (
           <p className="demo-banner" role="status">
             <strong>Demo mode:</strong> memory-only state transitions. Live API
@@ -981,12 +981,12 @@ export function Environments({
             <LogSurface label="Virtual machine log" text={logs}
               placeholder="Nothing recorded yet." />
             </TabsContent>
-            <TabsContent value="connect" className="detail-terminal">
+            <TabsContent value="connect" className="detail-pane">
             <Terminal id={current.id} machine />
             </TabsContent>
           </Tabs>
         </Card>
-      </div>
+      </>
       <AlertDialog
         open={!!confirming}
         onOpenChange={(open) => {

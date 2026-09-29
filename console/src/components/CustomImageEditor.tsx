@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
+  Lifecycle,
+  StatusBadge,
   Badge, Button, Card, Form, FormActions, FormField, Label,
   Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
   ChipName, ChipOption, ChipOptionAdd, ChipRemove, ChipScope, ChipValue,
@@ -9,11 +11,9 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "./Failure.js";
-import { Lifecycle } from "./Lifecycle.js";
 import { LogSurface } from "./LogSurface.js";
 import { Step, Steps } from "./Steps.js";
 import { ShellEditor } from "./ShellEditor.js";
-import { StatusBadge } from "./StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import type { CustomImage, Report } from "../lib/types.js";
 import { buildLabel, buildTone } from "../lib/status.js";
@@ -159,7 +159,6 @@ function Dependencies({ value, onChange, disabled }: {
                 event.preventDefault();
                 if (isKey(typed)) add(typed);
               }
-              if (event.key === "Escape") { event.preventDefault(); setQuery(""); }
             }}
           />
         </ChipInputBox>

@@ -107,7 +107,7 @@ Rules:
 
 - The screen says its own name. The breadcrumb repeating it is what a
   breadcrumb is for.
-- Use `Lifecycle` from `console/src/components/Lifecycle.js`. Do not hand-roll
+- Use `Lifecycle` from `@momoi-labs/kiso-react`. Do not hand-roll
   the row, and do not add a fourth group to it.
 - Fill only the slots the screen has. No verbs → pass no `actions`, and the
   group is absent rather than an empty bordered box. Nothing running to
@@ -119,11 +119,11 @@ Rules:
   breakdown belongs on the Overview.
 - One `.detail-tabs` card. Not a split.
 - A log or terminal panel takes `className="detail-logs"` or
-  `"detail-terminal"` so it reaches the card's edges.
+  `"detail-pane"` so it reaches the card's edges.
 - The tab already names the panel. Do not caption the panel with the same
   word: the Application's log pane said "Logs" under a tab called Logs.
 - A single tab means no tab bar. A lone tab is not a choice.
-- Status is a `StatusBadge` from `console/src/components/StatusBadge.js`
+- Status is a `StatusBadge` from `@momoi-labs/kiso-react`
   with one of its three tones. Green is alive: running, building, a run
   that is going or that ended well. Red is failed. Neutral is what is not
   happening: pending, stopped, disabled. No `Badge variant="info"`, no
