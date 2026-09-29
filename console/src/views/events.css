@@ -1,7 +1,7 @@
 .events-page { min-width: 0; }
 .events-layout { display: grid; gap: var(--spacing-xl); margin-block-start: var(--spacing-xl); align-items: start; }
 .events-layout-open { grid-template-columns: minmax(0, 1fr) minmax(280px, 32%); }
-.events-list { display: grid; gap: var(--spacing-lg); align-content: start; min-width: 0; }
+.events-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); align-content: start; min-width: 0; }
 .events-row { cursor: pointer; }
 .events-row[data-state="selected"] { background: var(--color-selected); color: var(--color-selected-foreground); }
 .events-action { border: 0; background: transparent; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
@@ -38,7 +38,7 @@
 /* The list fills the window like a detail screen does: the card takes the
    height the header and filters leave, the rows scroll inside it, and the
    footer with the pager rests on the card's bottom edge. The chain is the
-   one console.css builds for .detail-tabs, so both pages end at the same
+   one Kiso builds for .detail-tabs, so both pages end at the same
    place. Below 1024px the sidebar stacks and the document scrolls again. */
 @media (min-width: 1024px) {
   .app-shell:has(.events-page) { height: 100vh; }

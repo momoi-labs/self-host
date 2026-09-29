@@ -1,8 +1,8 @@
+import { StatusBadge } from "@momoi-labs/kiso-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api.js";
 import { readinessLabel, readinessTone } from "../lib/status.js";
 import type { HttpReadiness } from "../lib/types.js";
-import { StatusBadge } from "./StatusBadge.js";
 
 /** Shows Web Target HTTP readiness separately from container lifecycle state. */
 export function HttpStatus({ id, status }: { id: string; status: string }) {

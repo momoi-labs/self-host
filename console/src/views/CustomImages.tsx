@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  StatusBadge,
   Button, Card,
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
@@ -12,7 +13,6 @@ import {
 import { CustomImageEditor } from "../components/CustomImageEditor.js";
 import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
-import { StatusBadge } from "../components/StatusBadge.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import { buildLabel, buildTone } from "../lib/status.js";
 import { waitForTask } from "../lib/tasks.js";

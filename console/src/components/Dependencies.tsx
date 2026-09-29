@@ -203,10 +203,6 @@ export function Dependencies({
                 event.preventDefault();
                 if (isKey(typed)) add(typed);
               }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setQuery("");
-              }
             }}
           />
         </ChipInputBox>

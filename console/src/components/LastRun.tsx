@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  StatusBadge,
   Button,
   LogView,
   LogViewLine,
@@ -22,7 +23,6 @@ import {
   type StepView,
 } from "../lib/runSteps.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
-import { StatusBadge } from "./StatusBadge.js";
 
 const startedFormat = new Intl.DateTimeFormat("en-GB", {
   day: "2-digit",

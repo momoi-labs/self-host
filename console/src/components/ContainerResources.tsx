@@ -1,11 +1,11 @@
 import {
+  StatusBadge,
   Sparkline,
   Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { NetworkChart } from "./NetworkChart.js";
 import { Meters } from "./Meters.js";
-import { StatusBadge } from "./StatusBadge.js";
 import { formatBytes, formatWindow } from "../lib/format.js";
 import { serviceTone } from "../lib/status.js";
 import type { AppSample, ContainerSeries, ServiceState } from "../lib/types.js";

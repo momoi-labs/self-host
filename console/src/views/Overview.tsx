@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  StatusBadge,
   Button,
   Card,
   EmptyState,
@@ -22,7 +23,6 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../components/Icon.js";
-import { StatusBadge } from "../components/StatusBadge.js";
 import { formatBytes } from "../lib/format.js";
 import { NOUNS, TITLES, barSteps, phase, position } from "../lib/runSteps.js";
 import { statusTone } from "../lib/status.js";
