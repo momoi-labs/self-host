@@ -127,6 +127,7 @@ pub struct ApplicationContainer {
     pub image: String,
     pub labels: Vec<(String, String)>,
     pub network: String,
+    pub additional_networks: Vec<String>,
     pub ports: Vec<String>,
     pub env: Vec<String>,
 }
@@ -138,6 +139,7 @@ pub struct ContainerState {
     pub status: String,
     pub exit_code: i64,
     pub restarts: u32,
+    pub health: Option<String>,
 }
 
 impl ContainerState {
@@ -173,6 +175,13 @@ pub trait DockerRuntime: Send + Sync {
     /// is no container to ask about.
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError>;
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError>;
+    async fn ensure_private_network(&self, name: &str) -> Result<(), DockerError>;
+    /// Reconciles only Platform private networks. Never starts a container.
+    async fn sync_private_networks(
+        &self,
+        container: &str,
+        networks: &[String],
+    ) -> Result<(), DockerError>;
     /// Removes a network when it is there, and says whether it was. A network
     /// with members is left alone and reported as an error, never force-removed.
     async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError>;
@@ -421,6 +430,101 @@ impl DockerRuntime for CliDocker {
         Ok(())
     }
 
+    async fn ensure_private_network(&self, name: &str) -> Result<(), DockerError> {
+        let inspect = std::process::Command::new("docker")
+            .args(["network", "inspect", "--format", "{{.Internal}}", name])
+            .output()
+            .map_err(|error| DockerError::spawn("failed to inspect private network", error))?;
+        if inspect.status.success() {
+            return if String::from_utf8_lossy(&inspect.stdout).trim() == "true" {
+                Ok(())
+            } else {
+                Err(DockerError::Unavailable(format!(
+                    "network '{name}' exists but is not internal"
+                )))
+            };
+        }
+        let create = std::process::Command::new("docker")
+            .args(["network", "create", "--internal", name])
+            .output()
+            .map_err(|error| DockerError::spawn("failed to create private network", error))?;
+        if !create.status.success() {
+            return Err(DockerError::refused(
+                "failed to create private network",
+                &create,
+            ));
+        }
+        Ok(())
+    }
+
+    async fn sync_private_networks(
+        &self,
+        container: &str,
+        networks: &[String],
+    ) -> Result<(), DockerError> {
+        if networks
+            .iter()
+            .any(|network| !network.starts_with("sf-private-"))
+        {
+            return Err(DockerError::Unavailable(
+                "private network synchronization requires Platform private networks".into(),
+            ));
+        }
+        let inspect = std::process::Command::new("docker")
+            .args([
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                "{{json .NetworkSettings.Networks}}",
+                container,
+            ])
+            .output()
+            .map_err(|error| DockerError::spawn("failed to inspect container networks", error))?;
+        if !inspect.status.success() {
+            return Err(DockerError::refused(
+                "failed to inspect container networks",
+                &inspect,
+            ));
+        }
+        let current: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&inspect.stdout).map_err(|error| {
+                DockerError::Command("failed to read container networks".into(), Box::new(error))
+            })?;
+        for network in current
+            .keys()
+            .filter(|name| name.starts_with("sf-private-") && !networks.contains(name))
+        {
+            let output = std::process::Command::new("docker")
+                .args(["network", "disconnect", network, container])
+                .output()
+                .map_err(|error| {
+                    DockerError::spawn("failed to revoke private network access", error)
+                })?;
+            if !output.status.success() {
+                return Err(DockerError::refused(
+                    "failed to revoke private network access",
+                    &output,
+                ));
+            }
+        }
+        for network in networks.iter().filter(|name| !current.contains_key(*name)) {
+            let output = std::process::Command::new("docker")
+                .args(["network", "connect", network, container])
+                .output()
+                .map_err(|error| {
+                    DockerError::spawn("failed to grant private network access", error)
+                })?;
+            if !output.status.success() {
+                return Err(DockerError::refused(
+                    "failed to grant private network access",
+                    &output,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError> {
         let inspect = std::process::Command::new("docker")
             .args(["network", "inspect", name])
@@ -561,6 +665,10 @@ impl DockerRuntime for CliDocker {
             config.network.clone(),
         ];
 
+        for network in &config.additional_networks {
+            args.extend(["--network".into(), network.clone()]);
+        }
+
         for (key, value) in &config.labels {
             args.push("--label".into());
             args.push(format!("{key}={value}"));
@@ -681,7 +789,7 @@ impl DockerRuntime for CliDocker {
             .args([
                 "inspect",
                 "-f",
-                "{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}",
+                "{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{end}}",
                 name,
             ])
             .output()
@@ -701,6 +809,7 @@ impl DockerRuntime for CliDocker {
             status,
             exit_code,
             restarts,
+            health: parts.next().map(str::to_owned),
         }))
     }
 
@@ -934,9 +1043,8 @@ fn compose_args(project: &ComposeProject, file: &Path) -> Vec<String> {
     ]
 }
 
-/// Writes the project file and creates every directory it bind-mounts, so
-/// the mounts are owned by the Platform's user and not by whoever Docker
-/// runs as.
+/// Writes the project and prepares bind sources without changing existing
+/// files into directories. Docker never creates a missing source itself.
 fn write_project(project: &ComposeProject) -> Result<(), DockerError> {
     let io = |what: &str, e: std::io::Error| {
         DockerError::Command(
@@ -945,8 +1053,8 @@ fn write_project(project: &ComposeProject) -> Result<(), DockerError> {
         )
     };
     std::fs::create_dir_all(&project.dir).map_err(|e| io("create project directory", e))?;
-    for dir in &project.bind_dirs {
-        std::fs::create_dir_all(dir).map_err(|e| io("create data directory", e))?;
+    for mount in &project.bind_mounts {
+        mount.prepare().map_err(|e| io("prepare bind source", e))?;
     }
     let path = project_file(project);
     std::fs::write(&path, &project.yaml).map_err(|e| io("write compose.yml", e))?;
@@ -1053,6 +1161,7 @@ fn fake_stats(container: &str, application: &str) -> ContainerStats {
 }
 
 pub type RecordedTerminal = (String, crate::terminal::Size, Option<String>);
+pub type RecordedNetworkSync = (String, Vec<String>);
 
 #[derive(Clone, Default)]
 pub struct FakeDocker {
@@ -1084,6 +1193,8 @@ pub struct FakeDocker {
     pub registry: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// Compose projects recreated, by name.
     pub recreated: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    pub network_syncs: std::sync::Arc<std::sync::Mutex<Vec<RecordedNetworkSync>>>,
+    pub health: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 }
 
 impl FakeDocker {
@@ -1103,6 +1214,8 @@ impl FakeDocker {
             images: Default::default(),
             registry: Default::default(),
             recreated: Default::default(),
+            network_syncs: Default::default(),
+            health: Default::default(),
         }
     }
 
@@ -1240,6 +1353,31 @@ impl DockerRuntime for FakeDocker {
         Ok(())
     }
 
+    async fn ensure_private_network(&self, _name: &str) -> Result<(), DockerError> {
+        Ok(())
+    }
+
+    async fn sync_private_networks(
+        &self,
+        container: &str,
+        networks: &[String],
+    ) -> Result<(), DockerError> {
+        self.network_syncs
+            .lock()
+            .unwrap()
+            .push((container.into(), networks.to_vec()));
+        if let Some(application) = self
+            .apps
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|application| application.name == container)
+        {
+            application.additional_networks = networks.to_vec();
+        }
+        Ok(())
+    }
+
     async fn remove_network_if_exists(&self, _name: &str) -> Result<bool, DockerError> {
         Ok(false)
     }
@@ -1317,6 +1455,7 @@ impl DockerRuntime for FakeDocker {
                 status: "exited".into(),
                 exit_code: *code,
                 restarts: 3,
+                health: self.health.lock().unwrap().get(name).cloned(),
             }));
         }
         let stopped = self.stopped.lock().unwrap().contains(name);
@@ -1328,6 +1467,7 @@ impl DockerRuntime for FakeDocker {
             },
             exit_code: 0,
             restarts: 0,
+            health: self.health.lock().unwrap().get(name).cloned(),
         }))
     }
 
@@ -1475,6 +1615,18 @@ where
 
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
         (**self).ensure_network(name).await
+    }
+
+    async fn ensure_private_network(&self, name: &str) -> Result<(), DockerError> {
+        (**self).ensure_private_network(name).await
+    }
+
+    async fn sync_private_networks(
+        &self,
+        container: &str,
+        networks: &[String],
+    ) -> Result<(), DockerError> {
+        (**self).sync_private_networks(container, networks).await
     }
 
     async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError> {

@@ -27,6 +27,9 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
+use crate::routes::{RouteError, is_challenge_path, matches_path};
+use crate::store::RouteRule;
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 // `UnsyncBoxBody`, not `BoxBody`: axum's own response body isn't `Sync`
 // (streaming bodies generally aren't), and every branch here has to box into
@@ -65,8 +68,22 @@ pub struct RouteTable {
 
 #[derive(Default)]
 struct Tables {
-    targets: HashMap<String, Option<SocketAddr>>,
-    hostnames_by_id: HashMap<String, Vec<String>>,
+    rules: HashMap<(String, String), OwnedRoute>,
+}
+
+#[derive(Clone)]
+struct OwnedRoute {
+    owner: String,
+    target: Option<SocketAddr>,
+    strip_prefix: bool,
+}
+
+/// The longest matching route, copied while holding the table's read lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteMatch {
+    pub path_prefix: String,
+    pub target: Option<SocketAddr>,
+    pub strip_prefix: bool,
 }
 
 impl RouteTable {
@@ -74,40 +91,100 @@ impl RouteTable {
         Self::default()
     }
 
-    /// `None`: no Application answers on this Hostname. `Some(None)`: an
-    /// Application does, but has no reachable target right now.
+    /// Compatibility lookup for an Application's root route.
     pub fn target_for(&self, host: &str) -> Option<Option<SocketAddr>> {
-        self.inner
-            .read()
-            .unwrap()
-            .targets
-            .get(&host.to_ascii_lowercase())
-            .copied()
+        self.route_for(host, "/").map(|route| route.target)
+    }
+
+    pub fn route_for(&self, host: &str, path: &str) -> Option<RouteMatch> {
+        let hostname = host.to_ascii_lowercase();
+        let tables = self.inner.read().unwrap();
+        tables
+            .rules
+            .iter()
+            .filter(|((host, prefix), _)| host == &hostname && matches_path(prefix, path))
+            .max_by_key(|((_, prefix), _)| prefix.len())
+            .map(|((_, prefix), route)| RouteMatch {
+                path_prefix: prefix.clone(),
+                target: route.target,
+                strip_prefix: route.strip_prefix,
+            })
+    }
+
+    /// Replaces one owner's routes in one write. A conflict leaves all prior
+    /// routes intact, including this owner's current routes.
+    pub fn publish_rules(
+        &self,
+        id: &str,
+        hostnames: &[String],
+        target: Option<SocketAddr>,
+        rules: &[RouteRule],
+    ) -> Result<(), RouteError> {
+        if target.is_some_and(|target| !target.ip().is_loopback() || target.port() == 0) {
+            return Err(RouteError::Invalid(
+                "target must be a loopback address with a nonzero port".into(),
+            ));
+        }
+        let mut next = HashMap::new();
+        for hostname in hostnames {
+            next.insert(
+                (hostname.to_ascii_lowercase(), "/".to_string()),
+                OwnedRoute {
+                    owner: id.to_string(),
+                    target,
+                    strip_prefix: false,
+                },
+            );
+        }
+        let mut explicit = std::collections::HashSet::new();
+        for rule in rules {
+            crate::routes::validate_rule(rule)?;
+            let key = (rule.hostname.clone(), rule.path_prefix.clone());
+            if !explicit.insert(key.clone()) {
+                return Err(RouteError::Conflict(format!(
+                    "duplicate rule for '{}' at '{}'",
+                    key.0, key.1
+                )));
+            }
+            next.insert(
+                key,
+                OwnedRoute {
+                    owner: id.to_string(),
+                    target: Some(rule.target),
+                    strip_prefix: rule.strip_prefix,
+                },
+            );
+        }
+        let mut tables = self.inner.write().unwrap();
+        for key in next.keys() {
+            if let Some(existing) = tables.rules.get(key)
+                && existing.owner != id
+            {
+                return Err(RouteError::Conflict(format!(
+                    "'{}' at '{}' is already owned by Application '{}'",
+                    key.0, key.1, existing.owner
+                )));
+            }
+        }
+        tables.rules.retain(|_, route| route.owner != id);
+        tables.rules.extend(next);
+        Ok(())
     }
 }
 
 impl Publisher for RouteTable {
     fn publish(&self, id: &str, hostnames: &[String], target: Option<SocketAddr>) {
-        let mut tables = self.inner.write().unwrap();
-        if let Some(previous) = tables.hostnames_by_id.remove(id) {
-            for hostname in previous {
-                tables.targets.remove(&hostname);
-            }
+        if let Err(error) = self.publish_rules(id, hostnames, target, &[]) {
+            tracing::error!(application_id = %id, %error, "could not publish Application routes");
         }
-        let normalized: Vec<String> = hostnames.iter().map(|h| h.to_ascii_lowercase()).collect();
-        for hostname in &normalized {
-            tables.targets.insert(hostname.clone(), target);
-        }
-        tables.hostnames_by_id.insert(id.to_string(), normalized);
     }
 
     fn withdraw(&self, id: &str) {
-        let mut tables = self.inner.write().unwrap();
-        if let Some(hostnames) = tables.hostnames_by_id.remove(id) {
-            for hostname in hostnames {
-                tables.targets.remove(&hostname);
-            }
-        }
+        self.inner
+            .write()
+            .unwrap()
+            .rules
+            .retain(|_, route| route.owner != id);
     }
 }
 
@@ -124,6 +201,7 @@ pub struct ProxyConfig {
 struct Context {
     admin_hostname: String,
     admin_router: Router,
+    challenge_router: Router,
     table: RouteTable,
     client: Client<HttpConnector, ProxyBody>,
     metrics: crate::metrics::Metrics,
@@ -178,6 +256,7 @@ pub async fn bind(
         ctx: Arc::new(Context {
             admin_hostname: config.admin_hostname,
             admin_router,
+            challenge_router: Router::new(),
             table,
             client,
             metrics,
@@ -186,10 +265,24 @@ pub async fn bind(
 }
 
 impl Bound {
+    /// W2 installs only its HTTP-01 routes here. Both listeners dispatch the
+    /// reserved challenge subtree to this router before any redirect, console
+    /// route or Application rule. Until then, the empty router answers 404.
+    pub fn with_challenge_router(mut self, router: Router) -> Self {
+        Arc::get_mut(&mut self.ctx)
+            .expect("listeners have not started")
+            .challenge_router = router;
+        self
+    }
+
     /// Serves both listeners forever.
     pub async fn run(self) -> anyhow::Result<()> {
         tracing::info!(https = %self.https_addr, http = %self.http_addr, "proxy listening");
-        tokio::spawn(serve_http(self.http_listener, self.http_setup_router));
+        tokio::spawn(serve_http(
+            self.http_listener,
+            self.http_setup_router,
+            self.ctx.challenge_router.clone(),
+        ));
         serve_https(self.https_listener, self.acceptor, self.ctx).await
     }
 }
@@ -248,7 +341,7 @@ async fn serve_https(
     }
 }
 
-async fn serve_http(listener: TcpListener, setup_router: Router) {
+async fn serve_http(listener: TcpListener, setup_router: Router, challenge_router: Router) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
@@ -258,16 +351,20 @@ async fn serve_http(listener: TcpListener, setup_router: Router) {
             }
         };
         let setup_router = setup_router.clone();
+        let challenge_router = challenge_router.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let setup_router = setup_router.clone();
+                let challenge_router = challenge_router.clone();
                 async move {
                     let path = req.uri().path();
                     let is_setup = path == "/setup"
                         || path.starts_with("/setup/")
                         || path.starts_with("/console/assets/");
-                    let response = if is_setup && requested_by_ip(&req) {
+                    let response = if is_challenge_path(path) {
+                        serve_router(&challenge_router, req).await
+                    } else if is_setup && requested_by_ip(&req) {
                         serve_router(&setup_router, req).await
                     } else {
                         redirect_to_https(&req)
@@ -334,6 +431,10 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
         return bad_request("missing Host header");
     };
 
+    if is_challenge_path(req.uri().path()) {
+        return serve_router(&ctx.challenge_router, req).await;
+    }
+
     if host == ctx.admin_hostname {
         return serve_router(&ctx.admin_router, req).await;
     }
@@ -341,14 +442,19 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
     // Only Hostnames the Platform published are counted as Application
     // traffic: a scanner guessing names must not grow the map, and the
     // admin hop is the console, not an Application.
-    match ctx.table.target_for(&host) {
+    match ctx.table.route_for(&host, req.uri().path()) {
         None => not_found(),
-        Some(None) => {
+        Some(RouteMatch { target: None, .. }) => {
             ctx.metrics.count_proxy_request(&host, true);
             service_unavailable()
         }
-        Some(Some(target)) => {
-            let response = proxy_to(&ctx.client, req, &host, target, peer_ip).await;
+        Some(
+            route @ RouteMatch {
+                target: Some(target),
+                ..
+            },
+        ) => {
+            let response = proxy_to(&ctx.client, req, &host, target, peer_ip, &route).await;
             // A `5xx` counts whichever side produced it: the Consumer asked
             // for an Application and did not get one.
             ctx.metrics
@@ -390,6 +496,7 @@ const FORWARDED_IDENTITY: &[&str] = &[
     "x-forwarded-proto",
     "x-forwarded-host",
     "x-real-ip",
+    "x-forwarded-prefix",
 ];
 
 async fn proxy_to(
@@ -398,6 +505,7 @@ async fn proxy_to(
     host: &str,
     target: SocketAddr,
     peer_ip: IpAddr,
+    route: &RouteMatch,
 ) -> Response<ProxyBody> {
     let is_upgrade = req
         .headers()
@@ -441,11 +549,25 @@ async fn proxy_to(
         parts.headers.insert(header::HOST, value);
     }
 
-    let path_and_query = parts
-        .uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
+    let original_path = parts.uri.path();
+    let path = if route.strip_prefix && route.path_prefix != "/" {
+        let stripped = original_path
+            .strip_prefix(&route.path_prefix)
+            .unwrap_or(original_path);
+        if stripped.is_empty() { "/" } else { stripped }
+    } else {
+        original_path
+    };
+    let path_and_query = match parts.uri.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_string(),
+    };
+    if route.strip_prefix
+        && route.path_prefix != "/"
+        && let Ok(prefix) = HeaderValue::from_str(&route.path_prefix)
+    {
+        parts.headers.insert("x-forwarded-prefix", prefix);
+    }
     parts.uri = match format!("http://{target}{path_and_query}").parse::<Uri>() {
         Ok(uri) => uri,
         Err(_) => return bad_request("invalid request target"),
@@ -628,6 +750,92 @@ mod tests {
         assert_eq!(table.target_for("a.home.lan"), None);
         assert_eq!(table.target_for("b.home.lan"), Some(Some(addr(2))));
     }
+
+    fn rule(prefix: &str, port: u16) -> RouteRule {
+        RouteRule {
+            hostname: "blog.example.invalid".into(),
+            path_prefix: prefix.into(),
+            target: addr(port),
+            strip_prefix: true,
+        }
+    }
+
+    #[test]
+    fn longest_segment_match_wins_and_an_explicit_root_replaces_its_fallback() {
+        let table = RouteTable::new();
+        table
+            .publish_rules(
+                "a",
+                &["blog.example.invalid".into()],
+                Some(addr(1)),
+                &[rule("/app", 2), rule("/app/api", 3), rule("/", 4)],
+            )
+            .unwrap();
+        for (path, port) in [
+            ("/", 4),
+            ("/apple", 4),
+            ("/app", 2),
+            ("/app/", 2),
+            ("/app/api/v1", 3),
+            ("/app/apiculture", 2),
+            ("/APP", 4),
+        ] {
+            assert_eq!(
+                table
+                    .route_for("BLOG.example.invalid", path)
+                    .unwrap()
+                    .target,
+                Some(addr(port)),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_hostname_rules_update_and_withdraw_only_their_owner() {
+        let table = RouteTable::new();
+        table.publish("root", &["blog.example.invalid".into()], Some(addr(1)));
+        table
+            .publish_rules("paths", &[], None, &[rule("/app", 2), rule("/api", 3)])
+            .unwrap();
+        table
+            .publish_rules("paths", &[], None, &[rule("/app", 4)])
+            .unwrap();
+        assert_eq!(
+            table
+                .route_for("blog.example.invalid", "/app")
+                .unwrap()
+                .target,
+            Some(addr(4))
+        );
+        assert_eq!(
+            table
+                .route_for("blog.example.invalid", "/api")
+                .unwrap()
+                .target,
+            Some(addr(1))
+        );
+        let conflict = table.publish_rules("paths", &[], None, &[rule("/", 5)]);
+        assert!(matches!(conflict, Err(RouteError::Conflict(_))));
+        assert_eq!(
+            table
+                .route_for("blog.example.invalid", "/app")
+                .unwrap()
+                .target,
+            Some(addr(4))
+        );
+        table.withdraw("root");
+        assert_eq!(table.target_for("blog.example.invalid"), None);
+        assert_eq!(
+            table
+                .route_for("blog.example.invalid", "/app")
+                .unwrap()
+                .target,
+            Some(addr(4))
+        );
+        table.withdraw("paths");
+        assert_eq!(table.route_for("blog.example.invalid", "/app"), None);
+    }
 }
 
 /// End to end: a real TLS listener, a real plain-HTTP backend, and requests
@@ -796,6 +1004,19 @@ mod integration {
         rustls::pki_types::CertificateDer<'static>,
         crate::metrics::Metrics,
     ) {
+        spawn_proxy_with_challenges(admin_router, table, Router::new()).await
+    }
+
+    async fn spawn_proxy_with_challenges(
+        admin_router: Router,
+        table: RouteTable,
+        challenge_router: Router,
+    ) -> (
+        SocketAddr,
+        SocketAddr,
+        rustls::pki_types::CertificateDer<'static>,
+        crate::metrics::Metrics,
+    ) {
         let dir = std::env::temp_dir().join(format!(
             "self-host-proxy-test-{}-{}",
             std::process::id(),
@@ -821,6 +1042,7 @@ mod integration {
         )
         .await
         .unwrap();
+        let bound = bound.with_challenge_router(challenge_router);
         let (https_addr, http_addr) = (bound.https_addr, bound.http_addr);
         tokio::spawn(bound.run());
         (https_addr, http_addr, cert_der, metrics)
@@ -1182,5 +1404,500 @@ mod integration {
         let mut buf = [0u8; 5];
         io.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"hello");
+    }
+
+    fn path_rule(host: &str, prefix: &str, target: SocketAddr, strip: bool) -> RouteRule {
+        RouteRule {
+            hostname: host.into(),
+            path_prefix: prefix.into(),
+            target,
+            strip_prefix: strip,
+        }
+    }
+
+    async fn spawn_fixture(router: Router) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn path_routes_preserve_queries_assets_and_prefix_aware_redirects() {
+        let root = spawn_fixture(Router::new().fallback(|| async { "root target" })).await;
+        let app = Router::new()
+            .route("/", axum::routing::get(|| async { "app target" }))
+            .route(
+                "/assets/main.css",
+                axum::routing::get(|| async { "body { color: blue; }" }),
+            )
+            .route(
+                "/inspect",
+                axum::routing::get(|uri: Uri, headers: hyper::HeaderMap| async move {
+                    format!(
+                        "{}|{}",
+                        uri,
+                        headers
+                            .get("x-forwarded-prefix")
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or("")
+                    )
+                }),
+            )
+            .route(
+                "/login",
+                axum::routing::get(|headers: hyper::HeaderMap| async move {
+                    let prefix = headers.get("x-forwarded-prefix").unwrap().to_str().unwrap();
+                    axum::response::Redirect::temporary(&format!("{prefix}/assets/main.css"))
+                }),
+            )
+            .route(
+                "/root-only",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::temporary("/assets/main.css")
+                }),
+            )
+            .route(
+                "/preserve/inspect",
+                axum::routing::get(|uri: Uri, headers: hyper::HeaderMap| async move {
+                    assert!(headers.get("x-forwarded-prefix").is_none());
+                    uri.to_string()
+                }),
+            );
+        let target = spawn_fixture(app).await;
+        let deepest = spawn_fixture(Router::new().fallback(|| async { "nested target" })).await;
+        let table = RouteTable::new();
+        table
+            .publish_rules("root", &["blog.example.invalid".into()], Some(root), &[])
+            .unwrap();
+        table
+            .publish_rules(
+                "paths",
+                &[],
+                None,
+                &[
+                    path_rule("blog.example.invalid", "/app", target, true),
+                    path_rule("blog.example.invalid", "/app/api", deepest, true),
+                    path_rule("blog.example.invalid", "/preserve", target, false),
+                ],
+            )
+            .unwrap();
+        let (addr, _, cert, _) = spawn_proxy(Router::new(), table.clone()).await;
+        for (path, expected) in [
+            ("/", "root target"),
+            ("/apple", "root target"),
+            ("/app", "app target"),
+            ("/app/inspect?x=a%2Fb&x=c", "/inspect?x=a%2Fb&x=c|/app"),
+            ("/app/assets/main.css", "body { color: blue; }"),
+            ("/app/api/v1", "nested target"),
+            ("/preserve/inspect?x=1", "/preserve/inspect?x=1"),
+        ] {
+            let (status, _, body) = request(
+                addr,
+                client_config(cert.clone()),
+                "blog.example.invalid",
+                path,
+                &[("x-forwarded-prefix", "/forged")],
+                vec![],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(String::from_utf8(body).unwrap(), expected, "{path}");
+        }
+        let (_, headers, _) = request(
+            addr,
+            client_config(cert.clone()),
+            "blog.example.invalid",
+            "/app/login",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(headers[header::LOCATION], "/app/assets/main.css");
+        let (_, headers, _) = request(
+            addr,
+            client_config(cert.clone()),
+            "blog.example.invalid",
+            "/app/root-only",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            headers[header::LOCATION],
+            "/assets/main.css",
+            "root-only upstream redirects are deliberately unchanged"
+        );
+        table
+            .publish_rules(
+                "paths",
+                &[],
+                None,
+                &[path_rule("blog.example.invalid", "/app", deepest, true)],
+            )
+            .unwrap();
+        let (_, _, body) = request(
+            addr,
+            client_config(cert.clone()),
+            "blog.example.invalid",
+            "/app",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            body, b"nested target",
+            "the next request sees the hot update"
+        );
+        table.withdraw("paths");
+        let (_, _, body) = request(
+            addr,
+            client_config(cert),
+            "blog.example.invalid",
+            "/app",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            body, b"root target",
+            "withdrawing path owner keeps the root owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn response_stream_reaches_the_consumer_before_the_upstream_finishes() {
+        let (send, receive) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(2);
+        let receive = Arc::new(tokio::sync::Mutex::new(Some(receive)));
+        let router = Router::new().route(
+            "/stream",
+            axum::routing::get(move || {
+                let receive = receive.clone();
+                async move {
+                    AxumBody::from_stream(tokio_stream::wrappers::ReceiverStream::new(
+                        receive.lock().await.take().unwrap(),
+                    ))
+                }
+            }),
+        );
+        let target = spawn_fixture(router).await;
+        let table = RouteTable::new();
+        table
+            .publish_rules(
+                "stream",
+                &[],
+                None,
+                &[path_rule("blog.example.invalid", "/app", target, true)],
+            )
+            .unwrap();
+        let (addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let tls = tokio_rustls::TlsConnector::from(client_config(cert))
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+            .unwrap();
+        let (mut sender, conn) = client_http1::handshake(TokioIo::new(tls)).await.unwrap();
+        tokio::spawn(conn);
+        let response = sender
+            .send_request(
+                Request::builder()
+                    .uri("/app/stream")
+                    .header(header::HOST, "blog.example.invalid")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut body = response.into_body();
+        send.send(Ok(Bytes::from_static(b"first"))).await.unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.into_data().unwrap(), "first");
+        send.send(Ok(Bytes::from_static(b"second"))).await.unwrap();
+        drop(send);
+        assert_eq!(body.collect().await.unwrap().to_bytes(), "second");
+    }
+
+    #[tokio::test]
+    async fn request_stream_reaches_the_upstream_before_the_consumer_finishes() {
+        let (observed, received) = tokio::sync::oneshot::channel();
+        let observed = Arc::new(tokio::sync::Mutex::new(Some(observed)));
+        let router = Router::new().route(
+            "/upload",
+            axum::routing::post(move |mut body: AxumBody| {
+                let observed = observed.clone();
+                async move {
+                    let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+                    observed
+                        .lock()
+                        .await
+                        .take()
+                        .unwrap()
+                        .send(first.clone())
+                        .unwrap();
+                    let rest = body.collect().await.unwrap().to_bytes();
+                    [first.as_ref(), rest.as_ref()].concat()
+                }
+            }),
+        );
+        let target = spawn_fixture(router).await;
+        let table = RouteTable::new();
+        table
+            .publish_rules(
+                "upload",
+                &[],
+                None,
+                &[path_rule("blog.example.invalid", "/app", target, true)],
+            )
+            .unwrap();
+        let (addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let tls = tokio_rustls::TlsConnector::from(client_config(cert))
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+            .unwrap();
+        let (mut sender, conn) = client_http1::handshake(TokioIo::new(tls)).await.unwrap();
+        tokio::spawn(conn);
+        let (chunks, stream) =
+            tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, Infallible>>(2);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/app/upload")
+            .header(header::HOST, "blog.example.invalid")
+            .body(http_body_util::StreamBody::new(
+                tokio_stream::wrappers::ReceiverStream::new(stream),
+            ))
+            .unwrap();
+        let response = tokio::spawn(async move { sender.send_request(request).await.unwrap() });
+        chunks
+            .send(Ok(hyper::body::Frame::data(Bytes::from_static(b"first"))))
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), received)
+                .await
+                .unwrap()
+                .unwrap(),
+            "first"
+        );
+        chunks
+            .send(Ok(hyper::body::Frame::data(Bytes::from_static(b"second"))))
+            .await
+            .unwrap();
+        drop(chunks);
+        assert_eq!(
+            response
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes(),
+            "firstsecond"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_websocket_handshake_and_frames_survive_prefix_stripping() {
+        use axum::extract::{WebSocketUpgrade, ws::Message};
+        use axum::response::IntoResponse;
+        use futures_util::{SinkExt, StreamExt};
+        let router = Router::new().route(
+            "/socket",
+            axum::routing::get(
+                |headers: hyper::HeaderMap, ws: WebSocketUpgrade| async move {
+                    if headers
+                        .get(header::COOKIE)
+                        .and_then(|value| value.to_str().ok())
+                        != Some("session=synthetic")
+                    {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    }
+                    assert_eq!(headers["origin"], "https://blog.example.invalid");
+                    assert_eq!(headers["x-forwarded-prefix"], "/app");
+                    ws.protocols(["fixture.v1"])
+                        .on_upgrade(|mut socket| async move {
+                            if let Some(Ok(Message::Text(text))) = socket.recv().await {
+                                socket.send(Message::Text(text)).await.unwrap();
+                            }
+                        })
+                },
+            ),
+        );
+        let target = spawn_fixture(router).await;
+        let table = RouteTable::new();
+        table
+            .publish_rules(
+                "socket",
+                &[],
+                None,
+                &[path_rule("blog.example.invalid", "/app", target, true)],
+            )
+            .unwrap();
+        let (addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
+        for authenticated in [false, true] {
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            let tls = tokio_rustls::TlsConnector::from(client_config(cert.clone()))
+                .connect(ServerName::try_from("localhost").unwrap(), tcp)
+                .await
+                .unwrap();
+            let mut req = "wss://blog.example.invalid/app/socket?token=fixture"
+                .into_client_request()
+                .unwrap();
+            req.headers_mut().insert(
+                "origin",
+                HeaderValue::from_static("https://blog.example.invalid"),
+            );
+            req.headers_mut().insert(
+                "sec-websocket-protocol",
+                HeaderValue::from_static("fixture.v1"),
+            );
+            if authenticated {
+                req.headers_mut().insert(
+                    header::COOKIE,
+                    HeaderValue::from_static("session=synthetic"),
+                );
+            }
+            let result = tokio_tungstenite::client_async(req, tls).await;
+            if !authenticated {
+                match result {
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                        assert_eq!(response.status(), StatusCode::UNAUTHORIZED)
+                    }
+                    _ => panic!("missing cookie must fail authentication"),
+                }
+                continue;
+            }
+            let (mut socket, response) = result.unwrap();
+            assert_eq!(response.headers()["sec-websocket-protocol"], "fixture.v1");
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    "hello".into(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                "hello"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn certificate_challenges_run_before_http_redirects_and_all_https_routes() {
+        let target = spawn_fixture(Router::new().fallback(|| async { "application" })).await;
+        let table = RouteTable::new();
+        table.publish(
+            "a",
+            &["blog.example.invalid".into(), "admin.home.lan".into()],
+            Some(target),
+        );
+        let admin = Router::new().fallback(|| async { "console" });
+        let (addr, http, cert, _) = spawn_proxy(admin.clone(), table.clone()).await;
+        let path = "/.well-known/acme-challenge/synthetic-token";
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = client
+            .get(format!("http://{http}{path}"))
+            .header(header::HOST, "blog.example.invalid")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(response.headers().get(header::LOCATION).is_none());
+        for hostname in ["blog.example.invalid", "admin.home.lan"] {
+            let (status, _, _) = request(
+                addr,
+                client_config(cert.clone()),
+                hostname,
+                path,
+                &[],
+                vec![],
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+        for encoded in [
+            "/%2ewell-known/acme-challenge/token",
+            "/.well-known/acme-challenge%2Ftoken",
+            "/.well-known%252Facme-challenge/token",
+            "/x/%2e%2e/.well-known/acme-challenge/token",
+            "/.well-known/a/../acme-challenge/token",
+        ] {
+            let (status, _, _) = request(
+                addr,
+                client_config(cert.clone()),
+                "blog.example.invalid",
+                encoded,
+                &[],
+                vec![],
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "HTTPS {encoded}");
+            let tcp = TcpStream::connect(http).await.unwrap();
+            let (mut sender, conn) = client_http1::handshake(TokioIo::new(tcp)).await.unwrap();
+            tokio::spawn(conn);
+            let response = sender
+                .send_request(
+                    Request::builder()
+                        .uri(encoded)
+                        .header(header::HOST, "blog.example.invalid")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "HTTP {encoded}");
+            assert!(response.headers().get(header::LOCATION).is_none());
+        }
+        let router = Router::new().route(
+            path,
+            axum::routing::get(|| async { "synthetic-key-authorization" }),
+        );
+        let (addr, http, cert, _) = spawn_proxy_with_challenges(admin, table, router).await;
+        let response = client
+            .get(format!("http://{http}{path}"))
+            .header(header::HOST, "blog.example.invalid")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.text().await.unwrap(),
+            "synthetic-key-authorization"
+        );
+        let (_, _, body) = request(
+            addr,
+            client_config(cert.clone()),
+            "admin.home.lan",
+            path,
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(body, b"synthetic-key-authorization");
+        let (_, _, body) = request(
+            addr,
+            client_config(cert),
+            "admin.home.lan",
+            "/console",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            body, b"console",
+            "management dispatch is never overridden by an Application"
+        );
     }
 }

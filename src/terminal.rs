@@ -484,6 +484,8 @@ mod tests {
             runtime: Default::default(),
             publication: Default::default(),
             variable_delivery: crate::store::VariableDelivery::Referenced,
+            route_rules: Vec::new(),
+            network_policy: Default::default(),
         };
         store.insert_application(&app).await.unwrap();
         let docker = FakeDocker::new();
@@ -492,6 +494,7 @@ mod tests {
             image: "example".into(),
             labels: apps::identity_labels("sample", "sample"),
             network: "test".into(),
+            additional_networks: Vec::new(),
             ports: vec![],
             env: vec![],
         });

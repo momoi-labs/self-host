@@ -22,6 +22,7 @@ pub mod bootstrap;
 pub mod collection;
 pub mod compose_app;
 pub mod config;
+pub mod connectivity;
 pub mod console;
 pub mod custom_images;
 pub mod dns;
@@ -350,6 +351,10 @@ struct DeployApplicationRequest {
     publication: Option<Publication>,
     #[serde(default)]
     variable_delivery: Option<VariableDelivery>,
+    #[serde(default)]
+    route_rules: Option<Vec<crate::store::RouteRule>>,
+    #[serde(default)]
+    network_policy: Option<crate::store::NetworkPolicy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -404,6 +409,10 @@ struct UpdateApplicationRequest {
     publication: Option<Publication>,
     #[serde(default)]
     variable_delivery: Option<VariableDelivery>,
+    #[serde(default)]
+    route_rules: Option<Vec<crate::store::RouteRule>>,
+    #[serde(default)]
+    network_policy: Option<crate::store::NetworkPolicy>,
 }
 
 /// One container of an Application, as Docker sees it right now.
@@ -416,6 +425,8 @@ struct ServiceStateResponse {
     exit_code: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     restarts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health: Option<String>,
 }
 
 impl From<apps::ServiceState> for ServiceStateResponse {
@@ -426,6 +437,7 @@ impl From<apps::ServiceState> for ServiceStateResponse {
             state: s.state,
             exit_code: s.exit_code,
             restarts: s.restarts,
+            health: s.health,
         }
     }
 }
@@ -461,6 +473,8 @@ struct ApplicationResponse {
     runtime: Runtime,
     publication: Publication,
     variable_delivery: VariableDelivery,
+    route_rules: Vec<crate::store::RouteRule>,
+    network_policy: crate::store::NetworkPolicy,
     /// Every container of the Application and its state. Empty until Docker
     /// has been asked.
     #[serde(default)]
@@ -510,6 +524,8 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             runtime: app.runtime,
             publication: app.publication,
             variable_delivery: app.variable_delivery,
+            route_rules: app.route_rules,
+            network_policy: app.network_policy,
             services: Vec::new(),
             task_id: None,
         }
@@ -633,6 +649,8 @@ mod http_readiness_tests {
             runtime: Default::default(),
             publication: Default::default(),
             variable_delivery: VariableDelivery::Referenced,
+            route_rules: Vec::new(),
+            network_policy: Default::default(),
         }
     }
 
@@ -643,6 +661,7 @@ mod http_readiness_tests {
             state: "running".into(),
             exit_code: Some(0),
             restarts: Some(0),
+            health: None,
         }
     }
 
@@ -899,14 +918,17 @@ async fn update_app<S: StateStore>(
             runtime: body.runtime,
             publication: body.publication,
             variable_delivery: body.variable_delivery,
+            route_rules: body.route_rules,
+            network_policy: body.network_policy,
         },
     )
     .await;
-    drop(namespace);
-    match prepared {
+    let response = match prepared {
         Ok(pending) => accept_deploy(&state, pending, "configure").await,
         Err(e) => deploy_error_response(e),
-    }
+    };
+    drop(namespace);
+    response
 }
 
 /// Answers with the `pending` row and hands the deploy to the scheduler. A
@@ -1056,6 +1078,8 @@ async fn deploy_app<S: StateStore>(
         runtime: body.runtime,
         publication: body.publication,
         variable_delivery: body.variable_delivery,
+        route_rules: body.route_rules,
+        network_policy: body.network_policy,
     };
 
     let development = match body.development.as_ref() {
@@ -1098,11 +1122,12 @@ async fn deploy_app<S: StateStore>(
         )),
     };
 
-    drop(namespace);
-    match prepared {
+    let response = match prepared {
         Ok(pending) => accept_deploy(&state, pending, "create").await,
         Err(err) => deploy_error_response(err),
-    }
+    };
+    drop(namespace);
+    response
 }
 
 /// A saved Application may keep an older tag after a later build changes the
@@ -1150,6 +1175,9 @@ async fn remove_app<S: StateStore>(
         Ok(app) => app,
         Err(e) => return remove_error_response(e),
     };
+    if let Err(error) = apps::require_removable(&state.store, &app).await {
+        return remove_error_response(error);
+    }
     let subject = audit::Subject::new("application", app.id.clone(), app.name);
     accepted_task(
         tasks::enqueue(
@@ -1194,6 +1222,7 @@ fn error_response(status: StatusCode, err: &dyn std::error::Error) -> Response {
 
 fn remove_error_response(err: RemoveError) -> Response {
     let status = match &err {
+        RemoveError::ConnectionsExist => StatusCode::CONFLICT,
         RemoveError::NotFound(_) => StatusCode::NOT_FOUND,
         RemoveError::NotInitialized => StatusCode::PRECONDITION_FAILED,
         RemoveError::Docker(_) | RemoveError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1516,6 +1545,9 @@ fn deploy_error_response(err: DeployError) -> Response {
     let status = match &err {
         DeployError::AlreadyExists(_) | DeployError::PublicationFixed => StatusCode::CONFLICT,
         DeployError::NativeUnavailable => StatusCode::NOT_IMPLEMENTED,
+        DeployError::Route(crate::routes::RouteError::Conflict(_)) => StatusCode::CONFLICT,
+        DeployError::Route(crate::routes::RouteError::Invalid(_)) => StatusCode::BAD_REQUEST,
+        DeployError::Connectivity(_) => StatusCode::BAD_REQUEST,
         DeployError::InvalidName(_)
         | DeployError::InvalidHostname(_)
         | DeployError::MissingImage
@@ -1610,6 +1642,133 @@ mod tests {
             .oneshot(req.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn route_rules_round_trip_update_without_redeploy_and_reject_conflicts() {
+        let (router, store) = setup_initialized_app("test-key", "home.lan").await;
+        let rule = json!({"hostname":"blog.home.lan","path_prefix":"/app",
+            "target":"127.0.0.1:29001","strip_prefix":true});
+        let response = post_json(
+            &router,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name":"blog", "image":"nginx:alpine", "route_rules":[rule.clone()]
+            }),
+        )
+        .await;
+        let (created, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
+        assert_eq!(created["route_rules"], json!([rule.clone()]));
+        assert_eq!(
+            created["network_policy"],
+            json!({"kind":"private","consumers":[]})
+        );
+        let id = created["id"].as_str().unwrap();
+        let update = put_json(&router, &format!("/apps/id/{id}"), Some("test-key"), json!({
+            "route_rules":[{"hostname":"blog.home.lan","path_prefix":"/assets","target":"127.0.0.1:29001","strip_prefix":true}], "pull":false
+        })).await;
+        assert_eq!(update.status(), StatusCode::OK);
+        assert_eq!(
+            store
+                .get_application(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .route_rules[0]
+                .path_prefix,
+            "/assets"
+        );
+        let shared = post_json(
+            &router,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name":"api", "image":"nginx:alpine", "route_rules":[rule.clone()]
+            }),
+        )
+        .await;
+        let (_, event) = accepted_and_finished(&store, shared).await;
+        assert_eq!(event.status, "completed");
+        let conflict = post_json(
+            &router,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name":"other", "image":"nginx:alpine", "route_rules":[rule]
+            }),
+        )
+        .await;
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        assert!(
+            store
+                .find_application_by_name("other")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        for invalid in [
+            json!({"hostname":"blog.home.lan","path_prefix":"/bad","target":"192.0.2.1:8080"}),
+            json!({"hostname":"admin.home.lan","path_prefix":"/","target":"127.0.0.1:8080"}),
+            json!({"hostname":"blog.home.lan","path_prefix":"/.well-known/acme-challenge","target":"127.0.0.1:8080"}),
+        ] {
+            let response = put_json(
+                &router,
+                &format!("/apps/id/{id}"),
+                Some("test-key"),
+                json!({"route_rules":[invalid],"pull":false}),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn private_grants_validate_references_and_guard_removal() {
+        let (router, store) = setup_initialized_app("test-key", "home.lan").await;
+        let response = post_json(
+            &router,
+            "/apps",
+            Some("test-key"),
+            json!({"name":"api","image":"nginx:alpine"}),
+        )
+        .await;
+        let (consumer, _) = accepted_and_finished(&store, response).await;
+        let id = consumer["id"].as_str().unwrap();
+        let compose = "services:\n  db:\n    image: postgres:17\n";
+        let response = post_json(
+            &router,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name":"database", "compose":compose, "publication":{"kind":"unpublished"},
+                "network_policy":{"kind":"private","consumers":[id]}
+            }),
+        )
+        .await;
+        let (provider, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
+        assert_eq!(provider["hostname"], "");
+        for name in ["api", "database"] {
+            assert_eq!(
+                delete_req(&router, &format!("/apps/{name}"), Some("test-key"))
+                    .await
+                    .status(),
+                StatusCode::CONFLICT
+            );
+        }
+        let invalid = put_json(
+            &router,
+            &format!("/apps/id/{}", provider["id"].as_str().unwrap()),
+            Some("test-key"),
+            json!({
+                "network_policy":{"kind":"private","consumers":["missing"]},"pull":false
+            }),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert!(store.get_all_env(id).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2243,6 +2402,8 @@ mod tests {
             runtime: Default::default(),
             publication: Default::default(),
             variable_delivery: VariableDelivery::Referenced,
+            route_rules: Vec::new(),
+            network_policy: Default::default(),
         };
         store.insert_application(&record).await.unwrap();
         let docker = FakeDocker::new();
@@ -2255,6 +2416,7 @@ mod tests {
                 image: record.image.clone(),
                 labels: apps::identity_labels(&record.id, &record.name),
                 network: crate::docker::APP_NETWORK.into(),
+                additional_networks: Vec::new(),
                 ports: vec![],
                 env: vec![],
             });
@@ -2869,14 +3031,12 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
             parsed["error"],
-            json!(
-                "invalid Application Hostname: 'blog.home.lan' is already answered by Application 'blog'"
-            )
+            json!("route conflict: 'blog.home.lan' at '/' is already owned by Application 'blog'")
         );
     }
 
@@ -2919,6 +3079,8 @@ mod tests {
                 "runtime": {"kind": "container"},
                 "publication": {"kind": "web"},
                 "variable_delivery": "referenced",
+                "route_rules": [],
+                "network_policy": {"kind":"private","consumers":[]},
                 "services": [{
                     "service": "app",
                     "container": format!("sf-app-{}", id.as_str().unwrap()),
