@@ -91,6 +91,79 @@ async fn late_deploy_keeps_the_edited_namespace_on_disk() {
     assert_eq!(application["hostname"], "news.home.lan");
 }
 
+#[tokio::test]
+async fn concurrent_route_updates_publish_the_latest_persisted_rules() {
+    let temp = TempDir::new("route-order");
+    let (old_router, store) = boot(&temp.state()).await;
+    drop(old_router);
+    let table = self_host::proxy::RouteTable::new();
+    let app = build_app(
+        store.clone(),
+        Arc::new(FakeDocker::new()),
+        Arc::new(routes::ProxyRoutes::new(table.clone())),
+        self_host::metrics::Metrics::new(),
+    );
+    let (_, created) = call(
+        &app,
+        "POST",
+        "/apps",
+        Some(json!({"name":"blog","image":"nginx"})),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+    settled(&app, id).await;
+    let uri = format!("/apps/id/{id}");
+    let update = |path: &str| {
+        json!({"pull":false,"route_rules":[{
+            "hostname":"blog.home.lan", "path_prefix":path, "target":"127.0.0.1:28001"
+        }]})
+    };
+    let (first, second) = tokio::join!(
+        call(&app, "PUT", &uri, Some(update("/one"))),
+        call(&app, "PUT", &uri, Some(update("/two")))
+    );
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(second.0, StatusCode::OK);
+    let saved = store.get_application(id).await.unwrap().unwrap();
+    for prefix in ["/one", "/two"] {
+        let matched = table.route_for("blog.home.lan", prefix).unwrap();
+        assert_eq!(
+            matched.path_prefix == prefix,
+            saved.route_rules[0].path_prefix == prefix
+        );
+    }
+    let duplicate =
+        json!({"hostname":"shared.home.lan","path_prefix":"/api","target":"127.0.0.1:28002"});
+    let (first, second) = tokio::join!(
+        call(
+            &app,
+            "POST",
+            "/apps",
+            Some(json!({"name":"one","image":"nginx","route_rules":[duplicate.clone()]}))
+        ),
+        call(
+            &app,
+            "POST",
+            "/apps",
+            Some(json!({"name":"two","image":"nginx","route_rules":[duplicate]}))
+        )
+    );
+    assert_eq!(
+        [first.0, second.0]
+            .iter()
+            .filter(|status| **status == StatusCode::ACCEPTED)
+            .count(),
+        1
+    );
+    assert_eq!(
+        [first.0, second.0]
+            .iter()
+            .filter(|status| **status == StatusCode::CONFLICT)
+            .count(),
+        1
+    );
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -331,7 +404,7 @@ async fn the_api_answers_the_same_errors_as_before() {
         Some(json!({ "name": "journal", "image": "nginx", "hostname": "blog.home.lan" })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{conflict}");
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
     assert!(
         conflict["error"]
             .as_str()

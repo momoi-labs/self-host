@@ -642,8 +642,16 @@ impl Records {
                 virtual_machine_id: None,
             });
         }
-        for application in store.list_applications().await? {
+        let mut applications = store.list_applications().await?;
+        applications.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut application_hosts = std::collections::BTreeSet::new();
+        for application in applications {
             for hostname in crate::routes::hostnames(&application) {
+                // Disjoint path rules can share a Hostname. Its DNS answer
+                // remains until the last Application stops claiming it.
+                if !application_hosts.insert(hostname.to_owned()) {
+                    continue;
+                }
                 // External routing hostnames are not answers in our Zone.
                 let Some(name) = hostname.strip_suffix(&format!(".{suffix}")) else {
                     continue;
@@ -942,6 +950,49 @@ mod tests {
         let (status, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
         assert_eq!(status, StatusCode::OK);
         assert!(inventory.as_array().unwrap().contains(&created));
+    }
+
+    #[tokio::test]
+    async fn shared_path_hostnames_have_one_dns_answer_until_the_last_owner_is_removed() {
+        let (router, store, zone) = setup().await;
+        zone.publish("*", "192.168.1.10".parse().unwrap()).await;
+        let (_, first) = call(
+            &router,
+            "POST",
+            "/apps",
+            json!({"name":"blog","image":"nginx"}),
+        )
+        .await;
+        let (_, second) = call(
+            &router,
+            "POST",
+            "/apps",
+            json!({"name":"api","image":"nginx", "route_rules":[{
+                "hostname":"blog.home.lan","path_prefix":"/api","target":"127.0.0.1:28001"
+            }]}),
+        )
+        .await;
+        let count = |body: &Value| {
+            body.as_array()
+                .unwrap()
+                .iter()
+                .filter(|record| record["name"] == "blog")
+                .count()
+        };
+        let (_, inventory) = call(&router, "GET", "/dns/records", Value::Null).await;
+        assert_eq!(count(&inventory), 1);
+        store
+            .delete_application(first["id"].as_str().unwrap())
+            .await
+            .unwrap();
+        let (_, inventory) = call(&router, "GET", "/dns/records", Value::Null).await;
+        assert_eq!(count(&inventory), 1);
+        store
+            .delete_application(second["id"].as_str().unwrap())
+            .await
+            .unwrap();
+        let (_, inventory) = call(&router, "GET", "/dns/records", Value::Null).await;
+        assert_eq!(count(&inventory), 0);
     }
 
     #[tokio::test]

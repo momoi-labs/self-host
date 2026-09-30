@@ -85,6 +85,10 @@ struct ApplicationBody {
     #[serde(default = "VariableDelivery::broadcast")]
     variable_delivery: VariableDelivery,
     #[serde(default)]
+    route_rules: Vec<crate::store::RouteRule>,
+    #[serde(default)]
+    network_policy: crate::store::NetworkPolicy,
+    #[serde(default)]
     env: BTreeMap<String, String>,
 }
 
@@ -286,6 +290,8 @@ impl FileStateStore {
             runtime: body.runtime,
             publication: body.publication,
             variable_delivery: body.variable_delivery,
+            route_rules: body.route_rules,
+            network_policy: body.network_policy,
         })
     }
 
@@ -324,6 +330,8 @@ fn body_from(app: &ApplicationRecord, compose_file: Option<String>) -> Applicati
         runtime: app.runtime.clone(),
         publication: app.publication,
         variable_delivery: app.variable_delivery,
+        route_rules: app.route_rules.clone(),
+        network_policy: app.network_policy.clone(),
         env: BTreeMap::new(),
     }
 }
@@ -938,6 +946,8 @@ mod tests {
             runtime: Runtime::Container,
             publication: Publication::Web,
             variable_delivery: VariableDelivery::Referenced,
+            route_rules: Vec::new(),
+            network_policy: Default::default(),
         }
     }
 
@@ -982,6 +992,8 @@ mod tests {
         assert_eq!(app.runtime, Runtime::Container);
         assert_eq!(app.publication, Publication::Web);
         assert_eq!(app.variable_delivery, VariableDelivery::Broadcast);
+        assert!(app.route_rules.is_empty());
+        assert_eq!(app.network_policy, crate::store::NetworkPolicy::Shared);
         assert_eq!(app.hostname, "blog.example.invalid");
         assert_eq!(app.aliases, ["www.example.invalid"]);
         assert_eq!(app.web_service.as_deref(), Some("web"));
@@ -990,6 +1002,27 @@ mod tests {
             store.get_all_env("k3n8qz4v2x1p").await.unwrap(),
             [("TOKEN".to_string(), "change-me".to_string())]
         );
+    }
+
+    #[tokio::test]
+    async fn wave_two_fields_survive_reopening_the_store() {
+        let dir = TempDir::new("wave-two-row");
+        let mut app = record("k3n8qz4v2x1p", "api");
+        app.route_rules.push(crate::store::RouteRule {
+            hostname: "api.example.invalid".into(),
+            path_prefix: "/api".into(),
+            target: "127.0.0.1:28001".parse().unwrap(),
+            strip_prefix: true,
+        });
+        app.network_policy = crate::store::NetworkPolicy::Private {
+            consumers: vec!["synthetic".into()],
+        };
+        {
+            let store = FileStateStore::open(dir.path()).unwrap();
+            store.insert_application(&app).await.unwrap();
+        }
+        let store = FileStateStore::open(dir.path()).unwrap();
+        assert_eq!(store.get_application(&app.id).await.unwrap(), Some(app));
     }
 
     #[tokio::test]

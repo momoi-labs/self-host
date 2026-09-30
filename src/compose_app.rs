@@ -12,6 +12,8 @@
 //! rendered project as `$$` so `docker compose` never interpolates it again
 //! (ADR-0030).
 
+pub mod storage;
+
 use indexmap::IndexMap;
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeSet;
@@ -53,7 +55,8 @@ const TOP_LEVEL_KEYS: &[&str] = &["version", "name", "services", "volumes"];
 /// Options on a top-level volume declaration the Platform does not carry
 /// into the rendered project. Refused by name rather than dropped, so the
 /// Operator learns the volume will not be what the file says.
-const UNSUPPORTED_VOLUME_KEYS: &[&str] = &["driver", "driver_opts", "name", "labels"];
+#[cfg(test)]
+const UNSUPPORTED_VOLUME_KEYS: &[&str] = &["driver", "driver_opts", "labels"];
 
 /// How strictly `${VAR:?}` and `${VAR?}` are treated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +87,6 @@ pub enum ComposeDefinitionError {
         service: String,
         port: u16,
     },
-    ExternalVolume(String),
     UnsupportedVolumeOption {
         volume: String,
         key: String,
@@ -127,10 +129,6 @@ impl std::fmt::Display for ComposeDefinitionError {
             Self::ReservedPort { service, port } => write!(
                 f,
                 "service '{service}': host port {port} belongs to the Platform"
-            ),
-            Self::ExternalVolume(name) => write!(
-                f,
-                "volume '{name}' is external; only volumes the Platform creates are supported"
             ),
             Self::UnsupportedVolumeOption { volume, key } => {
                 write!(f, "volume '{volume}': '{key}' is not supported yet")
@@ -190,6 +188,8 @@ pub struct Mount {
     pub kind: MountKind,
     /// For `Data`, the path under the Application's data directory.
     pub data_path: Option<String>,
+    pub read_only: bool,
+    pub create_host_path: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -202,13 +202,21 @@ pub struct ServiceDefinition {
     body: Mapping,
 }
 
+impl ServiceDefinition {
+    pub fn has_extra_hosts(&self) -> bool {
+        self.body
+            .get("extra_hosts")
+            .is_some_and(|value| !value.is_null())
+    }
+}
+
 /// The Operator's Compose file, read and checked, not yet rendered. Its
 /// `${VAR}` references are already resolved; `referenced` remembers which
 /// names they asked for.
 #[derive(Debug, Clone)]
 pub struct ComposeDefinition {
     pub services: Vec<ServiceDefinition>,
-    declared_volumes: Vec<String>,
+    declared_volumes: IndexMap<String, Value>,
     referenced: BTreeSet<String>,
 }
 
@@ -235,12 +243,14 @@ pub struct RenderOverrides {
     /// Docker hostnames by service name. An entry replaces the service's
     /// rendered `hostname` value.
     pub service_hostnames: IndexMap<String, String>,
+    pub network_plan: Option<crate::connectivity::NetworkPlan>,
 }
 
 impl RenderOverrides {
     pub fn service_hostname(service: impl Into<String>, hostname: impl Into<String>) -> Self {
         Self {
             service_hostnames: [(service.into(), hostname.into())].into_iter().collect(),
+            network_plan: None,
         }
     }
 }
@@ -253,9 +263,9 @@ pub struct ComposeProject {
     /// Where the file and the Application's data live.
     pub dir: PathBuf,
     pub yaml: String,
-    /// Host directories the Platform bind-mounts into the services. Created
-    /// before `up`, so Docker does not create them owned by root.
-    pub bind_dirs: Vec<PathBuf>,
+    /// Host files and directories checked before `up`. Missing paths become
+    /// directories only when the mount explicitly allows creation.
+    pub bind_mounts: Vec<storage::BindMount>,
     /// Container names, in service order.
     pub containers: Vec<(String, String)>,
 }
@@ -330,37 +340,7 @@ impl ComposeDefinition {
             )?);
         }
 
-        let declared_volumes = match top.get("volumes") {
-            None | Some(Value::Null) => vec![],
-            Some(Value::Mapping(m)) => {
-                let mut names = Vec::with_capacity(m.len());
-                for (name, body) in m {
-                    let name = key_name(name);
-                    if let Value::Mapping(b) = body {
-                        if b.get("external").is_some_and(|v| v.as_bool() == Some(true)) {
-                            return Err(ComposeDefinitionError::ExternalVolume(name));
-                        }
-                        if let Some(key) = b
-                            .keys()
-                            .map(key_name)
-                            .find(|key| UNSUPPORTED_VOLUME_KEYS.contains(&key.as_str()))
-                        {
-                            return Err(ComposeDefinitionError::UnsupportedVolumeOption {
-                                volume: name,
-                                key,
-                            });
-                        }
-                    }
-                    names.push(name);
-                }
-                names
-            }
-            Some(_) => {
-                return Err(ComposeDefinitionError::UnsupportedTopLevel(
-                    "volumes (must be a mapping)".into(),
-                ));
-            }
-        };
+        let declared_volumes = parse_volume_declarations(top.get("volumes"))?;
 
         Ok(ComposeDefinition {
             services: parsed,
@@ -469,12 +449,8 @@ impl ComposeDefinition {
     ) -> ComposeProject {
         let data_dir = dir.join("data");
         let mut services = Mapping::new();
-        let mut volumes: IndexMap<String, Value> = self
-            .declared_volumes
-            .iter()
-            .map(|v| (v.clone(), Value::Mapping(Mapping::new())))
-            .collect();
-        let mut bind_dirs = Vec::new();
+        let mut volumes = self.declared_volumes.clone();
+        let mut bind_mounts = Vec::new();
         let mut containers = Vec::new();
 
         for service in &self.services {
@@ -489,10 +465,24 @@ impl ComposeDefinition {
             if !body.contains_key("restart") {
                 body.insert("restart".into(), "unless-stopped".into());
             }
-            body.insert(
-                "networks".into(),
-                Value::Sequence(vec!["default".into(), APP_NETWORK.into()]),
-            );
+            let mut attachments = match &overrides.network_plan {
+                Some(plan) if plan.provider => {
+                    let mut attachments = vec![plan.primary_network.clone().into()];
+                    // Docker does not publish ports on an internal-only network.
+                    // The dormant native adapter adds this unshared bridge for
+                    // loopback access; ordinary providers stay internal-only.
+                    if published.is_some() {
+                        attachments.push("default".into());
+                    }
+                    attachments
+                }
+                Some(plan) if !plan.shared => vec!["default".into()],
+                _ => vec!["default".into(), APP_NETWORK.into()],
+            };
+            if let Some(plan) = &overrides.network_plan {
+                attachments.extend(plan.additional_networks.iter().cloned().map(Value::String));
+            }
+            body.insert("networks".into(), Value::Sequence(attachments));
 
             let mut service_labels = mapping_of_strings(body.get("labels"));
             for (k, v) in labels {
@@ -525,26 +515,44 @@ impl ComposeDefinition {
                 body.insert("ports".into(), Value::Sequence(ports));
             }
 
-            if let Some(Value::Sequence(mounts)) = body.get("volumes") {
-                let mut rewritten = Vec::with_capacity(mounts.len());
-                for mount in mounts {
-                    let spec = mount.as_str().unwrap_or_default();
-                    let (source, rest) = split_mount(spec);
-                    match classify_source(source) {
-                        MountSource::Named(volume) => {
-                            volumes
-                                .entry(volume)
-                                .or_insert_with(|| Value::Mapping(Mapping::new()));
-                            rewritten.push(Value::String(spec.to_string()));
+            if !service.mounts.is_empty() {
+                let mut rewritten = Vec::with_capacity(service.mounts.len());
+                for mount in &service.mounts {
+                    let mut rendered = Mapping::new();
+                    rendered.insert("target".into(), mount.target.clone().into());
+                    rendered.insert("read_only".into(), mount.read_only.into());
+                    match mount.kind {
+                        MountKind::Named | MountKind::Anonymous => {
+                            rendered.insert("type".into(), "volume".into());
+                            if mount.kind == MountKind::Named {
+                                volumes
+                                    .entry(mount.source.clone())
+                                    .or_insert_with(|| Value::Mapping(Mapping::new()));
+                                rendered.insert("source".into(), mount.source.clone().into());
+                            }
                         }
-                        MountSource::Absolute => rewritten.push(Value::String(spec.to_string())),
-                        MountSource::Anonymous => rewritten.push(Value::String(spec.to_string())),
-                        MountSource::Relative(rel) => {
-                            let host = data_dir.join(rel);
-                            bind_dirs.push(host.clone());
-                            rewritten.push(Value::String(format!("{}:{rest}", host.display())));
+                        MountKind::Data | MountKind::Host => {
+                            let host = if mount.kind == MountKind::Data {
+                                dir.join(mount.data_path.as_ref().expect("relative mount path"))
+                            } else {
+                                PathBuf::from(&mount.source)
+                            };
+                            bind_mounts.push(storage::BindMount {
+                                source: host.clone(),
+                                create_host_path: mount.create_host_path,
+                                data_root: (mount.kind == MountKind::Data)
+                                    .then(|| data_dir.clone()),
+                            });
+                            rendered.insert("type".into(), "bind".into());
+                            rendered.insert("source".into(), host.display().to_string().into());
+                            // The Platform prepares paths. Docker must never turn a missing
+                            // file into a directory if the source disappears afterwards.
+                            let mut bind = Mapping::new();
+                            bind.insert("create_host_path".into(), false.into());
+                            rendered.insert("bind".into(), Value::Mapping(bind));
                         }
                     }
+                    rewritten.push(Value::Mapping(rendered));
                 }
                 body.insert("volumes".into(), Value::Sequence(rewritten));
             }
@@ -562,11 +570,33 @@ impl ComposeDefinition {
             }
             top.insert("volumes".into(), Value::Mapping(m));
         }
-        let mut app_network = Mapping::new();
-        app_network.insert("external".into(), Value::Bool(true));
         let mut networks = Mapping::new();
-        networks.insert(APP_NETWORK.into(), Value::Mapping(app_network));
-        top.insert("networks".into(), Value::Mapping(networks));
+        if overrides
+            .network_plan
+            .as_ref()
+            .is_none_or(|plan| !plan.provider || published.is_some())
+        {
+            networks.insert("default".into(), Value::Mapping(Mapping::new()));
+        }
+        if overrides
+            .network_plan
+            .as_ref()
+            .is_none_or(|plan| plan.shared)
+        {
+            let mut shared = Mapping::new();
+            shared.insert("external".into(), true.into());
+            networks.insert(APP_NETWORK.into(), Value::Mapping(shared));
+        }
+        if let Some(plan) = &overrides.network_plan {
+            for name in &plan.internal_networks {
+                let mut external = Mapping::new();
+                external.insert("external".into(), true.into());
+                networks.insert(name.clone().into(), Value::Mapping(external));
+            }
+        }
+        if !networks.is_empty() {
+            top.insert("networks".into(), Value::Mapping(networks));
+        }
 
         let mut top = Value::Mapping(top);
         escape_dollars(&mut top);
@@ -576,7 +606,7 @@ impl ComposeDefinition {
             dir: dir.to_path_buf(),
             yaml: serde_yaml::to_string(&top)
                 .expect("a mapping of strings and sequences serialises"),
-            bind_dirs,
+            bind_mounts,
             containers,
         }
     }
@@ -586,6 +616,177 @@ impl ComposeDefinition {
 /// so `docker ps` reads the same way for one container or five.
 pub fn container_name(project: &str, service: &str) -> String {
     format!("{project}-{service}")
+}
+
+fn parse_volume_declarations(
+    value: Option<&Value>,
+) -> Result<IndexMap<String, Value>, ComposeDefinitionError> {
+    let mut volumes = IndexMap::new();
+    let entries = match value {
+        None | Some(Value::Null) => return Ok(volumes),
+        Some(Value::Mapping(entries)) => entries,
+        _ => {
+            return Err(ComposeDefinitionError::UnsupportedTopLevel(
+                "volumes (must be a mapping)".into(),
+            ));
+        }
+    };
+    for (name, body) in entries {
+        let name = key_name(name);
+        let invalid = |key: &str| ComposeDefinitionError::UnsupportedVolumeOption {
+            volume: name.clone(),
+            key: key.into(),
+        };
+        if !valid_volume_name(&name) {
+            return Err(invalid("invalid volume name"));
+        }
+        let mapping = match body {
+            Value::Null => Mapping::new(),
+            Value::Mapping(mapping) => mapping.clone(),
+            _ => return Err(invalid("declaration must be a mapping")),
+        };
+        for key in mapping.keys().map(key_name) {
+            if !matches!(key.as_str(), "external" | "name") {
+                return Err(invalid(&key));
+            }
+        }
+        let external = match mapping.get("external") {
+            None => false,
+            Some(Value::Bool(external)) => *external,
+            Some(_) => return Err(invalid("external must be true or false")),
+        };
+        match mapping.get("name") {
+            Some(Value::String(actual)) if external && valid_volume_name(actual) => {}
+            Some(_) if !external => return Err(invalid("name requires external: true")),
+            Some(_) => return Err(invalid("name must be an explicit volume name")),
+            None if external => return Err(invalid("external requires an explicit name")),
+            None => {}
+        }
+        volumes.insert(name, Value::Mapping(mapping));
+    }
+    Ok(volumes)
+}
+
+fn valid_volume_name(name: &str) -> bool {
+    name.as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+fn parse_mount(value: &Value) -> Result<Mount, String> {
+    let (source, target, read_only, create_host_path, explicit_type) = match value {
+        Value::String(spec) => {
+            let (source, rest) = split_mount(spec);
+            let (target, mode) = rest.split_once(':').unwrap_or((rest, "rw"));
+            if !matches!(mode, "ro" | "rw") {
+                return Err(format!(
+                    "volume '{spec}': mount mode '{mode}' is not supported; use 'ro' or 'rw'"
+                ));
+            }
+            (
+                source.to_owned(),
+                target.to_owned(),
+                mode == "ro",
+                true,
+                None,
+            )
+        }
+        Value::Mapping(mapping) => {
+            for key in mapping.keys().map(key_name) {
+                if !matches!(
+                    key.as_str(),
+                    "type" | "source" | "target" | "read_only" | "bind"
+                ) {
+                    return Err(format!("volume: '{key}' is not supported"));
+                }
+            }
+            let mount_type = mapping
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|value| matches!(*value, "bind" | "volume"))
+                .ok_or("volume: 'type' must be 'bind' or 'volume'")?;
+            let source = match mapping.get("source") {
+                Some(Value::String(source)) if !source.is_empty() => source.clone(),
+                None if mount_type == "volume" => String::new(),
+                _ => return Err("volume: 'source' must be a nonempty string".into()),
+            };
+            let target = mapping
+                .get("target")
+                .and_then(Value::as_str)
+                .ok_or("volume: 'target' must be a container path")?
+                .to_owned();
+            let read_only = match mapping.get("read_only") {
+                None => false,
+                Some(Value::Bool(value)) => *value,
+                _ => return Err("volume: 'read_only' must be true or false".into()),
+            };
+            let mut create = false;
+            if let Some(bind) = mapping.get("bind") {
+                if mount_type != "bind" {
+                    return Err("volume: 'bind' requires type: bind".into());
+                }
+                let bind = bind
+                    .as_mapping()
+                    .ok_or("volume: 'bind' must be a mapping")?;
+                for key in bind.keys().map(key_name) {
+                    if key != "create_host_path" {
+                        return Err(format!("volume bind: '{key}' is not supported"));
+                    }
+                }
+                match bind.get("create_host_path") {
+                    None => {}
+                    Some(Value::Bool(value)) => create = *value,
+                    _ => return Err("volume bind: 'create_host_path' must be true or false".into()),
+                }
+            }
+            (source, target, read_only, create, Some(mount_type))
+        }
+        _ => return Err("volumes must contain mount strings or mappings".into()),
+    };
+    if !storage::valid_target(&target) {
+        return Err(format!(
+            "volume target '{target}' must be an absolute container path"
+        ));
+    }
+    let (kind, data_path) = match classify_source(&source) {
+        MountSource::Relative(rel) => {
+            if rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(format!(
+                    "volume '{source}' leaves the Application's directory"
+                ));
+            }
+            (
+                MountKind::Data,
+                Some(Path::new("data").join(rel).display().to_string()),
+            )
+        }
+        MountSource::Named(ref name) if valid_volume_name(name) => (MountKind::Named, None),
+        MountSource::Named(_) => return Err(format!("invalid volume source '{source}'")),
+        MountSource::Absolute => (MountKind::Host, None),
+        MountSource::Anonymous => (MountKind::Anonymous, None),
+    };
+    if let Some(mount_type) = explicit_type {
+        let is_bind = matches!(kind, MountKind::Data | MountKind::Host);
+        if (mount_type == "bind") != is_bind {
+            return Err(format!(
+                "volume type '{mount_type}' does not match source '{source}'"
+            ));
+        }
+    }
+    Ok(Mount {
+        source,
+        target,
+        kind,
+        data_path,
+        read_only,
+        create_host_path,
+    })
 }
 
 fn key_name(key: &Value) -> String {
@@ -674,54 +875,7 @@ fn parse_service(
         None | Some(Value::Null) => {}
         Some(Value::Sequence(items)) => {
             for item in items {
-                let Value::String(spec) = item else {
-                    return Err(invalid(
-                        "volumes must use the short syntax, e.g. \"./data:/opt/data\"".into(),
-                    ));
-                };
-                let (source, rest) = split_mount(spec);
-                let (target, mode) = match rest.split_once(':') {
-                    Some((target, mode)) => (target, Some(mode)),
-                    None => (rest, None),
-                };
-                if target.is_empty() {
-                    return Err(invalid(format!("volume '{spec}' has no container path")));
-                }
-                // SELinux labels and the Docker Desktop consistency hints
-                // mean nothing on this Host and would be passed to Docker
-                // unread. Only the access mode is understood.
-                if let Some(mode) = mode
-                    && let Some(option) = mode.split(',').find(|o| !matches!(*o, "ro" | "rw"))
-                {
-                    return Err(invalid(format!(
-                        "volume '{spec}': mount mode '{option}' is not supported; use 'ro' or 'rw'"
-                    )));
-                }
-                let (kind, data_path) = match classify_source(source) {
-                    MountSource::Relative(rel) => {
-                        if rel
-                            .components()
-                            .any(|c| matches!(c, std::path::Component::ParentDir))
-                        {
-                            return Err(invalid(format!(
-                                "volume '{spec}' leaves the Application's directory"
-                            )));
-                        }
-                        (
-                            MountKind::Data,
-                            Some(Path::new("data").join(rel).display().to_string()),
-                        )
-                    }
-                    MountSource::Named(_) => (MountKind::Named, None),
-                    MountSource::Absolute => (MountKind::Host, None),
-                    MountSource::Anonymous => (MountKind::Anonymous, None),
-                };
-                mounts.push(Mount {
-                    source: source.to_string(),
-                    target: target.to_string(),
-                    kind,
-                    data_path,
-                });
+                mounts.push(parse_mount(item).map_err(invalid)?);
             }
         }
         Some(_) => return Err(invalid("volumes must be a list".into())),
@@ -1307,6 +1461,8 @@ services:
                 target: "/opt/data".into(),
                 kind: MountKind::Data,
                 data_path: Some("data/.hermes".into()),
+                read_only: false,
+                create_host_path: true,
             }]
         );
     }
@@ -1314,16 +1470,14 @@ services:
     #[test]
     fn the_home_directory_lands_under_the_application_data_directory() {
         let project = render(&hermes());
-        assert!(
-            project
-                .yaml
-                .contains("/cfg/apps/k3n8qz4v2x1p/data/.hermes:/opt/data"),
-            "{}",
-            project.yaml
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        assert_eq!(
+            doc["services"]["hermes"]["volumes"][0]["source"],
+            "/cfg/apps/k3n8qz4v2x1p/data/.hermes"
         );
         assert_eq!(
-            project.bind_dirs,
-            vec![PathBuf::from("/cfg/apps/k3n8qz4v2x1p/data/.hermes")]
+            project.bind_mounts[0].source,
+            PathBuf::from("/cfg/apps/k3n8qz4v2x1p/data/.hermes")
         );
     }
 
@@ -1489,7 +1643,7 @@ services:
         let project = render(&def);
         let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
         assert!(doc["volumes"]["pgdata"].is_mapping());
-        assert!(project.bind_dirs.is_empty());
+        assert!(project.bind_mounts.is_empty());
     }
 
     #[test]
@@ -1587,8 +1741,10 @@ services:
         )
         .unwrap();
         let project = render(&def);
-        assert!(project.yaml.contains("/srv/music:/music:ro"));
-        assert!(project.bind_dirs.is_empty());
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        assert_eq!(doc["services"]["web"]["volumes"][0]["source"], "/srv/music");
+        assert_eq!(doc["services"]["web"]["volumes"][0]["read_only"], true);
+        assert_eq!(project.bind_mounts[0].source, PathBuf::from("/srv/music"));
     }
 
     #[test]
@@ -1898,6 +2054,54 @@ services:
         for mode in ["ro", "rw"] {
             ComposeDefinition::parse(&web(&format!("    volumes:\n      - ./x:/x:{mode}\n")))
                 .unwrap_or_else(|e| panic!("{mode}: {e}"));
+        }
+    }
+    #[test]
+    fn existing_volume_mapping_is_explicit_and_preserved() {
+        let definition = ComposeDefinition::parse("services:\n  db:\n    image: postgres:17\n    volumes: [data:/var/lib/postgresql/data]\nvolumes:\n  data:\n    external: true\n    name: synthetic-existing\n").unwrap();
+        let doc: Value = serde_yaml::from_str(&render(&definition).yaml).unwrap();
+        assert_eq!(doc["volumes"]["data"]["name"], "synthetic-existing");
+        assert_eq!(doc["volumes"]["data"]["external"], true);
+        for body in [
+            "external: true",
+            "name: existing",
+            "external: yes",
+            "unexpected: true",
+        ] {
+            assert!(
+                ComposeDefinition::parse(&format!(
+                    "services:\n  db:\n    image: postgres:17\nvolumes:\n  data:\n    {body}\n"
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn long_bind_mounts_keep_read_only_and_never_ask_docker_to_create_sources() {
+        let definition = ComposeDefinition::parse("services:\n  web:\n    image: nginx\n    volumes:\n      - type: bind\n        source: ./config.json\n        target: /etc/config.json\n        read_only: true\n        bind:\n          create_host_path: false\n").unwrap();
+        let project = render(&definition);
+        let doc: Value = serde_yaml::from_str(&project.yaml).unwrap();
+        let mount = &doc["services"]["web"]["volumes"][0];
+        assert_eq!(mount["type"], "bind");
+        assert_eq!(mount["read_only"], true);
+        assert_eq!(mount["bind"]["create_host_path"], false);
+        assert!(!project.bind_mounts[0].create_host_path);
+    }
+
+    #[test]
+    fn unsupported_long_mount_options_are_refused_instead_of_dropped() {
+        for option in [
+            "consistency: cached",
+            "volume: {nocopy: true}",
+            "bind: {propagation: shared}",
+            "read_only: yes",
+            "unknown: true",
+        ] {
+            let yaml = format!(
+                "services:\n  web:\n    image: nginx\n    volumes:\n      - type: bind\n        source: ./config\n        target: /etc/config\n        {option}\n"
+            );
+            assert!(ComposeDefinition::parse(&yaml).is_err(), "{option}");
         }
     }
 }

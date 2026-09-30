@@ -14,7 +14,7 @@ For an Application with id `k3n8qz4v2x1p` and a service called `hermes`:
 | --- | --- |
 | Project name | `sf-app-k3n8qz4v2x1p`. The same prefix a single-container Application uses. |
 | Container names | `sf-app-k3n8qz4v2x1p-hermes`, one per service. The file's `container_name` is replaced. |
-| Networks | Every service joins the project's own network and `sf-apps`. Nothing joins `sf-system` (ADR-0012). |
+| Networks | New Applications use their own network. Existing Applications keep `sf-apps` until the Operator changes their network policy. See private connectivity below. |
 | Labels | `sf.app.id`, `sf.app.name` and `sf.app.service` on every container. |
 | Restart policy | `unless-stopped` when the service has none, so the Application returns after a reboot. |
 | Environment | Application Variables fill the file's `${VAR}` references. Applications created before this get every Variable on every service instead; see Variables below. |
@@ -49,32 +49,96 @@ another client talks to.
 
 ## Persistent storage
 
-Short-syntax `volumes` only, `SOURCE:TARGET[:MODE]`.
+Named volumes keep their project names, `sf-app-<id>_<volume>`. To attach
+an existing volume deliberately, name it and mark it external:
 
-| Source | Meaning on the Host |
+```yaml
+services:
+  db:
+    image: postgres:17
+    volumes:
+      - data:/var/lib/postgresql/data
+volumes:
+  data:
+    external: true
+    name: synthetic-existing-data
+```
+
+The volume must already exist. A missing external volume fails deployment;
+the Platform never substitutes empty storage or copies data. `name` without
+`external: true`, `external` without `name`, driver settings, labels and
+unknown options are refused. Stop the previous writer before mapping its
+volume to an Application.
+
+Short mounts use `SOURCE:TARGET[:ro|rw]`. Long mounts accept `type` (`bind`
+or `volume`), `source`, `target` and `read_only`. Bind mounts also accept
+`bind.create_host_path`. Other mount options are refused by name.
+
+| Bind source | Host path |
 | --- | --- |
-| `data` (a name) | A named volume, `sf-app-<id>_data`, created by Compose. |
-| `~` or `~/.hermes` | `~/.config/self-host/apps/<id>/data/.hermes`. |
-| `./x` | `~/.config/self-host/apps/<id>/data/x`. |
-| `/absolute/path` | Passed through. With Colima, only paths under the Operator's home are visible to the VM. |
+| `~` or `~/.example` | `~/.config/self-host/apps/<id>/data/.example` |
+| `./config.json` | `~/.config/self-host/apps/<id>/data/config.json` |
+| `/absolute/path` | The given Host path |
 
-Relative paths cannot leave the data directory. The Platform creates the
-directories it bind-mounts before `up`, so they belong to the Operator and
-not to root.
+Existing files remain files; directories remain directories. A missing
+long-syntax source fails unless `bind.create_host_path: true` explicitly
+requests a directory. Missing short-syntax sources keep the previous behavior
+and create directories. Create file sources before deploying. Relative paths
+cannot leave the Application's data directory, including through symlinks.
+Special files are refused. Docker receives `create_host_path: false` after
+the Platform prepares each source.
 
-`MODE` is `ro` or `rw`. The SELinux labels `z` and `Z`, the Docker Desktop
-hints `cached`, `delegated` and `consistent`, and `nocopy` mean nothing on
-this Host and are refused by name. Long-syntax mounts are refused as well.
+```yaml
+volumes:
+  - type: bind
+    source: ./config.json
+    target: /etc/example/config.json
+    read_only: true
+    bind:
+      create_host_path: false
+```
 
-A top-level `volumes` entry declares a named volume and nothing more. The
-Platform creates it under the project name, and that is the whole contract:
-`external: true`, `driver`, `driver_opts`, `name` and `labels` are refused,
-as in "volume 'data': 'driver' is not supported yet".
+Restart, redeploy and ordinary removal keep named volumes and bind data.
+Removal runs Compose without `--volumes`. Deleting stored data is a separate
+Operator action.
 
-Data survives every deploy, start, stop and restart: `docker compose up`
-recreates containers, not volumes. Removing an Application removes its
-containers and project network and keeps its named volumes and data
-directory on the Host.
+## Private connectivity
+
+`network_policy` is explicit Platform State. Old rows read as
+`{"kind":"shared"}` and keep the shared `sf-apps` bridge. New Applications
+use `{"kind":"private","consumers":[]}`. Their own bridge permits outbound
+connections but does not join other Applications.
+
+An unpublished Compose Application can grant access to named container
+Applications:
+
+```json
+{"network_policy":{"kind":"private","consumers":["synthetic-consumer-id"]}}
+```
+
+The provider joins an internal Docker network, `sf-private-<provider-id>`.
+Only its declared consumers join that network. The provider cannot declare
+`ports` or `extra_hosts`, has no Web Target and creates no public listener.
+Consumers address a provider service by its container name,
+`sf-app-<provider-id>-<service>`. Grant changes connect or disconnect the
+consumer's existing containers, including stopped containers, without
+starting them. Removing an Application with grants or references is refused
+until those connections are removed.
+
+Credentials remain explicit Application Variables. A network grant copies
+no Variable, creates no database role and invents no password. Give each
+consumer its own database credentials, then set them only on that consumer.
+Referenced Variable delivery still limits which Compose services receive
+those values. Database provisioning and credential rotation belong to P2.
+
+The native endpoint adapter validates a dedicated non-root Application
+Account and publishes only on `127.0.0.1`. It adds the provider's own bridge
+because Docker cannot publish a port from an internal-only network. That
+bridge is not shared with other Applications. The adapter has no active
+Operator API path before N3. Loopback limits access to the Host; it does not isolate Host
+accounts. Database authentication must still reject clients without a
+consumer's credentials. Native API creation and native consumer grants remain
+disabled.
 
 ## Variables
 
@@ -138,7 +202,7 @@ it only lets a name resolve to an address the container could already
 open a socket to, which is what a TLS-verified HTTPS call to a LAN
 service needs.
 
-Top level: `services`, `volumes` (named volumes without `external`),
+Top level: `services`, `volumes` (managed or explicitly mapped external volumes),
 `version` (ignored), `name` (ignored).
 
 YAML anchors (`&common`) and aliases (`*common`) are resolved when the file
@@ -169,7 +233,7 @@ The row records what the Operator asked for. The console shows that word
 checked against Docker: an Application on record as running whose service
 has exited is shown as `failed`, with the service name, its exit code and
 its restart count as the reason. The `services` list on the API carries
-every container's state. Logs come from every service of the project,
+every container's state and its Docker health status when a healthcheck is configured. Logs come from every service of the project,
 prefixed by service name, and still stream after a container has exited so
 the reason it exited can be read.
 

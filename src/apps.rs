@@ -1,7 +1,7 @@
 use crate::compose_app::{
     self, ComposeDefinition, ComposeDefinitionError, ComposeProject, Resolution,
 };
-use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntime};
+use crate::docker::{ApplicationContainer, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
 use crate::ports;
 use crate::routes::RouteStore;
@@ -73,6 +73,8 @@ pub enum DeployError {
     NativeUnavailable,
     /// The request asked to change a Publication chosen at creation.
     PublicationFixed,
+    Route(crate::routes::RouteError),
+    Connectivity(crate::connectivity::ConnectivityError),
     Store(StoreError),
 }
 
@@ -112,6 +114,8 @@ impl std::fmt::Display for DeployError {
             DeployError::PublicationFixed => {
                 write!(f, "publication cannot be changed after creation yet")
             }
+            DeployError::Route(error) => write!(f, "{error}"),
+            DeployError::Connectivity(error) => write!(f, "{error}"),
             DeployError::Store(_) => write!(f, "failed to record the Application"),
         }
     }
@@ -212,9 +216,6 @@ async fn validate_routing(
     store: &impl StateStore,
     record: &ApplicationRecord,
 ) -> Result<(), DeployError> {
-    if record.publication == Publication::Unpublished {
-        return Ok(());
-    }
     let suffix = store
         .get_state("dns_suffix")
         .await?
@@ -245,20 +246,65 @@ async fn validate_routing(
         }
     }
 
-    for other in store.list_applications().await? {
-        if other.id == record.id {
+    crate::routes::validate_rules(
+        record,
+        &store.list_applications().await?,
+        &format!("admin.{suffix}"),
+    )
+    .map_err(DeployError::Route)?;
+
+    Ok(())
+}
+
+async fn validate_connectivity(
+    store: &impl StateStore,
+    record: &ApplicationRecord,
+) -> Result<(), DeployError> {
+    crate::connectivity::validate(record, &store.list_applications().await?)
+        .map_err(DeployError::Connectivity)?;
+    if let Some(compose) = &record.compose {
+        let env = store.get_all_env(&record.id).await?;
+        let definition = ComposeDefinition::parse_with(compose, &env, Resolution::Check)?;
+        crate::connectivity::validate_definition(&record.network_policy, &definition)
+            .map_err(DeployError::Connectivity)?;
+    }
+    Ok(())
+}
+
+async fn ensure_application_networks(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    record: &ApplicationRecord,
+) -> Result<crate::connectivity::NetworkPlan, DeployError> {
+    let plan = crate::connectivity::plan(record, &store.list_applications().await?);
+    for name in &plan.internal_networks {
+        docker.ensure_private_network(name).await?;
+    }
+    if !plan.internal_networks.contains(&plan.primary_network)
+        && (record.source != SOURCE_COMPOSE || plan.shared)
+    {
+        docker.ensure_network(&plan.primary_network).await?;
+    }
+    Ok(plan)
+}
+
+async fn reconcile_private_connections(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+) -> Result<(), DeployError> {
+    for consumer in store.list_applications().await? {
+        if consumer.runtime != Runtime::Container {
             continue;
         }
-        for taken in crate::routes::hostnames(&other) {
-            if crate::routes::hostnames(record).contains(&taken) {
-                return Err(DeployError::InvalidHostname(format!(
-                    "'{taken}' is already answered by Application '{}'",
-                    other.name
-                )));
+        let plan = ensure_application_networks(store, docker, &consumer).await?;
+        for (_, container) in containers_of(&consumer) {
+            if docker.container_state(&container).await?.is_some() {
+                docker
+                    .sync_private_networks(&container, &plan.internal_networks)
+                    .await?;
             }
         }
     }
-
     Ok(())
 }
 
@@ -310,12 +356,14 @@ async fn start_container(
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
 
+    let plan = ensure_application_networks(store, docker, record).await?;
     docker
         .run_application(ApplicationContainer {
             name: container_name_for(&record.id),
             image: record.image.clone(),
             labels: identity_labels(&record.id, &record.name),
-            network: APP_NETWORK.to_string(),
+            network: plan.primary_network,
+            additional_networks: plan.additional_networks,
             ports: web_target_publication(record),
             env,
         })
@@ -336,6 +384,8 @@ pub struct DeployOptions {
     pub runtime: Option<Runtime>,
     pub publication: Option<Publication>,
     pub variable_delivery: Option<VariableDelivery>,
+    pub route_rules: Option<Vec<crate::store::RouteRule>>,
+    pub network_policy: Option<crate::store::NetworkPolicy>,
 }
 
 /// Publication is chosen at creation (ADR-0028): a deploy under a name
@@ -472,9 +522,30 @@ async fn pending_record(
         runtime: Runtime::Container,
         publication,
         variable_delivery,
+        route_rules: options
+            .route_rules
+            .clone()
+            .or_else(|| existing.as_ref().map(|app| app.route_rules.clone()))
+            .unwrap_or_default(),
+        network_policy: options
+            .network_policy
+            .clone()
+            .or_else(|| existing.as_ref().map(|app| app.network_policy.clone()))
+            .unwrap_or_else(crate::store::NetworkPolicy::private),
     };
 
+    if let Some(previous) = &existing
+        && previous.source != SOURCE_COMPOSE
+        && previous.network_policy != record.network_policy
+    {
+        return Err(DeployError::Connectivity(
+            crate::connectivity::ConnectivityError(
+                "network policy changes require a Compose Application".into(),
+            ),
+        ));
+    }
     validate_routing(store, &record).await?;
+    validate_connectivity(store, &record).await?;
 
     Ok(record)
 }
@@ -595,6 +666,8 @@ enum DeployWork {
     /// aliases. The container is keyed by id and the route is a table entry,
     /// so only the route has to be rewritten.
     Settled,
+    /// Apply network grants without starting an Application.
+    NetworksOnly,
     Pull,
     Build {
         path: String,
@@ -820,11 +893,17 @@ pub async fn project_for(
         }),
         _ => None,
     };
-    let overrides = record
+    let mut overrides = record
         .development
         .as_ref()
         .map(|_| compose_app::RenderOverrides::service_hostname("web", &record.name))
         .unwrap_or_default();
+    crate::connectivity::validate_definition(&record.network_policy, &definition)
+        .map_err(DeployError::Connectivity)?;
+    overrides.network_plan = Some(crate::connectivity::plan(
+        record,
+        &store.list_applications().await?,
+    ));
     Ok(definition.render_with_overrides(
         &project_name_for(&record.id),
         &project_dir_for(&record.id),
@@ -858,15 +937,23 @@ pub async fn finish_deploy_reporting(
 ) -> Result<(ApplicationRecord, Vec<crate::audit::Change>), DeployError> {
     let PendingDeploy { record, work } = pending;
 
-    // Nothing for Docker, but the route may be exactly what changed.
-    if matches!(work, DeployWork::Settled) {
-        routes.publish(&record);
-        return Ok((record, Vec::new()));
+    if matches!(work, DeployWork::Settled | DeployWork::NetworksOnly) {
+        if matches!(work, DeployWork::NetworksOnly) {
+            reconcile_private_connections(store, docker).await?;
+        }
+        let current = get_application(store, &record.id).await?;
+        if current.status == STATUS_RUNNING {
+            routes.publish(&current);
+        } else {
+            routes.withdraw(&current.id);
+        }
+        return Ok((current, Vec::new()));
     }
 
     let mut changes = Vec::new();
     let result = async {
-        docker.ensure_network(APP_NETWORK).await?;
+        reconcile_private_connections(store, docker).await?;
+        ensure_application_networks(store, docker, &record).await?;
         match &work {
             DeployWork::Pull => docker.pull_image(&record.image).await?,
             DeployWork::Build { path } => docker.build_image(path, &record.image).await?,
@@ -886,7 +973,7 @@ pub async fn finish_deploy_reporting(
                 docker.compose_up(&project).await?;
                 return Ok(());
             }
-            DeployWork::Settled => unreachable!(),
+            DeployWork::Settled | DeployWork::NetworksOnly => unreachable!(),
         }
         start_container(store, docker, &record).await?;
         Ok(())
@@ -965,6 +1052,9 @@ pub async fn reconcile(
     // A deploy still waiting in the task queue was never started, so there is
     // nothing to settle: the scheduler carries it out after this.
     let queued = crate::tasks::queued_application_ids(store).await?;
+    if executor_available {
+        reconcile_private_connections(store, docker).await?;
+    }
     for mut app in store.list_applications().await? {
         if app.status == STATUS_PENDING && executor_available && !queued.contains(&app.id) {
             let states = service_states(docker, &app).await;
@@ -1073,6 +1163,8 @@ pub struct ApplicationUpdate {
     /// May change either way. On a Compose Application the rendered project
     /// changes with it, so Docker is asked.
     pub variable_delivery: Option<VariableDelivery>,
+    pub route_rules: Option<Vec<crate::store::RouteRule>>,
+    pub network_policy: Option<crate::store::NetworkPolicy>,
 }
 
 /// Saves the change and redeploys.
@@ -1169,6 +1261,14 @@ pub async fn prepare_update(
         variable_delivery: update
             .variable_delivery
             .unwrap_or(current.variable_delivery),
+        route_rules: update
+            .route_rules
+            .clone()
+            .unwrap_or_else(|| current.route_rules.clone()),
+        network_policy: update
+            .network_policy
+            .clone()
+            .unwrap_or_else(|| current.network_policy.clone()),
         ..current.clone()
     };
 
@@ -1198,10 +1298,19 @@ pub async fn prepare_update(
     }
 
     validate_routing(store, &record).await?;
+    validate_connectivity(store, &record).await?;
 
     let image_changed = record.image != current.image;
     let file_changed = record.compose != current.compose;
     let delivery_changed = record.variable_delivery != current.variable_delivery;
+    let network_changed = record.network_policy != current.network_policy;
+    if network_changed && current.source != SOURCE_COMPOSE {
+        return Err(DeployError::Connectivity(
+            crate::connectivity::ConnectivityError(
+                "network policy changes require a Compose Application".into(),
+            ),
+        ));
+    }
     let pull = update.pull && !registry_images(&record).is_empty();
 
     store.insert_application(&record).await?;
@@ -1211,6 +1320,7 @@ pub async fn prepare_update(
     // no downtime. How Variables reach a project is part of the rendered
     // file, so that change is Docker's too.
     let needs_docker = pull
+        || network_changed
         || if current.source == SOURCE_COMPOSE {
             file_changed
                 || delivery_changed
@@ -1218,12 +1328,17 @@ pub async fn prepare_update(
         } else {
             image_changed
         };
-    if !needs_docker && current.status == STATUS_RUNNING {
-        record.status = STATUS_RUNNING.into();
+    if !needs_docker || (current.status == STATUS_STOPPED && current.source == SOURCE_COMPOSE) {
+        record.status = current.status.clone();
+        record.last_error = current.last_error.clone();
         store.insert_application(&record).await?;
         return Ok(PendingDeploy {
             record,
-            work: DeployWork::Settled,
+            work: if update.network_policy.is_some() {
+                DeployWork::NetworksOnly
+            } else {
+                DeployWork::Settled
+            },
         });
     }
 
@@ -1300,6 +1415,7 @@ pub fn system_container_name(role: &str) -> String {
 
 #[derive(Debug)]
 pub enum RemoveError {
+    ConnectionsExist,
     NotInitialized,
     NotFound(String),
     Docker(DockerError),
@@ -1309,6 +1425,10 @@ pub enum RemoveError {
 impl std::fmt::Display for RemoveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            RemoveError::ConnectionsExist => write!(
+                f,
+                "remove private connection grants before removing the Application"
+            ),
             RemoveError::NotInitialized => {
                 write!(f, "platform is not initialized; run 'self-host init' first")
             }
@@ -1344,6 +1464,25 @@ impl From<StoreError> for RemoveError {
     }
 }
 
+pub async fn require_removable(
+    store: &impl StateStore,
+    app: &ApplicationRecord,
+) -> Result<(), RemoveError> {
+    let applications = store.list_applications().await?;
+    let grants = |record: &ApplicationRecord| match &record.network_policy {
+        crate::store::NetworkPolicy::Private { consumers } => consumers.clone(),
+        _ => Vec::new(),
+    };
+    if !grants(app).is_empty()
+        || applications
+            .iter()
+            .any(|other| grants(other).contains(&app.id))
+    {
+        return Err(RemoveError::ConnectionsExist);
+    }
+    Ok(())
+}
+
 pub async fn remove_application(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
@@ -1358,6 +1497,8 @@ pub async fn remove_application(
         .find_application_by_name(name)
         .await?
         .ok_or_else(|| RemoveError::NotFound(name.to_string()))?;
+
+    require_removable(store, &app).await?;
 
     // The project is rendered before the row goes, because rendering reads
     // the row's environment.
@@ -1424,10 +1565,9 @@ pub async fn start_application(
 ) -> Result<ApplicationRecord, DeployError> {
     let app = get_application(store, id).await?;
     let result = async {
+        reconcile_private_connections(store, docker).await?;
         if app.source == SOURCE_COMPOSE {
-            docker
-                .compose_start(&project_for(store, &app).await?)
-                .await?;
+            docker.compose_up(&project_for(store, &app).await?).await?;
         } else {
             docker.start_container(&container_name_for(&app.id)).await?;
         }
@@ -1562,6 +1702,7 @@ pub struct ServiceState {
     pub state: String,
     pub exit_code: Option<i64>,
     pub restarts: Option<u32>,
+    pub health: Option<String>,
 }
 
 /// The containers an Application is made of, as `(service, container)`. A
@@ -1606,6 +1747,7 @@ pub async fn service_states(
                 state: s.status,
                 exit_code: Some(s.exit_code),
                 restarts: Some(s.restarts),
+                health: s.health,
             },
             None => ServiceState {
                 service,
@@ -1613,6 +1755,7 @@ pub async fn service_states(
                 state: "missing".into(),
                 exit_code: None,
                 restarts: None,
+                health: None,
             },
         });
     }
@@ -1632,8 +1775,11 @@ pub fn live_status(
 
     let reasons: Vec<String> = services
         .iter()
-        .filter(|s| s.state != "running")
+        .filter(|s| s.state != "running" || s.health.as_deref() == Some("unhealthy"))
         .map(|s| match s.state.as_str() {
+            "running" if s.health.as_deref() == Some("unhealthy") => {
+                format!("service '{}' is unhealthy", s.service)
+            }
             "missing" => format!("service '{}' has no container", s.service),
             "exited" => format!(
                 "service '{}' exited with code {} after {} restarts",
@@ -1780,36 +1926,22 @@ async fn recreate_with_env(
         .find(|a| a.name == app_name)
         .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
 
-    let env_vars = store
-        .get_all_env(&app.id)
-        .await?
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>();
-
+    ensure_application_networks(store, docker, app)
+        .await
+        .map_err(EnvError::Definition)?;
     if app.source == SOURCE_COMPOSE {
-        // The environment is rendered into the project; `up` recreates only
-        // the services whose definition changed.
         let project = project_for(store, app)
             .await
             .map_err(EnvError::Definition)?;
         docker.compose_up(&project).await?;
-        return Ok(());
+    } else {
+        docker
+            .remove_container(&container_name_for(&app.id))
+            .await?;
+        start_container(store, docker, app)
+            .await
+            .map_err(EnvError::Definition)?;
     }
-
-    let container_name = container_name_for(&app.id);
-
-    docker.remove_container(&container_name).await?;
-    docker
-        .run_application(ApplicationContainer {
-            name: container_name,
-            image: app.image.clone(),
-            labels: identity_labels(&app.id, &app.name),
-            network: APP_NETWORK.to_string(),
-            ports: vec![],
-            env: env_vars,
-        })
-        .await?;
 
     Ok(())
 }
@@ -1873,6 +2005,199 @@ mod tests {
         store
     }
 
+    async fn private_fixture() -> (
+        FakeStateStore,
+        FakeDocker,
+        FakeRoutes,
+        ApplicationRecord,
+        ApplicationRecord,
+    ) {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let consumer = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "consumer",
+            "nginx",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "database",
+            "services:\n  db:\n    image: postgres:17\n",
+            None,
+            None,
+            DeployOptions {
+                publication: Some(Publication::Unpublished),
+                network_policy: Some(crate::store::NetworkPolicy::Private {
+                    consumers: vec![consumer.id.clone()],
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let provider = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+        (store, docker, routes, consumer, provider)
+    }
+
+    #[tokio::test]
+    async fn revoking_a_grant_on_a_stopped_provider_keeps_it_stopped() {
+        let (store, docker, routes, consumer, provider) = private_fixture().await;
+        stop_application(&store, &docker, &routes, &provider.id)
+            .await
+            .unwrap();
+        let previous = docker.recreated.lock().unwrap().len();
+        let saved = update_application(
+            &store,
+            &docker,
+            &routes,
+            &provider.id,
+            ApplicationUpdate {
+                network_policy: Some(crate::store::NetworkPolicy::private()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.status, STATUS_STOPPED);
+        assert_eq!(docker.recreated.lock().unwrap().len(), previous);
+        assert_eq!(
+            docker
+                .container_state(&compose_app::container_name(
+                    &project_name_for(&provider.id),
+                    "db"
+                ))
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "exited"
+        );
+        assert!(
+            docker
+                .network_syncs
+                .lock()
+                .unwrap()
+                .contains(&(container_name_for(&consumer.id), vec![]))
+        );
+        assert!(routes.get(&provider.id).is_none());
+        let started = start_application(&store, &docker, &routes, &provider.id)
+            .await
+            .unwrap();
+        assert_eq!(started.status, STATUS_RUNNING);
+        let project = docker.project(&project_name_for(&provider.id)).unwrap();
+        assert!(
+            !project
+                .yaml
+                .contains(&crate::connectivity::provider_network(&provider.id))
+        );
+    }
+
+    #[tokio::test]
+    async fn revocation_precedes_failed_deploy_and_is_retried_from_saved_policy() {
+        let (store, mut docker, routes, consumer, provider) = private_fixture().await;
+        docker.compose_failure = Some("synthetic deployment failure".into());
+        let result = update_application(
+            &store,
+            &docker,
+            &routes,
+            &provider.id,
+            ApplicationUpdate {
+                network_policy: Some(crate::store::NetworkPolicy::private()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        let detached = (container_name_for(&consumer.id), vec![]);
+        assert!(docker.network_syncs.lock().unwrap().contains(&detached));
+        docker.network_syncs.lock().unwrap().clear();
+        docker.compose_failure = None;
+        update_application(
+            &store,
+            &docker,
+            &routes,
+            &provider.id,
+            ApplicationUpdate {
+                network_policy: Some(crate::store::NetworkPolicy::private()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(docker.network_syncs.lock().unwrap().contains(&detached));
+        docker.network_syncs.lock().unwrap().clear();
+        reconcile(&store, &docker, &routes).await.unwrap();
+        assert!(docker.network_syncs.lock().unwrap().contains(&detached));
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_database_reports_health_without_a_route() {
+        let (store, docker, routes, _, provider) = private_fixture().await;
+        let container = compose_app::container_name(&project_name_for(&provider.id), "db");
+        docker
+            .health
+            .lock()
+            .unwrap()
+            .insert(container, "unhealthy".into());
+        let services = service_states(&docker, &provider).await;
+        assert_eq!(services[0].health.as_deref(), Some("unhealthy"));
+        assert_eq!(live_status(&provider, &services).0, STATUS_FAILED);
+        assert!(routes.get(&provider.id).is_none());
+        assert!(
+            store
+                .get_application(&provider.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .web_target_port
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn editing_routes_on_a_stopped_application_keeps_routes_withdrawn() {
+        let (store, docker, routes, consumer, _) = private_fixture().await;
+        stop_application(&store, &docker, &routes, &consumer.id)
+            .await
+            .unwrap();
+        let saved = update_application(
+            &store,
+            &docker,
+            &routes,
+            &consumer.id,
+            ApplicationUpdate {
+                route_rules: Some(vec![crate::store::RouteRule {
+                    hostname: consumer.hostname.clone(),
+                    path_prefix: "/app".into(),
+                    target: "127.0.0.1:28001".parse().unwrap(),
+                    strip_prefix: false,
+                }]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.status, STATUS_STOPPED);
+        assert!(routes.get(&consumer.id).is_none());
+        assert_eq!(
+            docker
+                .container_state(&container_name_for(&consumer.id))
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "exited"
+        );
+    }
+
     #[tokio::test]
     async fn preparing_a_deploy_records_it_without_touching_docker() {
         let store = initialized_store().await;
@@ -1924,7 +2249,8 @@ mod tests {
         // Off the Platform Infra bridge, an Application cannot open a socket
         // on the state store, whose password is the same on every install.
         let containers = docker.apps.lock().unwrap();
-        assert_eq!(containers[0].network, APP_NETWORK);
+        assert!(containers[0].network.starts_with("sf-app-"));
+        assert_ne!(containers[0].network, crate::docker::APP_NETWORK);
     }
 
     #[tokio::test]
@@ -2301,7 +2627,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(clash, Err(DeployError::InvalidHostname(_))));
+        assert!(matches!(
+            clash,
+            Err(DeployError::Route(crate::routes::RouteError::Conflict(_)))
+        ));
     }
 
     const HERMES: &str = r#"

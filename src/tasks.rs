@@ -299,12 +299,15 @@ async fn execute<S: StateStore>(
         }
         // By id, then by the name it has now: a rename in between is not a
         // reason to leave the Application behind.
-        Work::RemoveApplication { id } => match apps::get_application(store, &id).await {
-            Ok(app) => apps::remove_application(store, docker, routes, &app.name)
-                .await
-                .map_err(|e| ErrorReport::new(&e)),
-            Err(e) => Err(ErrorReport::new(&e)),
-        },
+        Work::RemoveApplication { id } => {
+            let _namespace = state.dns_records.lock_namespace().await;
+            match apps::get_application(store, &id).await {
+                Ok(app) => apps::remove_application(store, docker, routes, &app.name)
+                    .await
+                    .map_err(|e| ErrorReport::new(&e)),
+                Err(e) => Err(ErrorReport::new(&e)),
+            }
+        }
         Work::SetEnvironment { name, key, value } => {
             apps::set_env(store, docker, &name, &key, &value)
                 .await

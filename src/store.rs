@@ -101,6 +101,37 @@ pub enum Publication {
     Unpublished,
 }
 
+/// One hostname/path rule owned by an Application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteRule {
+    pub hostname: String,
+    pub path_prefix: String,
+    pub target: std::net::SocketAddr,
+    #[serde(default)]
+    pub strip_prefix: bool,
+}
+
+/// Existing Applications retain their shared network until explicitly changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkPolicy {
+    #[default]
+    Shared,
+    Private {
+        #[serde(default)]
+        consumers: Vec<String>,
+    },
+}
+
+impl NetworkPolicy {
+    pub fn private() -> Self {
+        Self::Private {
+            consumers: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplicationRecord {
     /// Stable identity. The container and the route are keyed on this, never
@@ -147,6 +178,10 @@ pub struct ApplicationRecord {
     /// written before the field existed broadcasts them.
     #[serde(default = "VariableDelivery::broadcast")]
     pub variable_delivery: VariableDelivery,
+    #[serde(default)]
+    pub route_rules: Vec<RouteRule>,
+    #[serde(default)]
+    pub network_policy: NetworkPolicy,
 }
 
 #[derive(Debug)]
@@ -581,6 +616,8 @@ mod tests {
             }),
             publication: Publication::Unpublished,
             variable_delivery: VariableDelivery::Referenced,
+            route_rules: Vec::new(),
+            network_policy: Default::default(),
         }
     }
 

@@ -2,10 +2,9 @@
 
 An Application's record says how it runs (`runtime`), whether Consumers reach
 it by Hostname (`publication`) and how its Variables reach a Compose project
-(`variable_delivery`). This page is the contract for those fields as shipped,
-followed by the shapes later slices are expected to add. The second half is
-proposed and not implemented; the code answers only what the first half
-describes.
+(`variable_delivery`). It also owns path rules (`route_rules`) and private
+network grants (`network_policy`). This page separates implemented contracts
+from proposals for later slices.
 
 ## What is implemented
 
@@ -16,6 +15,8 @@ describes.
 | `runtime` | `{"kind": "container"}` or `{"kind": "native", ...}` | `container` | `container` |
 | `publication` | `{"kind": "web"}` or `{"kind": "unpublished"}` | `web` | `web` |
 | `variable_delivery` | `"broadcast"` or `"referenced"` | `broadcast` | `referenced` |
+| `route_rules` | Array of hostname/path rules | `[]` | `[]` |
+| `network_policy` | `{"kind":"shared"}` or `{"kind":"private","consumers":[]}` | `shared` | `private` |
 
 A native Runtime carries `account`, `command` (argv), `working_dir` (relative
 to the account's home, or absent), `port` (the loopback port when it is a Web
@@ -39,7 +40,8 @@ optional). It is recorded shape only: see the refusal below.
 ### Requests and responses
 
 `POST /apps` and `PUT /apps/id/{id}` accept optional `runtime`, `publication`
-and `variable_delivery`. Every Application response carries all three. A
+`variable_delivery`, `route_rules` and `network_policy`. Every Application
+response carries these fields. A
 request without them behaves exactly as before.
 
 ```json
@@ -104,29 +106,65 @@ Errors keep the `{error, caused_by}` shape of ADR-0010.
   nothing for it.
 - `src/lib.rs` maps the request and response fields and the three statuses.
 
-## Proposed shapes, not implemented
+## Path rules and private connections
 
-Everything below is a proposal for a later slice. None of it is in the code,
-and a request that sends any of it today is ignored or refused as an unknown
-field.
+`route_rules` contains `{hostname, path_prefix, target, strip_prefix}` objects.
+Targets are loopback socket addresses. Segment matching chooses the longest
+prefix; `/app` does not match `/apple`. Automatic Hostname and alias routes
+keep prefix `/`. An explicit root replaces its owner's automatic root.
+Different Applications may own disjoint paths on the same Hostname. Removing
+one keeps the other's rules and derived DNS answer.
 
-### W1: a route rule
+An omitted list preserves rules on update; `[]` removes explicit rules.
+Invalid rules return `400`; duplicate keys return `409`. The management
+Hostname and certificate challenge subtree are reserved. A route-only update
+with `pull: false` takes effect without Docker work. See [route rules](routing.md)
+for prefix behavior, WebSockets and the W2 challenge-handler boundary.
 
-Today a route is a set of Hostnames and one loopback target per Application.
-W1 adds path routing. A route rule is:
+`network_policy` preserves `shared` on old records. New Applications use
+`{"kind":"private","consumers":[]}`. Ordinary private Applications keep
+outbound networking on their own bridge. An unpublished Compose Application
+can grant other container Applications access through its internal network:
 
 ```json
-{"hostname": "blog.example.invalid", "path_prefix": "/api",
- "target": "127.0.0.1:20002", "strip_prefix": true}
+{
+  "network_policy": {
+    "kind": "private",
+    "consumers": ["m7p2xr9wq4tn"]
+  }
+}
 ```
 
-`hostname` matches the request's Hostname; `path_prefix` matches the start
-of the path; `target` is a loopback address on the Host; `strip_prefix` says
-whether the prefix is removed before forwarding (`false` preserves it). When
-several rules match, the longest `path_prefix` wins; the Application's plain
-Hostname route is the rule with prefix `/`. The proxy owns matching, the
-Application record owns its rules, and the route table is still rebuilt from
-the records at start (ADR-0019).
+Consumer ids must exist and cannot repeat or refer to the provider itself.
+A provider with grants cannot declare ports or `extra_hosts`. Grant changes
+connect or disconnect consumers without starting stopped containers. Removing
+a provider or consumer with live references returns `409`; remove its grants
+first. A Compose Application can change policy explicitly. Single-container
+policy changes are refused in this slice; existing shared policies remain
+unchanged.
+
+Credentials remain Variables assigned explicitly to a consumer. Grants do not
+copy a provider's Variables. Managed database roles and connection references
+remain P2. Service responses include Docker's `health` when a healthcheck
+exists, including for unpublished Applications.
+
+P1's native endpoint adapter checks the dedicated non-root account and renders
+only `127.0.0.1`. It is unavailable through the API until N3. Loopback restricts
+reachability to the Host; database authentication still restricts clients.
+See [Compose storage and networking](compose-applications.md).
+
+## Native supervision boundary
+
+N2 provides protected s6 services and Linux boot delegation. N1 performs every
+Application launch, including readiness commands. The privileged daemon and
+s6 runner perform setup; Application commands execute as their dedicated
+non-root account. ADR-0031 records this choice and the helper alternative.
+Native create and update requests still return `501` until N3.
+
+## Proposed shapes, not implemented
+
+The remaining shapes are proposals for later slices. They do not enable
+certificate issuance, native API lifecycle or source builds in this wave.
 
 ### W2: certificates by server name
 
