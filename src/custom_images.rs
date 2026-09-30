@@ -686,7 +686,9 @@ pub(crate) async fn create<S: StateStore>(
         &state,
         audit_action,
         subject,
-        crate::tasks::Work::BuildCustomImage { image },
+        crate::tasks::Work::BuildCustomImage {
+            image: Box::new(image),
+        },
     )
     .await
     {

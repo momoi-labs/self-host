@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
 use crate::error::ErrorReport;
-use crate::store::{DevelopmentApplication, StoreError};
+use crate::store::{DevelopmentApplication, Publication, Runtime, StoreError, VariableDelivery};
 use rand::Rng;
 
 pub mod apps;
@@ -33,6 +33,7 @@ pub mod file_store;
 pub mod host_addresses;
 pub mod host_dns;
 pub mod metrics;
+pub mod native;
 pub mod paths;
 pub mod ports;
 pub mod proxy;
@@ -341,6 +342,14 @@ struct DeployApplicationRequest {
     aliases: Option<Vec<String>>,
     #[serde(default)]
     development: Option<DevelopmentApplicationRequest>,
+    /// How the Application runs and whether it is published (ADR-0028).
+    /// Left out, a container published on its Hostname, as before.
+    #[serde(default)]
+    runtime: Option<Runtime>,
+    #[serde(default)]
+    publication: Option<Publication>,
+    #[serde(default)]
+    variable_delivery: Option<VariableDelivery>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -387,6 +396,14 @@ struct UpdateApplicationRequest {
     /// decides.
     #[serde(default)]
     pull: Option<bool>,
+    /// A native Runtime is refused, and Publication cannot change after
+    /// creation (ADR-0028); `variable_delivery` may be switched either way.
+    #[serde(default)]
+    runtime: Option<Runtime>,
+    #[serde(default)]
+    publication: Option<Publication>,
+    #[serde(default)]
+    variable_delivery: Option<VariableDelivery>,
 }
 
 /// One container of an Application, as Docker sees it right now.
@@ -439,6 +456,11 @@ struct ApplicationResponse {
     web_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     development: Option<DevelopmentApplicationResponse>,
+    /// Always present (ADR-0028). A row written before the fields existed
+    /// reads as a container, published, broadcasting its Variables.
+    runtime: Runtime,
+    publication: Publication,
+    variable_delivery: VariableDelivery,
     /// Every container of the Application and its state. Empty until Docker
     /// has been asked.
     #[serde(default)]
@@ -485,6 +507,9 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             web_service: app.web_service,
             web_port: app.web_port,
             development: app.development.map(Into::into),
+            runtime: app.runtime,
+            publication: app.publication,
+            variable_delivery: app.variable_delivery,
             services: Vec::new(),
             task_id: None,
         }
@@ -605,6 +630,9 @@ mod http_readiness_tests {
             web_port: None,
             web_target_port: Some(port),
             development: None,
+            runtime: Default::default(),
+            publication: Default::default(),
+            variable_delivery: VariableDelivery::Referenced,
         }
     }
 
@@ -868,6 +896,9 @@ async fn update_app<S: StateStore>(
             web_port: body.web_port,
             development,
             pull,
+            runtime: body.runtime,
+            publication: body.publication,
+            variable_delivery: body.variable_delivery,
         },
     )
     .await;
@@ -916,7 +947,9 @@ async fn accept_deploy<S: StateStore>(
         state,
         action,
         subject,
-        tasks::Work::DeployApplication { pending },
+        tasks::Work::DeployApplication {
+            pending: Box::new(pending),
+        },
     )
     .await
     {
@@ -1012,8 +1045,18 @@ async fn deploy_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     Json(body): Json<DeployApplicationRequest>,
 ) -> Response {
-    let hostname = body.hostname.as_deref();
-    let aliases = body.aliases.as_deref();
+    // A native request carries no image, path or Compose file, so it is
+    // answered before the definition is looked for (ADR-0028).
+    if matches!(body.runtime, Some(Runtime::Native(_))) {
+        return deploy_error_response(apps::DeployError::NativeUnavailable);
+    }
+    let options = apps::DeployOptions {
+        hostname: body.hostname,
+        aliases: body.aliases,
+        runtime: body.runtime,
+        publication: body.publication,
+        variable_delivery: body.variable_delivery,
+    };
 
     let development = match body.development.as_ref() {
         Some(request) => match validate_development_image(&state, request, None).await {
@@ -1030,22 +1073,14 @@ async fn deploy_app<S: StateStore>(
         development,
     ) {
         ("", "", "", Some(settings)) => {
-            apps::prepare_deploy_from_development(
-                &state.store,
-                &body.name,
-                settings,
-                hostname,
-                aliases,
-            )
-            .await
+            apps::prepare_deploy_from_development(&state.store, &body.name, settings, options).await
         }
         ("", "", "", None) => Err(apps::DeployError::MissingImage),
         (image, "", "", None) => {
-            apps::prepare_deploy_from_image(&state.store, &body.name, image, hostname, aliases)
-                .await
+            apps::prepare_deploy_from_image(&state.store, &body.name, image, options).await
         }
         ("", path, "", None) => {
-            apps::prepare_deploy_from_path(&state.store, &body.name, path, hostname, aliases).await
+            apps::prepare_deploy_from_path(&state.store, &body.name, path, options).await
         }
         ("", "", compose, None) => {
             apps::prepare_deploy_from_compose(
@@ -1054,8 +1089,7 @@ async fn deploy_app<S: StateStore>(
                 compose,
                 body.web_service.as_deref(),
                 body.web_port,
-                hostname,
-                aliases,
+                options,
             )
             .await
         }
@@ -1230,7 +1264,9 @@ fn env_error_response(err: apps::EnvError) -> Response {
     let status = match &err {
         apps::EnvError::NotFound(_) => StatusCode::NOT_FOUND,
         apps::EnvError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        apps::EnvError::Docker(_) | apps::EnvError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        apps::EnvError::Docker(_) | apps::EnvError::Definition(_) | apps::EnvError::Store(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     error_response(status, &err)
 }
@@ -1478,7 +1514,8 @@ async fn revoke_key<S: StateStore>(
 
 fn deploy_error_response(err: DeployError) -> Response {
     let status = match &err {
-        DeployError::AlreadyExists(_) => StatusCode::CONFLICT,
+        DeployError::AlreadyExists(_) | DeployError::PublicationFixed => StatusCode::CONFLICT,
+        DeployError::NativeUnavailable => StatusCode::NOT_IMPLEMENTED,
         DeployError::InvalidName(_)
         | DeployError::InvalidHostname(_)
         | DeployError::MissingImage
@@ -2203,6 +2240,9 @@ mod tests {
             web_port: None,
             web_target_port: None,
             development: None,
+            runtime: Default::default(),
+            publication: Default::default(),
+            variable_delivery: VariableDelivery::Referenced,
         };
         store.insert_application(&record).await.unwrap();
         let docker = FakeDocker::new();
@@ -2573,6 +2613,237 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_request_that_predates_runtime_and_publication_answers_with_the_defaults() {
+        let (app, _store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx"}),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["hostname"], json!("blog.home.lan"));
+        assert_eq!(parsed["runtime"], json!({"kind": "container"}));
+        assert_eq!(parsed["publication"], json!({"kind": "web"}));
+        assert_eq!(parsed["variable_delivery"], json!("referenced"));
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_request_answers_with_an_empty_hostname_and_no_route() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let routes = Arc::new(routes::FakeRoutes::new());
+        let app = build_app(
+            store.clone(),
+            Arc::new(FakeDocker::new()),
+            routes.clone(),
+            metrics::Metrics::new(),
+        );
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "worker",
+                "compose": "services:\n  worker:\n    image: alpine\n    command: sleep infinity\n",
+                "publication": {"kind": "unpublished"}
+            }),
+        )
+        .await;
+
+        let (parsed, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed", "{:?}", event.error);
+        assert_eq!(parsed["hostname"], json!(""));
+        assert_eq!(parsed["aliases"], json!([]));
+        assert_eq!(parsed["publication"], json!({"kind": "unpublished"}));
+        assert_eq!(parsed["runtime"], json!({"kind": "container"}));
+        assert!(parsed.get("web_service").is_none(), "{parsed}");
+        assert!(parsed.get("web_port").is_none(), "{parsed}");
+        let record = settle(&store, "worker").await;
+        assert_eq!(record.status, apps::STATUS_RUNNING);
+        assert_eq!(record.web_target_port, None);
+        assert_eq!(routes.get(&record.id), None, "no route, no Host port");
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_request_with_a_hostname_is_refused() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "worker",
+                "image": "alpine",
+                "hostname": "worker.home.lan",
+                "publication": {"kind": "unpublished"}
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed["error"],
+            json!("invalid Application Hostname: an unpublished Application has no Hostname")
+        );
+        assert!(store.list_applications().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_native_request_is_refused_with_501_and_records_nothing() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "api",
+                "runtime": {
+                    "kind": "native",
+                    "account": "sf-app-api",
+                    "command": ["/opt/api/bin/serve"],
+                    "port": 8080,
+                    "limits": {"memory_bytes": 268435456}
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed,
+            json!({
+                "error": "native execution is not available yet; the Application runtime must be container",
+                "caused_by": []
+            })
+        );
+        assert!(store.list_applications().await.unwrap().is_empty());
+
+        // The same with a definition beside it.
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "api",
+                "image": "nginx",
+                "runtime": {"kind": "native", "account": "sf-app-api", "command": ["/opt/api/bin/serve"]}
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert!(store.list_applications().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_update_that_changes_publication_is_refused_with_409() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "blog", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let blog = settle(&store, "blog").await;
+        let uri = format!("/apps/id/{}", blog.id);
+
+        let response = put_json(
+            &app,
+            &uri,
+            Some("test-key"),
+            json!({"publication": {"kind": "unpublished"}}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed["error"],
+            json!("publication cannot be changed after creation yet")
+        );
+
+        // The same Publication is a no-op, answered inline.
+        let response = put_json(
+            &app,
+            &uri,
+            Some("test-key"),
+            json!({"publication": {"kind": "web"}}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // A native Runtime on an update is refused the way a create is.
+        let response = put_json(
+            &app,
+            &uri,
+            Some("test-key"),
+            json!({"runtime": {"kind": "native", "account": "sf-app-blog", "command": ["/bin/true"]}}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let saved = store.get_application(&blog.id).await.unwrap().unwrap();
+        assert_eq!(saved.publication, Publication::Web);
+        assert_eq!(saved.runtime, Runtime::Container);
+        assert_eq!(saved.status, apps::STATUS_RUNNING);
+    }
+
+    #[tokio::test]
+    async fn variable_delivery_round_trips_through_create_and_update() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "hermes",
+                "compose": HERMES,
+                "web_port": 9119,
+                "variable_delivery": "broadcast"
+            }),
+        )
+        .await;
+        let (parsed, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed", "{:?}", event.error);
+        assert_eq!(parsed["variable_delivery"], json!("broadcast"));
+        let id = parsed["id"].as_str().unwrap().to_string();
+
+        // The rendered project changes with the delivery, so Docker is asked.
+        let response = put_json(
+            &app,
+            &format!("/apps/id/{id}"),
+            Some("test-key"),
+            json!({"variable_delivery": "referenced"}),
+        )
+        .await;
+        let (parsed, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed", "{:?}", event.error);
+        assert_eq!(parsed["variable_delivery"], json!("referenced"));
+
+        let response = send(&app, &format!("/apps/id/{id}"), Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["variable_delivery"], json!("referenced"));
+    }
+
+    #[tokio::test]
     async fn deploy_rejects_an_alias_answered_by_another_application() {
         let (app, store) = setup_initialized_app("test-key", "home.lan").await;
 
@@ -2645,6 +2916,9 @@ mod tests {
                 "status": "running",
                 "source": "image",
                 "restarts": 0,
+                "runtime": {"kind": "container"},
+                "publication": {"kind": "web"},
+                "variable_delivery": "referenced",
                 "services": [{
                     "service": "app",
                     "container": format!("sf-app-{}", id.as_str().unwrap()),

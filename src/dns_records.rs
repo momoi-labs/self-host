@@ -971,6 +971,45 @@ mod tests {
         );
     }
 
+    /// An unpublished Application has no Hostname, so it takes no name from
+    /// the Zone and leaves the name free for the Operator (ADR-0028).
+    #[tokio::test]
+    async fn inventory_omits_an_unpublished_application() {
+        let (app, _, zone) = setup().await;
+        zone.publish("*", "192.0.2.10".parse().unwrap()).await;
+        let (status, application) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({
+                "name": "worker",
+                "compose": "services:\n  worker:\n    image: alpine\n    command: sleep infinity\n",
+                "publication": {"kind": "unpublished"}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{application}");
+        assert_eq!(application["hostname"], json!(""));
+
+        let (status, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            inventory,
+            json!([
+                {"name": "*", "type": "A", "value": "192.0.2.10", "ttl": 60, "owner": "platform"}
+            ])
+        );
+
+        let (status, record) = call(
+            &app,
+            "POST",
+            "/dns/records",
+            json!({"name": "worker", "type": "A", "value": "192.0.2.30"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{record}");
+    }
+
     #[tokio::test]
     async fn application_names_cannot_be_created_edited_or_deleted_as_operator_records() {
         let (app, _, _) = setup().await;
@@ -1185,9 +1224,14 @@ mod tests {
     #[tokio::test]
     async fn a_late_deploy_cannot_reclaim_a_name_released_by_an_edit() {
         let (app, store, _) = setup().await;
-        let pending = crate::apps::prepare_deploy_from_image(&store, "blog", "nginx", None, None)
-            .await
-            .unwrap();
+        let pending = crate::apps::prepare_deploy_from_image(
+            &store,
+            "blog",
+            "nginx",
+            crate::apps::DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         let path = format!("/apps/id/{}", pending.record.id);
         let (status, _) = call(&app, "PUT", &path, json!({"hostname": "news.home.lan"})).await;
         assert!(status.is_success());

@@ -32,8 +32,10 @@ const INTERRUPTED: &str = "The Platform restarted before this task finished.";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Work {
+    /// Boxed, as is the image below: the two payloads a queue entry may
+    /// carry are far larger than the ids the other variants hold.
     DeployApplication {
-        pending: apps::PendingDeploy,
+        pending: Box<apps::PendingDeploy>,
     },
     StartApplication {
         id: String,
@@ -64,7 +66,7 @@ pub enum Work {
         action: String,
     },
     BuildCustomImage {
-        image: custom_images::Image,
+        image: Box<custom_images::Image>,
     },
     RemoveCustomImage {
         id: String,
@@ -276,7 +278,7 @@ async fn execute<S: StateStore>(
     let routes = state.routes.as_ref();
     let done = match work {
         Work::DeployApplication { pending } => {
-            return apps::finish_deploy_reporting(store, docker, routes, pending)
+            return apps::finish_deploy_reporting(store, docker, routes, *pending)
                 .await
                 .map(|(_, changes)| changes)
                 .map_err(|e| ErrorReport::new(&e));
@@ -314,7 +316,7 @@ async fn execute<S: StateStore>(
         Work::OperateVirtualMachine { id, action } => {
             environments::run_operation(&state, &id, &action).await
         }
-        Work::BuildCustomImage { image } => custom_images::run_build(&state, image).await,
+        Work::BuildCustomImage { image } => custom_images::run_build(&state, *image).await,
         Work::RemoveCustomImage { id } => custom_images::run_remove(&state, &id).await,
     };
     done.map(|()| Vec::new())

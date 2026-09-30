@@ -1,9 +1,13 @@
-use crate::compose_app::{self, ComposeDefinition, ComposeDefinitionError, ComposeProject};
+use crate::compose_app::{
+    self, ComposeDefinition, ComposeDefinitionError, ComposeProject, Resolution,
+};
 use crate::docker::{APP_NETWORK, ApplicationContainer, DockerError, DockerRuntime};
 use crate::error::ErrorReport;
 use crate::ports;
 use crate::routes::RouteStore;
-use crate::store::{DevelopmentApplication, StateStore, StoreError};
+use crate::store::{
+    DevelopmentApplication, Publication, Runtime, StateStore, StoreError, VariableDelivery,
+};
 use serde::{Deserialize, Serialize};
 
 pub const APP_CONTAINER_PORT: u16 = 80;
@@ -64,8 +68,17 @@ pub enum DeployError {
     Docker(DockerError),
     /// No Host port left for the Application's Web Target to answer on.
     NoWebTargetPort(crate::ports::NoPortAvailable),
+    /// The request asked for a native Runtime, which the Platform records
+    /// but cannot run yet (ADR-0028).
+    NativeUnavailable,
+    /// The request asked to change a Publication chosen at creation.
+    PublicationFixed,
     Store(StoreError),
 }
+
+/// Why an unpublished Application refuses a Hostname, an alias or a Web
+/// Target in a request.
+const UNPUBLISHED_HAS_NO_HOSTNAME: &str = "an unpublished Application has no Hostname";
 
 impl std::fmt::Display for DeployError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -91,6 +104,13 @@ impl std::fmt::Display for DeployError {
             DeployError::Docker(_) => write!(f, "failed to deploy the Application"),
             DeployError::NoWebTargetPort(_) => {
                 write!(f, "failed to publish the Application on the LAN")
+            }
+            DeployError::NativeUnavailable => write!(
+                f,
+                "native execution is not available yet; the Application runtime must be container"
+            ),
+            DeployError::PublicationFixed => {
+                write!(f, "publication cannot be changed after creation yet")
             }
             DeployError::Store(_) => write!(f, "failed to record the Application"),
         }
@@ -186,10 +206,15 @@ pub fn validate_hostname(hostname: &str) -> Result<(), DeployError> {
 
 /// Checks the Hostname and every alias an Application is about to be saved
 /// with, and refuses an alias that another Application already answers on.
+/// An unpublished Application has nothing to check and takes no name from
+/// the Zone (ADR-0028).
 async fn validate_routing(
     store: &impl StateStore,
     record: &ApplicationRecord,
 ) -> Result<(), DeployError> {
+    if record.publication == Publication::Unpublished {
+        return Ok(());
+    }
     let suffix = store
         .get_state("dns_suffix")
         .await?
@@ -298,6 +323,74 @@ async fn start_container(
     Ok(())
 }
 
+/// What a deploy request says beyond the Application's definition: where it
+/// answers and how it runs (ADR-0028). A field left unsaid means what every
+/// Application meant before the field existed, except `variable_delivery`,
+/// which a new Application reads as `Referenced`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeployOptions {
+    /// The Hostname, instead of `<name>.<suffix>`.
+    pub hostname: Option<String>,
+    /// Extra Hostnames the Application also answers on.
+    pub aliases: Option<Vec<String>>,
+    pub runtime: Option<Runtime>,
+    pub publication: Option<Publication>,
+    pub variable_delivery: Option<VariableDelivery>,
+}
+
+/// Publication is chosen at creation (ADR-0028): a deploy under a name
+/// already on record keeps the row's, and one asking for the other kind is
+/// refused. A new Application is published unless it says otherwise.
+fn settle_publication(
+    requested: Option<Publication>,
+    current: Option<Publication>,
+) -> Result<Publication, DeployError> {
+    match (requested, current) {
+        (Some(requested), Some(current)) if requested != current => {
+            Err(DeployError::PublicationFixed)
+        }
+        (Some(requested), _) => Ok(requested),
+        (None, Some(current)) => Ok(current),
+        (None, None) => Ok(Publication::default()),
+    }
+}
+
+/// The Publication a deploy under `name` ends up with, settled before the
+/// definition is checked so an unpublished file is not asked for a Web
+/// Target it does not have.
+async fn publication_for(
+    store: &impl StateStore,
+    name: &str,
+    options: &DeployOptions,
+) -> Result<Publication, DeployError> {
+    let current = store
+        .find_application_by_name(name)
+        .await?
+        .map(|app| app.publication);
+    settle_publication(options.publication, current)
+}
+
+/// An unpublished Application has nothing to route, so a request that names
+/// a Hostname, an alias or a Web Target for one is refused rather than
+/// recorded and ignored. An empty value is how a form says nothing.
+fn refuse_routing_for_unpublished(
+    hostname: Option<&str>,
+    aliases: Option<&[String]>,
+    web_service: Option<&str>,
+    web_port: Option<u16>,
+) -> Result<(), DeployError> {
+    let names_routing = hostname.is_some_and(|h| !h.trim().is_empty())
+        || aliases.is_some_and(|a| !a.is_empty())
+        || web_service.is_some_and(|s| !s.trim().is_empty())
+        || web_port.is_some();
+    if names_routing {
+        return Err(DeployError::InvalidHostname(
+            UNPUBLISHED_HAS_NO_HOSTNAME.into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Builds the row for a deploy, reusing the existing Application when the name
 /// is already taken so that a redeploy keeps its id, and therefore its
 /// container and its environment.
@@ -306,30 +399,57 @@ async fn pending_record(
     name: &str,
     image: String,
     source: &str,
-    hostname_override: Option<&str>,
-    aliases: Option<&[String]>,
     definition: Option<ComposeSpec>,
+    options: &DeployOptions,
 ) -> Result<ApplicationRecord, DeployError> {
     let dns_suffix = store
         .get_state("dns_suffix")
         .await?
         .ok_or(DeployError::NotInitialized)?;
 
-    let existing = store.find_application_by_name(name).await?;
-    let hostname = match (hostname_override, &existing) {
-        (Some(h), _) => h.to_string(),
-        (None, Some(app)) => app.hostname.clone(),
-        (None, None) => default_hostname(name, &dns_suffix),
-    };
-    let aliases = match (aliases, &existing) {
-        (Some(a), _) => a.to_vec(),
-        (None, Some(app)) => app.aliases.clone(),
-        (None, None) => vec![],
-    };
+    // The shape is recorded (ADR-0028); running it is a later slice.
+    if matches!(options.runtime, Some(Runtime::Native(_))) {
+        return Err(DeployError::NativeUnavailable);
+    }
 
-    let web_target_port = match existing.as_ref().and_then(|app| app.web_target_port) {
-        Some(port) => port,
-        None => allocate_web_target_port(store).await?,
+    let existing = store.find_application_by_name(name).await?;
+    let publication = settle_publication(
+        options.publication,
+        existing.as_ref().map(|app| app.publication),
+    )?;
+    let variable_delivery = options
+        .variable_delivery
+        .or_else(|| existing.as_ref().map(|app| app.variable_delivery))
+        .unwrap_or(VariableDelivery::Referenced);
+
+    let (hostname, aliases, web_target_port) = match publication {
+        // No Hostname, no Record, no route, no Host port.
+        Publication::Unpublished => {
+            refuse_routing_for_unpublished(
+                options.hostname.as_deref(),
+                options.aliases.as_deref(),
+                definition.as_ref().and_then(|d| d.web_service.as_deref()),
+                definition.as_ref().and_then(|d| d.web_port),
+            )?;
+            (String::new(), Vec::new(), None)
+        }
+        Publication::Web => {
+            let hostname = match (&options.hostname, &existing) {
+                (Some(h), _) => h.clone(),
+                (None, Some(app)) => app.hostname.clone(),
+                (None, None) => default_hostname(name, &dns_suffix),
+            };
+            let aliases = match (&options.aliases, &existing) {
+                (Some(a), _) => a.clone(),
+                (None, Some(app)) => app.aliases.clone(),
+                (None, None) => vec![],
+            };
+            let port = match existing.as_ref().and_then(|app| app.web_target_port) {
+                Some(port) => port,
+                None => allocate_web_target_port(store).await?,
+            };
+            (hostname, aliases, Some(port))
+        }
     };
 
     let record = ApplicationRecord {
@@ -347,8 +467,11 @@ async fn pending_record(
         compose: definition.as_ref().map(|d| d.compose.clone()),
         web_service: definition.as_ref().and_then(|d| d.web_service.clone()),
         web_port: definition.as_ref().and_then(|d| d.web_port),
-        web_target_port: Some(web_target_port),
+        web_target_port,
         development: None,
+        runtime: Runtime::Container,
+        publication,
+        variable_delivery,
     };
 
     validate_routing(store, &record).await?;
@@ -422,8 +545,12 @@ async fn allocate_web_target_port(store: &impl StateStore) -> Result<u16, Deploy
 
 /// Where the Web Target answers on the Host, as Docker publishes it. Empty
 /// until the Application has a port, which is every Application deployed
-/// before the proxy moved into the binary.
+/// before the proxy moved into the binary, and always empty for an
+/// unpublished Application, which has no Web Target.
 fn web_target_publication(record: &ApplicationRecord) -> Vec<String> {
+    if record.publication == Publication::Unpublished {
+        return Vec::new();
+    }
     record
         .web_target_port
         .map(|host_port| {
@@ -490,8 +617,7 @@ pub async fn prepare_deploy_from_image(
     store: &impl StateStore,
     name: &str,
     image: &str,
-    hostname_override: Option<&str>,
-    aliases: Option<&[String]>,
+    options: DeployOptions,
 ) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
 
@@ -503,16 +629,8 @@ pub async fn prepare_deploy_from_image(
         return Err(DeployError::NotInitialized);
     }
 
-    let record = pending_record(
-        store,
-        name,
-        image.to_string(),
-        SOURCE_IMAGE,
-        hostname_override,
-        aliases,
-        None,
-    )
-    .await?;
+    let record =
+        pending_record(store, name, image.to_string(), SOURCE_IMAGE, None, &options).await?;
     store.insert_application(&record).await?;
 
     Ok(PendingDeploy {
@@ -523,19 +641,40 @@ pub async fn prepare_deploy_from_image(
 
 /// Checks a Compose definition and resolves where its Hostname points. The
 /// resolved target is what gets recorded, so the route never has to guess
-/// again: what the console shows is what the proxy uses.
+/// again: what the console shows is what the proxy uses. An unpublished
+/// Application has no Web Target to resolve; its image is the first
+/// service's, so the listing still says what it runs. `variables` are the
+/// Application's, when it already exists; a new one has none yet.
 fn check_compose(
     compose: &str,
     web_service: Option<&str>,
     web_port: Option<u16>,
+    publication: Publication,
+    variables: &[(String, String)],
 ) -> Result<ComposeSpec, DeployError> {
     if compose.trim().is_empty() {
         return Err(DeployError::MissingCompose);
     }
-    let definition = ComposeDefinition::parse(compose)?;
+    // The Operator may still be about to set the Variables the file names,
+    // so a requirement is not raised here; `project_for` raises it before
+    // anything runs (ADR-0030).
+    let definition = ComposeDefinition::parse_with(compose, variables, Resolution::Check)?;
     // A form sends the field it shows, empty or not. Empty means "the
     // default", the same as leaving it out.
     let web_service = web_service.map(str::trim).filter(|s| !s.is_empty());
+    if publication == Publication::Unpublished {
+        refuse_routing_for_unpublished(None, None, web_service, web_port)?;
+        return Ok(ComposeSpec {
+            compose: compose.to_string(),
+            image: definition
+                .services
+                .first()
+                .map(|s| s.image.clone())
+                .unwrap_or_default(),
+            web_service: None,
+            web_port: None,
+        });
+    }
     let target = definition.web_target(web_service, web_port)?;
     let image = definition
         .service(&target.service)
@@ -558,12 +697,13 @@ pub async fn prepare_deploy_from_compose(
     compose: &str,
     web_service: Option<&str>,
     web_port: Option<u16>,
-    hostname_override: Option<&str>,
-    aliases: Option<&[String]>,
+    options: DeployOptions,
 ) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
 
-    let spec = check_compose(compose, web_service, web_port)?;
+    let publication = publication_for(store, name, &options).await?;
+    let variables = variables_for(store, name).await?;
+    let spec = check_compose(compose, web_service, web_port, publication, &variables)?;
 
     if !store.is_initialized().await? {
         return Err(DeployError::NotInitialized);
@@ -574,9 +714,8 @@ pub async fn prepare_deploy_from_compose(
         name,
         spec.image.clone(),
         SOURCE_COMPOSE,
-        hostname_override,
-        aliases,
         Some(spec),
+        &options,
     )
     .await?;
     store.insert_application(&record).await?;
@@ -587,19 +726,39 @@ pub async fn prepare_deploy_from_compose(
     })
 }
 
+/// The Variables a deploy under `name` can already count on: the existing
+/// Application's, when the name is taken, and none for a new one.
+async fn variables_for(
+    store: &impl StateStore,
+    name: &str,
+) -> Result<Vec<(String, String)>, DeployError> {
+    match store.find_application_by_name(name).await? {
+        Some(existing) => Ok(store.get_all_env(&existing.id).await?),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// Records a development Application as generated Compose plus explicit form
 /// metadata. This path is the only one that attaches that metadata.
 pub async fn prepare_deploy_from_development(
     store: &impl StateStore,
     name: &str,
     development: DevelopmentApplication,
-    hostname_override: Option<&str>,
-    aliases: Option<&[String]>,
+    options: DeployOptions,
 ) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
     validate_development(&development)?;
     let compose = development_compose(&development);
-    let spec = check_compose(&compose, Some("web"), Some(development.web_port))?;
+    // A development Application is a Web Target by construction, so an
+    // unpublished one is refused here for naming a Web Target.
+    let publication = publication_for(store, name, &options).await?;
+    let spec = check_compose(
+        &compose,
+        Some("web"),
+        Some(development.web_port),
+        publication,
+        &[],
+    )?;
     if spec.image != development.tag {
         return Err(DeployError::InvalidDevelopment(
             "the image tag does not match its generated Compose definition".into(),
@@ -613,9 +772,8 @@ pub async fn prepare_deploy_from_development(
         name,
         spec.image.clone(),
         SOURCE_COMPOSE,
-        hostname_override,
-        aliases,
         Some(spec),
+        &options,
     )
     .await?;
     record.development = Some(development);
@@ -640,7 +798,9 @@ pub fn project_dir_for(app_id: &str) -> std::path::PathBuf {
 }
 
 /// Renders the project the runtime runs for a Compose Application, with the
-/// Platform's environment on top of the file's own.
+/// Application's Variables resolved into the file (ADR-0030). This is the
+/// point where a `${VAR:?}` requirement is enforced: nothing reaches Docker
+/// with a required Variable missing.
 pub async fn project_for(
     store: &impl StateStore,
     record: &ApplicationRecord,
@@ -649,14 +809,16 @@ pub async fn project_for(
         .compose
         .as_deref()
         .ok_or(DeployError::MissingCompose)?;
-    let definition = ComposeDefinition::parse(compose)?;
     let env = store.get_all_env(&record.id).await?;
-    let published = match record.web_target_port {
-        Some(host_port) => Some(compose_app::PublishedTarget {
+    let definition = ComposeDefinition::parse_with(compose, &env, Resolution::Run)?;
+    // Only a published Application has a Web Target to put on loopback; an
+    // unpublished project stays on the Application network (ADR-0028).
+    let published = match (record.publication, record.web_target_port) {
+        (Publication::Web, Some(host_port)) => Some(compose_app::PublishedTarget {
             target: definition.web_target(record.web_service.as_deref(), record.web_port)?,
             host_port,
         }),
-        None => None,
+        _ => None,
     };
     let overrides = record
         .development
@@ -668,6 +830,7 @@ pub async fn project_for(
         &project_dir_for(&record.id),
         &identity_labels(&record.id, &record.name),
         &env,
+        record.variable_delivery,
         published.as_ref(),
         &overrides,
     ))
@@ -821,7 +984,13 @@ pub async fn reconcile(
             store.insert_application(&app).await?;
         }
 
-        if app.status == STATUS_RUNNING && app.web_target_port.is_none() && executor_available {
+        // An unpublished Application never gets a Host port: nothing routes
+        // to it (ADR-0028).
+        if app.status == STATUS_RUNNING
+            && app.publication == Publication::Web
+            && app.web_target_port.is_none()
+            && executor_available
+        {
             match give_web_target_port(store, docker, &mut app).await {
                 Ok(port) => tracing::info!(
                     "Application {} answers on Host port {port} now; its workload was recreated \
@@ -854,10 +1023,9 @@ pub async fn deploy_from_image(
     routes: &(impl RouteStore + ?Sized),
     name: &str,
     image: &str,
-    hostname_override: Option<&str>,
-    aliases: Option<&[String]>,
+    options: DeployOptions,
 ) -> Result<ApplicationRecord, DeployError> {
-    let pending = prepare_deploy_from_image(store, name, image, hostname_override, aliases).await?;
+    let pending = prepare_deploy_from_image(store, name, image, options).await?;
     finish_deploy(store, docker, routes, pending).await
 }
 
@@ -898,6 +1066,13 @@ pub struct ApplicationUpdate {
     /// picks up what the registry has now. A redeploy that pulls is Docker's
     /// business even when nothing else changed.
     pub pull: bool,
+    /// A native Runtime is refused; a container one is what the row has.
+    pub runtime: Option<Runtime>,
+    /// Must match what the row has: Publication is chosen at creation.
+    pub publication: Option<Publication>,
+    /// May change either way. On a Compose Application the rendered project
+    /// changes with it, so Docker is asked.
+    pub variable_delivery: Option<VariableDelivery>,
 }
 
 /// Saves the change and redeploys.
@@ -928,6 +1103,19 @@ pub async fn prepare_update(
     }
 
     let current = get_application(store, id).await?;
+    if matches!(update.runtime, Some(Runtime::Native(_))) {
+        return Err(DeployError::NativeUnavailable);
+    }
+    // Same value or unsaid: a no-op. The other kind: refused (ADR-0028).
+    settle_publication(update.publication, Some(current.publication))?;
+    if current.publication == Publication::Unpublished {
+        refuse_routing_for_unpublished(
+            update.hostname.as_deref(),
+            update.aliases.as_deref(),
+            update.web_service.as_deref(),
+            update.web_port,
+        )?;
+    }
     let development = update
         .development
         .clone()
@@ -978,16 +1166,22 @@ pub async fn prepare_update(
         development,
         status: STATUS_PENDING.into(),
         last_error: None,
+        variable_delivery: update
+            .variable_delivery
+            .unwrap_or(current.variable_delivery),
         ..current.clone()
     };
 
     // A Compose Application shows the image behind its Hostname; the file is
     // what the Operator edits.
     if current.source == SOURCE_COMPOSE {
+        let variables = store.get_all_env(&current.id).await?;
         let spec = check_compose(
             record.compose.as_deref().unwrap_or_default(),
             record.web_service.as_deref(),
             record.web_port,
+            current.publication,
+            &variables,
         )?;
         record.image = spec.image;
         record.web_service = spec.web_service;
@@ -1007,16 +1201,20 @@ pub async fn prepare_update(
 
     let image_changed = record.image != current.image;
     let file_changed = record.compose != current.compose;
+    let delivery_changed = record.variable_delivery != current.variable_delivery;
     let pull = update.pull && !registry_images(&record).is_empty();
 
     store.insert_application(&record).await?;
 
     // Only the image is Docker's business. A rename, a new Hostname, an
     // added alias and a new web target are all a route rewrite, which costs
-    // no downtime.
+    // no downtime. How Variables reach a project is part of the rendered
+    // file, so that change is Docker's too.
     let needs_docker = pull
         || if current.source == SOURCE_COMPOSE {
-            file_changed || (record.development.is_some() && record.name != current.name)
+            file_changed
+                || delivery_changed
+                || (record.development.is_some() && record.name != current.name)
         } else {
             image_changed
         };
@@ -1054,8 +1252,7 @@ pub async fn prepare_deploy_from_path(
     store: &impl StateStore,
     name: &str,
     path: &str,
-    hostname_override: Option<&str>,
-    aliases: Option<&[String]>,
+    options: DeployOptions,
 ) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
 
@@ -1068,16 +1265,7 @@ pub async fn prepare_deploy_from_path(
     }
 
     let image_tag = format!("self-host-{name}:latest");
-    let record = pending_record(
-        store,
-        name,
-        image_tag,
-        SOURCE_PATH,
-        hostname_override,
-        aliases,
-        None,
-    )
-    .await?;
+    let record = pending_record(store, name, image_tag, SOURCE_PATH, None, &options).await?;
     store.insert_application(&record).await?;
 
     Ok(PendingDeploy {
@@ -1094,10 +1282,9 @@ pub async fn deploy_from_path(
     routes: &(impl RouteStore + ?Sized),
     name: &str,
     path: &str,
-    hostname_override: Option<&str>,
-    aliases: Option<&[String]>,
+    options: DeployOptions,
 ) -> Result<ApplicationRecord, DeployError> {
-    let pending = prepare_deploy_from_path(store, name, path, hostname_override, aliases).await?;
+    let pending = prepare_deploy_from_path(store, name, path, options).await?;
     finish_deploy(store, docker, routes, pending).await
 }
 
@@ -1478,6 +1665,9 @@ pub enum EnvError {
     NotInitialized,
     NotFound(String),
     Docker(DockerError),
+    /// The Compose project could not be rendered with the Variables as they
+    /// now are: a required one is still missing, or the file will not parse.
+    Definition(DeployError),
     Store(StoreError),
 }
 
@@ -1489,6 +1679,9 @@ impl std::fmt::Display for EnvError {
             }
             EnvError::NotFound(name) => write!(f, "Application '{name}' not found"),
             EnvError::Docker(_) => write!(f, "failed to restart the Application container"),
+            EnvError::Definition(_) => {
+                write!(f, "failed to render the Application with its Variables")
+            }
             EnvError::Store(_) => write!(f, "failed to read or write the Application environment"),
         }
     }
@@ -1498,6 +1691,7 @@ impl std::error::Error for EnvError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             EnvError::Docker(e) => Some(e),
+            EnvError::Definition(e) => Some(e),
             EnvError::Store(e) => Some(e),
             _ => None,
         }
@@ -1598,7 +1792,7 @@ async fn recreate_with_env(
         // the services whose definition changed.
         let project = project_for(store, app)
             .await
-            .map_err(|e| EnvError::Docker(DockerError::Unavailable(e.to_string())))?;
+            .map_err(EnvError::Definition)?;
         docker.compose_up(&project).await?;
         return Ok(());
     }
@@ -1686,9 +1880,10 @@ mod tests {
 
         let routes = FakeRoutes::new();
 
-        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        let pending =
+            prepare_deploy_from_image(&store, "blog", "nginx:alpine", DeployOptions::default())
+                .await
+                .unwrap();
 
         assert_eq!(pending.record.status, STATUS_PENDING);
         assert!(!pending.is_settled());
@@ -1715,9 +1910,16 @@ mod tests {
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
 
-        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
 
         // Off the Platform Infra bridge, an Application cannot open a socket
         // on the state store, whose password is the same on every install.
@@ -1730,9 +1932,16 @@ mod tests {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
-        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
 
         // Back to pending, as a process that died mid-deploy would leave it.
         let mut app = store
@@ -1763,9 +1972,16 @@ mod tests {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
-        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
 
         // As the store would have it after an upgrade: running, on record,
         // and answering nowhere the Host can reach.
@@ -1800,9 +2016,16 @@ mod tests {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
-        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         let mut app = store
             .find_application_by_name("blog")
             .await
@@ -1831,17 +2054,23 @@ mod tests {
         let store = initialized_store().await;
         let routes = FakeRoutes::new();
         let docker = FakeDocker::new();
-        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         deploy_from_image(
             &store,
             &docker,
             &routes,
             "journal",
             "nginx:alpine",
-            None,
-            None,
+            DeployOptions::default(),
         )
         .await
         .unwrap();
@@ -1885,9 +2114,10 @@ mod tests {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
-        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        let pending =
+            prepare_deploy_from_image(&store, "blog", "nginx:alpine", DeployOptions::default())
+                .await
+                .unwrap();
         // The row is written; the deploy never ran.
         drop(pending);
 
@@ -1934,9 +2164,16 @@ mod tests {
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
 
-        let app = deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        let app = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         let deploys_before = docker.deployed_apps().len();
 
         let updated = update_application(
@@ -1967,9 +2204,16 @@ mod tests {
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
 
-        let app = deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        let app = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
 
         update_application(
             &store,
@@ -1999,9 +2243,16 @@ mod tests {
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
 
-        let app = deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        let app = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         assert!(routes.get(&app.id).is_some());
 
         remove_application(&store, &docker, &routes, "blog")
@@ -2017,12 +2268,26 @@ mod tests {
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
 
-        deploy_from_image(&store, &docker, &routes, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
-        let shop = deploy_from_image(&store, &docker, &routes, "shop", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        let shop = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "shop",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
 
         let clash = update_application(
             &store,
@@ -2058,10 +2323,16 @@ services:
         docker: &FakeDocker,
         routes: &FakeRoutes,
     ) -> ApplicationRecord {
-        let pending =
-            prepare_deploy_from_compose(store, "hermes", HERMES, None, Some(9119), None, None)
-                .await
-                .unwrap();
+        let pending = prepare_deploy_from_compose(
+            store,
+            "hermes",
+            HERMES,
+            None,
+            Some(9119),
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         finish_deploy(store, docker, routes, pending).await.unwrap()
     }
 
@@ -2118,9 +2389,14 @@ services:
             &store,
             &docker,
             &routes,
-            prepare_deploy_from_development(&store, "t3", settings.clone(), None, None)
-                .await
-                .unwrap(),
+            prepare_deploy_from_development(
+                &store,
+                "t3",
+                settings.clone(),
+                DeployOptions::default(),
+            )
+            .await
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -2168,7 +2444,7 @@ services:
             &store,
             &docker,
             &routes,
-            prepare_deploy_from_development(&store, "t3", settings, None, None)
+            prepare_deploy_from_development(&store, "t3", settings, DeployOptions::default())
                 .await
                 .unwrap(),
         )
@@ -2210,10 +2486,16 @@ services:
     async fn an_empty_web_service_means_the_default_one() {
         let store = initialized_store().await;
 
-        let pending =
-            prepare_deploy_from_compose(&store, "hermes", HERMES, Some(""), Some(9119), None, None)
-                .await
-                .unwrap();
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "hermes",
+            HERMES,
+            Some(""),
+            Some(9119),
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(pending.record.web_service.as_deref(), Some("hermes"));
     }
@@ -2228,8 +2510,7 @@ services:
             "services:\n  hermes:\n    image: x\n    privileged: true\n",
             None,
             Some(80),
-            None,
-            None,
+            DeployOptions::default(),
         )
         .await
         .unwrap_err();
@@ -2250,10 +2531,16 @@ services:
         let docker = FakeDocker::failing_compose("Error response from daemon: manifest unknown");
         let routes = FakeRoutes::new();
 
-        let pending =
-            prepare_deploy_from_compose(&store, "hermes", HERMES, None, Some(9119), None, None)
-                .await
-                .unwrap();
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "hermes",
+            HERMES,
+            None,
+            Some(9119),
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         let err = finish_deploy(&store, &docker, &routes, pending)
             .await
             .unwrap_err();
@@ -2287,10 +2574,16 @@ services:
         let compose = format!(
             "{HERMES}  tools:\n    image: sf-img-tools:abc\n  worker:\n    image: nousresearch/hermes-agent:latest\n"
         );
-        let pending =
-            prepare_deploy_from_compose(&store, "hermes", &compose, None, Some(9119), None, None)
-                .await
-                .unwrap();
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "hermes",
+            &compose,
+            None,
+            Some(9119),
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         let app = finish_deploy(&store, &docker, &routes, pending)
             .await
             .unwrap();
@@ -2414,9 +2707,10 @@ services:
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
-        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None, None)
-            .await
-            .unwrap();
+        let pending =
+            prepare_deploy_from_image(&store, "blog", "nginx:alpine", DeployOptions::default())
+                .await
+                .unwrap();
         let app = finish_deploy(&store, &docker, &routes, pending)
             .await
             .unwrap();
@@ -2537,7 +2831,7 @@ services:
 
         let edited = HERMES.replace(
             "HERMES_DASHBOARD=1",
-            "HERMES_DASHBOARD=1\n      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=seba",
+            "HERMES_DASHBOARD=1\n      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=operator",
         );
         let updated = update_application(
             &store,
@@ -2558,7 +2852,7 @@ services:
         assert!(
             project
                 .yaml
-                .contains("HERMES_DASHBOARD_BASIC_AUTH_USERNAME: seba")
+                .contains("HERMES_DASHBOARD_BASIC_AUTH_USERNAME: operator")
         );
     }
 
@@ -2598,12 +2892,99 @@ services:
         );
     }
 
+    /// A new Application gets its Variables by reference (ADR-0030): one the
+    /// file never names stays out of every service.
     #[tokio::test]
-    async fn platform_environment_is_rendered_into_the_project() {
+    async fn a_variable_the_file_never_names_stays_out_of_a_referenced_project() {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
         let app = deploy_hermes(&store, &docker, &routes).await;
+        assert_eq!(app.variable_delivery, VariableDelivery::Referenced);
+
+        set_env(&store, &docker, "hermes", "OPENROUTER_API_KEY", "sk-test")
+            .await
+            .unwrap();
+
+        let project = docker.project(&format!("sf-app-{}", app.id)).unwrap();
+        assert!(
+            !project.yaml.contains("OPENROUTER_API_KEY"),
+            "{}",
+            project.yaml
+        );
+        assert!(
+            project.yaml.contains("HERMES_DASHBOARD: '1'"),
+            "{}",
+            project.yaml
+        );
+    }
+
+    #[tokio::test]
+    async fn a_variable_the_file_references_reaches_only_that_service() {
+        const TWO_SERVICES: &str = "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n    environment:\n      - OPENROUTER_API_KEY\n      - MODEL=${MODEL:-default-model}\n  side:\n    image: alpine\n";
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "vars",
+            TWO_SERVICES,
+            None,
+            Some(80),
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        let app = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+
+        set_env(&store, &docker, "vars", "OPENROUTER_API_KEY", "sk-test")
+            .await
+            .unwrap();
+        set_env(&store, &docker, "vars", "MODEL", "a$b")
+            .await
+            .unwrap();
+
+        let project = docker.project(&format!("sf-app-{}", app.id)).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&project.yaml).unwrap();
+        assert_eq!(
+            doc["services"]["web"]["environment"]["OPENROUTER_API_KEY"],
+            "sk-test"
+        );
+        // Resolved by the Platform, and written so `docker compose` leaves
+        // the dollar alone.
+        assert_eq!(doc["services"]["web"]["environment"]["MODEL"], "a$$b");
+        assert!(
+            doc["services"]["side"]["environment"].is_null(),
+            "{}",
+            project.yaml
+        );
+    }
+
+    /// An Application kept on broadcast delivery still gets every Variable
+    /// on every service, the way it did before ADR-0030.
+    #[tokio::test]
+    async fn an_application_kept_on_broadcast_still_gets_every_variable() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "hermes",
+            HERMES,
+            None,
+            Some(9119),
+            DeployOptions {
+                variable_delivery: Some(VariableDelivery::Broadcast),
+                ..DeployOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let app = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
 
         set_env(&store, &docker, "hermes", "OPENROUTER_API_KEY", "sk-test")
             .await
@@ -2611,6 +2992,65 @@ services:
 
         let project = docker.project(&format!("sf-app-{}", app.id)).unwrap();
         assert!(project.yaml.contains("OPENROUTER_API_KEY: sk-test"));
+    }
+
+    /// `${VAR:?}` is checked when the project is about to run, not when the
+    /// file is saved, so the Operator can save first and set the Variable
+    /// after. Until then the deploy fails with the Variable's name.
+    #[tokio::test]
+    async fn a_required_variable_is_checked_when_the_project_runs_not_when_the_file_is_saved() {
+        const REQUIRED: &str = "services:\n  web:\n    image: nginx\n    environment:\n      TOKEN: ${TOKEN:?set TOKEN first}\n";
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "gate",
+            REQUIRED,
+            None,
+            Some(80),
+            DeployOptions::default(),
+        )
+        .await
+        .expect("saving the file does not need the Variable");
+        let id = pending.record.id.clone();
+
+        let error = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap_err();
+        let report = ErrorReport::new(&error);
+        assert!(
+            report.caused_by.iter().any(|c| c.contains("TOKEN")),
+            "{report}"
+        );
+        let failed = store.get_application(&id).await.unwrap().unwrap();
+        assert_eq!(failed.status, STATUS_FAILED);
+        assert!(docker.project(&format!("sf-app-{id}")).is_none());
+
+        // The same refusal, with its cause, when a Variable change tries to
+        // render the project while another required one is still missing.
+        let error = set_env(&store, &docker, "gate", "OTHER", "x")
+            .await
+            .unwrap_err();
+        assert!(
+            ErrorReport::new(&error)
+                .caused_by
+                .iter()
+                .any(|c| c.contains("TOKEN")),
+            "{}",
+            ErrorReport::new(&error)
+        );
+
+        set_env(&store, &docker, "gate", "TOKEN", "change-me")
+            .await
+            .unwrap();
+        let project = docker.project(&format!("sf-app-{id}")).unwrap();
+        assert!(
+            project.yaml.contains("TOKEN: change-me"),
+            "{}",
+            project.yaml
+        );
     }
 
     #[tokio::test]
@@ -2642,5 +3082,285 @@ services:
     #[test]
     fn validate_app_name_accepts_simple_name() {
         assert!(validate_app_name("blog").is_ok());
+    }
+
+    /// A Compose file with nothing to route to: a worker.
+    const WORKER: &str = "services:\n  worker:\n    image: alpine\n    command: sleep infinity\n";
+
+    fn unpublished() -> DeployOptions {
+        DeployOptions {
+            publication: Some(Publication::Unpublished),
+            ..Default::default()
+        }
+    }
+
+    fn native() -> Runtime {
+        Runtime::Native(crate::store::NativeDefinition {
+            account: "sf-app-api".into(),
+            command: vec!["/opt/api/bin/serve".into()],
+            working_dir: None,
+            port: Some(8080),
+            limits: Default::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_compose_deploy_has_no_hostname_no_port_and_no_route() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        // The Operator already answers on the name the Application would
+        // have taken. An unpublished one takes nothing from the Zone.
+        crate::collection::RECORDS
+            .upsert(
+                &store,
+                &crate::dns_records::Record {
+                    name: "worker".into(),
+                    record_type: crate::dns_records::RecordType::A,
+                    value: std::net::Ipv4Addr::new(192, 0, 2, 30),
+                    ttl: crate::dns_records::TTL,
+                    description: None,
+                    owner: crate::dns_records::Owner::Operator,
+                },
+            )
+            .await
+            .unwrap();
+
+        let pending =
+            prepare_deploy_from_compose(&store, "worker", WORKER, None, None, unpublished())
+                .await
+                .unwrap();
+        assert_eq!(pending.record.publication, Publication::Unpublished);
+        assert_eq!(pending.record.hostname, "");
+        assert!(pending.record.aliases.is_empty());
+        assert_eq!(pending.record.web_service, None);
+        assert_eq!(pending.record.web_port, None);
+        assert_eq!(pending.record.web_target_port, None);
+        assert_eq!(pending.record.image, "alpine");
+        assert_eq!(pending.record.runtime, Runtime::Container);
+        assert_eq!(
+            pending.record.variable_delivery,
+            VariableDelivery::Referenced
+        );
+
+        let app = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+        assert_eq!(app.status, STATUS_RUNNING);
+        assert_eq!(
+            routes.get(&app.id),
+            None,
+            "nothing routes to an unpublished Application"
+        );
+        let project = docker.project(&project_name_for(&app.id)).unwrap();
+        assert!(
+            !project.yaml.contains("127.0.0.1:"),
+            "no loopback publication in the project:\n{}",
+            project.yaml
+        );
+
+        // A restart neither gives it a port nor a route.
+        reconcile(&store, &docker, &routes).await.unwrap();
+        let after = store.get_application(&app.id).await.unwrap().unwrap();
+        assert_eq!(after.status, STATUS_RUNNING);
+        assert_eq!(after.web_target_port, None);
+        assert_eq!(routes.get(&app.id), None);
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_image_deploy_publishes_no_port_and_no_route() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let app = deploy_from_image(&store, &docker, &routes, "worker", "alpine", unpublished())
+            .await
+            .unwrap();
+
+        assert_eq!(app.status, STATUS_RUNNING);
+        assert_eq!(app.hostname, "");
+        assert_eq!(app.web_target_port, None);
+        assert_eq!(routes.get(&app.id), None);
+        let containers = docker.apps.lock().unwrap();
+        assert!(containers[0].ports.is_empty(), "{:?}", containers[0].ports);
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_application_refuses_a_hostname_an_alias_or_a_web_target() {
+        let store = initialized_store().await;
+        let expected = "invalid Application Hostname: an unpublished Application has no Hostname";
+
+        let with_hostname = DeployOptions {
+            hostname: Some("worker.home.lan".into()),
+            ..unpublished()
+        };
+        let err = prepare_deploy_from_image(&store, "worker", "alpine", with_hostname)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DeployError::InvalidHostname(_)), "{err}");
+        assert_eq!(err.to_string(), expected);
+
+        let with_alias = DeployOptions {
+            aliases: Some(vec!["jobs.home.lan".into()]),
+            ..unpublished()
+        };
+        let err = prepare_deploy_from_image(&store, "worker", "alpine", with_alias)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+
+        let err = prepare_deploy_from_compose(
+            &store,
+            "worker",
+            WORKER,
+            Some("worker"),
+            None,
+            unpublished(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+
+        let err =
+            prepare_deploy_from_compose(&store, "worker", WORKER, None, Some(8080), unpublished())
+                .await
+                .unwrap_err();
+        assert_eq!(err.to_string(), expected);
+
+        assert!(store.list_applications().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_native_runtime_is_refused_before_anything_is_recorded() {
+        let store = initialized_store().await;
+        let options = DeployOptions {
+            runtime: Some(native()),
+            ..Default::default()
+        };
+
+        let err = prepare_deploy_from_image(&store, "api", "alpine", options)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, DeployError::NativeUnavailable), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "native execution is not available yet; the Application runtime must be container"
+        );
+        assert!(store.list_applications().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publication_is_fixed_at_creation_and_the_runtime_stays_container() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let err = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                publication: Some(Publication::Unpublished),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DeployError::PublicationFixed), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "publication cannot be changed after creation yet"
+        );
+
+        // A deploy under the same name is a redeploy, and keeps the row's.
+        let err = prepare_deploy_from_image(&store, "blog", "nginx:alpine", unpublished())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DeployError::PublicationFixed), "{err}");
+
+        // Saying the same thing again changes nothing.
+        let pending = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                publication: Some(Publication::Web),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(pending.is_settled());
+        assert_eq!(pending.record.publication, Publication::Web);
+
+        let err = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                runtime: Some(native()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DeployError::NativeUnavailable), "{err}");
+        let saved = store.get_application(&app.id).await.unwrap().unwrap();
+        assert_eq!(saved.runtime, Runtime::Container);
+        assert_eq!(saved.publication, Publication::Web);
+        assert_eq!(saved.status, STATUS_RUNNING);
+    }
+
+    #[tokio::test]
+    async fn changing_variable_delivery_on_a_compose_application_reaches_docker() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+        assert_eq!(app.variable_delivery, VariableDelivery::Referenced);
+
+        let pending = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                variable_delivery: Some(VariableDelivery::Broadcast),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            !pending.is_settled(),
+            "the rendered project changes with the delivery"
+        );
+        assert_eq!(
+            pending.record.variable_delivery,
+            VariableDelivery::Broadcast
+        );
+        let switched = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+        assert_eq!(switched.variable_delivery, VariableDelivery::Broadcast);
+
+        // Saying what the row already says is a route rewrite at most.
+        let same = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                variable_delivery: Some(VariableDelivery::Broadcast),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(same.is_settled());
     }
 }

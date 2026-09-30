@@ -14,10 +14,39 @@ export type ServiceState = {
   restarts?: number;
 };
 
+/** Limits on a native Application's whole process tree; a missing field is
+ * no limit. */
+export type ResourceLimits = {
+  cpu_percent?: number;
+  memory_bytes?: number;
+  max_tasks?: number;
+};
+
+/** What a native Application runs and under which Application Account. */
+export type NativeDefinition = {
+  account: string;
+  command: string[];
+  working_dir?: string | null;
+  port?: number | null;
+  limits?: ResourceLimits;
+};
+
+/** How an Application runs (ADR-0028). Every Application predating the field
+ * is a container; native is recorded but refused for now. */
+export type Runtime = { kind: "container" } | ({ kind: "native" } & NativeDefinition);
+
+/** Whether the Application's Hostname routes to it (ADR-0028). An unpublished
+ * Application has an empty hostname, no aliases and no route. */
+export type Publication = { kind: "web" } | { kind: "unpublished" };
+
+/** How an Application's Variables reach a Compose project. */
+export type VariableDelivery = "broadcast" | "referenced";
+
 export type App = {
   id: string;
   name: string;
   image: string;
+  /** Empty for an unpublished Application. */
   hostname: string;
   status: string;
   /** The task carrying an accepted action out; only on a 202. */
@@ -31,6 +60,9 @@ export type App = {
   web_port?: number;
   development?: DevelopmentApplication;
   services?: ServiceState[];
+  runtime?: Runtime;
+  publication?: Publication;
+  variable_delivery?: VariableDelivery;
   /** HTTP server readiness of the configured Web Target, separate from status. */
 };
 
