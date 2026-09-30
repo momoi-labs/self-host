@@ -107,6 +107,15 @@ the reason it exited can be read.
 stays stopped across a Platform restart and a Host reboot; `start` brings it
 back. `restart` restarts the containers in place.
 
+A restart or a redeploy can pull newer images first, so a moving tag such as
+`:latest` picks up a new release. Each image a registry serves is pulled;
+images built on the Host are not. A restart that pulls recreates the
+containers from the new images, and a failed pull leaves them running as they
+were. A redeploy that pulls brings the project up, which recreates the
+services whose image changed. The `pull_newer_images` setting picks the
+default, and `{"pull": true}` or `{"pull": false}` in the body of
+`POST /apps/id/{id}/restart` or `PUT /apps/id/{id}` overrides it once.
+
 ## Example
 
 The official Hermes file, as accepted:

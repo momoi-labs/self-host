@@ -11,30 +11,27 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
   Form,
   FormActions,
   FormField,
   Input,
+  Label,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Switch,
 } from "@momoi-labs/kiso-react";
 
 import { Changes, type Change } from "../../components/Changes.js";
 import { Icon } from "../../components/Icon.js";
 import { api, failureOf, getJson } from "../../lib/api.js";
-
-/** What `GET /settings` answers. */
-export type Settings = {
-  auditEventsMaxAge: {
-    effective: string;
-    source: "command-line" | "operator" | "default";
-    /** The Operator's setting, kept even while the daemon flag pins the value. */
-    setting: string | null;
-  };
-};
+import type { Settings } from "../../lib/types.js";
 
 const DEFAULT_RETENTION = "30d";
 
@@ -56,14 +53,13 @@ function join(amount: string, unit: Unit): string {
 }
 
 /**
- * The General tab of Settings: one form, one section per group of settings,
- * the way an Application's configuration reads. One group so far, the audit
- * history. Precedence is PostgreSQL's: the daemon flag outranks what is saved
- * here, and what is saved here outranks the default.
+ * The Platform's own settings, one card per group. Precedence is
+ * PostgreSQL's: the daemon flag outranks what is saved here, and what is
+ * saved here outranks the default.
  *
- * Nothing is written until the Operator has seen the change spelled out:
- * Save opens a confirmation that lists every setting about to move, from
- * what to what. Each setting has its own way back to the default.
+ * The audit history is a form: Save opens a confirmation that lists every
+ * setting about to move, from what to what, because a shorter retention
+ * deletes events. A switch applies as soon as it is flipped.
  */
 export function General() {
   const [settings, setSettings] = useState<Settings | null | undefined>();
@@ -79,6 +75,8 @@ export function General() {
   const [saving, setSaving] = useState(false);
   /** The write waiting for confirmation, or null. */
   const [pending, setPending] = useState<{ retention: string | null; changes: Change[] } | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const [toggleError, setToggleError] = useState<string | null>(null);
 
   async function load() {
     const current = await getJson<Settings>("/settings");
@@ -126,6 +124,23 @@ export function General() {
     }
   }
 
+  async function togglePull(pull: boolean) {
+    setToggling(true);
+    setToggleError(null);
+    try {
+      const res = await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ pullNewerImages: pull }),
+      });
+      if (!res.ok) throw new Error((await failureOf(res)).error);
+      setSettings((await res.json()) as Settings);
+    } catch (cause) {
+      setToggleError((cause as Error).message);
+    } finally {
+      setToggling(false);
+    }
+  }
+
   const message = pinned ? (
     <>
       <strong>Set by the daemon flag.</strong> Remove <code>--audit-events-max-age</code> from the
@@ -142,65 +157,99 @@ export function General() {
 
   return (
     <>
-      <Form id="general-settings" className="settings-form" onSubmit={(event) => propose(value.trim() || null, event)}>
-        <div className="form-body">
-          <p className="t-caps">Audit history</p>
+      <Card id="settings-general" aria-labelledby="audit-history-heading">
+        <CardHeader>
+          <h2 className="t-h3" id="audit-history-heading">Audit history</h2>
+          <CardDescription>How long the Events page keeps what happened.</CardDescription>
+        </CardHeader>
+        <Form id="general-settings" onSubmit={(event) => propose(value.trim() || null, event)}>
+          <div className="form-body">
+            <FormField
+              id="audit-events-max-age"
+              label="Keep audit events for"
+              hint="At least one day. Events older than this are deleted on the next change to the history, so a shorter value deletes them as soon as it is saved."
+            >
+              <div className="settings-duration">
+                <Input
+                  id="audit-events-max-age"
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  placeholder={pinned ? split(retention?.effective ?? "").amount : "30"}
+                  value={pinned ? split(retention?.effective ?? "").amount : amount}
+                  disabled={pinned || settings == null}
+                  onChange={(event) => setAmount(event.target.value)}
+                />
+                <Select
+                  value={pinned ? split(retention?.effective ?? "").unit : unit}
+                  disabled={pinned || settings == null}
+                  onValueChange={(next) => setUnit(next as Unit)}
+                >
+                  <SelectTrigger aria-label="Unit"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {units.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {/* Each setting finds its own way back; the footer only saves
+                    the form as a whole. */}
+                {saved && !pinned ? (
+                  <Button size="sm" variant="ghost" type="button" disabled={saving} onClick={() => propose(null)}>
+                    Reset to default ({DEFAULT_RETENTION})
+                  </Button>
+                ) : null}
+              </div>
+            </FormField>
 
-          <FormField
-            id="audit-events-max-age"
-            label="Keep audit events for"
-            hint="At least one day. Events older than this are deleted on the next change to the history, so a shorter value deletes them as soon as it is saved."
-          >
-            <div className="settings-duration">
-              <Input
-                id="audit-events-max-age"
-                type="number"
-                min={1}
-                inputMode="numeric"
-                placeholder={pinned ? split(retention?.effective ?? "").amount : "30"}
-                value={pinned ? split(retention?.effective ?? "").amount : amount}
-                disabled={pinned || settings == null}
-                onChange={(event) => setAmount(event.target.value)}
-              />
-              <Select
-                value={pinned ? split(retention?.effective ?? "").unit : unit}
-                disabled={pinned || settings == null}
-                onValueChange={(next) => setUnit(next as Unit)}
-              >
-                <SelectTrigger aria-label="Unit"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {units.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              {/* Each setting finds its own way back; the footer only saves
-                  the form as a whole. */}
-              {saved && !pinned ? (
-                <Button size="sm" variant="ghost" type="button" disabled={saving} onClick={() => propose(null)}>
-                  Reset to default ({DEFAULT_RETENTION})
-                </Button>
-              ) : null}
+            {error ? (
+              <Alert variant="error">
+                <Icon name="alert" size="md" />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+
+          <FormActions tone={dirty && !pinned ? "warning" : "neutral"} message={message}>
+            {dirty && !pinned ? (
+              <Button size="sm" type="button" onClick={() => setValue(saved)}>
+                Discard
+              </Button>
+            ) : null}
+            <Button size="sm" variant="primary" type="submit" disabled={pinned || saving || !dirty}>
+              Save
+            </Button>
+          </FormActions>
+        </Form>
+      </Card>
+
+      <Card aria-labelledby="applications-heading">
+        <CardHeader>
+          <h2 className="t-h3" id="applications-heading">Applications</h2>
+          <CardDescription>What a restart or a redeploy does unless you choose otherwise.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="settings-row">
+            <div>
+              <Label htmlFor="pull-newer-images">Pull newer images</Label>
+              <p className="muted t-label">
+                Restart and Save and redeploy pull each image from its registry first. Both start
+                with this choice, and you can change it each time.
+              </p>
             </div>
-          </FormField>
-
-          {error ? (
+            <Switch
+              id="pull-newer-images"
+              checked={settings?.pullNewerImages.effective ?? false}
+              disabled={settings == null || toggling}
+              onCheckedChange={(checked) => void togglePull(checked)}
+            />
+          </div>
+          {toggleError ? (
             <Alert variant="error">
               <Icon name="alert" size="md" />
-              <AlertDescription>{error}</AlertDescription>
+              <AlertDescription>{toggleError}</AlertDescription>
             </Alert>
           ) : null}
-        </div>
-
-        <FormActions sticky tone={dirty && !pinned ? "warning" : "neutral"} message={message}>
-          {dirty && !pinned ? (
-            <Button size="sm" type="button" onClick={() => setValue(saved)}>
-              Discard
-            </Button>
-          ) : null}
-          <Button size="sm" variant="primary" type="submit" disabled={pinned || saving || !dirty}>
-            Save
-          </Button>
-        </FormActions>
-      </Form>
+        </CardContent>
+      </Card>
 
       <AlertDialog open={pending !== null} onOpenChange={(open) => { if (!open) setPending(null); }}>
         <AlertDialogContent>

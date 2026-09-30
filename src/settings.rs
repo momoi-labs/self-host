@@ -14,7 +14,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{AppState, error::ErrorReport, metrics::parse_duration, store::StateStore};
 
@@ -25,6 +25,8 @@ pub const MIN_AUDIT_EVENTS_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 pub const AUDIT_EVENTS_MAX_AGE_KEY: &str = "audit_events_max_age";
 /// The audit subject id for a change to this setting.
 pub const AUDIT_EVENTS_MAX_AGE_SUBJECT: &str = "audit-events-max-age";
+pub const PULL_NEWER_IMAGES_KEY: &str = "pull_newer_images";
+pub const PULL_NEWER_IMAGES_SUBJECT: &str = "pull-newer-images";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -43,17 +45,84 @@ pub struct Retention {
     pub setting: Option<String>,
 }
 
+/// A setting that is on or off. There is no flag for these, so the source
+/// is the Operator or the default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Toggle {
+    pub effective: bool,
+    pub source: Source,
+    pub setting: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub audit_events_max_age: Retention,
+    /// Whether a restart or a redeploy pulls newer images when the request does
+    /// not say.
+    pub pull_newer_images: Toggle,
 }
 
+/// Only the settings present change. `null` removes one, and the default
+/// applies again.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Update {
-    /// A duration like `45d`, or `null` to remove the setting.
-    pub audit_events_max_age: Option<String>,
+    /// A duration like `45d`.
+    #[serde(default, deserialize_with = "present")]
+    pub audit_events_max_age: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pub pull_newer_images: Option<Option<bool>>,
+}
+
+/// Tells a field set to `null` apart from a field left out.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// The audit subject a change to the settings is recorded under, from the
+/// request body.
+pub(crate) fn subject(payload: &serde_json::Value) -> (&'static str, &'static str) {
+    subject_for(
+        payload.get("auditEventsMaxAge").is_some(),
+        payload.get("pullNewerImages").is_some(),
+    )
+}
+
+/// The setting a change touched, or the audit history when it touched more
+/// than one.
+fn subject_for(retention: bool, pull: bool) -> (&'static str, &'static str) {
+    if pull && !retention {
+        (PULL_NEWER_IMAGES_SUBJECT, "Image pulls")
+    } else {
+        (AUDIT_EVENTS_MAX_AGE_SUBJECT, "Audit history")
+    }
+}
+
+/// Whether a restart or a redeploy pulls newer images when the request does
+/// not say.
+pub(crate) async fn pull_newer_images<S: StateStore>(state: &AppState<S>) -> bool {
+    pull_setting(state).await.unwrap_or(false)
+}
+
+async fn pull_setting<S: StateStore>(state: &AppState<S>) -> Option<bool> {
+    match state
+        .store
+        .get_state(PULL_NEWER_IMAGES_KEY)
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+    {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
 }
 
 /// The retention in force right now: the flag if the daemon has one, else the
@@ -90,11 +159,21 @@ async fn current<S: StateStore>(state: &AppState<S>) -> Settings {
         },
         (None, None) => (DEFAULT_AUDIT_EVENTS_MAX_AGE, Source::Default),
     };
+    let pull = pull_setting(state).await;
     Settings {
         audit_events_max_age: Retention {
             effective: format_duration(effective),
             source,
             setting,
+        },
+        pull_newer_images: Toggle {
+            effective: pull.unwrap_or(false),
+            source: if pull.is_some() {
+                Source::Operator
+            } else {
+                Source::Default
+            },
+            setting: pull,
         },
     }
 }
@@ -108,8 +187,13 @@ pub(crate) async fn update<S: StateStore>(
     Json(update): Json<Update>,
 ) -> Response {
     let before = current(&state).await;
-    let result = match update.audit_events_max_age.as_deref().map(str::trim) {
-        Some(text) if !text.is_empty() => match validate(text) {
+    let result = match update
+        .audit_events_max_age
+        .as_ref()
+        .map(|text| text.as_deref().map(str::trim))
+    {
+        None => Ok(()),
+        Some(Some(text)) if !text.is_empty() => match validate(text) {
             Ok(value) => state
                 .store
                 .store_state(AUDIT_EVENTS_MAX_AGE_KEY, &format_duration(value))
@@ -126,6 +210,17 @@ pub(crate) async fn update<S: StateStore>(
             .await
             .map_err(|e| e.to_string()),
     };
+    let result = result.and(match update.pull_newer_images {
+        None => Ok(()),
+        Some(value) => state
+            .store
+            .store_state(
+                PULL_NEWER_IMAGES_KEY,
+                value.map(|on| on.to_string()).as_deref().unwrap_or(""),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+    });
     if let Err(error) = result {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -137,23 +232,38 @@ pub(crate) async fn update<S: StateStore>(
     // for this very change is what triggers it. The event carries what
     // changed; the middleware that closes it keeps a description it finds.
     let after = current(&state).await;
+    let mut changes = Vec::new();
+    if update.audit_events_max_age.is_some() {
+        changes.push(crate::audit::Change {
+            setting: AUDIT_EVENTS_MAX_AGE_KEY.into(),
+            from: describe(&before.audit_events_max_age),
+            to: describe(&after.audit_events_max_age),
+        });
+    }
+    if update.pull_newer_images.is_some() {
+        changes.push(crate::audit::Change {
+            setting: PULL_NEWER_IMAGES_KEY.into(),
+            from: describe_toggle(&before.pull_newer_images),
+            to: describe_toggle(&after.pull_newer_images),
+        });
+    }
+    let (id, name) = subject_for(
+        update.audit_events_max_age.is_some(),
+        update.pull_newer_images.is_some(),
+    );
     let mut event = crate::audit::event(
         "configure",
         crate::audit::Subject {
             kind: "settings".into(),
-            id: AUDIT_EVENTS_MAX_AGE_SUBJECT.into(),
-            name: "Audit history".into(),
+            id: id.into(),
+            name: name.into(),
             available: None,
         },
         "completed",
         crate::audit::actor(),
         "Settings changed.",
     );
-    event.changes = Some(vec![crate::audit::Change {
-        setting: AUDIT_EVENTS_MAX_AGE_KEY.into(),
-        from: describe(&before.audit_events_max_age),
-        to: describe(&after.audit_events_max_age),
-    }]);
+    event.changes = Some(changes);
     crate::audit::record(&state, event).await;
     Json(after).into_response()
 }
@@ -164,6 +274,14 @@ fn describe(retention: &Retention) -> String {
     match retention.source {
         Source::Default => format!("{} (default)", retention.effective),
         _ => retention.effective.clone(),
+    }
+}
+
+fn describe_toggle(toggle: &Toggle) -> String {
+    let value = if toggle.effective { "on" } else { "off" };
+    match toggle.source {
+        Source::Default => format!("{value} (default)"),
+        _ => value.into(),
     }
 }
 
@@ -333,6 +451,49 @@ mod tests {
         assert_eq!(
             events[0]["changes"],
             json!([{"setting": "audit_events_max_age", "from": "30d (default)", "to": "1d"}])
+        );
+    }
+
+    #[tokio::test]
+    async fn pulling_newer_images_is_off_until_the_operator_turns_it_on() {
+        let (app, store) = setup(None).await;
+        let (_, body) = call(&app, "GET", Value::Null).await;
+        assert_eq!(
+            body["pullNewerImages"],
+            json!({"effective": false, "source": "default", "setting": null})
+        );
+
+        call(&app, "PUT", json!({"auditEventsMaxAge": "45d"})).await;
+        let (status, body) = call(&app, "PUT", json!({"pullNewerImages": true})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["pullNewerImages"],
+            json!({"effective": true, "source": "operator", "setting": true})
+        );
+        // A setting left out of the request stays as it was.
+        assert_eq!(body["auditEventsMaxAge"]["setting"], "45d");
+
+        let events: Vec<Value> = store
+            .list_audit_events()
+            .await
+            .unwrap()
+            .iter()
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        let event = events
+            .iter()
+            .find(|event| event["subject"]["id"] == PULL_NEWER_IMAGES_SUBJECT)
+            .expect("the change is audited under its own subject");
+        assert_eq!(event["subject"]["name"], "Image pulls");
+        assert_eq!(
+            event["changes"],
+            json!([{"setting": "pull_newer_images", "from": "off (default)", "to": "on"}])
+        );
+
+        let (_, body) = call(&app, "PUT", json!({"pullNewerImages": null})).await;
+        assert_eq!(
+            body["pullNewerImages"],
+            json!({"effective": false, "source": "default", "setting": null})
         );
     }
 
