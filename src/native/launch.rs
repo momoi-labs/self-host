@@ -245,6 +245,26 @@ fn environment_for(account: &ResolvedAccount, request: &LaunchRequest) -> Vec<(S
 /// nothing and leaves no cgroup behind.
 #[cfg(target_os = "linux")]
 pub fn launch(root: &CgroupRoot, request: &LaunchRequest) -> Result<LaunchedProcess, LaunchError> {
+    let account = super::identity::resolve(&request.account)?;
+    working_dir_within(&account.home, &request.working_dir)?;
+    validate(request)?;
+    let cgroup = root.create(&request.application_id, &request.limits)?;
+    match launch_in(&cgroup, request) {
+        Ok(process) => Ok(process),
+        Err(error) => {
+            let _ = cgroup.remove();
+            Err(error)
+        }
+    }
+}
+
+/// Readiness runs in the main command's existing resource context, with
+/// exactly the same identity checks and privilege drop as a fresh launch.
+#[cfg(target_os = "linux")]
+pub(crate) fn launch_in(
+    cgroup: &ApplicationCgroup,
+    request: &LaunchRequest,
+) -> Result<LaunchedProcess, LaunchError> {
     use std::os::unix::io::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -253,7 +273,6 @@ pub fn launch(root: &CgroupRoot, request: &LaunchRequest) -> Result<LaunchedProc
     working_dir_within(&account.home, &request.working_dir)?;
     validate(request)?;
     let last_cap = read_cap_last_cap()?;
-    let cgroup = root.create(&request.application_id, &request.limits)?;
 
     // Opened here, while still privileged and before forking, so the child
     // only has to write to it: no path lookup after fork.
@@ -261,7 +280,6 @@ pub fn launch(root: &CgroupRoot, request: &LaunchRequest) -> Result<LaunchedProc
     let procs = match std::fs::OpenOptions::new().write(true).open(&procs_path) {
         Ok(file) => file,
         Err(source) => {
-            let _ = cgroup.remove();
             return Err(CgroupError::Io {
                 path: procs_path,
                 source,
@@ -294,14 +312,13 @@ pub fn launch(root: &CgroupRoot, request: &LaunchRequest) -> Result<LaunchedProc
             Ok(LaunchedProcess {
                 pid: child.id(),
                 child,
-                cgroup,
+                cgroup: cgroup.clone(),
             })
         }
         Err(e) => {
             // A refused pre_exec step or a missing program: the child is gone
             // and never ran the command, so the cgroup is empty.
             drop(procs);
-            let _ = cgroup.remove();
             Err(LaunchError::Spawn(e))
         }
     }

@@ -2,10 +2,10 @@
 
 A Native Application is a process tree the Platform runs on the Host itself,
 without a container, under a Linux account that exists only for it. This
-page covers the part that is built: the account, the privilege drop and the
-cgroup. Nothing here is reachable from the Operator API yet. The record can
-say `"runtime": {"kind": "native"}` (ADR-0028), but create and update refuse
-it until the lifecycle slice lands. s6 supervision (ADR-0014) is also later.
+page covers account provisioning, privilege dropping, cgroups and s6
+supervision. The Operator API still refuses native create and update requests
+until N3 connects the lifecycle adapter. The internal supervisor does not
+change that refusal.
 
 Linux only. On any other system the same functions return an `Unsupported`
 error and nothing else happens.
@@ -74,7 +74,8 @@ the Platform's own API key set on the daemon never reaches an Application.
 stdin is `/dev/null`; stdout and stderr are pipes the caller reads.
 
 Every launch has a `Purpose` (`Main`, `Hook`, `Build`, `Terminal`) and all
-of them go through the same steps. A build or a terminal is not a way to get
+of them go through the same steps. Readiness commands use `Hook` and join the
+main command's existing cgroup through the same N1 launch checks. A build or a terminal is not a way to get
 more than the Application has.
 
 ## What the cgroup does
@@ -141,9 +142,113 @@ both when it ends, also on failure.
 
 ## What comes later
 
-- Supervision with s6 (ADR-0014): restart on exit, logs, readiness.
 - The Operator API: creating, deploying and stopping a Native Application
   through the console. Until then the record shape exists and is refused.
 - Turning a `NativeDefinition` plus the Application's Variables into a
   `LaunchRequest`, described as a proposed shape in
   `docs/deployment-contracts.md`.
+
+## Supervision and intended state
+
+`native::supervision::Supervisor` connects to a running s6 scan tree. It does
+not start a second scanner when the daemon restarts. `prepare` creates a
+stopped service; `start`, `stop` and `restart` change it and wait for s6's
+ready or fully stopped notification. A failed readiness check reports a
+startup error with the Application's log directory.
+
+The root-owned `down` file records stopped intent. Starting removes it and
+stopping writes it before sending a control command. Both operations sync
+the directory. s6 reads the same file after reboot. The service definition
+is private JSON, separate from Application data, and includes argv,
+Variables, limits, readiness and timeouts. N3 will map Platform State to this
+internal representation; the Operator API does not accept it yet.
+
+Each generated `run` script invokes the internal `native-run` command. That
+runner calls N1, forwards stdout and stderr, runs readiness under the same
+Application Account, then notifies s6. Main commands and readiness commands
+inherit no supervisor descriptors or daemon credentials. The runner handles
+stop with N1's grace period and `cgroup.kill`. The `finish` script repeats
+cgroup cleanup when a runner crashes or is killed. The `s6-setlock` lock prevents
+a replacement from overlapping a still-running wrapper.
+
+All supervisor paths must be absolute, root-owned, free of symlinks and
+unwritable by other accounts, including their ancestors. Service definitions
+and wrappers are inaccessible to Application Accounts. Keep the executable
+in a protected directory too. A writable development checkout is refused.
+
+s6-log captures each Application in its own private log directory, owned by
+the Platform. It rotates at 1 MiB and keeps ten old files. The Application
+cannot edit its log history or another Application's logs. Application data
+stays in the Application Account's home and is never removed by stop or
+restart.
+
+## Linux boot supervision
+
+Install the distribution's `s6` package. Linux must expose cgroup v2 with
+`cpu`, `memory`, `pids` and `cgroup.kill`. On Debian or Ubuntu:
+
+```sh
+sudo apt-get install s6
+```
+
+`assets/linux/self-host-native.service` starts one root-owned s6 tree with
+`Delegate=cpu memory pids`. The boot command moves the supervisor into a
+separate cgroup leaf before enabling controllers for Application cgroups.
+The service manager owns the scanner's lifetime; s6 owns Application
+processes. Restarting the Platform daemon does not restart this unit.
+
+The Linux installer opts into that unit with `SELF_HOST_NATIVE=1`. It checks
+for s6 and cgroup v2 before installing and enabling it. The default installer
+keeps its existing container-only behavior. Installing the unit does not
+enable native API requests or create any Applications.
+
+For development on a disposable Linux Host, install the built binary and
+unit with root ownership, then start the unit:
+
+```sh
+sudo install -o root -g root -m 755 target/debug/self-host /usr/local/bin/self-host
+sudo install -o root -g root -m 644 assets/linux/self-host-native.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now self-host-native.service
+sudo systemctl status self-host-native.service
+```
+
+The scan directory is `/var/lib/self-host/native/services`. The boot command
+writes the delegated Application cgroup path to
+`/var/lib/self-host/native/cgroup-root`. `Supervisor::connect` takes that
+path and the installed executable. Missing s6, unsafe supervision paths and
+missing controllers fail before Application code runs. Use
+`journalctl -u self-host-native.service` for boot failures.
+
+## Supervision validation
+
+`tests/native_supervision_linux.rs` runs only with explicit `--ignored` on a
+disposable root Linux environment. It checks main and readiness identities,
+zero capabilities, protected wrappers, crash recovery, detached descendant
+cleanup, log rotation, reconnect without duplication, stopped intent after
+scanner restart, retained data and unhealthy-startup errors. These checks
+complement the N1 privileged tests; skipped tests are not Linux evidence.
+
+The s6 behavior follows its [service directory
+contract](https://skarnet.org/software/s6/servicedir.html) and
+[control commands](https://skarnet.org/software/s6/s6-svc.html).
+
+For a real reboot check, use the fixture only on a disposable Host after
+installing the unit above. Build and prepare the two synthetic Applications:
+
+```sh
+cargo build --example native_reboot
+sudo target/debug/examples/native_reboot prepare
+```
+
+Reboot that disposable Host, wait for `self-host-native.service` to start,
+then verify:
+
+```sh
+sudo target/debug/examples/native_reboot verify
+```
+
+The fixture checks that the boot id changed, the running Application started
+exactly twice, the stopped Application started once, both retained their
+data, and the running process uses a nonzero uid. It leaves the fixtures in
+place for inspection. Destroy the disposable Host when validation ends.

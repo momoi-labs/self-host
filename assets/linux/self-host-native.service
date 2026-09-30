@@ -1,0 +1,19 @@
+[Unit]
+Description=self-host native Application supervision
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/self-host native-scan --root /var/lib/self-host/native
+Restart=on-failure
+RestartSec=2
+Delegate=cpu memory pids
+KillMode=control-group
+TimeoutStopSec=30
+UMask=0077
+StateDirectory=self-host
+
+[Install]
+WantedBy=multi-user.target

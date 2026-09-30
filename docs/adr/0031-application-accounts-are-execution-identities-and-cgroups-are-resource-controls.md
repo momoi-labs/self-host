@@ -34,10 +34,25 @@ why the account and its home are shaped the way they are.
 
 ## Consequences
 
-Provisioning needs root and launching needs root, so the daemon runs with
-that privilege on a Linux Host that serves Native Applications. The command
-itself never does; `tests/native_linux.rs` proves the identity, the empty
-capability sets, the limits and the teardown on a real Host.
+The Linux daemon retains root for account provisioning and launch setup.
+The s6 launcher also needs root to join a cgroup and drop the child's
+privileges. This is the accepted N2 boundary, resolving the pending-decision
+note in the wave 1 handoff. Application code never inherits that privilege.
+Main commands, readiness checks, hooks, builds, terminals and their
+descendants all use the N1 identity and cgroup checks before exec.
+
+A separate privileged helper could reduce the daemon's authority. We defer
+it because it would add an authenticated IPC protocol and a second lifecycle
+boundary while N1 already performs privileged setup in the daemon. The
+tradeoff is explicit: a daemon compromise has Host-wide authority. Protected
+root-owned supervision files and fail-closed child setup are required; an
+Application cannot write its launcher or turn a failed check into a root
+execution path.
+
+The Host service manager starts one s6 supervisor tree and delegates cgroup
+controllers. It does not supervise individual Applications. Restarting the
+daemon reconnects to that tree. Restarting the Host restores each
+Application's recorded running or stopped intent.
 
 A hook, a build or a terminal is not a privileged path. All four purposes go
 through the same order, so the console's terminal on a Native Application is
