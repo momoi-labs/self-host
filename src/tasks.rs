@@ -43,6 +43,9 @@ pub enum Work {
     },
     RestartApplication {
         id: String,
+        /// Pull newer images first. Tasks queued before this existed did not.
+        #[serde(default)]
+        pull: bool,
     },
     RemoveApplication {
         id: String,
@@ -244,9 +247,14 @@ async fn run<S: StateStore>(state: &AppState<S>, task: Task) {
         Err(error) => Err(ErrorReport::new(&Stopped(error))),
     };
     let mut outcome = match &result {
-        Ok(()) => event(&task, "completed", "Action completed."),
+        Ok(_) => event(&task, "completed", "Action completed."),
         Err(_) => event(&task, "failed", "Action failed."),
     };
+    if let Ok(changes) = &result
+        && !changes.is_empty()
+    {
+        outcome.changes = Some(changes.clone());
+    }
     if let Err(error) = result {
         tracing::warn!(task = %task.id, action = %task.action, subject = %task.subject.name, "{error}");
         outcome.error = Some(error);
@@ -257,15 +265,22 @@ async fn run<S: StateStore>(state: &AppState<S>, task: Task) {
     }
 }
 
-async fn execute<S: StateStore>(state: AppState<S>, work: Work) -> Result<(), ErrorReport> {
+/// Carries the work out. What it changed, when it can say, goes on the
+/// task's event.
+async fn execute<S: StateStore>(
+    state: AppState<S>,
+    work: Work,
+) -> Result<Vec<audit::Change>, ErrorReport> {
     let store = &state.store;
     let docker = state.docker.as_ref();
     let routes = state.routes.as_ref();
-    match work {
-        Work::DeployApplication { pending } => apps::finish_deploy(store, docker, routes, pending)
-            .await
-            .map(drop)
-            .map_err(|e| ErrorReport::new(&e)),
+    let done = match work {
+        Work::DeployApplication { pending } => {
+            return apps::finish_deploy_reporting(store, docker, routes, pending)
+                .await
+                .map(|(_, changes)| changes)
+                .map_err(|e| ErrorReport::new(&e));
+        }
         Work::StartApplication { id } => apps::start_application(store, docker, routes, &id)
             .await
             .map(drop)
@@ -274,10 +289,12 @@ async fn execute<S: StateStore>(state: AppState<S>, work: Work) -> Result<(), Er
             .await
             .map(drop)
             .map_err(|e| ErrorReport::new(&e)),
-        Work::RestartApplication { id } => apps::restart_application(store, docker, routes, &id)
-            .await
-            .map(drop)
-            .map_err(|e| ErrorReport::new(&e)),
+        Work::RestartApplication { id, pull } => {
+            return apps::restart_application(store, docker, routes, &id, pull)
+                .await
+                .map(|(_, changes)| changes)
+                .map_err(|e| ErrorReport::new(&e));
+        }
         // By id, then by the name it has now: a rename in between is not a
         // reason to leave the Application behind.
         Work::RemoveApplication { id } => match apps::get_application(store, &id).await {
@@ -299,7 +316,8 @@ async fn execute<S: StateStore>(state: AppState<S>, work: Work) -> Result<(), Er
         }
         Work::BuildCustomImage { image } => custom_images::run_build(&state, image).await,
         Work::RemoveCustomImage { id } => custom_images::run_remove(&state, &id).await,
-    }
+    };
+    done.map(|()| Vec::new())
 }
 
 async fn load<S: StateStore>(store: &S) -> Result<Vec<Task>, StoreError> {

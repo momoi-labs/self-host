@@ -383,6 +383,10 @@ struct UpdateApplicationRequest {
     web_port: Option<u16>,
     #[serde(default)]
     development: Option<DevelopmentApplicationRequest>,
+    /// Pull newer images before redeploying. Without it, the Platform setting
+    /// decides.
+    #[serde(default)]
+    pull: Option<bool>,
 }
 
 /// One container of an Application, as Docker sees it right now.
@@ -846,6 +850,10 @@ async fn update_app<S: StateStore>(
         }
         None => None,
     };
+    let pull = match body.pull {
+        Some(pull) => pull,
+        None => settings::pull_newer_images(&state).await,
+    };
     let namespace = state.dns_records.lock_namespace().await;
     let prepared = apps::prepare_update(
         &state.store,
@@ -859,6 +867,7 @@ async fn update_app<S: StateStore>(
             web_service: body.web_service,
             web_port: body.web_port,
             development,
+            pull,
         },
     )
     .await;
@@ -948,12 +957,32 @@ async fn stop_app<S: StateStore>(
     lifecycle_response(&state, "stop", id, |id| tasks::Work::StopApplication { id }).await
 }
 
+/// What a restart may say. Without `pull`, the Platform setting decides.
+#[derive(Deserialize, Default)]
+struct RestartRequest {
+    pull: Option<bool>,
+}
+
 async fn restart_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    body: axum::body::Bytes,
 ) -> Response {
+    // No body at all is how the CLI asks, and it means the same as `{}`.
+    let request = if body.is_empty() {
+        RestartRequest::default()
+    } else {
+        match serde_json::from_slice::<RestartRequest>(&body) {
+            Ok(request) => request,
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, &error),
+        }
+    };
+    let pull = match request.pull {
+        Some(pull) => pull,
+        None => settings::pull_newer_images(&state).await,
+    };
     lifecycle_response(&state, "restart", id, |id| {
-        tasks::Work::RestartApplication { id }
+        tasks::Work::RestartApplication { id, pull }
     })
     .await
 }
@@ -962,7 +991,7 @@ async fn lifecycle_response<S: StateStore>(
     state: &AppState<S>,
     action: &'static str,
     id: String,
-    job: fn(String) -> tasks::Work,
+    job: impl FnOnce(String) -> tasks::Work,
 ) -> Response {
     let app = match apps::get_application(&state.store, &id).await {
         Ok(app) => app,
@@ -1901,6 +1930,98 @@ mod tests {
 
         let response = post_json(&app, "/apps/id/nope/start", Some("test-key"), json!({})).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_restart_pulls_when_asked_or_when_the_setting_says_so() {
+        let (app, store, docker) = setup_app("test-key").await;
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": HERMES}),
+        )
+        .await;
+        let record = settle(&store, "hermes").await;
+        let image = "nousresearch/hermes-agent:latest";
+        docker
+            .registry
+            .lock()
+            .unwrap()
+            .insert(image.into(), format!("sha256:{}", "b".repeat(64)));
+        let restart = format!("/apps/id/{}/restart", record.id);
+        let pulls = || docker.pulled.lock().unwrap().len();
+
+        // The setting is off, so a restart that does not say does not pull.
+        let response = post_json(&app, &restart, Some("test-key"), json!({})).await;
+        let (_, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
+        assert_eq!(pulls(), 0);
+        assert_eq!(event.changes, None);
+
+        let response = post_json(&app, &restart, Some("test-key"), json!({"pull": true})).await;
+        let (_, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
+        assert_eq!(pulls(), 1);
+        assert_eq!(
+            event.changes,
+            Some(vec![audit::Change {
+                setting: image.into(),
+                from: "none".into(),
+                to: "sha256:bbbbbbbbbbbb".into(),
+            }])
+        );
+
+        put_json(
+            &app,
+            "/settings",
+            Some("test-key"),
+            json!({"pullNewerImages": true}),
+        )
+        .await;
+        let response = post_json(&app, &restart, Some("test-key"), json!({})).await;
+        accepted_and_finished(&store, response).await;
+        assert_eq!(pulls(), 2);
+
+        // The request overrides the setting either way.
+        let response = post_json(&app, &restart, Some("test-key"), json!({"pull": false})).await;
+        accepted_and_finished(&store, response).await;
+        assert_eq!(pulls(), 2);
+    }
+
+    #[tokio::test]
+    async fn saving_and_redeploying_pulls_when_asked() {
+        let (app, store, docker) = setup_app("test-key").await;
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({"name": "hermes", "compose": HERMES}),
+        )
+        .await;
+        let record = settle(&store, "hermes").await;
+        docker.registry.lock().unwrap().insert(
+            "nousresearch/hermes-agent:latest".into(),
+            format!("sha256:{}", "e".repeat(64)),
+        );
+
+        let response = put_json(
+            &app,
+            &format!("/apps/id/{}", record.id),
+            Some("test-key"),
+            json!({"pull": true}),
+        )
+        .await;
+        let (_, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.action, "configure");
+        assert_eq!(event.status, "completed");
+        assert_eq!(docker.pulled.lock().unwrap().len(), 1);
+        assert_eq!(
+            event.changes.map(|changes| changes[0].to.clone()),
+            Some("sha256:eeeeeeeeeeee".into())
+        );
     }
 
     #[tokio::test]

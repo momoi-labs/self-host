@@ -415,8 +415,9 @@ async fn subject<S: StateStore>(
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| field(body, pointer));
     } else if kind == "settings" {
-        id = crate::settings::AUDIT_EVENTS_MAX_AGE_SUBJECT.into();
-        name = "Audit history".into();
+        let (setting, label) = crate::settings::subject(body);
+        id = setting.into();
+        name = label.into();
     } else if kind == "api-key" {
         name = state
             .store

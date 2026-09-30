@@ -12,6 +12,8 @@ import {
   AlertDialogTitle,
   Button,
   Card,
+  Checkbox,
+  Label,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
@@ -28,10 +30,10 @@ import { Glance } from "../components/Glance.js";
 import { HttpStatus } from "../components/HttpStatus.js";
 import { AppLogPane } from "../components/LogPane.js";
 import { useToast } from "../components/Toasts.js";
-import { api, failureOf } from "../lib/api.js";
+import { api, failureOf, getJson } from "../lib/api.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
 import { waitForTask } from "../lib/tasks.js";
-import type { App, Metrics, Report } from "../lib/types.js";
+import type { App, Metrics, Report, Settings } from "../lib/types.js";
 import { fetchEvents } from "../lib/useEvents.js";
 import { seriesFor } from "../lib/useMetrics.js";
 
@@ -54,6 +56,8 @@ export function AppDetail({
 }) {
   const notify = useToast();
   const [confirming, setConfirming] = useState(false);
+  /** The restart waiting for confirmation, or null. */
+  const [restart, setRestart] = useState<{ pull: boolean } | null>(null);
   const [removing, setRemoving] = useState(false);
   const removalInFlight = useRef(false);
   const samples = seriesFor(metrics, app.id);
@@ -65,10 +69,13 @@ export function AppDetail({
 
   // The API queues the action and answers with its task; the outcome comes
   // from the task's event, which keeps the same id from start to finish.
-  async function lifecycle(verb: string) {
+  async function lifecycle(verb: string, body?: object) {
     if (removalInFlight.current) return;
     try {
-      const res = await api(`/apps/id/${encodeURIComponent(app.id)}/${verb}`, { method: "POST" });
+      const res = await api(`/apps/id/${encodeURIComponent(app.id)}/${verb}`, {
+        method: "POST",
+        body: body ? JSON.stringify(body) : undefined,
+      });
       if (!res.ok) {
         notify("danger", `Could not ${verb} ${app.name}`, await failureOf(res));
       } else {
@@ -89,6 +96,12 @@ export function AppDetail({
       notify("danger", `Could not ${verb} ${app.name}`, (cause as Error).message);
     }
     await reload();
+  }
+
+  /** Opens the restart confirmation with the Platform's choice to pull. */
+  async function askRestart() {
+    const settings = await getJson<Settings>("/settings");
+    setRestart({ pull: settings?.pullNewerImages.effective ?? false });
   }
 
   async function save(body: Submission): Promise<Report | null> {
@@ -201,7 +214,7 @@ export function AppDetail({
               <Button
                 size="sm"
                 disabled={removing || app.status !== "running"}
-                onClick={() => void lifecycle("restart")}
+                onClick={() => void askRestart()}
               >
                 Restart
               </Button>
@@ -265,6 +278,48 @@ export function AppDetail({
           </TabsContent>
         </Tabs>
       </Card>
+
+      {/*
+        The checkbox starts where the Platform setting is, and this restart
+        can go the other way without touching the setting.
+      */}
+      <AlertDialog open={restart !== null} onOpenChange={(open) => { if (!open) setRestart(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restart application</AlertDialogTitle>
+          </AlertDialogHeader>
+          <div className="dialog-body stack">
+            <AlertDialogDescription>
+              <code>{app.name}</code> restarts its {isCompose(app) ? "containers" : "container"}.
+            </AlertDialogDescription>
+            <div className="field">
+              <div className="check">
+                <Checkbox id="restart-pull" checked={restart?.pull ?? false}
+                  onCheckedChange={(checked) => setRestart({ pull: checked === true })}
+                  aria-describedby="restart-pull-hint" />
+                <Label htmlFor="restart-pull">Pull newer images</Label>
+              </div>
+              <p id="restart-pull-hint" className="muted t-label">
+                Pulls each image from its registry, then recreates the containers. If a pull fails,
+                nothing restarts. Images built on this Host are not pulled.
+              </p>
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="primary"
+              onClick={() => {
+                const pull = restart?.pull ?? false;
+                setRestart(null);
+                void lifecycle("restart", { pull });
+              }}
+            >
+              Restart
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/*
         Replaces window.confirm, which cannot be styled and says the hostname

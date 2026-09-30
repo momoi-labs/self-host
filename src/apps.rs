@@ -479,6 +479,9 @@ enum DeployWork {
     /// `docker compose up`: Compose pulls what is missing and recreates only
     /// the services whose definition changed.
     ComposeUp,
+    /// Pulls each image a registry serves first, then `docker compose up`,
+    /// which also recreates the services whose image changed.
+    PullComposeUp,
 }
 
 /// Writes the `pending` row for an image deploy. Nothing has reached Docker
@@ -677,14 +680,28 @@ pub async fn finish_deploy(
     routes: &(impl RouteStore + ?Sized),
     pending: PendingDeploy,
 ) -> Result<ApplicationRecord, DeployError> {
+    finish_deploy_reporting(store, docker, routes, pending)
+        .await
+        .map(|(record, _)| record)
+}
+
+/// `finish_deploy`, answering also with the image id each pull of an
+/// existing image went from and to, for the event of the task that ran it.
+pub async fn finish_deploy_reporting(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
+    pending: PendingDeploy,
+) -> Result<(ApplicationRecord, Vec<crate::audit::Change>), DeployError> {
     let PendingDeploy { record, work } = pending;
 
     // Nothing for Docker, but the route may be exactly what changed.
     if matches!(work, DeployWork::Settled) {
         routes.publish(&record);
-        return Ok(record);
+        return Ok((record, Vec::new()));
     }
 
+    let mut changes = Vec::new();
     let result = async {
         docker.ensure_network(APP_NETWORK).await?;
         match &work {
@@ -692,13 +709,16 @@ pub async fn finish_deploy(
             DeployWork::Build { path } => docker.build_image(path, &record.image).await?,
             DeployWork::Recreate { pull } => {
                 if *pull {
-                    docker.pull_image(&record.image).await?;
+                    changes = pull_images(docker, std::slice::from_ref(&record.image)).await?;
                 }
                 let _ = docker
                     .remove_container(&container_name_for(&record.id))
                     .await;
             }
-            DeployWork::ComposeUp => {
+            DeployWork::ComposeUp | DeployWork::PullComposeUp => {
+                if matches!(work, DeployWork::PullComposeUp) {
+                    changes = pull_images(docker, &registry_images(&record)).await?;
+                }
                 let project = project_for(store, &record).await?;
                 docker.compose_up(&project).await?;
                 return Ok(());
@@ -713,7 +733,7 @@ pub async fn finish_deploy(
     let current = record_outcome(store, record, result).await?;
     // Publish after the container is up, using the names currently on record.
     routes.publish(&current);
-    Ok(current)
+    Ok((current, changes))
 }
 
 /// Gives an Application deployed before the Platform served HTTP itself a Host
@@ -874,6 +894,10 @@ pub struct ApplicationUpdate {
     /// Explicit development metadata. Omitted values preserve existing
     /// development Applications, while ordinary Compose stays ordinary.
     pub development: Option<DevelopmentApplication>,
+    /// Pull each image a registry serves before redeploying, so a moving tag
+    /// picks up what the registry has now. A redeploy that pulls is Docker's
+    /// business even when nothing else changed.
+    pub pull: bool,
 }
 
 /// Saves the change and redeploys.
@@ -983,17 +1007,19 @@ pub async fn prepare_update(
 
     let image_changed = record.image != current.image;
     let file_changed = record.compose != current.compose;
+    let pull = update.pull && !registry_images(&record).is_empty();
 
     store.insert_application(&record).await?;
 
     // Only the image is Docker's business. A rename, a new Hostname, an
     // added alias and a new web target are all a route rewrite, which costs
     // no downtime.
-    let needs_docker = if current.source == SOURCE_COMPOSE {
-        file_changed || (record.development.is_some() && record.name != current.name)
-    } else {
-        image_changed
-    };
+    let needs_docker = pull
+        || if current.source == SOURCE_COMPOSE {
+            file_changed || (record.development.is_some() && record.name != current.name)
+        } else {
+            image_changed
+        };
     if !needs_docker && current.status == STATUS_RUNNING {
         record.status = STATUS_RUNNING.into();
         store.insert_application(&record).await?;
@@ -1006,14 +1032,18 @@ pub async fn prepare_update(
     if current.source == SOURCE_COMPOSE {
         return Ok(PendingDeploy {
             record,
-            work: DeployWork::ComposeUp,
+            work: if pull {
+                DeployWork::PullComposeUp
+            } else {
+                DeployWork::ComposeUp
+            },
         });
     }
 
     Ok(PendingDeploy {
         record,
         work: DeployWork::Recreate {
-            pull: image_changed && current.source == SOURCE_IMAGE,
+            pull: pull || (image_changed && current.source == SOURCE_IMAGE),
         },
     })
 }
@@ -1222,29 +1252,116 @@ pub async fn start_application(
     Ok(current)
 }
 
+/// Restarts the Application. With `pull`, each image a registry serves is
+/// pulled first and the containers are recreated from it, so a moving tag
+/// such as `:latest` picks up what the registry has now. Answers with the
+/// image id each pull went from and to.
+///
+/// A pull that fails ends the restart before anything is touched: the
+/// containers keep running on the images they had.
 pub async fn restart_application(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
     routes: &(impl RouteStore + ?Sized),
     id: &str,
-) -> Result<ApplicationRecord, DeployError> {
+    pull: bool,
+) -> Result<(ApplicationRecord, Vec<crate::audit::Change>), DeployError> {
     let app = get_application(store, id).await?;
+    let images = if pull {
+        registry_images(&app)
+    } else {
+        Vec::new()
+    };
+    let changes = pull_images(docker, &images).await?;
     let result = async {
-        if app.source == SOURCE_COMPOSE {
-            docker
-                .compose_restart(&project_for(store, &app).await?)
-                .await?;
-        } else {
-            docker
-                .restart_container(&container_name_for(&app.id))
-                .await?;
+        match (app.source == SOURCE_COMPOSE, images.is_empty()) {
+            (true, true) => {
+                docker
+                    .compose_restart(&project_for(store, &app).await?)
+                    .await?
+            }
+            (true, false) => {
+                docker
+                    .compose_recreate(&project_for(store, &app).await?)
+                    .await?
+            }
+            (false, true) => {
+                docker
+                    .restart_container(&container_name_for(&app.id))
+                    .await?
+            }
+            (false, false) => {
+                let _ = docker.remove_container(&container_name_for(&app.id)).await;
+                start_container(store, docker, &app).await?;
+            }
         }
         Ok(())
     }
     .await;
     let current = record_outcome(store, app, result).await?;
     routes.publish(&current);
-    Ok(current)
+    Ok((current, changes))
+}
+
+/// The images a registry serves for this Application, once each. An image
+/// built on the Host, from a path, a custom image or a development image,
+/// has nowhere to be pulled from.
+fn registry_images(app: &ApplicationRecord) -> Vec<String> {
+    let images = match app.source.as_str() {
+        SOURCE_IMAGE => vec![app.image.clone()],
+        SOURCE_COMPOSE => app
+            .compose
+            .as_deref()
+            .and_then(|compose| ComposeDefinition::parse(compose).ok())
+            .map(|definition| {
+                definition
+                    .services
+                    .into_iter()
+                    .map(|service| service.image)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let mut unique: Vec<String> = Vec::new();
+    for image in images {
+        if !crate::docker::built_on_host(&image) && !unique.contains(&image) {
+            unique.push(image);
+        }
+    }
+    unique
+}
+
+/// Pulls each image and says which id it had before and has now, so a pull
+/// that changed nothing reads as such.
+async fn pull_images(
+    docker: &(impl DockerRuntime + ?Sized),
+    images: &[String],
+) -> Result<Vec<crate::audit::Change>, DeployError> {
+    let mut changes = Vec::new();
+    for image in images {
+        let before = docker.image_id(image).await?;
+        docker.pull_image(image).await?;
+        let after = docker.image_id(image).await?;
+        changes.push(crate::audit::Change {
+            setting: image.clone(),
+            from: short_image_id(before),
+            to: short_image_id(after),
+        });
+    }
+    Ok(changes)
+}
+
+/// `sha256:` and the first twelve digits, the way `docker images` prints an
+/// id. `none` when the Host did not have the image.
+fn short_image_id(id: Option<String>) -> String {
+    match id {
+        Some(id) => {
+            let digits = id.strip_prefix("sha256:").unwrap_or(&id);
+            format!("sha256:{}", &digits[..digits.len().min(12)])
+        }
+        None => "none".into(),
+    }
 }
 
 // ── State ──────────────────────────────────────────────────────
@@ -2160,6 +2277,163 @@ services:
             routes.get(&saved.id).is_none(),
             "no route for a project that is not up"
         );
+    }
+
+    #[tokio::test]
+    async fn a_restart_that_pulls_refreshes_registry_images_and_recreates_the_project() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let compose = format!(
+            "{HERMES}  tools:\n    image: sf-img-tools:abc\n  worker:\n    image: nousresearch/hermes-agent:latest\n"
+        );
+        let pending =
+            prepare_deploy_from_compose(&store, "hermes", &compose, None, Some(9119), None, None)
+                .await
+                .unwrap();
+        let app = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+        let hermes = "nousresearch/hermes-agent:latest";
+        docker
+            .images
+            .lock()
+            .unwrap()
+            .insert(hermes.into(), format!("sha256:{}", "a".repeat(64)));
+        docker
+            .registry
+            .lock()
+            .unwrap()
+            .insert(hermes.into(), format!("sha256:{}", "b".repeat(64)));
+
+        let (restarted, changes) = restart_application(&store, &docker, &routes, &app.id, true)
+            .await
+            .unwrap();
+
+        assert_eq!(restarted.status, STATUS_RUNNING);
+        // Once per image, and never an image the Host built itself.
+        assert_eq!(docker.pulled.lock().unwrap().as_slice(), [hermes]);
+        assert_eq!(
+            changes,
+            [crate::audit::Change {
+                setting: hermes.into(),
+                from: "sha256:aaaaaaaaaaaa".into(),
+                to: "sha256:bbbbbbbbbbbb".into(),
+            }]
+        );
+        assert_eq!(
+            docker.recreated.lock().unwrap().as_slice(),
+            [project_name_for(&app.id)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redeploy_that_pulls_refreshes_the_images_even_with_nothing_edited() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+        let hermes = "nousresearch/hermes-agent:latest";
+        docker
+            .registry
+            .lock()
+            .unwrap()
+            .insert(hermes.into(), format!("sha256:{}", "d".repeat(64)));
+
+        // Nothing edited and no pull: only the route, as before.
+        let pending = prepare_update(&store, &app.id, ApplicationUpdate::default())
+            .await
+            .unwrap();
+        assert!(pending.is_settled());
+
+        let pending = prepare_update(
+            &store,
+            &app.id,
+            ApplicationUpdate {
+                pull: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!pending.is_settled());
+        let (redeployed, changes) = finish_deploy_reporting(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+
+        assert_eq!(redeployed.status, STATUS_RUNNING);
+        assert_eq!(docker.pulled.lock().unwrap().as_slice(), [hermes]);
+        assert_eq!(changes[0].to, "sha256:dddddddddddd");
+    }
+
+    #[tokio::test]
+    async fn a_restart_without_pull_restarts_what_is_there() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+
+        let (_, changes) = restart_application(&store, &docker, &routes, &app.id, false)
+            .await
+            .unwrap();
+
+        assert!(changes.is_empty());
+        assert!(docker.pulled.lock().unwrap().is_empty());
+        assert!(docker.recreated.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pull_that_fails_leaves_the_application_running_as_it_was() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+        let docker = FakeDocker {
+            pull_failure: Some("Error response from daemon: toomanyrequests".into()),
+            ..docker
+        };
+
+        let err = restart_application(&store, &docker, &routes, &app.id, true)
+            .await
+            .unwrap_err();
+
+        assert!(
+            ErrorReport::new(&err)
+                .caused_by
+                .iter()
+                .any(|c| c.contains("toomanyrequests"))
+        );
+        assert!(docker.recreated.lock().unwrap().is_empty());
+        let saved = store.get_application(&app.id).await.unwrap().unwrap();
+        assert_eq!(saved.status, STATUS_RUNNING);
+        assert!(saved.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_restart_that_pulls_replaces_a_single_container() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let pending = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None, None)
+            .await
+            .unwrap();
+        let app = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+        docker
+            .registry
+            .lock()
+            .unwrap()
+            .insert("nginx:alpine".into(), format!("sha256:{}", "c".repeat(64)));
+
+        let (restarted, changes) = restart_application(&store, &docker, &routes, &app.id, true)
+            .await
+            .unwrap();
+
+        assert_eq!(restarted.status, STATUS_RUNNING);
+        assert_eq!(changes[0].from, "none");
+        assert_eq!(changes[0].to, "sha256:cccccccccccc");
+        assert_eq!(docker.deployed_apps(), [container_name_for(&app.id)]);
     }
 
     #[tokio::test]

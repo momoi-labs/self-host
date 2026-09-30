@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { isSettingsTab, type SettingsTab } from "../views/Settings.js";
+import { isSettingsSection, type SettingsSection } from "../views/Settings.js";
 
 export type View =
   | { view: "overview"; id: null }
@@ -12,20 +12,20 @@ export type View =
   | { view: "custom-images"; id: null }
   | { view: "environments"; id: string }
   | { view: "environment-new"; id: null }
-  | { view: "settings"; id: SettingsTab };
+  | { view: "settings"; id: SettingsSection };
 
 const overview: View = { view: "overview", id: null };
 
 /**
  * A view named in the URL fragment, so a link into the console opens on it.
- * Settings carries its tab in the fragment too: `#settings/api-keys`.
+ * Settings carries its section in the fragment too: `#settings/api-keys`.
  */
 function fromHash(): View | null {
   const hash = location.hash;
   if (hash === "#dns") return { view: "dns", id: null };
   if (hash === "#settings") return { view: "settings", id: "general" };
-  if (hash.startsWith("#settings/") && isSettingsTab(hash.slice(10)))
-    return { view: "settings", id: hash.slice(10) as SettingsTab };
+  if (hash.startsWith("#settings/") && isSettingsSection(hash.slice(10)))
+    return { view: "settings", id: hash.slice(10) as SettingsSection };
   if (hash === "#events") return { view: "events", id: null };
   if (hash === "#new") return { view: "new", id: null };
   if (hash === "#custom-images") return { view: "custom-images", id: null };

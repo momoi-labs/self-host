@@ -1,50 +1,62 @@
+import { useEffect } from "react";
 import {
-  Card,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
 } from "@momoi-labs/kiso-react";
 
+import { Masonry } from "../components/Masonry.js";
 import { ApiKeys } from "./settings/ApiKeys.js";
-import { DnsSetup } from "./settings/DnsSetup.js";
+import { DnsSetup, YourHost } from "./settings/DnsSetup.js";
 import { General } from "./settings/General.js";
 
-export type SettingsTab = "general" | "api-keys" | "dns-setup";
+export type SettingsSection = "general" | "api-keys" | "dns-setup";
 
-export const settingsTabs: readonly SettingsTab[] = ["general", "api-keys", "dns-setup"];
+export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup"];
 
-export function isSettingsTab(value: string): value is SettingsTab {
-  return (settingsTabs as readonly string[]).includes(value);
+export function isSettingsSection(value: string): value is SettingsSection {
+  return (settingsSections as readonly string[]).includes(value);
 }
 
 /**
- * Everything the Operator configures about the Platform itself, one tab per
- * group. The active tab is in the URL fragment, so a link lands on it and a
- * reload keeps it.
+ * Everything the Operator configures about the Platform itself, one card per
+ * group, packed to fill the screen. The URL fragment names a section, so a
+ * link scrolls to its card.
  */
-export function Settings({ tab, onTab }: { tab: SettingsTab; onTab: (tab: SettingsTab) => void }) {
+export function Settings({ section }: { section: SettingsSection }) {
+  useEffect(() => {
+    if (section === "general") return;
+    const card = document.getElementById(`settings-${section}`);
+    const grid = card?.parentElement;
+    if (!card || !grid) return;
+    // The cards load their data after this runs and the page grows under the
+    // scroll, so the card is brought back each time the grid grows, until the
+    // page settles or the Operator scrolls on their own.
+    const observer = new ResizeObserver(() => card.scrollIntoView({ block: "start" }));
+    observer.observe(grid);
+    const stop = () => observer.disconnect();
+    const timer = window.setTimeout(stop, 2000);
+    const events = ["wheel", "touchstart", "keydown"] as const;
+    for (const event of events) window.addEventListener(event, stop, { once: true });
+    return () => {
+      stop();
+      window.clearTimeout(timer);
+      for (const event of events) window.removeEventListener(event, stop);
+    };
+  }, [section]);
+
   return (
     <div className="stack">
       <PageHeader>
         <PageHeaderTitle>Settings</PageHeaderTitle>
         <PageHeaderDescription>How the Platform runs, who can reach it, and how devices find it.</PageHeaderDescription>
       </PageHeader>
-      <Card className="detail-tabs">
-        <Tabs value={tab} onValueChange={(next) => { if (isSettingsTab(next)) onTab(next); }}>
-          <TabsList aria-label="Settings">
-            <TabsTrigger value="general">General</TabsTrigger>
-            <TabsTrigger value="api-keys">API keys</TabsTrigger>
-            <TabsTrigger value="dns-setup">DNS setup</TabsTrigger>
-          </TabsList>
-          <TabsContent value="general"><General /></TabsContent>
-          <TabsContent value="api-keys"><ApiKeys /></TabsContent>
-          <TabsContent value="dns-setup"><DnsSetup /></TabsContent>
-        </Tabs>
-      </Card>
+      <Masonry>
+        <General />
+        <YourHost />
+        <ApiKeys />
+        <DnsSetup />
+      </Masonry>
     </div>
   );
 }

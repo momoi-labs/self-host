@@ -841,7 +841,10 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
             "event-running",
             "restart",
             "running",
-            Work::RestartApplication { id: id.clone() },
+            Work::RestartApplication {
+                id: id.clone(),
+                pull: false,
+            },
         ),
         task(
             "event-pending",

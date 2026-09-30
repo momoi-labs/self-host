@@ -177,6 +177,9 @@ pub trait DockerRuntime: Send + Sync {
     /// with members is left alone and reported as an error, never force-removed.
     async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError>;
     async fn pull_image(&self, image: &str) -> Result<(), DockerError>;
+    /// The id of the image a reference points to on this Host, or `None`
+    /// when the Host does not have it.
+    async fn image_id(&self, image: &str) -> Result<Option<String>, DockerError>;
     async fn container_images(&self) -> Result<Vec<String>, DockerError>;
     async fn remove_image_repository(&self, repository: &str) -> Result<(), DockerError>;
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError>;
@@ -217,6 +220,9 @@ pub trait DockerRuntime: Send + Sync {
     async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError>;
     async fn compose_stop(&self, project: &ComposeProject) -> Result<(), DockerError>;
     async fn compose_restart(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    /// Replaces every container of the project with a new one from the image
+    /// on the Host, the way a restart would, but picking up a newer image.
+    async fn compose_recreate(&self, project: &ComposeProject) -> Result<(), DockerError>;
     /// Removes the containers and the project network. Volumes stay: they
     /// are the Application's data, and removing an Application is not
     /// permission to delete what it wrote.
@@ -376,6 +382,20 @@ impl DockerRuntime for CliDocker {
         Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok())
     }
 
+    async fn image_id(&self, image: &str) -> Result<Option<String>, DockerError> {
+        let output = std::process::Command::new("docker")
+            .args(["image", "inspect", "-f", "{{.Id}}", image])
+            .output()
+            .map_err(|e| DockerError::spawn(format!("failed to inspect image '{image}'"), e))?;
+
+        // An image the Host does not have yet is an answer, not a failure.
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!id.is_empty()).then_some(id))
+    }
+
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
         let output = std::process::Command::new("docker")
             .args(["network", "inspect", name])
@@ -427,7 +447,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
-        if image.starts_with("sf-img-") || image.starts_with("self-host-dev-") {
+        if built_on_host(image) {
             let step =
                 format!("custom image '{image}' is not available on this Host; build it again");
             let output = std::process::Command::new("docker")
@@ -781,6 +801,14 @@ impl DockerRuntime for CliDocker {
         compose(project, &["restart"], "failed to restart the Application")
     }
 
+    async fn compose_recreate(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        compose(
+            project,
+            &["up", "-d", "--force-recreate", "--remove-orphans"],
+            "failed to recreate the Application",
+        )
+    }
+
     async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError> {
         if !project_file(project).exists() {
             return Ok(());
@@ -805,6 +833,12 @@ impl DockerRuntime for CliDocker {
         );
         Ok(spawn_log_stream("docker", args))
     }
+}
+
+/// Images the Platform builds itself: custom images and development images.
+/// They have no registry to be pulled from.
+pub fn built_on_host(image: &str) -> bool {
+    image.starts_with("sf-img-") || image.starts_with("self-host-dev-")
 }
 
 /// Runs one `docker` command and reports a refusal in Docker's words.
@@ -1044,6 +1078,12 @@ pub struct FakeDocker {
     /// cannot start the container it was asked for.
     pub run_failure: Option<String>,
     pub terminals: std::sync::Arc<std::sync::Mutex<Vec<RecordedTerminal>>>,
+    /// The id each image has on the Host, by reference.
+    pub images: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// The id a pull would fetch, by reference: what the registry has now.
+    pub registry: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// Compose projects recreated, by name.
+    pub recreated: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl FakeDocker {
@@ -1060,6 +1100,9 @@ impl FakeDocker {
             compose_failure: None,
             run_failure: None,
             terminals: Default::default(),
+            images: Default::default(),
+            registry: Default::default(),
+            recreated: Default::default(),
         }
     }
 
@@ -1209,7 +1252,17 @@ impl DockerRuntime for FakeDocker {
             ));
         }
         self.pulled.lock().unwrap().push(image.to_string());
+        if let Some(id) = self.registry.lock().unwrap().get(image) {
+            self.images
+                .lock()
+                .unwrap()
+                .insert(image.to_string(), id.clone());
+        }
         Ok(())
+    }
+
+    async fn image_id(&self, image: &str) -> Result<Option<String>, DockerError> {
+        Ok(self.images.lock().unwrap().get(image).cloned())
     }
 
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
@@ -1357,6 +1410,11 @@ impl DockerRuntime for FakeDocker {
         self.compose_start(project).await
     }
 
+    async fn compose_recreate(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        self.recreated.lock().unwrap().push(project.name.clone());
+        self.compose_start(project).await
+    }
+
     async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError> {
         self.projects
             .lock()
@@ -1427,6 +1485,10 @@ where
         (**self).pull_image(image).await
     }
 
+    async fn image_id(&self, image: &str) -> Result<Option<String>, DockerError> {
+        (**self).image_id(image).await
+    }
+
     async fn build_image(&self, path: &str, tag: &str) -> Result<(), DockerError> {
         (**self).build_image(path, tag).await
     }
@@ -1489,6 +1551,10 @@ where
 
     async fn compose_restart(&self, project: &ComposeProject) -> Result<(), DockerError> {
         (**self).compose_restart(project).await
+    }
+
+    async fn compose_recreate(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_recreate(project).await
     }
 
     async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError> {

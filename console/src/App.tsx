@@ -121,7 +121,7 @@ export function App() {
             go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
           }} />
         ) : view.view === "settings" ? (
-          <Settings tab={view.id} onTab={(tab) => go({ view: "settings", id: tab })} />
+          <Settings section={view.id} />
         ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
           <Environments
             metrics={metrics}

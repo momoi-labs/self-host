@@ -14,9 +14,9 @@ import {
   SelectValue,
 } from "@momoi-labs/kiso-react";
 
-import { api, asReport, failureOf } from "../lib/api.js";
+import { api, asReport, failureOf, getJson } from "../lib/api.js";
 import { isCompose, parseAliases } from "../lib/status.js";
-import type { App, ComposeService, Inspection, Report } from "../lib/types.js";
+import type { App, ComposeService, Inspection, Report, Settings } from "../lib/types.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
 import { customImageTemplate } from "../lib/customImageTemplates.js";
@@ -36,6 +36,8 @@ export type Submission = {
     web_port: number;
     persist_data: boolean;
   };
+  /** Pull newer images before redeploying. Only an edit sends it. */
+  pull?: boolean;
 };
 
 type CustomImage = { id: string; name: string; image: string; status: string; template_id?: string | null };
@@ -110,6 +112,12 @@ export function AppForm({
   const [aliases, setAliases] = useState(saved.aliases);
   const [webService, setWebService] = useState(saved.webService);
   const [port, setPort] = useState(saved.port);
+  // Starts where the Platform setting is; this redeploy can go the other way.
+  const [pull, setPull] = useState(false);
+  useEffect(() => {
+    if (creating) return;
+    void getJson<Settings>("/settings").then((settings) => setPull(settings?.pullNewerImages.effective ?? false));
+  }, [creating]);
   const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port };
   const dirty = !creating && !same(fields, saved);
 
@@ -280,6 +288,8 @@ export function AppForm({
     } else {
       body.image = image.trim();
     }
+
+    if (!creating) body.pull = pull;
 
     const report = await onSubmit(body, source);
     if (report) place(report, sent);
@@ -534,12 +544,19 @@ export function AppForm({
       ) : (
         /* Removing lives in the header row with the other lifecycle verbs,
            so the form's footer is only about saving. A redeploy without an
-           edit is still an ask: it pulls the image again. */
+           edit is still an ask when it pulls newer images. An image built on
+           this Host has nothing to pull, so it gets no checkbox. */
         <FormActions
           sticky
           tone={dirty ? "warning" : "neutral"}
-          message={dirty ? <><strong>Unsaved changes.</strong> The Application keeps running as it is until you save.</> : "Saved. Redeploying pulls the image again."}
+          message={dirty ? <><strong>Unsaved changes.</strong> The Application keeps running as it is until you save.</> : pull && source !== "custom-image" ? "Saved. Redeploying pulls newer images first." : "Saved."}
         >
+          {source !== "custom-image" ? (
+            <div className="check">
+              <Checkbox id="f-pull" checked={pull} onCheckedChange={(checked) => setPull(checked === true)} />
+              <Label htmlFor="f-pull">Pull newer images</Label>
+            </div>
+          ) : null}
           {dirty ? (
             <Button size="sm" type="button" onClick={reset}>
               Discard

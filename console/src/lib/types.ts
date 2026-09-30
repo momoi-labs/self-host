@@ -188,3 +188,19 @@ export type Environment = {
   lan_address?: string | null;
   installed_versions?: unknown;
 };
+
+/** What `GET /settings` answers. */
+export type Settings = {
+  auditEventsMaxAge: {
+    effective: string;
+    source: "command-line" | "operator" | "default";
+    /** The Operator's setting, kept even while the daemon flag pins the value. */
+    setting: string | null;
+  };
+  /** Whether a restart pulls newer images when the Operator does not say. */
+  pullNewerImages: {
+    effective: boolean;
+    source: "operator" | "default";
+    setting: boolean | null;
+  };
+};
