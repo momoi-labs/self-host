@@ -45,6 +45,14 @@ impl CgroupRoot {
         &self.0
     }
 
+    /// Locate a previously launched tree for cleanup after its runner died.
+    pub fn application(&self, application_id: &str) -> Result<ApplicationCgroup, CgroupError> {
+        validate_id(application_id)?;
+        Ok(ApplicationCgroup {
+            path: self.0.join(format!("sf-app-{application_id}")),
+        })
+    }
+
     /// Enables the controllers for the root's children, creates
     /// `<root>/sf-app-<id>` and writes the limits into it, with
     /// `memory.oom.group` set so an OOM kill takes the whole tree.
@@ -56,6 +64,7 @@ impl CgroupRoot {
         application_id: &str,
         limits: &ResourceLimits,
     ) -> Result<ApplicationCgroup, CgroupError> {
+        validate_id(application_id)?;
         write(
             &self.0.join("cgroup.subtree_control"),
             &subtree_control_enabling(),
@@ -301,6 +310,20 @@ fn ensure_cgroup2(_path: &Path) -> Result<(), CgroupError> {
     Err(CgroupError::Unsupported)
 }
 
+fn validate_id(id: &str) -> Result<(), CgroupError> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(CgroupError::Io {
+            path: PathBuf::from(id),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid Application id"),
+        });
+    }
+    Ok(())
+}
+
 fn read(path: &Path) -> Result<String, CgroupError> {
     std::fs::read_to_string(path).map_err(|source| CgroupError::Io {
         path: path.to_path_buf(),
@@ -329,6 +352,17 @@ fn remove_dir(path: &Path) -> Result<(), CgroupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_ids_cannot_escape_the_delegated_directory() {
+        for id in ["", "..", "a/b", "../other", "/root"] {
+            assert!(
+                validate_id(id).is_err(),
+                "{id} must be refused before cgroup IO"
+            );
+        }
+        assert!(validate_id("fixture-123").is_ok());
+    }
 
     #[test]
     fn cpu_max_is_the_percentage_as_a_quota_over_a_100ms_period() {

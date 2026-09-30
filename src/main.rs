@@ -21,6 +21,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    NativeRun {
+        #[arg(long)]
+        service: std::path::PathBuf,
+    },
+    #[command(hide = true)]
+    NativeFinish {
+        #[arg(long)]
+        service: std::path::PathBuf,
+    },
+    #[command(hide = true)]
+    NativeScan {
+        #[arg(long)]
+        root: std::path::PathBuf,
+    },
     /// Bootstrap the platform on this Host
     Init {
         /// DNS suffix for Application Hostnames (default: home.lan)
@@ -211,6 +226,15 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Command::NativeRun { service }) => {
+            native_result(self_host::native::supervision::run_service(&service))
+        }
+        Some(Command::NativeFinish { service }) => {
+            native_result(self_host::native::supervision::finish_service(&service))
+        }
+        Some(Command::NativeScan { root }) => {
+            native_result(self_host::native::supervision::boot_scan(&root))
+        }
         Some(Command::Init {
             dns,
             host_ip,
@@ -270,6 +294,13 @@ async fn main() {
         None => {
             run_server(self_host::metrics::Window::default(), false, None).await;
         }
+    }
+}
+
+fn native_result(result: anyhow::Result<()>) {
+    if let Err(error) = result {
+        eprintln!("Error: {error:#}");
+        std::process::exit(1);
     }
 }
 

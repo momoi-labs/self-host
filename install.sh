@@ -14,6 +14,7 @@
 #                            `docker info` already works, colima otherwise)
 #   SELF_HOST_COLIMA_CPU     CPUs for the Colima VM           (default 4)
 #   SELF_HOST_COLIMA_MEMORY  GiB of memory for the Colima VM  (default 6)
+#   SELF_HOST_NATIVE         set to 1 to install Linux s6 boot supervision
 #   SELF_HOST_BINARY_ONLY    set to 1 to install the binary and stop
 #
 set -euo pipefail
@@ -70,9 +71,12 @@ main() {
 	case "$(detect_os)" in
 		darwin) bootstrap_macos ;;
 		linux)
+			if [ "${SELF_HOST_NATIVE:-}" = "1" ]; then
+				install_native_supervision
+			fi
 			echo
 			echo "Next: self-host init && self-host serve"
-			echo "Unattended startup on Linux is not set up by this installer."
+			echo "Platform daemon startup on Linux is not set up by this installer."
 			echo "Neither is the bridged network for Virtual machines: that is"
 			echo "vmnet, which is macOS only. Lima on Linux bridges another way."
 			;;
@@ -138,6 +142,46 @@ install_binary() {
 	fi
 
 	echo "${BINARY} ${version} installed to ${INSTALL_DIR}/${BINARY}"
+}
+
+# Optional until the native lifecycle API is available. This installs one
+# supervisor tree; individual Applications are always supervised by s6.
+install_native_supervision() {
+	local tool unit
+	command -v systemctl >/dev/null || { echo "native boot supervision requires systemd" >&2; exit 1; }
+	for tool in s6-svscan s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock; do
+		command -v "$tool" >/dev/null || {
+			echo "missing $tool; install s6 first (sudo apt-get install s6 on Debian/Ubuntu)" >&2
+			exit 1
+		}
+	done
+	[ -f /sys/fs/cgroup/cgroup.controllers ] || { echo "native Applications require cgroup v2 with cpu, memory and pids" >&2; exit 1; }
+	unit="$tmpdir/self-host-native.service"
+	cat >"$unit" <<EOF
+[Unit]
+Description=self-host native Application supervision
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=${INSTALL_DIR}/${BINARY} native-scan --root /var/lib/self-host/native
+Restart=on-failure
+RestartSec=2
+Delegate=cpu memory pids
+KillMode=control-group
+TimeoutStopSec=30
+UMask=0077
+StateDirectory=self-host
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	sudo install -m 644 -o root -g root "$unit" /etc/systemd/system/self-host-native.service
+	sudo systemctl daemon-reload
+	sudo systemctl enable --now self-host-native.service
+	echo "s6 boot supervision installed; the native Operator API remains unavailable."
 }
 
 detect_os() {
