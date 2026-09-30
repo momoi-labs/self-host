@@ -9,7 +9,7 @@
 use std::net::SocketAddr;
 
 use crate::proxy::{Publisher, RouteTable};
-use crate::store::ApplicationRecord;
+use crate::store::{ApplicationRecord, Publication};
 
 /// Publishing an Application's route and taking it down again.
 ///
@@ -21,8 +21,12 @@ pub trait RouteStore: Send + Sync + 'static {
 }
 
 /// Every Hostname the Application answers on: its Hostname first, then any
-/// aliases, without repeating one that appears twice.
+/// aliases, without repeating one that appears twice. An unpublished
+/// Application answers on none (ADR-0028).
 pub fn hostnames(app: &ApplicationRecord) -> Vec<&str> {
+    if app.publication == Publication::Unpublished {
+        return Vec::new();
+    }
     let mut all = vec![app.hostname.as_str()];
     for alias in &app.aliases {
         if !all.contains(&alias.as_str()) {
@@ -36,8 +40,12 @@ pub fn hostnames(app: &ApplicationRecord) -> Vec<&str> {
 ///
 /// Loopback, on the Host port the Application's Web Target is published on
 /// (ADR-0019). `None` for an Application that has no port yet, which the
-/// proxy answers as unavailable rather than unknown.
+/// proxy answers as unavailable rather than unknown, and for one that is
+/// unpublished, which the proxy never hears of.
 pub fn target(app: &ApplicationRecord) -> Option<SocketAddr> {
+    if app.publication == Publication::Unpublished {
+        return None;
+    }
     app.web_target_port
         .map(|port| SocketAddr::from(([127, 0, 0, 1], port)))
 }
@@ -55,6 +63,12 @@ impl ProxyRoutes {
 
 impl RouteStore for ProxyRoutes {
     fn publish(&self, app: &ApplicationRecord) {
+        // Publishing an unpublished Application means taking down whatever
+        // route its id held: it has no Hostname for the table to answer on.
+        if app.publication == Publication::Unpublished {
+            self.withdraw(&app.id);
+            return;
+        }
         let hostnames: Vec<String> = hostnames(app).into_iter().map(str::to_string).collect();
         self.table.publish(&app.id, &hostnames, target(app));
     }
@@ -102,6 +116,10 @@ impl FakeRoutes {
 
 impl RouteStore for FakeRoutes {
     fn publish(&self, app: &ApplicationRecord) {
+        if app.publication == Publication::Unpublished {
+            self.withdraw(&app.id);
+            return;
+        }
         self.published.lock().unwrap().insert(
             app.id.clone(),
             Published {
@@ -135,7 +153,42 @@ mod tests {
             web_port: None,
             web_target_port: Some(20001),
             development: None,
+            runtime: Default::default(),
+            publication: Publication::Web,
+            variable_delivery: crate::store::VariableDelivery::Referenced,
         }
+    }
+
+    fn unpublished(id: &str) -> ApplicationRecord {
+        let mut record = app(id, "", &[]);
+        record.publication = Publication::Unpublished;
+        record.web_target_port = None;
+        record
+    }
+
+    #[test]
+    fn an_unpublished_application_answers_on_no_hostname_and_has_no_target() {
+        let record = unpublished("abc123");
+        assert!(hostnames(&record).is_empty());
+        assert_eq!(target(&record), None);
+    }
+
+    #[test]
+    fn publishing_an_unpublished_application_withdraws_whatever_its_id_held() {
+        let table = RouteTable::new();
+        let routes = ProxyRoutes::new(table.clone());
+        routes.publish(&app("abc123", "blog.example.invalid", &[]));
+        assert!(table.target_for("blog.example.invalid").is_some());
+
+        routes.publish(&unpublished("abc123"));
+
+        assert_eq!(table.target_for("blog.example.invalid"), None);
+        assert_eq!(table.target_for(""), None);
+
+        let fake = FakeRoutes::new();
+        fake.publish(&app("abc123", "blog.example.invalid", &[]));
+        fake.publish(&unpublished("abc123"));
+        assert_eq!(fake.get("abc123"), None);
     }
 
     #[test]

@@ -71,8 +71,28 @@ An Application defined by a Docker Compose file the Operator supplies. The Platf
 _Avoid_: stack, docker-compose app, project (as the user-facing term; the project is what the Platform renders)
 
 **Web Target**:
-The Compose service and container port an Application's Hostname routes to. Resolved when the definition is accepted and recorded on the Application.
+Where an Application's Hostname routes to: the Compose service and container port of a Compose Application, or the loopback port a Native Application's process listens on. Resolved when the definition is accepted and recorded on the Application. An unpublished Application has none.
 _Avoid_: backend, main service, entrypoint
+
+**Runtime**:
+How an Application runs on the Host: in a container (Docker, one container or a Compose project) or as a native process tree under an Application Account. Recorded on the Application; every Application that predates the term runs in a container.
+_Avoid_: engine, executor, backend (as the name for how an Application runs)
+
+**Native Application**:
+An Application whose Runtime is a process tree on the Host, run under its own Application Account, with no container. The Platform records the shape today and runs it in a later slice.
+_Avoid_: bare-metal app, host process (as the product term), s6 service (the supervisor is a detail)
+
+**Application Account**:
+The dedicated Host account a Native Application runs as: an execution identity the Platform owns, never root and never the Operator's own login.
+_Avoid_: service user, system user, login (an Application Account is not for people)
+
+**Publication**:
+Whether Consumers reach an Application by its Hostname. A published Application has a Hostname, a Record, a route and a Web Target; an unpublished one, such as a worker or a database, has none of them. Chosen when the Application is created. Distinct from Deploy, which makes the Application run.
+_Avoid_: exposure, visibility, public/private (the LAN is the only audience)
+
+**Application Variable**:
+A named value the Operator sets on an Application, which the Application's services read as an input. How it reaches a Compose service, copied into every service or only where the file references it, is recorded on the Application.
+_Avoid_: env var (as the product term), secret (a Variable may hold one, but is not one by definition), config value
 
 **Platform Infra**:
 Components the Platform once started for itself, as containers, rather than Operator Applications. There are none left: the Platform keeps its state in files it owns (ADR-0018) and serves DNS (ADR-0017) and HTTP (ADR-0019) from its own process. Docker runs Applications.

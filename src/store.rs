@@ -29,6 +29,78 @@ pub struct DevelopmentApplication {
     pub persist_data: bool,
 }
 
+/// How an Application's Variables reach the services of a Compose
+/// Application.
+///
+/// The Operator sets Variables on an Application (`self-host apps env set`).
+/// Before the Platform resolved `${VAR}` itself, every Variable was copied
+/// into every service's `environment`, which is `Broadcast`. `Referenced`
+/// is the contract from here on: a Variable is an input to the definition,
+/// and a service receives it only where the file names it. Rows written
+/// before this field existed read as `Broadcast`, so nothing they relied on
+/// is taken away; a new Application starts as `Referenced`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariableDelivery {
+    /// Every service gets every Variable in its environment, whether or not
+    /// the file mentions it.
+    Broadcast,
+    /// A Variable reaches a service only through `${VAR}`, `$VAR` or a bare
+    /// `VAR` entry in that service's definition.
+    Referenced,
+}
+
+impl VariableDelivery {
+    /// What a row that predates the field means. Serde needs a function.
+    pub const fn broadcast() -> Self {
+        VariableDelivery::Broadcast
+    }
+}
+
+/// How an Application runs on the Host (ADR-0028).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Runtime {
+    /// Docker: one container or a Compose project. Every row written before
+    /// this field existed runs this way.
+    #[default]
+    Container,
+    /// A process tree on the Host under a dedicated Application Account.
+    /// Recorded shape only in this wave: refused on create and update.
+    Native(NativeDefinition),
+}
+
+/// What a Native Application runs and under which Application Account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeDefinition {
+    /// The Application Account name; `native::identity::AccountName`
+    /// validates it when anything runs.
+    pub account: String,
+    /// argv; argv[0] is the program.
+    pub command: Vec<String>,
+    /// Relative to the account's home. `None` is the home itself.
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    /// The loopback port the process listens on when it is a Web Target.
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub limits: crate::native::ResourceLimits,
+}
+
+/// Whether Consumers reach the Application by its Hostname (ADR-0028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Publication {
+    /// The Hostname and its Aliases route to the Web Target on a loopback
+    /// Host port. What every old row has.
+    #[default]
+    Web,
+    /// No Hostname, no Record, no proxy route, no Host port. A worker or a
+    /// database.
+    Unpublished,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplicationRecord {
     /// Stable identity. The container and the route are keyed on this, never
@@ -63,6 +135,18 @@ pub struct ApplicationRecord {
     /// Present only for Applications created or explicitly converted through
     /// the development-image API.
     pub development: Option<DevelopmentApplication>,
+    /// How the Application runs. A row written before the field existed
+    /// runs in a container (ADR-0028).
+    #[serde(default)]
+    pub runtime: Runtime,
+    /// Whether the Application is reachable by Hostname. A row written
+    /// before the field existed is published (ADR-0028).
+    #[serde(default)]
+    pub publication: Publication,
+    /// How the Application's Variables reach a Compose project. A row
+    /// written before the field existed broadcasts them.
+    #[serde(default = "VariableDelivery::broadcast")]
+    pub variable_delivery: VariableDelivery,
 }
 
 #[derive(Debug)]
@@ -462,5 +546,89 @@ impl StateStore for FakeStateStore {
         let len = audit.len();
         audit.retain(|row| row.updated_at.as_str() >= before);
         Ok((len - audit.len()) as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record() -> ApplicationRecord {
+        ApplicationRecord {
+            id: "k3n8qz4v2x1p".into(),
+            name: "api".into(),
+            hostname: String::new(),
+            aliases: vec![],
+            image: String::new(),
+            status: "pending".into(),
+            source: "native".into(),
+            last_error: None,
+            compose: None,
+            web_service: None,
+            web_port: None,
+            web_target_port: None,
+            development: None,
+            runtime: Runtime::Native(NativeDefinition {
+                account: "sf-app-k3n8qz4v2x1p".into(),
+                command: vec!["/opt/api/bin/serve".into(), "--port".into(), "8080".into()],
+                working_dir: Some("app".into()),
+                port: Some(8080),
+                limits: crate::native::ResourceLimits {
+                    cpu_percent: Some(150),
+                    memory_bytes: Some(256 * 1024 * 1024),
+                    max_tasks: Some(64),
+                },
+            }),
+            publication: Publication::Unpublished,
+            variable_delivery: VariableDelivery::Referenced,
+        }
+    }
+
+    #[test]
+    fn a_native_row_round_trips_through_serde() {
+        let record = record();
+        let json = serde_json::to_string(&record).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ApplicationRecord>(&json).unwrap(),
+            record
+        );
+    }
+
+    #[test]
+    fn runtime_and_publication_are_tagged_by_kind() {
+        assert_eq!(
+            serde_json::to_value(Runtime::Container).unwrap(),
+            serde_json::json!({"kind": "container"})
+        );
+        assert_eq!(
+            serde_json::to_value(Publication::Web).unwrap(),
+            serde_json::json!({"kind": "web"})
+        );
+        assert_eq!(
+            serde_json::to_value(Publication::Unpublished).unwrap(),
+            serde_json::json!({"kind": "unpublished"})
+        );
+        let native = serde_json::to_value(record().runtime).unwrap();
+        assert_eq!(native["kind"], "native");
+        assert_eq!(native["account"], "sf-app-k3n8qz4v2x1p");
+        assert_eq!(native["limits"]["memory_bytes"], 256 * 1024 * 1024);
+    }
+
+    /// A queued deploy carries its record as JSON, so a task written before
+    /// the fields existed has to read back the way the row does.
+    #[test]
+    fn a_record_written_before_the_fields_existed_reads_as_container_web_broadcast() {
+        let json = r#"{
+            "id": "k3n8qz4v2x1p", "name": "blog", "hostname": "blog.example.invalid",
+            "aliases": [], "image": "nginx", "status": "running", "source": "image",
+            "last_error": null, "compose": null, "web_service": null, "web_port": null,
+            "web_target_port": 20001, "development": null
+        }"#;
+        let record: ApplicationRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.runtime, Runtime::Container);
+        assert_eq!(record.publication, Publication::Web);
+        assert_eq!(record.variable_delivery, VariableDelivery::Broadcast);
+        assert_eq!(record.hostname, "blog.example.invalid");
+        assert_eq!(record.web_target_port, Some(20001));
     }
 }

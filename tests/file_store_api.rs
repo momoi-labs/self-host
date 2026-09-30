@@ -50,9 +50,14 @@ async fn concurrent_record_and_application_claims_have_one_winner() {
 async fn late_deploy_keeps_the_edited_namespace_on_disk() {
     let temp = TempDir::new("dns-late-deploy");
     let (app, store) = boot(&temp.state()).await;
-    let pending = self_host::apps::prepare_deploy_from_image(&store, "blog", "nginx", None, None)
-        .await
-        .unwrap();
+    let pending = self_host::apps::prepare_deploy_from_image(
+        &store,
+        "blog",
+        "nginx",
+        self_host::apps::DeployOptions::default(),
+    )
+    .await
+    .unwrap();
     let id = pending.record.id.clone();
     let updated = self_host::apps::prepare_update(
         &store,

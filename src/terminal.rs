@@ -481,6 +481,9 @@ mod tests {
                 web_port: 3000,
                 persist_data: false,
             }),
+            runtime: Default::default(),
+            publication: Default::default(),
+            variable_delivery: crate::store::VariableDelivery::Referenced,
         };
         store.insert_application(&app).await.unwrap();
         let docker = FakeDocker::new();

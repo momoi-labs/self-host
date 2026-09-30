@@ -31,7 +31,8 @@ use sha2::{Digest, Sha256};
 use crate::error::ErrorReport;
 use crate::schema;
 use crate::store::{
-    ApiKeyRecord, ApplicationRecord, AuditRow, DevelopmentApplication, StateStore, StoreError,
+    ApiKeyRecord, ApplicationRecord, AuditRow, DevelopmentApplication, Publication, Runtime,
+    StateStore, StoreError, VariableDelivery,
 };
 
 pub const DB_FILE: &str = "platform.db";
@@ -75,6 +76,14 @@ struct ApplicationBody {
     web_target_port: Option<u16>,
     #[serde(default)]
     development: Option<DevelopmentApplication>,
+    /// Rows written before these three existed read as a container,
+    /// published, broadcasting its Variables (ADR-0027, ADR-0028).
+    #[serde(default)]
+    runtime: Runtime,
+    #[serde(default)]
+    publication: Publication,
+    #[serde(default = "VariableDelivery::broadcast")]
+    variable_delivery: VariableDelivery,
     #[serde(default)]
     env: BTreeMap<String, String>,
 }
@@ -274,6 +283,9 @@ impl FileStateStore {
             web_port: body.web_port,
             web_target_port: body.web_target_port,
             development: body.development,
+            runtime: body.runtime,
+            publication: body.publication,
+            variable_delivery: body.variable_delivery,
         })
     }
 
@@ -309,6 +321,9 @@ fn body_from(app: &ApplicationRecord, compose_file: Option<String>) -> Applicati
         web_port: app.web_port,
         web_target_port: app.web_target_port,
         development: app.development.clone(),
+        runtime: app.runtime.clone(),
+        publication: app.publication,
+        variable_delivery: app.variable_delivery,
         env: BTreeMap::new(),
     }
 }
@@ -920,7 +935,88 @@ mod tests {
             web_port: None,
             web_target_port: None,
             development: None,
+            runtime: Runtime::Container,
+            publication: Publication::Web,
+            variable_delivery: VariableDelivery::Referenced,
         }
+    }
+
+    /// An Application row as the Platform wrote it before `runtime`,
+    /// `publication` and `variable_delivery` existed.
+    const ROW_WRITTEN_BEFORE_RUNTIME_AND_PUBLICATION: &str = r#"{
+        "id": "k3n8qz4v2x1p",
+        "name": "blog",
+        "hostname": "blog.example.invalid",
+        "aliases": ["www.example.invalid"],
+        "image": "nginx:latest",
+        "status": "running",
+        "source": "compose",
+        "last_error": null,
+        "compose_file": null,
+        "web_service": "web",
+        "web_port": 8080,
+        "web_target_port": 20001,
+        "development": null,
+        "env": {"TOKEN": "change-me"}
+    }"#;
+
+    #[tokio::test]
+    async fn a_row_written_before_runtime_and_publication_reads_as_a_published_container() {
+        let dir = TempDir::new("pre-runtime-row");
+        let store = FileStateStore::open(dir.path()).unwrap();
+        store
+            .put_record(
+                APPLICATION_KIND,
+                "k3n8qz4v2x1p",
+                ROW_WRITTEN_BEFORE_RUNTIME_AND_PUBLICATION,
+            )
+            .await
+            .unwrap();
+
+        let app = store
+            .get_application("k3n8qz4v2x1p")
+            .await
+            .unwrap()
+            .expect("the old row is an Application");
+
+        assert_eq!(app.runtime, Runtime::Container);
+        assert_eq!(app.publication, Publication::Web);
+        assert_eq!(app.variable_delivery, VariableDelivery::Broadcast);
+        assert_eq!(app.hostname, "blog.example.invalid");
+        assert_eq!(app.aliases, ["www.example.invalid"]);
+        assert_eq!(app.web_service.as_deref(), Some("web"));
+        assert_eq!(app.web_target_port, Some(20001));
+        assert_eq!(
+            store.get_all_env("k3n8qz4v2x1p").await.unwrap(),
+            [("TOKEN".to_string(), "change-me".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_row_round_trips_through_the_store() {
+        let dir = TempDir::new("native-row");
+        let store = FileStateStore::open(dir.path()).unwrap();
+        let mut app = record("k3n8qz4v2x1p", "api");
+        app.hostname = String::new();
+        app.source = "native".into();
+        app.image = String::new();
+        app.runtime = Runtime::Native(crate::store::NativeDefinition {
+            account: "sf-app-k3n8qz4v2x1p".into(),
+            command: vec!["/opt/api/bin/serve".into()],
+            working_dir: None,
+            port: Some(8080),
+            limits: crate::native::ResourceLimits {
+                cpu_percent: None,
+                memory_bytes: Some(256 * 1024 * 1024),
+                max_tasks: Some(64),
+            },
+        });
+        app.publication = Publication::Unpublished;
+        store.insert_application(&app).await.unwrap();
+        drop(store);
+
+        let store = FileStateStore::open(dir.path()).unwrap();
+        assert_eq!(store.get_application(&app.id).await.unwrap(), Some(app));
     }
 
     #[tokio::test]
