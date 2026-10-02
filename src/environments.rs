@@ -267,6 +267,10 @@ pub struct RuntimeProgress {
     pub output: String,
 }
 
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to methods that already return must-use Futures"
+)]
 #[async_trait]
 pub trait VmRuntime: Send + Sync + 'static {
     async fn inspect(&self, id: &str) -> Result<RunnerObservation, String>;

@@ -258,6 +258,10 @@ impl std::fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to methods that already return must-use Futures"
+)]
 #[async_trait]
 pub trait StateStore: Clone + Send + Sync + 'static {
     /// Prepares the store to be written to. Called on every start, and does

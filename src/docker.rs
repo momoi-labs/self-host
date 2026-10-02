@@ -177,6 +177,10 @@ pub struct ContainerStats {
     pub tx_bytes: u64,
 }
 
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to methods that already return must-use Futures"
+)]
 #[async_trait]
 pub trait DockerRuntime: Send + Sync {
     async fn build_source(&self, _build: &SourceBuild) -> Result<String, DockerError> {
