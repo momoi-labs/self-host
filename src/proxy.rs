@@ -265,6 +265,20 @@ pub async fn bind(
 }
 
 impl Bound {
+    /// Replaces the initial LAN certificate with an SNI resolver. The resolver
+    /// may replace individual keys while these listeners remain running.
+    pub fn with_certificate_resolver(
+        mut self,
+        resolver: Arc<dyn rustls::server::ResolvesServerCert>,
+    ) -> Self {
+        let mut config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(resolver);
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        self.acceptor = TlsAcceptor::from(Arc::new(config));
+        self
+    }
+
     /// W2 installs only its HTTP-01 routes here. Both listeners dispatch the
     /// reserved challenge subtree to this router before any redirect, console
     /// route or Application rule. Until then, the empty router answers 404.

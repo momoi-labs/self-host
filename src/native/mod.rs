@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 pub mod cgroup;
 pub mod identity;
 pub mod launch;
+pub mod lifecycle;
 pub mod supervision;
 
 pub use cgroup::{ApplicationCgroup, CgroupError, CgroupRoot};

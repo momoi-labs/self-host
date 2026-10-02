@@ -1375,6 +1375,12 @@ async fn serve_proxy(
     table: self_host::proxy::RouteTable,
     metrics: self_host::metrics::Metrics,
 ) -> anyhow::Result<()> {
+    let certificates = self_host::certificates::CertificateManager::open(
+        &file_store::state_dir().join("certificates"),
+        &self_host::tls::cert_path(),
+        &self_host::tls::key_path(),
+    )
+    .context("load persisted certificates")?;
     let config = self_host::proxy::ProxyConfig {
         cert_path: self_host::tls::cert_path(),
         key_path: self_host::tls::key_path(),
@@ -1385,9 +1391,27 @@ async fn serve_proxy(
     };
     let ports = format!("{} and {}", config.https_port, config.http_port);
 
-    self_host::proxy::serve(config, admin_router, table, metrics)
+    let bound = self_host::proxy::bind(config, admin_router, table, metrics)
         .await
-        .with_context(|| format!("cannot serve Consumer traffic on {ports}. {}", bind_hint()))
+        .with_context(|| format!("cannot serve Consumer traffic on {ports}. {}", bind_hint()))?
+        .with_certificate_resolver(certificates.resolver())
+        .with_challenge_router(certificates.challenge_router());
+
+    let renewal = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if certificates.reconcile().await.is_err() {
+                tracing::error!(
+                    "failed to persist certificate status; inspect certificate storage permissions"
+                );
+            }
+        }
+    });
+    let result = bound.run().await;
+    renewal.abort();
+    result
 }
 
 #[cfg(target_os = "macos")]

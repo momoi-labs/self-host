@@ -32,7 +32,7 @@ export type NativeDefinition = {
 };
 
 /** How an Application runs (ADR-0028). Every Application predating the field
- * is a container; native is recorded but refused for now. */
+ * is a container. */
 export type Runtime = { kind: "container" } | ({ kind: "native" } & NativeDefinition);
 
 /** Whether the Application's Hostname routes to it (ADR-0028). An unpublished
@@ -41,6 +41,33 @@ export type Publication = { kind: "web" } | { kind: "unpublished" };
 
 /** How an Application's Variables reach a Compose project. */
 export type VariableDelivery = "broadcast" | "referenced";
+
+export type GitSource = {
+  repository: string;
+  git_ref: string;
+  revision?: string | null;
+  context: string;
+  dockerfile: string;
+  compose_path?: string | null;
+  build_args: Record<string, string>;
+  build_secrets: Record<string, string>;
+  credential_id?: string | null;
+  registry_credential_id?: string | null;
+};
+
+export type GitBuild = {
+  revision: string;
+  images: Record<string, string>;
+  status: string;
+};
+
+export type GitInspection = {
+  revision: string;
+  git_ref: string;
+  build_files: { kind: "dockerfile" | "compose"; path: string }[];
+  ports: number[];
+  services: { name: string; ports: number[] }[];
+};
 
 export type App = {
   id: string;
@@ -52,6 +79,8 @@ export type App = {
   /** The task carrying an accepted action out; only on a 202. */
   task_id?: string;
   source?: string;
+  git?: GitSource;
+  git_build?: GitBuild;
   aliases?: string[];
   restarts?: number | null;
   last_error?: Report | string | null;

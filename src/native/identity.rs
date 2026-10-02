@@ -251,6 +251,55 @@ pub struct ProvisionRequest<'a> {
     pub home: &'a Path,
 }
 
+/// Verify both the ownership marker and home before lifecycle mutation.
+pub fn verify_owned(request: &ProvisionRequest) -> Result<ResolvedAccount, ProvisionError> {
+    let entry = lookup(request.account)?;
+    if !comment_marks_ours(&entry.comment, request.application_id) || entry.home != request.home {
+        return Err(ProvisionError::NotOurs(request.account.as_str().to_owned()));
+    }
+    check_account(request.account, &entry)?;
+    Ok(ResolvedAccount {
+        name: request.account.clone(),
+        uid: entry.uid,
+        gid: entry.gid,
+        home: entry.home,
+    })
+}
+
+/// Remove an owned execution identity, never its retained home or data.
+#[cfg(target_os = "linux")]
+pub fn revoke(request: &ProvisionRequest) -> Result<(), ProvisionError> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(ProvisionError::NotPrivileged);
+    }
+    match verify_owned(request) {
+        Ok(_) => (),
+        Err(ProvisionError::Identity(IdentityError::Unknown(_))) => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    let step = "revoke the Application Account with userdel".to_owned();
+    let output = std::process::Command::new("/usr/sbin/userdel")
+        .arg(request.account.as_str())
+        .env_clear()
+        .output()
+        .map_err(|source| ProvisionError::Command {
+            step: step.clone(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(ProvisionError::Failed {
+            step,
+            stderr: CommandStderr(String::from_utf8_lossy(&output.stderr).into_owned()),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn revoke(_: &ProvisionRequest) -> Result<(), ProvisionError> {
+    Err(ProvisionError::Unsupported)
+}
+
 /// The text a tool wrote on stderr when it refused, kept as its own layer
 /// under the step that failed (ADR-0010).
 #[derive(Debug)]
@@ -351,7 +400,8 @@ pub fn provision(request: &ProvisionRequest) -> Result<ResolvedAccount, Provisio
         }
         Err(IdentityError::Unknown(_)) => {
             let step = "create the Application Account with useradd".to_string();
-            let output = Command::new("useradd")
+            let output = Command::new("/usr/sbin/useradd")
+                .env_clear()
                 .args([
                     "--system",
                     "--user-group",

@@ -16,7 +16,10 @@ import {
 
 import { api, asReport, failureOf, getJson } from "../lib/api.js";
 import { isCompose, parseAliases } from "../lib/status.js";
-import type { App, ComposeService, Inspection, Report, Settings } from "../lib/types.js";
+import type { App, ComposeService, GitInspection, GitSource, Inspection, Publication, Report, Settings } from "../lib/types.js";
+import { gitFieldsOf, gitSourceOf, type GitFields } from "./GitSourceFields.js";
+import { GitWorkflowFields, type GitSourceMode } from "./GitWorkflowFields.js";
+import type { GitRepository } from "./GitRepositoryPicker.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
 import { customImageTemplate } from "../lib/customImageTemplates.js";
@@ -29,6 +32,10 @@ export type Submission = {
   web_service?: string;
   web_port?: number;
   image?: string;
+  git?: GitSource;
+  refresh_source?: boolean;
+  source_revision?: string;
+  publication?: Publication;
   development?: {
     image_id: string;
     tag: string;
@@ -67,9 +74,15 @@ function fieldsOf(app?: App) {
     aliases: (app?.aliases ?? []).join(", "),
     webService: app?.web_service ?? "",
     port: app?.web_port ? String(app.web_port) : "",
+    unpublished: app?.publication?.kind === "unpublished",
+    git: gitFieldsOf(app?.git),
   };
 }
 type Fields = ReturnType<typeof fieldsOf>;
+
+function gitKey(fields: GitFields) {
+  return JSON.stringify(fields);
+}
 
 /** Whitespace and alias order are not edits. */
 function same(a: Fields, b: Fields) {
@@ -95,7 +108,18 @@ export function AppForm({
 }) {
   const creating = !app;
   const saved = fieldsOf(app);
-  const [source, setSource] = useState(creating ? "image" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
+  const [source, setSource] = useState(creating ? "image" : app?.git ? "git" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
+  const [git, setGit] = useState(saved.git);
+  const [gitMode, setGitMode] = useState<GitSourceMode>("repositories");
+  const [gitSetup, setGitSetup] = useState(false);
+  const [gitInspection, setGitInspection] = useState<GitInspection | null>(null);
+  const [gitReviewKey, setGitReviewKey] = useState("");
+  const [checkingGit, setCheckingGit] = useState(false);
+  const [recipeChosen, setRecipeChosen] = useState(!creating);
+  const gitRequest = useRef(0);
+  const gitDraft = useRef(git);
+  gitDraft.current = git;
+  const gitReviewed = gitInspection !== null && gitReviewKey === gitKey(git);
   const [name, setName] = useState(saved.name);
   const [image, setImage] = useState(saved.image);
   const [customImageId, setCustomImageId] = useState(saved.customImageId);
@@ -112,14 +136,18 @@ export function AppForm({
   const [aliases, setAliases] = useState(saved.aliases);
   const [webService, setWebService] = useState(saved.webService);
   const [port, setPort] = useState(saved.port);
+  const [unpublished, setUnpublished] = useState(saved.unpublished);
+  const [gitDomains, setGitDomains] = useState(false);
+  const portEdited = useRef(false);
   // Starts where the Platform setting is; this redeploy can go the other way.
   const [pull, setPull] = useState(false);
   useEffect(() => {
     if (creating) return;
     void getJson<Settings>("/settings").then((settings) => setPull(settings?.pullNewerImages.effective ?? false));
   }, [creating]);
-  const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port };
+  const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port, unpublished, git };
   const dirty = !creating && !same(fields, saved);
+  const changedGitSelection = source === "git" && (git.repository.trim() !== saved.git.repository.trim() || git.gitRef.trim() !== saved.git.gitRef.trim() || git.revision.trim() !== saved.git.revision.trim());
 
   /** Back to the record, field by field, the way Discard is read. */
   function reset() {
@@ -135,14 +163,120 @@ export function AppForm({
     setAliases(saved.aliases);
     setWebService(saved.webService);
     setPort(saved.port);
+    setUnpublished(saved.unpublished);
+    setGit(saved.git);
+    gitDraft.current = saved.git;
+    ++gitRequest.current;
+    setCheckingGit(false);
+    setGitSetup(false);
+    setGitInspection(null);
+    setGitReviewKey("");
+    setRecipeChosen(!creating);
+    portEdited.current = false;
     setErrors({});
   }
   const [other, setOther] = useState(false);
   const [inspected, setInspected] = useState<Inspection | null>(null);
   const [errors, setErrors] = useState<Errors>({});
   const [failure, setFailure] = useState<Report | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const hostnameField = useRef<HTMLInputElement>(null);
   const aliasesField = useRef<HTMLInputElement>(null);
+
+  useEffect(() => () => { ++gitRequest.current; }, []);
+
+  function changeGit(next: GitFields) {
+    if (gitKey(next) === gitKey(gitDraft.current)) return;
+    const old = gitDraft.current;
+    gitDraft.current = next;
+    ++gitRequest.current;
+    setGit(next);
+    setGitReviewKey("");
+    setCheckingGit(false);
+    if (next.repository !== old.repository || next.gitRef !== old.gitRef || next.credentialId !== old.credentialId) {
+      if (next.repository !== old.repository || next.credentialId !== old.credentialId) setGitSetup(false);
+      setGitInspection(null);
+      if (next.repository !== old.repository) setRecipeChosen(!creating);
+    }
+  }
+
+  async function inspectGit(candidate = gitDraft.current) {
+    if (checkingGit || submitting) return;
+    const generation = ++gitRequest.current;
+    gitDraft.current = candidate;
+    setGit(candidate);
+    setGitReviewKey("");
+    setCheckingGit(true);
+    setFailure(null);
+    try {
+      let selected = candidate;
+      let result: GitInspection | null = null;
+      // A discovered Compose file needs a second check using that recipe so
+      // its ports describe what will actually be built.
+      for (let attempt = 0; attempt < 2; ++attempt) {
+        const response = await api("/source/inspect", { method: "POST", body: JSON.stringify({ git: gitSourceOf(selected) }) });
+        if (!response.ok) throw await failureOf(response);
+        result = await response.json() as GitInspection;
+        if (gitRequest.current !== generation) return;
+        if (result.build_files.length !== 1) break;
+        const file = result.build_files[0];
+        const detected = file.kind === "compose"
+          ? { ...selected, composePath: file.path }
+          : { ...selected, composePath: "", dockerfile: file.path };
+        if (gitKey(detected) === gitKey(selected)) break;
+        if (attempt === 1) throw new Error("The repository changed while checking. Check it again.");
+        selected = detected;
+        gitDraft.current = selected;
+        setGit(selected);
+      }
+      if (!result || gitRequest.current !== generation) return;
+      gitDraft.current = selected;
+      setGit(selected);
+      setGitInspection(result);
+      setGitReviewKey(gitKey(selected));
+      setGitSetup(true);
+      if (result.build_files.length === 1) setRecipeChosen(true);
+      if (!name.trim()) {
+        const repositoryName = selected.repository.replace(/\.git\/?$/, "").split("/").pop() ?? "";
+        setName(repositoryName.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63));
+      }
+      const service = selected.composePath.trim()
+        ? result.services.find((service) => service.name === webService) ?? result.services.find((service) => service.ports.length) ?? result.services[0]
+        : undefined;
+      setWebService(service?.name ?? "");
+      const candidates = service?.ports ?? result.ports;
+      if (!portEdited.current) setPort(candidates.length === 1 ? String(candidates[0]) : "");
+    } catch (cause) {
+      if (gitRequest.current === generation) setFailure(asReport(cause));
+    } finally {
+      if (gitRequest.current === generation) setCheckingGit(false);
+    }
+  }
+
+  function importRepository(repository: GitRepository) {
+    const candidate = { ...git, repository: repository.clone_url, gitRef: repository.default_branch || "HEAD", revision: "", composePath: "", dockerfile: "Dockerfile" };
+    setGitInspection(null);
+    setRecipeChosen(false);
+    portEdited.current = false;
+    void inspectGit(candidate);
+  }
+
+  function chooseGitRecipe(kind: "dockerfile" | "compose", path: string) {
+    changeGit(kind === "compose" ? { ...git, composePath: path } : { ...git, composePath: "", dockerfile: path });
+    setGitReviewKey("");
+    setRecipeChosen(true);
+    portEdited.current = false;
+    setPort("");
+    setWebService("");
+  }
+
+  function chooseGitService(service: string) {
+    setWebService(service);
+    if (!creating) return;
+    const candidates = gitInspection?.services.find((item) => item.name === service)?.ports ?? [];
+    portEdited.current = false;
+    setPort(candidates.length === 1 ? String(candidates[0]) : "");
+  }
 
   const services = inspected?.services ?? [];
   const chosen: ComposeService | undefined = services.find((s) => s.name === webService);
@@ -210,6 +344,7 @@ export function AppForm({
   // The service to route to: what the Application already picked, else the
   // Platform's own default, else the first one in the file.
   useEffect(() => {
+    if (source !== "compose") return;
     if (!services.length) return;
     if (services.some((s) => s.name === webService)) return;
     setWebService(app?.web_service && services.some((s) => s.name === app.web_service)
@@ -217,16 +352,17 @@ export function AppForm({
       : inspected?.web_service && services.some((s) => s.name === inspected.web_service)
         ? inspected.web_service
         : services[0].name);
-  }, [services, webService, app?.web_service, inspected?.web_service]);
+  }, [source, services, webService, app?.web_service, inspected?.web_service]);
 
   // A listed port needs no choosing; anything else the file does not mention
   // is typed into the number input.
   useEffect(() => {
+    if (source !== "compose") return;
     if (!ports.length) return;
     if (port && ports.includes(port)) return;
     if (port) setOther(true);
     else setPort(ports[0]);
-  }, [ports, port]);
+  }, [source, ports, port]);
 
   function chooseService(next: string) {
     setWebService(next);
@@ -252,6 +388,7 @@ export function AppForm({
     if (report.error.startsWith("invalid Application Hostname:")) {
       const onAlias = sent.some((alias) => report.error.includes(`'${alias}'`));
       setErrors({ [onAlias ? "aliases" : "hostname"]: asReport(report).error });
+      setGitDomains(true);
       (onAlias ? aliasesField : hostnameField).current?.focus();
       return;
     }
@@ -264,35 +401,69 @@ export function AppForm({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setErrors({});
-    setFailure(null);
-
-    const sent = parseAliases(aliases);
-    const body: Submission = { name: name.trim(), aliases: sent };
-    // Editing always sends the Hostname: an empty one is a mistake here, not
-    // a request for the default.
-    if (hostname.trim() || !creating) body.hostname = hostname.trim();
-    if (source === "custom-image") {
-      if (!customImageId || !customImageTag || customImagesLoading || customImagesFailure || !startCommand.trim() || !devPort) return;
-      body.development = {
-        image_id: customImageId,
-        tag: customImageTag,
-        command: startCommand.trim(),
-        web_port: Number(devPort),
-        persist_data: persistData,
-      };
-    } else if (source === "compose") {
-      body.compose = compose;
-      body.web_service = webService.trim();
-      if (port.trim()) body.web_port = Number(port.trim());
-    } else {
-      body.image = image.trim();
+    if (submitting || checkingGit) return;
+    if (creating && source === "git" && !gitReviewed) {
+      await inspectGit();
+      return;
     }
+    if (creating && source === "git" && !recipeChosen) return;
+    setSubmitting(true);
+    try {
+      setErrors({});
+      setFailure(null);
 
-    if (!creating) body.pull = pull;
+      const sent = source === "git" && unpublished ? [] : parseAliases(aliases);
+      const body: Submission = { name: name.trim(), aliases: sent };
+      // Editing always sends the Hostname: an empty one is a mistake here, not
+      // a request for the default.
+      if ((hostname.trim() || !creating) && !(source === "git" && unpublished)) body.hostname = hostname.trim();
+      if (source === "custom-image") {
+        if (!customImageId || !customImageTag || customImagesLoading || customImagesFailure || !startCommand.trim() || !devPort) return;
+        body.development = {
+          image_id: customImageId,
+          tag: customImageTag,
+          command: startCommand.trim(),
+          web_port: Number(devPort),
+          persist_data: persistData,
+        };
+      } else if (source === "git") {
+        try { body.git = gitSourceOf(git); } catch (cause) {
+          setFailure({ error: (cause as Error).message, caused_by: [] });
+          return;
+        }
+        if (git.token) {
+          if (!git.username.trim()) { setFailure({ error: "A Git token needs a username.", caused_by: [] }); return; }
+          try {
+            const response = await api("/source/credentials", { method: "POST", body: JSON.stringify({ kind: "git", username: git.username.trim(), value: git.token }) });
+            if (!response.ok) { setFailure(await failureOf(response)); return; }
+            const credential = await response.json() as { id: string };
+            body.git.credential_id = credential.id;
+            setGit({ ...git, credentialId: credential.id, token: "", username: "" });
+          } catch { setFailure({ error: "Could not save the Git credential.", caused_by: [] }); return; }
+        }
+        if (!unpublished) {
+          if (git.composePath.trim()) body.web_service = webService.trim();
+          if (port.trim()) body.web_port = Number(port.trim());
+        }
+        if (creating) {
+          body.source_revision = gitInspection?.revision;
+          body.publication = { kind: unpublished ? "unpublished" : "web" };
+        } else body.refresh_source = false;
+      } else if (source === "compose") {
+        body.compose = compose;
+        body.web_service = webService.trim();
+        if (port.trim()) body.web_port = Number(port.trim());
+      } else {
+        body.image = image.trim();
+      }
 
-    const report = await onSubmit(body, source);
-    if (report) place(report, sent);
+      if (!creating && source !== "git") body.pull = pull;
+
+      const report = await onSubmit(body, source);
+      if (report) place(report, sent);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const webHelp = !chosen
@@ -396,12 +567,54 @@ export function AppForm({
     />
   );
 
+  const routingFields = <>
+      <FormField
+        id="f-hostname"
+        label="Hostname"
+        error={errors.hostname}
+        hint={
+          creating
+            ? "Leave empty to use the application name and DNS suffix."
+            : "Takes effect immediately; the container keeps running."
+        }
+      >
+        <Input
+          ref={hostnameField}
+          className="mono"
+          id="f-hostname"
+          value={hostname}
+          onChange={(event) => setHostname(event.target.value)}
+          placeholder={`my-app.${dnsSuffix}`}
+          required={!creating}
+        />
+      </FormField>
+
+      <FormField
+        id="f-aliases"
+        label="Aliases"
+        error={errors.aliases}
+        hint={`Other hostnames this application also answers on, comma separated.${
+          creating ? "" : " Keep the old one here to change the Hostname without breaking it."
+        }`}
+      >
+        <Input
+          ref={aliasesField}
+          className="mono"
+          id="f-aliases"
+          value={aliases}
+          onChange={(event) => setAliases(event.target.value)}
+          placeholder={`old-name.${dnsSuffix}`}
+        />
+      </FormField>
+
+  </>;
+
   return (
     <Form id="app-form" onSubmit={submit}>
       <div className="form-body">
-      <p className="t-caps">Configuration</p>
+      {source !== "git" ? <p className="t-caps">Configuration</p> : null}
 
-      <FormField
+      {!(creating && source === "git") ? <FormField
         label="Name"
         id="f-name"
         value={name}
@@ -410,7 +623,7 @@ export function AppForm({
         required
         autoFocus={creating}
         hint="Lowercase letters, numbers and hyphens; at most 63 characters."
-      />
+      /> : null}
 
       {creating ? (
         <fieldset className="field source-choice">
@@ -419,6 +632,7 @@ export function AppForm({
             ["image", "Container image"],
             ["custom-image", "Custom image"],
             ["compose", "Compose file"],
+            ["git", "Git repository"],
           ].map(([value, label]) => (
             <label className="row" key={value}>
               <input
@@ -426,7 +640,10 @@ export function AppForm({
                 name="f-source"
                 value={value}
                 checked={source === value}
-                onChange={() => setSource(value)}
+                onChange={() => {
+                  if (value !== "git") { ++gitRequest.current; setCheckingGit(false); }
+                  setSource(value);
+                }}
               />{" "}
               {label}
             </label>
@@ -434,7 +651,18 @@ export function AppForm({
         </fieldset>
       ) : null}
 
-      {source === "compose" ? composeFields : source === "custom-image" ? (
+      {source === "git" ? <GitWorkflowFields
+        fields={git} onChange={changeGit} creating={creating}
+        mode={gitMode} onModeChange={setGitMode} setup={gitSetup}
+        onEditSource={() => { setGitSetup(false); setGitReviewKey(""); }}
+        inspection={gitInspection} reviewed={gitReviewed} checking={checkingGit}
+        disabled={submitting} onImport={importRepository}
+        recipeChosen={recipeChosen} onRecipeChange={chooseGitRecipe}
+        name={name} onNameChange={setName} port={port}
+        onPortChange={(next) => { portEdited.current = true; setPort(next); }}
+        webService={webService} onWebServiceChange={chooseGitService}
+        unpublished={unpublished} onUnpublishedChange={setUnpublished} dnsSuffix={dnsSuffix}
+      /> : source === "compose" ? composeFields : source === "custom-image" ? (
         <>
           <FormField id="f-custom-image" label="Custom image">
             <select id="f-custom-image" className="input" required value={customImageTag}
@@ -489,57 +717,25 @@ export function AppForm({
         </>
       ) : imageField}
 
-      <FormField
-        id="f-hostname"
-        label="Hostname"
-        error={errors.hostname}
-        hint={
-          creating
-            ? "Leave empty to use the application name and DNS suffix."
-            : "Takes effect immediately; the container keeps running."
-        }
-      >
-        <Input
-          ref={hostnameField}
-          className="mono"
-          id="f-hostname"
-          value={hostname}
-          onChange={(event) => setHostname(event.target.value)}
-          placeholder={`my-app.${dnsSuffix}`}
-          required={!creating}
-        />
-      </FormField>
-
-      <FormField
-        id="f-aliases"
-        label="Aliases"
-        error={errors.aliases}
-        hint={`Other hostnames this application also answers on, comma separated.${
-          creating ? "" : " Keep the old one here to change the Hostname without breaking it."
-        }`}
-      >
-        <Input
-          ref={aliasesField}
-          className="mono"
-          id="f-aliases"
-          value={aliases}
-          onChange={(event) => setAliases(event.target.value)}
-          placeholder={`old-name.${dnsSuffix}`}
-        />
-      </FormField>
+      {source !== "git" ? routingFields : !unpublished && (!creating || gitSetup) ? creating ? (
+        <details className="disclosure" open={gitDomains} onToggle={(event) => setGitDomains(event.currentTarget.open)}>
+          <summary>Domain settings</summary>
+          <div className="git-settings-fields">{routingFields}</div>
+        </details>
+      ) : routingFields : null}
 
       {failure ? <Failure failure={failure} /> : null}
       </div>
 
       {creating ? (
-        <FormActions sticky>
+        <FormActions sticky message={source === "git" ? checkingGit ? "Checking the selected repository." : !gitSetup ? gitMode === "repositories" ? "Import a repository, or use its URL." : "Check the repository before building." : !gitReviewed ? "Check the changed source before building." : "Build and deploy the reviewed commit." : undefined}>
           <Button size="sm" type="button" onClick={onCancel}>
             Cancel
           </Button>
-          <Button size="sm" variant="primary" type="submit"
-            disabled={source === "custom-image" && (!customImageId || !customImageTag || customImagesLoading || !!customImagesFailure)}>
-            Deploy
-          </Button>
+          {source !== "git" || gitSetup || gitMode === "url" ? <Button size="sm" variant="primary" type="submit"
+            disabled={submitting || checkingGit || source === "custom-image" && (!customImageId || !customImageTag || customImagesLoading || !!customImagesFailure) || source === "git" && (!git.repository.trim() || gitSetup && gitReviewed && (!recipeChosen || !unpublished && (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)))}>
+            {source === "git" ? checkingGit ? "Checking..." : gitReviewed && recipeChosen ? "Build and deploy" : gitSetup ? "Check repository" : "Continue" : "Deploy"}
+          </Button> : null}
         </FormActions>
       ) : (
         /* Removing lives in the header row with the other lifecycle verbs,
@@ -549,9 +745,9 @@ export function AppForm({
         <FormActions
           sticky
           tone={dirty ? "warning" : "neutral"}
-          message={dirty ? <><strong>Unsaved changes.</strong> The Application keeps running as it is until you save.</> : pull && source !== "custom-image" ? "Saved. Redeploying pulls newer images first." : "Saved."}
+          message={dirty ? <><strong>Unsaved changes.</strong> {changedGitSelection ? "Saving builds the selected repository, ref or pinned commit." : "The Application keeps running as it is until you save."}</> : source === "git" ? app?.git_build?.revision ? `Saved. Rebuild commit ${app.git_build.revision.slice(0, 12)}. Check for updates to review a newer version.` : "Saved. A failed build keeps the running Application." : pull && source !== "custom-image" ? "Saved. Redeploying pulls newer images first." : "Saved."}
         >
-          {source !== "custom-image" ? (
+          {source !== "git" && source !== "custom-image" ? (
             <div className="check">
               <Checkbox id="f-pull" checked={pull} onCheckedChange={(checked) => setPull(checked === true)} />
               <Label htmlFor="f-pull">Pull newer images</Label>
@@ -562,8 +758,8 @@ export function AppForm({
               Discard
             </Button>
           ) : null}
-          <Button size="sm" variant="primary" type="submit">
-            Save and redeploy
+          <Button size="sm" variant="primary" type="submit" disabled={submitting}>
+            {source === "git" ? "Save and build" : "Save and redeploy"}
           </Button>
         </FormActions>
       )}

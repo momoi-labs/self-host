@@ -58,8 +58,9 @@ A hook, a build or a terminal is not a privileged path. All four purposes go
 through the same order, so the console's terminal on a Native Application is
 a shell as that account and nothing more.
 
-Nothing in this decision is reachable from the Operator API yet. The record
-can describe a native Runtime (ADR-0028) and is refused until the lifecycle
-slice wires these pieces to it.
+N3 connects this boundary to the Operator API. Native create, update,
+lifecycle actions, Variables and logs use the installed N1 launcher and
+N2 supervisor. The API requires a dedicated Application Account and keeps
+its Runtime kind fixed.
 
 **Status:** accepted

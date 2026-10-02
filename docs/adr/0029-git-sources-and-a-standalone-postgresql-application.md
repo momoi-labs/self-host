@@ -1,10 +1,10 @@
 # Source builds come from a Git repository, and local PostgreSQL is an unpublished Application
 
-Two shapes are proposed here so the slices that build them start from the
-same picture. Neither is implemented. The Platform builds from a Host path
-today (`path` source) and refuses `build:` in a Compose file by name
-(ADR-0015), because an arbitrary Host read is never accepted. Applications
-that need a database run one inside their own Compose file.
+Git source builds are implemented in D2. Managed PostgreSQL remains a P2
+proposal. The Platform still accepts the existing Host `path` source and
+refuses `build:` in pasted Compose files (ADR-0015). Git Compose inputs come
+from an owned checkout. Applications that need a database can continue to
+run one inside their own Compose file.
 
 ## A source build is a repository, a ref and a pinned commit
 
@@ -44,7 +44,7 @@ This is slice P2.
   own in a container any more, and a database for Applications is not the
   Platform's state (ADR-0027).
 
-**Status:** proposed
+**Status:** Git sources accepted and implemented in D2. Managed PostgreSQL proposed.
 
 **Extends:** [ADR-0015](0015-compose-service-ownership-and-routing.md) (the
 `build:` refusal), [ADR-0028](0028-runtime-and-publication-are-recorded-explicitly.md)

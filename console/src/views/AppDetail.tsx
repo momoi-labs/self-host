@@ -1,4 +1,4 @@
-import { Suspense, lazy, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useRef, useState } from "react";
 import {
   Lifecycle,
   StatusBadge,
@@ -28,13 +28,15 @@ import { AppForm, type Submission } from "../components/AppForm.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
 import { HttpStatus } from "../components/HttpStatus.js";
+import { GitBuildRun } from "../components/GitBuildRun.js";
+import { GitUpdateDialog } from "../components/GitUpdateDialog.js";
 import { AppLogPane } from "../components/LogPane.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf, getJson } from "../lib/api.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
 import { waitForTask } from "../lib/tasks.js";
-import type { App, Metrics, Report, Settings } from "../lib/types.js";
-import { fetchEvents } from "../lib/useEvents.js";
+import type { App, GitSource, Metrics, Report, Settings } from "../lib/types.js";
+import { fetchEvents, useEvents } from "../lib/useEvents.js";
 import { seriesFor } from "../lib/useMetrics.js";
 
 // xterm is a third of the console's JavaScript and only the Terminal tab needs
@@ -43,12 +45,14 @@ const Terminal = lazy(() => import("../components/Terminal.js").then((module) =>
 
 export function AppDetail({
   app,
+  formRevision,
   dnsSuffix,
   metrics,
   reload,
   onRemoved,
 }: {
   app: App;
+  formRevision: string;
   dnsSuffix: string;
   metrics: Metrics | null;
   reload: () => Promise<App[]>;
@@ -61,8 +65,17 @@ export function AppDetail({
   const [removing, setRemoving] = useState(false);
   const removalInFlight = useRef(false);
   const samples = seriesFor(metrics, app.id);
-  const [tab, setTab] = useState("configuration");
+  const [tab, setTab] = useState(app.git && app.status === "pending" ? "last-update" : app.git_build ? "summary" : "configuration");
   const [openedTerminal, setOpenedTerminal] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const buildInFlight = useRef(false);
+  const [buildTask, setBuildTask] = useState<string | null>(app.task_id ?? null);
+  const { events, error: eventsError } = useEvents();
+  const latestBuild = events.filter((event) => event.subject.id === app.id && (event.id === buildTask || event.description.startsWith("Git build")))
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))[0] ?? null;
+  const lastBuild = building && buildTask && !events.some((event) => event.id === buildTask) ? null : latestBuild;
+  const gitBusy = Boolean(app.git && (building || lastBuild?.status === "running" || lastBuild?.status === "pending"));
 
   const canStop = app.status === "running" || app.status === "failed";
   const canStart = app.status === "stopped" || app.status === "failed";
@@ -70,7 +83,7 @@ export function AppDetail({
   // The API queues the action and answers with its task; the outcome comes
   // from the task's event, which keeps the same id from start to finish.
   async function lifecycle(verb: string, body?: object) {
-    if (removalInFlight.current) return;
+    if (removalInFlight.current || buildInFlight.current || gitBusy) return;
     try {
       const res = await api(`/apps/id/${encodeURIComponent(app.id)}/${verb}`, {
         method: "POST",
@@ -106,6 +119,7 @@ export function AppDetail({
 
   async function save(body: Submission): Promise<Report | null> {
     if (removalInFlight.current) return { error: "Application removal is in progress.", caused_by: [] };
+    if (app.git) return runGitBuild(body);
     let failure: Report | null = null;
     try {
       const res = await api(`/apps/id/${encodeURIComponent(app.id)}`, {
@@ -138,8 +152,45 @@ export function AppDetail({
     return failure;
   }
 
+  async function runGitBuild(body: object): Promise<Report | null> {
+    if (removalInFlight.current || buildInFlight.current || gitBusy) return { error: "An Application operation is already in progress.", caused_by: [] };
+    buildInFlight.current = true;
+    setBuilding(true);
+    let failure: Report | null = null;
+    try {
+      const response = await api(`/apps/id/${encodeURIComponent(app.id)}`, { method: "PUT", body: JSON.stringify(body) });
+      if (!response.ok) failure = await failureOf(response);
+      else {
+        const accepted = await response.json() as App;
+        if (!accepted.task_id) throw new Error("The API did not name the build task.");
+        setBuildTask(accepted.task_id);
+        setTab("last-update");
+        const outcome = await waitForTask(accepted.task_id, { events: fetchEvents });
+        if (outcome.status === "failed") failure = outcome.error ?? { error: "The Git build failed.", caused_by: [] };
+        else notify("success", "Build and deployment completed");
+      }
+    } catch (cause) {
+      failure = { error: "Could not follow the Git build", caused_by: [(cause as Error).message] };
+    } finally {
+      buildInFlight.current = false;
+      setBuilding(false);
+      await reload();
+    }
+    return failure;
+  }
+
+  async function deployUpdate(source: GitSource, revision: string, expected: string) {
+    const failure = await runGitBuild({ git: source, refresh_source: true, source_revision: revision, expected_git_revision: expected });
+    if (failure) notify("danger", "Could not update application", failure);
+  }
+
+  async function rebuildCurrent() {
+    const failure = await runGitBuild({ refresh_source: false });
+    if (failure) notify("danger", "Could not rebuild application", failure);
+  }
+
   async function remove() {
-    if (removalInFlight.current) return;
+    if (removalInFlight.current || buildInFlight.current || gitBusy) return;
     removalInFlight.current = true;
     setConfirming(false);
     setRemoving(true);
@@ -201,23 +252,25 @@ export function AppDetail({
             <>
               <StatusBadge tone={statusTone(app.status)}>{app.status}</StatusBadge>
               <HttpStatus id={app.id} status={app.status} />
+              {gitBusy ? <StatusBadge tone="success" pulse>{lastBuild?.status === "pending" ? "Queued" : "Building"}</StatusBadge> : null}
             </>
           }
           actions={
             <>
-              <Button size="sm" disabled={removing || !canStart} onClick={() => void lifecycle("start")}>
+              <Button size="sm" disabled={removing || gitBusy || !canStart} onClick={() => void lifecycle("start")}>
                 Start
               </Button>
-              <Button size="sm" disabled={removing || !canStop} onClick={() => void lifecycle("stop")}>
+              <Button size="sm" disabled={removing || gitBusy || !canStop} onClick={() => void lifecycle("stop")}>
                 Stop
               </Button>
               <Button
                 size="sm"
-                disabled={removing || app.status !== "running"}
+                disabled={removing || gitBusy || app.status !== "running"}
                 onClick={() => void askRestart()}
               >
                 Restart
               </Button>
+              {app.git && app.git_build ? <Button size="sm" disabled={removing || gitBusy} onClick={() => setCheckingUpdate(true)}>Update</Button> : null}
             </>
           }
           destructive={
@@ -225,7 +278,7 @@ export function AppDetail({
               size="sm"
               variant="ghost"
               className="btn-danger-ghost"
-              disabled={removing}
+              disabled={removing || gitBusy}
               onClick={() => {
                 if (!removing && !removalInFlight.current) setConfirming(true);
               }}
@@ -257,13 +310,31 @@ export function AppDetail({
           }}
         >
           <TabsList aria-label="Application details">
+            {app.git_build ? <TabsTrigger value="summary">Summary</TabsTrigger> : null}
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
+            {app.git && (lastBuild || building || app.status === "pending") ? <TabsTrigger value="last-update">Last update</TabsTrigger> : null}
             <TabsTrigger value="logs">Logs</TabsTrigger>
             <TabsTrigger value="terminal">Terminal</TabsTrigger>
           </TabsList>
+          {app.git_build ? <TabsContent value="summary">
+            <dl className="summary-facts">
+              {app.git ? <><dt>Repository</dt><dd>{app.git.repository}</dd><dt>Branch or tag</dt><dd><code>{app.git.git_ref}</code></dd></> : null}
+              <dt>Deployed commit</dt>
+              <dd><code>{app.git_build.revision}</code></dd>
+              <dt>Build result</dt>
+              <dd><StatusBadge tone={app.git_build.status === "completed" ? "success" : "neutral"}>{app.git_build.status}</StatusBadge></dd>
+              {Object.entries(app.git_build.images).map(([service, image]) => <Fragment key={service}>
+                <dt>{service} image</dt><dd><code>{image}</code></dd>
+              </Fragment>)}
+            </dl>
+            <Button size="sm" disabled={removing || gitBusy} onClick={() => void rebuildCurrent()}>Rebuild current version</Button>
+          </TabsContent> : null}
           <TabsContent value="configuration">
-            <AppForm app={app} dnsSuffix={dnsSuffix} onSubmit={save} />
+            <AppForm key={formRevision} app={app} dnsSuffix={dnsSuffix} onSubmit={save} />
           </TabsContent>
+          {app.git ? <TabsContent value="last-update" className="detail-run">
+            <GitBuildRun event={lastBuild} error={eventsError} busy={gitBusy} onRetry={() => setTab("configuration")} />
+          </TabsContent> : null}
           <TabsContent value="logs" className="detail-logs">
             {/* The panel is one row tall; the Application's log brings a
                 container picker above it, so the two share a wrapper. */}
@@ -278,6 +349,8 @@ export function AppDetail({
           </TabsContent>
         </Tabs>
       </Card>
+
+      {checkingUpdate ? <GitUpdateDialog key={`${app.id}:${app.git_build?.revision}:${JSON.stringify(app.git)}`} app={app} onClose={() => setCheckingUpdate(false)} onDeploy={deployUpdate} /> : null}
 
       {/*
         The checkbox starts where the Platform setting is, and this restart

@@ -19,6 +19,7 @@ use rand::Rng;
 pub mod apps;
 pub mod audit;
 pub mod bootstrap;
+pub mod certificates;
 pub mod collection;
 pub mod compose_app;
 pub mod config;
@@ -41,6 +42,8 @@ pub mod proxy;
 pub mod routes;
 pub mod schema;
 pub mod settings;
+pub mod source;
+pub mod source_build_guard;
 pub mod store;
 pub mod tasks;
 pub mod terminal;
@@ -57,6 +60,7 @@ use store::StateStore;
 struct AppState<S: StateStore> {
     store: S,
     docker: Arc<dyn DockerRuntime>,
+    native: Arc<dyn native::lifecycle::NativeRuntime>,
     routes: Arc<dyn RouteStore>,
     custom_images: Arc<custom_images::Builds>,
     environments: Arc<Environments>,
@@ -97,7 +101,17 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
     vm_runtime: Arc<dyn VmRuntime>,
     zone: Arc<dyn dns_records::Zone>,
 ) -> Router {
-    build_platform(store, docker, routes, metrics, vm_runtime, zone, None).0
+    build_platform_with_native(
+        store,
+        docker,
+        routes,
+        metrics,
+        vm_runtime,
+        zone,
+        None,
+        Arc::new(native::lifecycle::S6Runtime::default()),
+    )
+    .0
 }
 
 /// Builds the API the way `serve` does: the tasks a restart interrupted are
@@ -112,7 +126,7 @@ pub async fn boot_app_with_vm_runtime<S: StateStore>(
     zone: Arc<dyn dns_records::Zone>,
     audit_events_max_age_flag: Option<std::time::Duration>,
 ) -> Router {
-    let (router, state) = build_platform(
+    let (router, state) = build_platform_with_native(
         store,
         docker,
         routes,
@@ -120,11 +134,48 @@ pub async fn boot_app_with_vm_runtime<S: StateStore>(
         vm_runtime,
         zone,
         audit_events_max_age_flag,
+        Arc::new(native::lifecycle::S6Runtime::default()),
     );
+    if let Err(error) =
+        native::lifecycle::reconcile(&state.store, state.native.as_ref(), state.routes.as_ref())
+            .await
+    {
+        tracing::warn!(%error, "native reconciliation failed");
+    }
     tasks::recover(&state).await;
     router
 }
 
+/// Builds the real Application API against an explicitly configured native
+/// supervisor. Linux integration fixtures use protected disposable paths.
+pub async fn boot_app_with_native_runtime<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
+    metrics: metrics::Metrics,
+    native: Arc<dyn native::lifecycle::NativeRuntime>,
+) -> Router {
+    let (router, state) = build_platform_with_native(
+        store,
+        docker,
+        routes,
+        metrics,
+        Arc::new(vms::LimaRuntime::default()),
+        Arc::new(dns_records::UnservedZone),
+        None,
+        native,
+    );
+    if let Err(error) =
+        native::lifecycle::reconcile(&state.store, state.native.as_ref(), state.routes.as_ref())
+            .await
+    {
+        tracing::warn!(%error, "native reconciliation failed");
+    }
+    tasks::recover(&state).await;
+    router
+}
+
+#[cfg(test)]
 fn build_platform<S: StateStore>(
     store: S,
     docker: Arc<dyn DockerRuntime>,
@@ -134,11 +185,35 @@ fn build_platform<S: StateStore>(
     zone: Arc<dyn dns_records::Zone>,
     audit_events_max_age_flag: Option<std::time::Duration>,
 ) -> (Router, AppState<S>) {
+    build_platform_with_native(
+        store,
+        docker,
+        routes,
+        metrics,
+        vm_runtime,
+        zone,
+        audit_events_max_age_flag,
+        Arc::new(native::lifecycle::S6Runtime::default()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_platform_with_native<S: StateStore>(
+    store: S,
+    docker: Arc<dyn DockerRuntime>,
+    routes: Arc<dyn RouteStore>,
+    metrics: metrics::Metrics,
+    vm_runtime: Arc<dyn VmRuntime>,
+    zone: Arc<dyn dns_records::Zone>,
+    audit_events_max_age_flag: Option<std::time::Duration>,
+    native: Arc<dyn native::lifecycle::NativeRuntime>,
+) -> (Router, AppState<S>) {
     let state = AppState {
         audit_events_max_age_flag,
         audit: Arc::new(audit::Journal::default()),
         store,
         docker,
+        native,
         routes,
         custom_images: Arc::new(custom_images::Builds::default()),
         environments: Arc::new(Environments::default()),
@@ -148,8 +223,54 @@ fn build_platform<S: StateStore>(
         tasks: Arc::new(tasks::Scheduler::default()),
     };
 
+    let authorization_routes = Router::new()
+        .route(
+            "/source/integrations/gitlab",
+            axum::routing::put(save_gitlab_integration),
+        )
+        .route(
+            "/source/integrations/github/register",
+            post(register_github_integration),
+        )
+        .route(
+            "/source/authorization/start",
+            post(start_source_authorization),
+        )
+        .route(
+            "/source/authorization/complete",
+            post(complete_source_authorization),
+        )
+        .route(
+            "/source/authorization/cancel",
+            post(cancel_source_authorization),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            capture_source_authorization::<S>,
+        ));
+
     let api_routes = Router::new()
         .route("/health", get(health))
+        .route("/certificates", get(certificate_status))
+        .route(
+            "/source/credentials",
+            get(source_credentials).post(save_source_credential),
+        )
+        .route("/source/inspect", post(inspect_git_source))
+        .route("/source/integrations", get(source_integrations))
+        .merge(authorization_routes)
+        .route(
+            "/source/connections",
+            get(source_connections).post(save_source_connection),
+        )
+        .route(
+            "/source/connections/{id}",
+            axum::routing::put(reconnect_source_connection).delete(delete_source_connection),
+        )
+        .route(
+            "/source/connections/{id}/repositories",
+            get(source_repositories),
+        )
         .route("/events", get(audit::list::<S>))
         .route("/bootstrap/status", get(bootstrap_status::<S>))
         .route("/apps", get(list_apps::<S>).post(deploy_app::<S>))
@@ -229,6 +350,7 @@ fn build_platform<S: StateStore>(
 
     let router = console::console_router()
         .merge(public_ca_router(tls::ca_cert_path()))
+        .merge(source_callback_router(source::private_root()))
         .merge(api_routes);
     (router, state)
 }
@@ -262,6 +384,350 @@ async fn health() -> Json<HealthResponse> {
         status: "ok".into(),
         version: env!("CARGO_PKG_VERSION"),
     })
+}
+
+async fn certificate_status() -> Response {
+    match certificates::read_status(&file_store::state_dir().join("certificates")) {
+        Ok(status) => Json(status).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorReport::plain("could not read certificate status")),
+        )
+            .into_response(),
+    }
+}
+
+async fn source_credentials() -> Response {
+    match source::list_credentials(&source::private_root()) {
+        Ok(metadata) => Json(metadata).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn save_source_credential(Json(request): Json<source::CredentialRequest>) -> Response {
+    match source::save_credential(&source::private_root(), request) {
+        Ok(metadata) => (StatusCode::CREATED, Json(metadata)).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+fn source_error_response(error: source::SourceError) -> Response {
+    let status = if matches!(error, source::SourceError::Invalid(_)) {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    error_response(status, &error)
+}
+
+async fn source_integrations() -> Response {
+    let result = match source::connections::auth::integrations(&source::private_root()) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    };
+    no_store(result)
+}
+
+async fn save_gitlab_integration(
+    Json(request): Json<source::connections::auth::GitlabIntegrationRequest>,
+) -> Response {
+    match source::connections::auth::save_gitlab(&source::private_root(), request) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn register_github_integration(
+    Json(request): Json<source::connections::auth::GithubRegistrationRequest>,
+) -> Response {
+    match source::connections::auth::register_github(&source::private_root(), request) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn start_source_authorization(
+    Json(request): Json<source::connections::auth::AuthorizationRequest>,
+) -> Response {
+    match source::connections::auth::start(&source::private_root(), request) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn complete_source_authorization(
+    Json(request): Json<source::connections::auth::AuthorizationCompletion>,
+) -> Response {
+    match source::connections::auth::complete(&source::private_root(), request).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelAuthorizationRequest {
+    state: String,
+}
+
+async fn cancel_source_authorization(Json(request): Json<CancelAuthorizationRequest>) -> Response {
+    match source::connections::auth::cancel(&source::private_root(), &request.state) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn capture_source_authorization<S: StateStore>(
+    State(state): State<AppState<S>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (action, description) = match (request.method().as_str(), request.uri().path()) {
+        ("PUT", "/source/integrations/gitlab") => ("configure", "Configure GitLab integration"),
+        ("POST", "/source/integrations/github/register") => {
+            ("configure", "Register GitHub integration")
+        }
+        ("POST", "/source/authorization/start") => ("authorize", "Start Git authorization"),
+        ("POST", "/source/authorization/complete") => ("authorize", "Complete Git authorization"),
+        ("POST", "/source/authorization/cancel") => ("cancel", "Cancel Git authorization"),
+        _ => return next.run(request).await,
+    };
+    // The audit history records the operation, never its state, code or secrets.
+    let mut event = audit::event(
+        action,
+        audit::Subject::new("git-provider", "git", "Git connections"),
+        "pending",
+        audit::actor(),
+        description,
+    );
+    let retention = settings::audit_events_max_age(&state).await;
+    if let Err(error) = state
+        .audit
+        .upsert(&state.store, event.clone(), retention)
+        .await
+    {
+        return no_store(error_response(StatusCode::INTERNAL_SERVER_ERROR, &error));
+    }
+    let response = audit::EVENT_ID
+        .scope(Some(event.id.clone()), next.run(request))
+        .await;
+    event.status = if response.status().is_success() {
+        "completed"
+    } else {
+        "failed"
+    }
+    .into();
+    event.started_at = Some(event.occurred_at.clone());
+    let finished_at = audit::timestamp();
+    event.finished_at = Some(finished_at.clone());
+    event.updated_at = Some(finished_at);
+    if !response.status().is_success() {
+        event.error = Some(ErrorReport::plain("Git provider authorization failed"));
+    }
+    if let Err(error) = state.audit.upsert(&state.store, event, retention).await {
+        tracing::warn!(%error, "could not record Git authorization event");
+    }
+    no_store(response)
+}
+
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+fn source_callback_router(root: std::path::PathBuf) -> Router {
+    Router::new()
+        .route(
+            "/source/authorization/callback",
+            get(source_authorization_callback),
+        )
+        .with_state(root)
+}
+
+#[derive(Serialize)]
+struct ProviderCallback {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installation_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn parse_provider_callback(query: &str) -> Option<ProviderCallback> {
+    if query.len() > 8192 {
+        return None;
+    }
+    let mut url = reqwest::Url::parse("https://callback.invalid/").ok()?;
+    url.set_query(Some(query));
+    let mut values = std::collections::BTreeMap::new();
+    for (key, value) in url.query_pairs() {
+        if !matches!(key.as_ref(), "state" | "code" | "installation_id" | "error") {
+            continue;
+        }
+        if values
+            .insert(key.into_owned(), value.into_owned())
+            .is_some()
+        {
+            return None;
+        }
+    }
+    let state = values.remove("state")?;
+    if state.is_empty() || state.len() > 256 || state.chars().any(char::is_control) {
+        return None;
+    }
+    let code = values.remove("code");
+    if code.as_deref().is_some_and(|code| {
+        code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control)
+    }) {
+        return None;
+    }
+    let error = values.remove("error");
+    if error.as_deref().is_some_and(|error| {
+        error.is_empty() || error.len() > 256 || error.chars().any(char::is_control)
+    }) {
+        return None;
+    }
+    let installation_id = match values.remove("installation_id") {
+        Some(value) => Some(value.parse::<u64>().ok().filter(|id| *id != 0)?),
+        None => None,
+    };
+    Some(ProviderCallback {
+        message_type: "self-host-git-callback",
+        state,
+        code,
+        installation_id,
+        error,
+    })
+}
+
+async fn source_authorization_callback(
+    State(root): State<std::path::PathBuf>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    let Some(callback) = query.as_deref().and_then(parse_provider_callback) else {
+        return denied_callback_page();
+    };
+    match source::connections::auth::callback_origin(&root, &callback.state) {
+        Ok(origin) => provider_callback_page(&origin, &callback),
+        Err(_) => denied_callback_page(),
+    }
+}
+
+fn script_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .expect("callback data is serializable")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+fn provider_callback_page(origin: &str, callback: &ProviderCallback) -> Response {
+    let nonce = format!("{:032x}", rand::random::<u128>());
+    let payload = script_json(callback);
+    let target_origin = script_json(&origin);
+    callback_html_response(
+        StatusCode::OK,
+        format!(
+            "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Git connection</title><p id=\"message\">Confirming with self-host. Keep this window open; it will close automatically.</p><script nonce=\"{nonce}\">(() => {{ const message = {payload}; const origin = {target_origin}; if (!window.opener) {{ document.getElementById('message').textContent = 'Open Git connections in self-host and try again.'; return; }} window.opener.postMessage(message, origin); }})();</script></html>"
+        ),
+        &format!(
+            "default-src 'none'; script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ),
+    )
+}
+
+fn denied_callback_page() -> Response {
+    callback_html_response(StatusCode::BAD_REQUEST,
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Git connection</title><p>Git authorization could not be completed. Close this window and try again from self-host.</p></html>".into(),
+        "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+}
+
+fn callback_html_response(status: StatusCode, body: String, csp: &str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("Referrer-Policy", "no-referrer")
+        .header("Content-Security-Policy", csp)
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+#[derive(Deserialize)]
+struct InspectGitRequest {
+    git: source::GitSource,
+}
+
+async fn inspect_git_source(Json(request): Json<InspectGitRequest>) -> Response {
+    match source::inspection::inspect(&source::private_root(), &request.git).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn source_connections() -> Response {
+    match source::connections::list_connections(&source::private_root()) {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn save_source_connection(
+    Json(request): Json<source::connections::ConnectionRequest>,
+) -> Response {
+    match source::connections::save_connection(&source::private_root(), request).await {
+        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn reconnect_source_connection(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(request): Json<source::connections::ConnectionRequest>,
+) -> Response {
+    match source::connections::reconnect_connection(&source::private_root(), &id, request).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+async fn delete_source_connection(
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match source::connections::delete_connection(&source::private_root(), &id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => source_error_response(error),
+    }
+}
+
+#[derive(Deserialize)]
+struct RepositoryQuery {
+    #[serde(default = "first_repository_page")]
+    page: u32,
+}
+
+fn first_repository_page() -> u32 {
+    1
+}
+
+async fn source_repositories(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<RepositoryQuery>,
+) -> Response {
+    match source::connections::list_repositories(&source::private_root(), &id, query.page).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => source_error_response(error),
+    }
 }
 
 /// The metrics the daemon holds in memory (ADR-0020): per-Application
@@ -324,6 +790,10 @@ async fn bootstrap_status<S: StateStore>(
 struct DeployApplicationRequest {
     name: String,
     #[serde(default)]
+    git: Option<source::GitSource>,
+    #[serde(default)]
+    source_revision: Option<String>,
+    #[serde(default)]
     image: String,
     #[serde(default)]
     path: String,
@@ -347,6 +817,8 @@ struct DeployApplicationRequest {
     /// Left out, a container published on its Hostname, as before.
     #[serde(default)]
     runtime: Option<Runtime>,
+    #[serde(default)]
+    environment: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     publication: Option<Publication>,
     #[serde(default)]
@@ -381,6 +853,14 @@ impl From<&DevelopmentApplicationRequest> for DevelopmentApplication {
 
 #[derive(Deserialize)]
 struct UpdateApplicationRequest {
+    #[serde(default)]
+    git: Option<source::GitSource>,
+    #[serde(default)]
+    refresh_source: bool,
+    #[serde(default)]
+    source_revision: Option<String>,
+    #[serde(default)]
+    expected_git_revision: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -451,6 +931,10 @@ struct ApplicationResponse {
     image: String,
     status: String,
     source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git: Option<source::GitSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_build: Option<source::GitBuild>,
     /// Present when `status` is `failed`, so the console can say why.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<ErrorReport>,
@@ -515,6 +999,8 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             image: app.image,
             status: app.status,
             source: app.source,
+            git: app.git,
+            git_build: app.git_build,
             last_error: app.last_error,
             restarts: None,
             compose: app.compose,
@@ -539,7 +1025,11 @@ async fn observed<S: StateStore>(
     state: &AppState<S>,
     app: apps::ApplicationRecord,
 ) -> ApplicationResponse {
-    let services = apps::service_states(state.docker.as_ref(), &app).await;
+    let services = if matches!(app.runtime, Runtime::Native(_)) {
+        native::lifecycle::service_states(state.native.as_ref(), &app).await
+    } else {
+        apps::service_states(state.docker.as_ref(), &app).await
+    };
     let (status, last_error) = apps::live_status(&app, &services);
     let restarts = services
         .iter()
@@ -640,6 +1130,8 @@ mod http_readiness_tests {
             image: "nginx".into(),
             status: apps::STATUS_RUNNING.into(),
             source: "image".into(),
+            git: None,
+            git_build: None,
             last_error: None,
             compose: None,
             web_service: None,
@@ -870,9 +1362,52 @@ async fn update_app<S: StateStore>(
         Ok(app) => app,
         Err(error) => return deploy_error_response(error),
     };
+    if current.git.is_some() {
+        let source = body.git.unwrap_or_else(|| current.git.clone().unwrap());
+        let _namespace = state.dns_records.lock_namespace().await;
+        let update = apps::ApplicationUpdate {
+            name: body.name,
+            image: body.image,
+            hostname: body.hostname,
+            aliases: body.aliases,
+            compose: body.compose,
+            web_service: body.web_service,
+            web_port: body.web_port,
+            development: body.development.as_ref().map(Into::into),
+            pull: false,
+            runtime: body.runtime,
+            publication: body.publication,
+            variable_delivery: body.variable_delivery,
+            route_rules: body.route_rules,
+            network_policy: body.network_policy,
+        };
+        return match apps::prepare_git_update_reviewed(
+            &state.store,
+            current,
+            source,
+            body.refresh_source,
+            update,
+            body.source_revision,
+            body.expected_git_revision,
+        )
+        .await
+        {
+            Ok(pending) => accept_git_deploy(&state, pending, "configure").await,
+            Err(error) => deploy_error_response(error),
+        };
+    }
+    if body.git.is_some()
+        || body.refresh_source
+        || body.source_revision.is_some()
+        || body.expected_git_revision.is_some()
+    {
+        return source_error_response(source::SourceError::Invalid(
+            "Git source updates require an existing Git Application".into(),
+        ));
+    }
     if body.development.is_some()
         && current.development.is_none()
-        && (current.source != apps::SOURCE_COMPOSE || body.compose.is_some())
+        && (current.compose.is_none() || body.compose.is_some())
     {
         return deploy_error_response(apps::DeployError::InvalidDevelopment(
             "explicit conversion is available only for an existing Compose application without a Compose file in this request".into(),
@@ -937,6 +1472,35 @@ async fn update_app<S: StateStore>(
 ///
 /// A deploy with no Docker work — a rename — is already done, and says so with
 /// a plain `200`.
+async fn accept_git_deploy<S: StateStore>(
+    state: &AppState<S>,
+    pending: apps::PendingGitDeploy,
+    action: &'static str,
+) -> Response {
+    let mut body = ApplicationResponse::from(pending.record.clone());
+    let subject = audit::Subject::new(
+        "application",
+        pending.record.id.clone(),
+        pending.record.name.clone(),
+    );
+    match tasks::enqueue(
+        state,
+        action,
+        subject,
+        tasks::Work::BuildGitApplication {
+            pending: Box::new(pending),
+        },
+    )
+    .await
+    {
+        Ok(task_id) => {
+            body.task_id = Some(task_id);
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
 async fn accept_deploy<S: StateStore>(
     state: &AppState<S>,
     pending: apps::PendingDeploy,
@@ -1067,11 +1631,7 @@ async fn deploy_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     Json(body): Json<DeployApplicationRequest>,
 ) -> Response {
-    // A native request carries no image, path or Compose file, so it is
-    // answered before the definition is looked for (ADR-0028).
-    if matches!(body.runtime, Some(Runtime::Native(_))) {
-        return deploy_error_response(apps::DeployError::NativeUnavailable);
-    }
+    let is_native = matches!(body.runtime, Some(Runtime::Native(_)));
     let options = apps::DeployOptions {
         hostname: body.hostname,
         aliases: body.aliases,
@@ -1082,6 +1642,66 @@ async fn deploy_app<S: StateStore>(
         network_policy: body.network_policy,
     };
 
+    if is_native {
+        if body.git.is_some()
+            || body.source_revision.is_some()
+            || !body.image.is_empty()
+            || !body.path.is_empty()
+            || !body.compose.is_empty()
+            || body.development.is_some()
+            || body.web_service.is_some()
+            || body.web_port.is_some()
+        {
+            return deploy_error_response(DeployError::InvalidNative(
+                "native Runtime accepts no image, path, Compose file or container Web Target"
+                    .into(),
+            ));
+        }
+        let _namespace = state.dns_records.lock_namespace().await;
+        return match apps::prepare_deploy_native(
+            &state.store,
+            &body.name,
+            options,
+            body.environment.into_iter().collect(),
+        )
+        .await
+        {
+            Ok(pending) => accept_deploy(&state, pending, "create").await,
+            Err(error) => deploy_error_response(error),
+        };
+    }
+    if !body.environment.is_empty() {
+        return deploy_error_response(DeployError::InvalidNative("environment on create requires native Runtime; use Application Variables for containers".into()));
+    }
+    if let Some(source) = body.git {
+        if !body.image.is_empty()
+            || !body.path.is_empty()
+            || !body.compose.is_empty()
+            || body.development.is_some()
+        {
+            return source_error_response(source::SourceError::Invalid("send a Git source without an image, Host path, inline Compose or development definition".into()));
+        }
+        let _namespace = state.dns_records.lock_namespace().await;
+        return match apps::prepare_git_create_reviewed(
+            &state.store,
+            &body.name,
+            source,
+            body.web_service,
+            body.web_port,
+            options,
+            body.source_revision,
+        )
+        .await
+        {
+            Ok(pending) => accept_git_deploy(&state, pending, "create").await,
+            Err(error) => deploy_error_response(error),
+        };
+    }
+    if body.source_revision.is_some() {
+        return source_error_response(source::SourceError::Invalid(
+            "a reviewed source revision requires a Git source".into(),
+        ));
+    }
     let development = match body.development.as_ref() {
         Some(request) => match validate_development_image(&state, request, None).await {
             Ok(settings) => Some(settings),
@@ -1245,6 +1865,12 @@ async fn set_env<S: StateStore>(
         Ok(app) => app,
         Err(e) => return remove_error_response(e),
     };
+    if matches!(app.runtime, Runtime::Native(_))
+        && let Err(error) =
+            native::lifecycle::validate_environment(&[(body.key.clone(), body.value.clone())])
+    {
+        return deploy_error_response(DeployError::InvalidNative(error.to_string()));
+    }
     accepted_task(
         tasks::enqueue(
             &state,
@@ -1305,6 +1931,9 @@ async fn list_app_containers<S: StateStore>(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     match state.store.get_application(&id).await {
+        Ok(Some(app)) if matches!(app.runtime, Runtime::Native(_)) => {
+            Json(Vec::<String>::new()).into_response()
+        }
         Ok(Some(_)) => match state.docker.application_containers(&id).await {
             Ok(names) => Json(names).into_response(),
             Err(err) => logs_error_response(&apps::LogsError::Docker(err)),
@@ -1325,7 +1954,11 @@ async fn http_status<S: StateStore>(
 ) -> Response {
     match apps::get_application(&state.store, &id).await {
         Ok(app) => {
-            let services = apps::service_states(state.docker.as_ref(), &app).await;
+            let services = if matches!(app.runtime, Runtime::Native(_)) {
+                native::lifecycle::service_states(state.native.as_ref(), &app).await
+            } else {
+                apps::service_states(state.docker.as_ref(), &app).await
+            };
             (
                 StatusCode::OK,
                 Json(HttpStatusResponse {
@@ -1375,6 +2008,26 @@ async fn stream_logs_for<S: StateStore>(
     app: apps::ApplicationRecord,
     container: Option<String>,
 ) -> Response {
+    if matches!(app.runtime, Runtime::Native(_)) {
+        if container.is_some() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorReport::plain("native Application has no containers")),
+            )
+                .into_response();
+        }
+        return match state.native.logs(&app).await {
+            Ok(receiver) => {
+                let stream = tokio_stream::wrappers::ReceiverStream::new(receiver).map(|line| {
+                    Ok::<_, std::convert::Infallible>(sse::Event::default().data(line))
+                });
+                sse::Sse::new(stream)
+                    .keep_alive(sse::KeepAlive::default())
+                    .into_response()
+            }
+            Err(error) => deploy_error_response(DeployError::Native(error)),
+        };
+    }
     let containers = match state.docker.application_containers(&app.id).await {
         Ok(names) => names,
         Err(err) => return logs_error_response(&apps::LogsError::Docker(err)),
@@ -1398,7 +2051,7 @@ async fn stream_logs_for<S: StateStore>(
         return sse::Sse::new(stream).into_response();
     }
 
-    let logs = if app.source == apps::SOURCE_COMPOSE && !requested_container {
+    let logs = if app.compose.is_some() && !requested_container {
         match apps::project_for(&state.store, &app).await {
             Ok(project) => state.docker.stream_compose_logs(&project).await,
             Err(err) => return deploy_error_response(err),
@@ -1548,7 +2201,9 @@ fn deploy_error_response(err: DeployError) -> Response {
         DeployError::Route(crate::routes::RouteError::Conflict(_)) => StatusCode::CONFLICT,
         DeployError::Route(crate::routes::RouteError::Invalid(_)) => StatusCode::BAD_REQUEST,
         DeployError::Connectivity(_) => StatusCode::BAD_REQUEST,
-        DeployError::InvalidName(_)
+        DeployError::Source(source::SourceError::Invalid(_)) => StatusCode::BAD_REQUEST,
+        DeployError::InvalidNative(_)
+        | DeployError::InvalidName(_)
         | DeployError::InvalidHostname(_)
         | DeployError::MissingImage
         | DeployError::MissingPath
@@ -1557,9 +2212,11 @@ fn deploy_error_response(err: DeployError) -> Response {
         | DeployError::InvalidCompose(_) => StatusCode::BAD_REQUEST,
         DeployError::NotFound(_) => StatusCode::NOT_FOUND,
         DeployError::NotInitialized => StatusCode::PRECONDITION_FAILED,
-        DeployError::Docker(_) | DeployError::NoWebTargetPort(_) | DeployError::Store(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        DeployError::Native(_)
+        | DeployError::Docker(_)
+        | DeployError::NoWebTargetPort(_)
+        | DeployError::Store(_)
+        | DeployError::Source(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     error_response(status, &err)
 }
@@ -1642,6 +2299,239 @@ mod tests {
             .oneshot(req.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn provider_authorization_routes_require_operator_authentication() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+        for (method, uri) in [
+            ("GET", "/source/integrations"),
+            ("PUT", "/source/integrations/gitlab"),
+            ("POST", "/source/integrations/github/register"),
+            ("POST", "/source/authorization/start"),
+            ("POST", "/source/authorization/complete"),
+            ("POST", "/source/authorization/cancel"),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"state":"untrusted-state","client_secret":"untrusted-secret"}"#,
+                ))
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri}"
+            );
+        }
+        assert_eq!(
+            send(
+                &app,
+                "/source/authorization/callback?state=unknown-state&error=access_denied",
+                None
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert!(audit::read(&store).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_callback_invalid_states_are_public_and_never_reflect_query_values() {
+        let root = std::env::temp_dir().join(format!(
+            "self-host-callback-{:032x}",
+            rand::random::<u128>()
+        ));
+        let app = source_callback_router(root.clone());
+        for uri in [
+            "/source/authorization/callback",
+            "/source/authorization/callback?state=unknown-state&code=synthetic-sensitive-code&error=synthetic-sensitive-error",
+            "/source/authorization/callback?state=unknown-state&state=other-state",
+            "/source/authorization/callback?state=unknown-state&installation_id=not-a-number",
+            "/source/authorization/callback?state=unknown-state&code=%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+        ] {
+            let response = send(&app, uri, None).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+            let body =
+                String::from_utf8(to_bytes(response.into_body(), 4096).await.unwrap().to_vec())
+                    .unwrap();
+            for reflected in [
+                "unknown-state",
+                "synthetic-sensitive-code",
+                "synthetic-sensitive-error",
+                "alert(1)",
+                "<script",
+            ] {
+                assert!(!body.contains(reflected));
+            }
+        }
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/source/authorization/callback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert!(
+            !root.exists(),
+            "the public bridge must not create private state"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_callback_bridge_escapes_data_uses_nonce_and_exact_origin() {
+        let code = "</script><script>alert('synthetic')</script>&\u{2028}\u{2029}";
+        let callback = ProviderCallback {
+            message_type: "self-host-git-callback",
+            state: "fixture-state".into(),
+            code: Some(code.into()),
+            installation_id: Some(1234),
+            error: Some("access_denied".into()),
+        };
+        let response = provider_callback_page("https://console.example.invalid", &callback);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let nonce = body
+            .split("<script nonce=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        assert_eq!(nonce.len(), 32);
+        assert!(csp.contains(&format!("script-src 'nonce-{nonce}'")));
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert_eq!(body.matches("<script").count(), 1);
+        assert_eq!(body.matches("</script>").count(), 1);
+        assert!(!body.contains(code));
+        assert!(body.contains("\\u003c/script\\u003e"));
+        assert!(body.contains("\\u2028\\u2029"));
+        assert!(body.contains("const origin = \"https://console.example.invalid\""));
+        assert!(body.contains("window.opener.postMessage(message, origin)"));
+        assert!(!body.contains("postMessage(message, '*')"));
+        let payload = body
+            .split("const message = ")
+            .nth(1)
+            .unwrap()
+            .split("; const origin")
+            .next()
+            .unwrap();
+        let payload: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(payload["code"], code);
+        assert_eq!(payload["installation_id"], json!(1234));
+        assert_eq!(payload["type"], "self-host-git-callback");
+    }
+
+    #[test]
+    fn provider_callback_accepts_provider_denial_and_installation_before_oauth_code() {
+        let denied = parse_provider_callback(
+            "state=fixture-state&error=access_denied&error_description=untrusted-description",
+        )
+        .unwrap();
+        assert_eq!(denied.error.as_deref(), Some("access_denied"));
+        assert!(denied.code.is_none());
+        let installation =
+            parse_provider_callback("state=fixture-state&installation_id=42&setup_action=install")
+                .unwrap();
+        assert_eq!(installation.installation_id, Some(42));
+        assert!(installation.code.is_none());
+        for query in [
+            "state=&code=a",
+            "state=a&code=",
+            "state=a&installation_id=0",
+            "state=a&installation_id=-1",
+            "state=a&installation_id=18446744073709551616",
+            "state=a&code=%00",
+        ] {
+            assert!(parse_provider_callback(query).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_authorization_audit_excludes_state_code_and_provider_errors() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+        let response = post_json(&app, "/source/authorization/complete", Some("test-key"),
+            json!({"state":"synthetic-sensitive-state","code":"synthetic-sensitive-code","error":"synthetic-sensitive-provider-error"})).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let events = audit::read(&store).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].subject.kind, "git-provider");
+        assert_eq!(events[0].status, "failed");
+        let recorded = serde_json::to_string(&events).unwrap();
+        for sensitive in [
+            "synthetic-sensitive-state",
+            "synthetic-sensitive-code",
+            "synthetic-sensitive-provider-error",
+        ] {
+            assert!(!recorded.contains(sensitive));
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_authorization_malformed_json_is_audited_without_its_body() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/source/authorization/start")
+                    .header(header::AUTHORIZATION, "Bearer test-key")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"provider":"github","name":"synthetic-sensitive-malformed-body""#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let events = audit::read(&store).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, "failed");
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains("synthetic-sensitive-malformed-body")
+        );
+    }
+
+    #[tokio::test]
+    async fn certificate_status_requires_operator_authentication() {
+        let (router, _) = setup_initialized_app("test-key", "home.lan").await;
+        assert_eq!(
+            send(&router, "/certificates", None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let response = send(&router, "/certificates", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), json!([]));
     }
 
     #[tokio::test]
@@ -2393,6 +3283,8 @@ mod tests {
             image: "hermes:latest".into(),
             status: apps::STATUS_RUNNING.into(),
             source: "image".into(),
+            git: None,
+            git_build: None,
             last_error: None,
             compose: None,
             web_service: None,
@@ -2862,7 +3754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_native_request_is_refused_with_501_and_records_nothing() {
+    async fn a_native_request_with_a_foreign_account_is_refused_and_records_nothing() {
         let (app, store) = setup_initialized_app("test-key", "home.lan").await;
 
         let response = post_json(
@@ -2882,15 +3774,13 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            parsed,
-            json!({
-                "error": "native execution is not available yet; the Application runtime must be container",
-                "caused_by": []
-            })
+        assert!(
+            parsed["error"].as_str().unwrap().starts_with(
+                "invalid native Application: native Application Account must be sf-app-"
+            )
         );
         assert!(store.list_applications().await.unwrap().is_empty());
 
@@ -2906,7 +3796,7 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(store.list_applications().await.unwrap().is_empty());
     }
 
@@ -2957,7 +3847,7 @@ mod tests {
             json!({"runtime": {"kind": "native", "account": "sf-app-blog", "command": ["/bin/true"]}}),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let saved = store.get_application(&blog.id).await.unwrap().unwrap();
         assert_eq!(saved.publication, Publication::Web);
