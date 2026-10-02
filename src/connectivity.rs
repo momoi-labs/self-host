@@ -33,7 +33,11 @@ pub fn validate(
     if grants.is_empty() {
         return Ok(());
     }
-    if record.source != "compose"
+    if (record.source != "compose"
+        && !record
+            .git
+            .as_ref()
+            .is_some_and(|source| source.compose_path.is_some()))
         || record.publication != Publication::Unpublished
         || record.runtime != Runtime::Container
     {

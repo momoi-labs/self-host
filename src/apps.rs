@@ -47,6 +47,8 @@ pub const STATUS_STOPPED: &str = "stopped";
 pub const SOURCE_IMAGE: &str = "image";
 pub const SOURCE_PATH: &str = "path";
 pub const SOURCE_COMPOSE: &str = "compose";
+pub const SOURCE_GIT: &str = "git";
+pub const SOURCE_NATIVE: &str = "native";
 
 /// Names reserved for Platform Infra — remove must reject these. Only the
 /// proxy is left: DNS moved into the binary (ADR-0017) and the state store
@@ -71,11 +73,14 @@ pub enum DeployError {
     /// The request asked for a native Runtime, which the Platform records
     /// but cannot run yet (ADR-0028).
     NativeUnavailable,
+    InvalidNative(String),
+    Native(anyhow::Error),
     /// The request asked to change a Publication chosen at creation.
     PublicationFixed,
     Route(crate::routes::RouteError),
     Connectivity(crate::connectivity::ConnectivityError),
     Store(StoreError),
+    Source(crate::source::SourceError),
 }
 
 /// Why an unpublished Application refuses a Hostname, an alias or a Web
@@ -107,6 +112,10 @@ impl std::fmt::Display for DeployError {
             DeployError::NoWebTargetPort(_) => {
                 write!(f, "failed to publish the Application on the LAN")
             }
+            DeployError::InvalidNative(message) => {
+                write!(f, "invalid native Application: {message}")
+            }
+            DeployError::Native(_) => write!(f, "native Application operation failed"),
             DeployError::NativeUnavailable => write!(
                 f,
                 "native execution is not available yet; the Application runtime must be container"
@@ -117,6 +126,7 @@ impl std::fmt::Display for DeployError {
             DeployError::Route(error) => write!(f, "{error}"),
             DeployError::Connectivity(error) => write!(f, "{error}"),
             DeployError::Store(_) => write!(f, "failed to record the Application"),
+            DeployError::Source(error) => write!(f, "{error}"),
         }
     }
 }
@@ -125,9 +135,11 @@ impl std::error::Error for DeployError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             DeployError::InvalidCompose(e) => Some(e),
+            DeployError::Native(e) => Some(e.as_ref()),
             DeployError::Docker(e) => Some(e),
             DeployError::NoWebTargetPort(e) => Some(e),
             DeployError::Store(e) => Some(e),
+            DeployError::Source(e) => Some(e),
             _ => None,
         }
     }
@@ -142,6 +154,12 @@ impl From<DockerError> for DeployError {
 impl From<StoreError> for DeployError {
     fn from(e: StoreError) -> Self {
         DeployError::Store(e)
+    }
+}
+
+impl From<crate::source::SourceError> for DeployError {
+    fn from(error: crate::source::SourceError) -> Self {
+        Self::Source(error)
     }
 }
 
@@ -212,7 +230,7 @@ pub fn validate_hostname(hostname: &str) -> Result<(), DeployError> {
 /// with, and refuses an alias that another Application already answers on.
 /// An unpublished Application has nothing to check and takes no name from
 /// the Zone (ADR-0028).
-async fn validate_routing(
+pub(crate) async fn validate_routing(
     store: &impl StateStore,
     record: &ApplicationRecord,
 ) -> Result<(), DeployError> {
@@ -281,7 +299,7 @@ async fn ensure_application_networks(
         docker.ensure_private_network(name).await?;
     }
     if !plan.internal_networks.contains(&plan.primary_network)
-        && (record.source != SOURCE_COMPOSE || plan.shared)
+        && (record.compose.is_none() || plan.shared)
     {
         docker.ensure_network(&plan.primary_network).await?;
     }
@@ -357,11 +375,15 @@ async fn start_container(
         .collect();
 
     let plan = ensure_application_networks(store, docker, record).await?;
+    let mut labels = identity_labels(&record.id, &record.name);
+    if record.git.is_some() {
+        labels.push(("sf.source".into(), "git".into()));
+    }
     docker
         .run_application(ApplicationContainer {
             name: container_name_for(&record.id),
             image: record.image.clone(),
-            labels: identity_labels(&record.id, &record.name),
+            labels,
             network: plan.primary_network,
             additional_networks: plan.additional_networks,
             ports: web_target_publication(record),
@@ -423,7 +445,7 @@ async fn publication_for(
 /// An unpublished Application has nothing to route, so a request that names
 /// a Hostname, an alias or a Web Target for one is refused rather than
 /// recorded and ignored. An empty value is how a form says nothing.
-fn refuse_routing_for_unpublished(
+pub(crate) fn refuse_routing_for_unpublished(
     hostname: Option<&str>,
     aliases: Option<&[String]>,
     web_service: Option<&str>,
@@ -457,12 +479,27 @@ async fn pending_record(
         .await?
         .ok_or(DeployError::NotInitialized)?;
 
-    // The shape is recorded (ADR-0028); running it is a later slice.
-    if matches!(options.runtime, Some(Runtime::Native(_))) {
+    let existing = store.find_application_by_name(name).await?;
+    let id = existing
+        .as_ref()
+        .map(|a| a.id.clone())
+        .unwrap_or_else(generate_app_id);
+    let mut runtime = options
+        .runtime
+        .clone()
+        .or_else(|| existing.as_ref().map(|a| a.runtime.clone()))
+        .unwrap_or_default();
+    if existing
+        .as_ref()
+        .is_some_and(|a| std::mem::discriminant(&a.runtime) != std::mem::discriminant(&runtime))
+    {
+        return Err(DeployError::InvalidNative(
+            "Application Runtime cannot be changed".into(),
+        ));
+    }
+    if source != SOURCE_NATIVE && matches!(runtime, Runtime::Native(_)) {
         return Err(DeployError::NativeUnavailable);
     }
-
-    let existing = store.find_application_by_name(name).await?;
     let publication = settle_publication(
         options.publication,
         existing.as_ref().map(|app| app.publication),
@@ -472,6 +509,11 @@ async fn pending_record(
         .or_else(|| existing.as_ref().map(|app| app.variable_delivery))
         .unwrap_or(VariableDelivery::Referenced);
 
+    if let Runtime::Native(definition) = &mut runtime {
+        crate::native::lifecycle::validate_definition(&id, definition, publication)
+            .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
+        crate::native::lifecycle::validate_port(store, &id, definition.port).await?;
+    }
     let (hostname, aliases, web_target_port) = match publication {
         // No Hostname, no Record, no route, no Host port.
         Publication::Unpublished => {
@@ -494,32 +536,36 @@ async fn pending_record(
                 (None, Some(app)) => app.aliases.clone(),
                 (None, None) => vec![],
             };
-            let port = match existing.as_ref().and_then(|app| app.web_target_port) {
-                Some(port) => port,
-                None => allocate_web_target_port(store).await?,
+            let port = match &runtime {
+                Runtime::Native(definition) => {
+                    definition.port.expect("validated native Web Target port")
+                }
+                Runtime::Container => match existing.as_ref().and_then(|app| app.web_target_port) {
+                    Some(port) => port,
+                    None => allocate_web_target_port(store).await?,
+                },
             };
             (hostname, aliases, Some(port))
         }
     };
 
     let record = ApplicationRecord {
-        id: existing
-            .as_ref()
-            .map(|a| a.id.clone())
-            .unwrap_or_else(generate_app_id),
+        id,
         name: name.to_string(),
         hostname,
         aliases,
         image,
         status: STATUS_PENDING.into(),
         source: source.to_string(),
+        git: None,
+        git_build: None,
         last_error: None,
         compose: definition.as_ref().map(|d| d.compose.clone()),
         web_service: definition.as_ref().and_then(|d| d.web_service.clone()),
         web_port: definition.as_ref().and_then(|d| d.web_port),
         web_target_port,
         development: None,
-        runtime: Runtime::Container,
+        runtime,
         publication,
         variable_delivery,
         route_rules: options
@@ -535,7 +581,7 @@ async fn pending_record(
     };
 
     if let Some(previous) = &existing
-        && previous.source != SOURCE_COMPOSE
+        && previous.compose.is_none()
         && previous.network_policy != record.network_policy
     {
         return Err(DeployError::Connectivity(
@@ -669,6 +715,9 @@ enum DeployWork {
     /// Apply network grants without starting an Application.
     NetworksOnly,
     Pull,
+    Native {
+        running: bool,
+    },
     Build {
         path: String,
     },
@@ -682,6 +731,116 @@ enum DeployWork {
     /// Pulls each image a registry serves first, then `docker compose up`,
     /// which also recreates the services whose image changed.
     PullComposeUp,
+}
+
+/// Accepts a native definition without touching Docker or starting code.
+pub async fn prepare_deploy_native(
+    store: &impl StateStore,
+    name: &str,
+    options: DeployOptions,
+    environment: Vec<(String, String)>,
+) -> Result<PendingDeploy, DeployError> {
+    validate_app_name(name)?;
+    if !store.is_initialized().await? {
+        return Err(DeployError::NotInitialized);
+    }
+    if !matches!(options.runtime, Some(Runtime::Native(_))) {
+        return Err(DeployError::InvalidNative(
+            "native source requires native Runtime".into(),
+        ));
+    }
+    crate::native::lifecycle::validate_environment(&environment)
+        .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
+    let previous = store.find_application_by_name(name).await?;
+    let record = pending_record(store, name, String::new(), SOURCE_NATIVE, None, &options).await?;
+    let running = previous.is_none_or(|a| a.status != STATUS_STOPPED);
+    store.insert_application(&record).await?;
+    for (key, value) in environment {
+        store.set_env(&record.id, &key, &value).await?;
+    }
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::Native { running },
+    })
+}
+
+impl PendingDeploy {
+    pub fn native_intent(&self) -> Option<bool> {
+        match self.work {
+            DeployWork::Native { running } => Some(running),
+            _ => None,
+        }
+    }
+}
+
+async fn prepare_native_update(
+    store: &impl StateStore,
+    current: ApplicationRecord,
+    update: ApplicationUpdate,
+) -> Result<PendingDeploy, DeployError> {
+    settle_publication(update.publication, Some(current.publication))?;
+    if update.image.is_some()
+        || update.compose.is_some()
+        || update.development.is_some()
+        || update.web_service.is_some()
+        || update.web_port.is_some()
+        || update.network_policy.is_some()
+    {
+        return Err(DeployError::InvalidNative(
+            "native updates accept command, working_dir, limits and loopback port through runtime"
+                .into(),
+        ));
+    }
+    if matches!(update.runtime, Some(Runtime::Container)) {
+        return Err(DeployError::InvalidNative(
+            "Application Runtime cannot be changed".into(),
+        ));
+    }
+    let mut record = current.clone();
+    record.name = update.name.unwrap_or_else(|| current.name.clone());
+    validate_app_name(&record.name)?;
+    if let Some(clash) = store.find_application_by_name(&record.name).await?
+        && clash.id != record.id
+    {
+        return Err(DeployError::AlreadyExists(record.name));
+    }
+    record.hostname = update.hostname.unwrap_or_else(|| current.hostname.clone());
+    record.aliases = update.aliases.unwrap_or_else(|| current.aliases.clone());
+    record.route_rules = update
+        .route_rules
+        .unwrap_or_else(|| current.route_rules.clone());
+    record.runtime = update.runtime.unwrap_or_else(|| current.runtime.clone());
+    let Runtime::Native(definition) = &mut record.runtime else {
+        unreachable!()
+    };
+    crate::native::lifecycle::validate_definition(&record.id, definition, record.publication)
+        .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
+    crate::native::lifecycle::validate_port(store, &record.id, definition.port).await?;
+    record.web_target_port = definition.port;
+    if record.publication == Publication::Unpublished {
+        refuse_routing_for_unpublished(
+            Some(&record.hostname),
+            Some(&record.aliases),
+            None,
+            definition.port,
+        )?;
+    }
+    validate_routing(store, &record).await?;
+    let changed = record.runtime != current.runtime;
+    let running = current.status != STATUS_STOPPED;
+    if changed {
+        record.status = STATUS_PENDING.into();
+        record.last_error = None;
+    }
+    store.insert_application(&record).await?;
+    Ok(PendingDeploy {
+        record,
+        work: if changed {
+            DeployWork::Native { running }
+        } else {
+            DeployWork::Settled
+        },
+    })
 }
 
 /// Writes the `pending` row for an image deploy. Nothing has reached Docker
@@ -898,6 +1057,7 @@ pub async fn project_for(
         .as_ref()
         .map(|_| compose_app::RenderOverrides::service_hostname("web", &record.name))
         .unwrap_or_default();
+    overrides.git_nonroot = record.git.is_some();
     crate::connectivity::validate_definition(&record.network_policy, &definition)
         .map_err(DeployError::Connectivity)?;
     overrides.network_plan = Some(crate::connectivity::plan(
@@ -973,6 +1133,7 @@ pub async fn finish_deploy_reporting(
                 docker.compose_up(&project).await?;
                 return Ok(());
             }
+            DeployWork::Native { .. } => return Err(DeployError::NativeUnavailable),
             DeployWork::Settled | DeployWork::NetworksOnly => unreachable!(),
         }
         start_container(store, docker, &record).await?;
@@ -1005,7 +1166,7 @@ async fn give_web_target_port(
     let mut published = app.clone();
     published.web_target_port = Some(port);
 
-    if published.source == SOURCE_COMPOSE {
+    if published.compose.is_some() {
         docker
             .compose_up(&project_for(store, &published).await?)
             .await?;
@@ -1056,6 +1217,9 @@ pub async fn reconcile(
         reconcile_private_connections(store, docker).await?;
     }
     for mut app in store.list_applications().await? {
+        if matches!(app.runtime, Runtime::Native(_)) {
+            continue;
+        }
         if app.status == STATUS_PENDING && executor_available && !queued.contains(&app.id) {
             let states = service_states(docker, &app).await;
             let running = !states.is_empty() && states.iter().all(|s| s.state == "running");
@@ -1138,7 +1302,7 @@ pub async fn get_application(
 /// What the console is allowed to change on an existing Application. `None`
 /// means "leave alone", so a form that only touches the image sends only the
 /// image.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ApplicationUpdate {
     pub name: Option<String>,
     pub image: Option<String>,
@@ -1195,8 +1359,13 @@ pub async fn prepare_update(
     }
 
     let current = get_application(store, id).await?;
+    if matches!(current.runtime, Runtime::Native(_)) {
+        return prepare_native_update(store, current, update).await;
+    }
     if matches!(update.runtime, Some(Runtime::Native(_))) {
-        return Err(DeployError::NativeUnavailable);
+        return Err(DeployError::InvalidNative(
+            "Application Runtime cannot be changed".into(),
+        ));
     }
     // Same value or unsaid: a no-op. The other kind: refused (ADR-0028).
     settle_publication(update.publication, Some(current.publication))?;
@@ -1274,7 +1443,7 @@ pub async fn prepare_update(
 
     // A Compose Application shows the image behind its Hostname; the file is
     // what the Operator edits.
-    if current.source == SOURCE_COMPOSE {
+    if current.compose.is_some() {
         let variables = store.get_all_env(&current.id).await?;
         let spec = check_compose(
             record.compose.as_deref().unwrap_or_default(),
@@ -1304,7 +1473,7 @@ pub async fn prepare_update(
     let file_changed = record.compose != current.compose;
     let delivery_changed = record.variable_delivery != current.variable_delivery;
     let network_changed = record.network_policy != current.network_policy;
-    if network_changed && current.source != SOURCE_COMPOSE {
+    if network_changed && current.compose.is_none() {
         return Err(DeployError::Connectivity(
             crate::connectivity::ConnectivityError(
                 "network policy changes require a Compose Application".into(),
@@ -1321,14 +1490,14 @@ pub async fn prepare_update(
     // file, so that change is Docker's too.
     let needs_docker = pull
         || network_changed
-        || if current.source == SOURCE_COMPOSE {
+        || if current.compose.is_some() {
             file_changed
                 || delivery_changed
                 || (record.development.is_some() && record.name != current.name)
         } else {
             image_changed
         };
-    if !needs_docker || (current.status == STATUS_STOPPED && current.source == SOURCE_COMPOSE) {
+    if !needs_docker || (current.status == STATUS_STOPPED && current.compose.is_some()) {
         record.status = current.status.clone();
         record.last_error = current.last_error.clone();
         store.insert_application(&record).await?;
@@ -1342,7 +1511,7 @@ pub async fn prepare_update(
         });
     }
 
-    if current.source == SOURCE_COMPOSE {
+    if current.compose.is_some() {
         return Ok(PendingDeploy {
             record,
             work: if pull {
@@ -1502,7 +1671,7 @@ pub async fn remove_application(
 
     // The project is rendered before the row goes, because rendering reads
     // the row's environment.
-    let project = if app.source == SOURCE_COMPOSE {
+    let project = if app.compose.is_some() {
         project_for(store, &app).await.ok()
     } else {
         None
@@ -1541,7 +1710,7 @@ pub async fn stop_application(
     let app = get_application(store, id).await?;
 
     routes.withdraw(&app.id);
-    if app.source == SOURCE_COMPOSE {
+    if app.compose.is_some() {
         docker
             .compose_stop(&project_for(store, &app).await?)
             .await?;
@@ -1566,8 +1735,15 @@ pub async fn start_application(
     let app = get_application(store, id).await?;
     let result = async {
         reconcile_private_connections(store, docker).await?;
-        if app.source == SOURCE_COMPOSE {
+        if app.compose.is_some() {
             docker.compose_up(&project_for(store, &app).await?).await?;
+        } else if app.git.is_some()
+            && docker
+                .container_state(&container_name_for(&app.id))
+                .await?
+                .is_none()
+        {
+            start_container(store, docker, &app).await?;
         } else {
             docker.start_container(&container_name_for(&app.id)).await?;
         }
@@ -1601,7 +1777,7 @@ pub async fn restart_application(
     };
     let changes = pull_images(docker, &images).await?;
     let result = async {
-        match (app.source == SOURCE_COMPOSE, images.is_empty()) {
+        match (app.compose.is_some(), images.is_empty()) {
             (true, true) => {
                 docker
                     .compose_restart(&project_for(store, &app).await?)
@@ -1708,7 +1884,7 @@ pub struct ServiceState {
 /// The containers an Application is made of, as `(service, container)`. A
 /// single-container Application has one service, called `app`.
 pub fn containers_of(record: &ApplicationRecord) -> Vec<(String, String)> {
-    if record.source != SOURCE_COMPOSE {
+    if record.compose.is_none() {
         return vec![("app".to_string(), container_name_for(&record.id))];
     }
     let project = project_name_for(&record.id);
@@ -1929,7 +2105,7 @@ async fn recreate_with_env(
     ensure_application_networks(store, docker, app)
         .await
         .map_err(EnvError::Definition)?;
-    if app.source == SOURCE_COMPOSE {
+    if app.compose.is_some() {
         let project = project_for(store, app)
             .await
             .map_err(EnvError::Definition)?;
@@ -1989,6 +2165,386 @@ impl From<StoreError> for LogsError {
     fn from(e: StoreError) -> Self {
         LogsError::Store(e)
     }
+}
+
+/// A Git candidate waits in its Task. An existing release stays authoritative
+/// until all checkout, build and definition checks succeed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingGitDeploy {
+    pub record: ApplicationRecord,
+    pub source: crate::source::GitSource,
+    pub refresh_source: bool,
+    pub update: Option<ApplicationUpdate>,
+    /// A reviewed candidate applies to this Task, never to the saved source ref.
+    #[serde(default)]
+    pub source_revision: Option<String>,
+    #[serde(default)]
+    pub expected_git_revision: Option<String>,
+}
+
+pub async fn prepare_git_create(
+    store: &impl StateStore,
+    name: &str,
+    source: crate::source::GitSource,
+    web_service: Option<String>,
+    web_port: Option<u16>,
+    options: DeployOptions,
+) -> Result<PendingGitDeploy, DeployError> {
+    prepare_git_create_reviewed(store, name, source, web_service, web_port, options, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn prepare_git_create_reviewed(
+    store: &impl StateStore,
+    name: &str,
+    source: crate::source::GitSource,
+    web_service: Option<String>,
+    web_port: Option<u16>,
+    options: DeployOptions,
+    source_revision: Option<String>,
+) -> Result<PendingGitDeploy, DeployError> {
+    crate::source::validate(&source)?;
+    validate_reviewed_revision(&source, source_revision.as_deref())?;
+    validate_app_name(name)?;
+    if !store.is_initialized().await? {
+        return Err(DeployError::NotInitialized);
+    }
+    if store.find_application_by_name(name).await?.is_some() {
+        return Err(DeployError::AlreadyExists(name.into()));
+    }
+    if matches!(options.runtime, Some(Runtime::Native(_))) {
+        return Err(DeployError::Source(crate::source::SourceError::Invalid(
+            "Git builds require container Runtime".into(),
+        )));
+    }
+    let mut record = pending_record(store, name, String::new(), SOURCE_GIT, None, &options).await?;
+    if record.publication == Publication::Unpublished {
+        refuse_routing_for_unpublished(None, None, web_service.as_deref(), web_port)?;
+    }
+    record.git = Some(source.clone());
+    record.web_service = web_service;
+    record.web_port = web_port;
+    store.insert_application(&record).await?;
+    Ok(PendingGitDeploy {
+        record,
+        source,
+        refresh_source: false,
+        update: None,
+        source_revision,
+        expected_git_revision: None,
+    })
+}
+
+pub async fn prepare_git_update(
+    store: &impl StateStore,
+    current: ApplicationRecord,
+    source: crate::source::GitSource,
+    refresh_source: bool,
+    update: ApplicationUpdate,
+) -> Result<PendingGitDeploy, DeployError> {
+    prepare_git_update_reviewed(store, current, source, refresh_source, update, None, None).await
+}
+
+pub async fn prepare_git_update_reviewed(
+    store: &impl StateStore,
+    current: ApplicationRecord,
+    source: crate::source::GitSource,
+    refresh_source: bool,
+    update: ApplicationUpdate,
+    source_revision: Option<String>,
+    expected_git_revision: Option<String>,
+) -> Result<PendingGitDeploy, DeployError> {
+    crate::source::validate(&source)?;
+    validate_reviewed_revision(&source, source_revision.as_deref())?;
+    if source_revision.is_some() != expected_git_revision.is_some() {
+        return Err(crate::source::SourceError::Invalid(
+            "reviewed updates need both candidate and deployed Git revisions".into(),
+        )
+        .into());
+    }
+    if let Some(expected) = expected_git_revision.as_deref() {
+        let mut unpinned = source.clone();
+        unpinned.revision = None;
+        validate_reviewed_revision(&unpinned, Some(expected))?;
+        let saved = get_application(store, &current.id).await?;
+        check_expected_git_revision(&saved, Some(expected))?;
+    }
+    if current.git.is_none() || current.runtime != Runtime::Container {
+        return Err(DeployError::Source(crate::source::SourceError::Invalid(
+            "Git source updates require an existing Git Application".into(),
+        )));
+    }
+    if current
+        .git
+        .as_ref()
+        .is_some_and(|old| old.compose_path.is_some() != source.compose_path.is_some())
+    {
+        return Err(DeployError::Source(crate::source::SourceError::Invalid(
+            "Git build type cannot change after creation".into(),
+        )));
+    }
+    if update.image.is_some()
+        || update.compose.is_some()
+        || update.development.is_some()
+        || matches!(update.runtime, Some(Runtime::Native(_)))
+    {
+        return Err(DeployError::Source(crate::source::SourceError::Invalid(
+            "Git source accepts no image, inline Compose, development definition or native Runtime"
+                .into(),
+        )));
+    }
+    let mut record = current.clone();
+    apply_git_update(store, &mut record, &update).await?;
+    validate_routing(store, &record).await?;
+    validate_connectivity(store, &record).await?;
+    Ok(PendingGitDeploy {
+        record,
+        source,
+        refresh_source,
+        update: Some(update),
+        source_revision,
+        expected_git_revision,
+    })
+}
+
+fn validate_reviewed_revision(
+    source: &crate::source::GitSource,
+    revision: Option<&str>,
+) -> Result<(), DeployError> {
+    let Some(revision) = revision else {
+        return Ok(());
+    };
+    if source
+        .revision
+        .as_deref()
+        .is_some_and(|pin| !pin.eq_ignore_ascii_case(revision))
+    {
+        return Err(crate::source::SourceError::Invalid(
+            "reviewed commit conflicts with the explicit source pin".into(),
+        )
+        .into());
+    }
+    let mut candidate = source.clone();
+    candidate.revision = Some(revision.into());
+    crate::source::validate(&candidate)?;
+    Ok(())
+}
+
+fn check_expected_git_revision(
+    record: &ApplicationRecord,
+    expected: Option<&str>,
+) -> Result<(), DeployError> {
+    if let Some(expected) = expected
+        && !record
+            .git_build
+            .as_ref()
+            .is_some_and(|build| build.revision.eq_ignore_ascii_case(expected))
+    {
+        return Err(crate::source::SourceError::Invalid(
+            "the deployed Git revision changed; check for updates again".into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+async fn apply_git_update(
+    store: &impl StateStore,
+    record: &mut ApplicationRecord,
+    update: &ApplicationUpdate,
+) -> Result<(), DeployError> {
+    settle_publication(update.publication, Some(record.publication))?;
+    if record.publication == Publication::Unpublished {
+        refuse_routing_for_unpublished(
+            update.hostname.as_deref(),
+            update.aliases.as_deref(),
+            update.web_service.as_deref(),
+            update.web_port,
+        )?;
+    }
+    if let Some(name) = &update.name {
+        validate_app_name(name)?;
+        if store
+            .find_application_by_name(name)
+            .await?
+            .is_some_and(|other| other.id != record.id)
+        {
+            return Err(DeployError::AlreadyExists(name.clone()));
+        }
+        record.name = name.clone();
+    }
+    if let Some(hostname) = &update.hostname {
+        record.hostname = hostname.clone();
+    }
+    if let Some(aliases) = &update.aliases {
+        record.aliases = aliases.clone();
+    }
+    if let Some(service) = &update.web_service {
+        record.web_service = Some(service.clone());
+    }
+    if let Some(port) = update.web_port {
+        record.web_port = Some(port);
+    }
+    if let Some(delivery) = update.variable_delivery {
+        record.variable_delivery = delivery;
+    }
+    if let Some(rules) = &update.route_rules {
+        record.route_rules = rules.clone();
+    }
+    if let Some(policy) = &update.network_policy {
+        record.network_policy = policy.clone();
+    }
+    Ok(())
+}
+
+pub async fn finish_git_deploy(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
+    pending: PendingGitDeploy,
+) -> Result<(ApplicationRecord, Vec<crate::audit::Change>), DeployError> {
+    let id = pending.record.id.clone();
+    let result = finish_git_deploy_inner(store, docker, routes, pending).await;
+    if let Err(error) = &result
+        && let Ok(current) = get_application(store, &id).await
+        && current.git_build.is_none()
+        && current.status == STATUS_PENDING
+    {
+        let _ = store
+            .set_application_outcome(&id, STATUS_FAILED, Some(ErrorReport::new(error)))
+            .await;
+        routes.withdraw(&id);
+    }
+    result
+}
+
+async fn finish_git_deploy_inner(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
+    pending: PendingGitDeploy,
+) -> Result<(ApplicationRecord, Vec<crate::audit::Change>), DeployError> {
+    let current = get_application(store, &pending.record.id).await?;
+    check_expected_git_revision(&current, pending.expected_git_revision.as_deref())?;
+    validate_reviewed_revision(&pending.source, pending.source_revision.as_deref())?;
+    let unchanged_selection = current.git.as_ref().is_some_and(|saved| {
+        saved.repository == pending.source.repository && saved.git_ref == pending.source.git_ref
+    });
+    let pinned = if let Some(reviewed) = pending.source_revision.as_deref() {
+        Some(reviewed)
+    } else if !pending.refresh_source && unchanged_selection {
+        current
+            .git_build
+            .as_ref()
+            .map(|build| build.revision.as_str())
+    } else {
+        None
+    };
+    let result = crate::source::build(
+        &crate::source::private_root(),
+        &current.id,
+        &pending.source,
+        pinned,
+        docker,
+    )
+    .await;
+    let built = match result {
+        Ok(built) => built,
+        Err(error) => {
+            if current.git_build.is_none() && current.status == STATUS_PENDING {
+                store
+                    .set_application_outcome(
+                        &current.id,
+                        STATUS_FAILED,
+                        Some(ErrorReport::new(&error)),
+                    )
+                    .await?;
+                routes.withdraw(&current.id);
+            }
+            return Err(error.into());
+        }
+    };
+    let mut record = get_application(store, &current.id).await?;
+    check_expected_git_revision(&record, pending.expected_git_revision.as_deref())?;
+    if let Some(update) = &pending.update {
+        apply_git_update(store, &mut record, update).await?;
+    }
+    record.image = built.image;
+    record.compose = built.compose;
+    record.git = Some(pending.source);
+    record.git_build = Some(built.build);
+    record.source = SOURCE_GIT.into();
+    if let Some(compose) = &record.compose {
+        let spec = check_compose(
+            compose,
+            record.web_service.as_deref(),
+            record.web_port,
+            record.publication,
+            &store.get_all_env(&record.id).await?,
+        )?;
+        record.image = spec.image;
+        record.web_service = spec.web_service;
+        record.web_port = spec.web_port;
+    } else {
+        if record
+            .web_service
+            .as_deref()
+            .is_some_and(|service| !service.is_empty())
+        {
+            return Err(DeployError::Source(crate::source::SourceError::Invalid(
+                "a Dockerfile source has no Compose web service".into(),
+            )));
+        }
+        if record.web_port == Some(0) {
+            return Err(DeployError::Source(crate::source::SourceError::Invalid(
+                "web port must be nonzero".into(),
+            )));
+        }
+    }
+    validate_routing(store, &record).await?;
+    validate_connectivity(store, &record).await?;
+    let mut changes = Vec::new();
+    if let (Some(before), Some(after)) = (&current.git_build, &record.git_build)
+        && before.revision != after.revision
+    {
+        changes.push(crate::audit::Change {
+            setting: "Git revision".into(),
+            from: before.revision.clone(),
+            to: after.revision.clone(),
+        });
+    }
+    if current.status == STATUS_STOPPED {
+        if current.compose.is_some() {
+            docker
+                .compose_down(&project_for(store, &current).await?)
+                .await?;
+        } else if docker
+            .container_state(&container_name_for(&current.id))
+            .await?
+            .is_some()
+        {
+            docker
+                .remove_container(&container_name_for(&current.id))
+                .await?;
+        }
+        record.status = STATUS_STOPPED.into();
+        record.last_error = None;
+        store.insert_application(&record).await?;
+        routes.withdraw(&record.id);
+        return Ok((record, changes));
+    }
+    record.status = STATUS_PENDING.into();
+    record.last_error = None;
+    let work = if record.compose.is_some() {
+        DeployWork::ComposeUp
+    } else {
+        DeployWork::Recreate { pull: false }
+    };
+    store.insert_application(&record).await?;
+    let (record, mut runtime_changes) =
+        finish_deploy_reporting(store, docker, routes, PendingDeploy { record, work }).await?;
+    changes.append(&mut runtime_changes);
+    Ok((record, changes))
 }
 
 #[cfg(test)]
@@ -3641,7 +4197,7 @@ services:
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, DeployError::NativeUnavailable), "{err}");
+        assert!(matches!(err, DeployError::InvalidNative(_)), "{err}");
         let saved = store.get_application(&app.id).await.unwrap().unwrap();
         assert_eq!(saved.runtime, Runtime::Container);
         assert_eq!(saved.publication, Publication::Web);
@@ -3691,5 +4247,116 @@ services:
         .await
         .unwrap();
         assert!(same.is_settled());
+    }
+
+    #[tokio::test]
+    async fn reviewed_git_updates_reject_stale_previews_before_checkout() {
+        let store = initialized_store().await;
+        let source: crate::source::GitSource = serde_json::from_value(serde_json::json!({
+            "repository": "https://example.invalid/fixture.git", "git_ref": "main"
+        }))
+        .unwrap();
+        let pending = prepare_git_create(
+            &store,
+            "reviewed-worker",
+            source.clone(),
+            None,
+            None,
+            DeployOptions {
+                publication: Some(Publication::Unpublished),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let first = "1".repeat(40);
+        let second = "2".repeat(40);
+        let third = "3".repeat(40);
+        let mut current = pending.record;
+        current.status = STATUS_RUNNING.into();
+        current.git_build = Some(crate::source::GitBuild {
+            revision: first.clone(),
+            images: Default::default(),
+            status: "completed".into(),
+        });
+        store.insert_application(&current).await.unwrap();
+        let candidate = prepare_git_update_reviewed(
+            &store,
+            current.clone(),
+            source.clone(),
+            true,
+            ApplicationUpdate::default(),
+            Some(second.clone()),
+            Some(first.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            candidate.source.revision.is_none(),
+            "a reviewed commit is transient"
+        );
+        assert_eq!(candidate.source_revision.as_deref(), Some(second.as_str()));
+        let mut old_task = serde_json::to_value(&candidate).unwrap();
+        old_task.as_object_mut().unwrap().remove("source_revision");
+        old_task
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_git_revision");
+        let recovered: PendingGitDeploy = serde_json::from_value(old_task).unwrap();
+        assert!(recovered.source_revision.is_none());
+        assert!(recovered.expected_git_revision.is_none());
+        let mut advanced = current.clone();
+        advanced.git_build.as_mut().unwrap().revision = third.clone();
+        store.insert_application(&advanced).await.unwrap();
+        assert!(
+            prepare_git_update_reviewed(
+                &store,
+                current,
+                source,
+                true,
+                ApplicationUpdate::default(),
+                Some(second),
+                Some(first)
+            )
+            .await
+            .is_err()
+        );
+        let docker = FakeDocker::new();
+        assert!(
+            finish_git_deploy(&store, &docker, &FakeRoutes::new(), candidate)
+                .await
+                .is_err()
+        );
+        assert!(docker.built.lock().unwrap().is_empty());
+        assert_eq!(
+            store.get_application(&advanced.id).await.unwrap().unwrap(),
+            advanced
+        );
+    }
+
+    #[tokio::test]
+    async fn reviewed_git_create_rejects_conflicting_explicit_pins_without_recording() {
+        let store = initialized_store().await;
+        let source: crate::source::GitSource = serde_json::from_value(serde_json::json!({
+            "repository": "https://example.invalid/fixture.git", "revision": "1".repeat(40)
+        }))
+        .unwrap();
+        assert!(
+            prepare_git_create_reviewed(
+                &store,
+                "conflicting-pin",
+                source,
+                None,
+                None,
+                DeployOptions {
+                    publication: Some(Publication::Unpublished),
+                    ..Default::default()
+                },
+                Some("2".repeat(40))
+            )
+            .await
+            .is_err()
+        );
+        assert!(store.list_applications().await.unwrap().is_empty());
     }
 }

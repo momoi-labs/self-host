@@ -37,6 +37,9 @@ pub enum Work {
     DeployApplication {
         pending: Box<apps::PendingDeploy>,
     },
+    BuildGitApplication {
+        pending: Box<apps::PendingGitDeploy>,
+    },
     StartApplication {
         id: String,
     },
@@ -147,6 +150,17 @@ fn key(subject: &Subject) -> Key {
 }
 
 fn event(task: &Task, status: &str, description: impl Into<String>) -> audit::Event {
+    let description = if matches!(task.work, Work::BuildGitApplication { .. }) {
+        match status {
+            "pending" => "Git build queued.",
+            "running" => "Git build and deployment are running.",
+            "completed" => "Git build and deployment completed.",
+            _ => "Git build or deployment failed.",
+        }
+        .to_owned()
+    } else {
+        description.into()
+    };
     let mut event = audit::event(
         task.action.clone(),
         task.subject.clone(),
@@ -277,21 +291,75 @@ async fn execute<S: StateStore>(
     let docker = state.docker.as_ref();
     let routes = state.routes.as_ref();
     let done = match work {
+        Work::BuildGitApplication { pending } => {
+            return apps::finish_git_deploy(store, docker, routes, *pending)
+                .await
+                .map(|(_, changes)| changes)
+                .map_err(|error| ErrorReport::new(&error));
+        }
         Work::DeployApplication { pending } => {
+            if let Some(running) = pending.native_intent() {
+                return crate::native::lifecycle::deploy(
+                    store,
+                    state.native.as_ref(),
+                    routes,
+                    pending.record,
+                    running,
+                )
+                .await
+                .map(|_| Vec::new())
+                .map_err(|error| ErrorReport::new(&error));
+            }
             return apps::finish_deploy_reporting(store, docker, routes, *pending)
                 .await
                 .map(|(_, changes)| changes)
                 .map_err(|e| ErrorReport::new(&e));
         }
-        Work::StartApplication { id } => apps::start_application(store, docker, routes, &id)
-            .await
-            .map(drop)
-            .map_err(|e| ErrorReport::new(&e)),
-        Work::StopApplication { id } => apps::stop_application(store, docker, routes, &id)
-            .await
-            .map(drop)
-            .map_err(|e| ErrorReport::new(&e)),
+        Work::StartApplication { id } => {
+            if native_application(store, &id).await? {
+                crate::native::lifecycle::operate(
+                    store,
+                    state.native.as_ref(),
+                    routes,
+                    &id,
+                    "start",
+                )
+                .await
+                .map(drop)
+                .map_err(|e| ErrorReport::new(&e))
+            } else {
+                apps::start_application(store, docker, routes, &id)
+                    .await
+                    .map(drop)
+                    .map_err(|e| ErrorReport::new(&e))
+            }
+        }
+        Work::StopApplication { id } => {
+            if native_application(store, &id).await? {
+                crate::native::lifecycle::operate(store, state.native.as_ref(), routes, &id, "stop")
+                    .await
+                    .map(drop)
+                    .map_err(|e| ErrorReport::new(&e))
+            } else {
+                apps::stop_application(store, docker, routes, &id)
+                    .await
+                    .map(drop)
+                    .map_err(|e| ErrorReport::new(&e))
+            }
+        }
         Work::RestartApplication { id, pull } => {
+            if native_application(store, &id).await? {
+                return crate::native::lifecycle::operate(
+                    store,
+                    state.native.as_ref(),
+                    routes,
+                    &id,
+                    "restart",
+                )
+                .await
+                .map(|_| Vec::new())
+                .map_err(|e| ErrorReport::new(&e));
+            }
             return apps::restart_application(store, docker, routes, &id, pull)
                 .await
                 .map(|(_, changes)| changes)
@@ -302,6 +370,14 @@ async fn execute<S: StateStore>(
         Work::RemoveApplication { id } => {
             let _namespace = state.dns_records.lock_namespace().await;
             match apps::get_application(store, &id).await {
+                Ok(app) if matches!(app.runtime, crate::store::Runtime::Native(_)) => {
+                    apps::require_removable(store, &app)
+                        .await
+                        .map_err(|e| ErrorReport::new(&e))?;
+                    crate::native::lifecycle::remove(store, state.native.as_ref(), routes, &app)
+                        .await
+                        .map_err(|e| ErrorReport::new(&e))
+                }
                 Ok(app) => apps::remove_application(store, docker, routes, &app.name)
                     .await
                     .map_err(|e| ErrorReport::new(&e)),
@@ -309,13 +385,42 @@ async fn execute<S: StateStore>(
             }
         }
         Work::SetEnvironment { name, key, value } => {
+            if native_named(store, &name).await? {
+                return crate::native::lifecycle::environment(
+                    store,
+                    state.native.as_ref(),
+                    routes,
+                    &name,
+                    &key,
+                    Some(&value),
+                )
+                .await
+                .map(|_| Vec::new())
+                .map_err(|e| ErrorReport::new(&e));
+            }
             apps::set_env(store, docker, &name, &key, &value)
                 .await
                 .map_err(|e| ErrorReport::new(&e))
         }
-        Work::UnsetEnvironment { name, key } => apps::unset_env(store, docker, &name, &key)
-            .await
-            .map_err(|e| ErrorReport::new(&e)),
+        Work::UnsetEnvironment { name, key } => {
+            if native_named(store, &name).await? {
+                crate::native::lifecycle::environment(
+                    store,
+                    state.native.as_ref(),
+                    routes,
+                    &name,
+                    &key,
+                    None,
+                )
+                .await
+                .map(drop)
+                .map_err(|e| ErrorReport::new(&e))
+            } else {
+                apps::unset_env(store, docker, &name, &key)
+                    .await
+                    .map_err(|e| ErrorReport::new(&e))
+            }
+        }
         Work::OperateVirtualMachine { id, action } => {
             environments::run_operation(&state, &id, &action).await
         }
@@ -323,6 +428,24 @@ async fn execute<S: StateStore>(
         Work::RemoveCustomImage { id } => custom_images::run_remove(&state, &id).await,
     };
     done.map(|()| Vec::new())
+}
+
+async fn native_application(store: &impl StateStore, id: &str) -> Result<bool, ErrorReport> {
+    Ok(matches!(
+        apps::get_application(store, id)
+            .await
+            .map_err(|e| ErrorReport::new(&e))?
+            .runtime,
+        crate::store::Runtime::Native(_)
+    ))
+}
+
+async fn native_named(store: &impl StateStore, name: &str) -> Result<bool, ErrorReport> {
+    Ok(store
+        .find_application_by_name(name)
+        .await
+        .map_err(|e| ErrorReport::new(&e))?
+        .is_some_and(|app| matches!(app.runtime, crate::store::Runtime::Native(_))))
 }
 
 async fn load<S: StateStore>(store: &S) -> Result<Vec<Task>, StoreError> {
@@ -352,7 +475,11 @@ pub async fn queued_application_ids<S: StateStore>(store: &S) -> Result<Vec<Stri
         .await?
         .into_iter()
         .filter(|task| {
-            task.status == "pending" && matches!(task.work, Work::DeployApplication { .. })
+            task.status == "pending"
+                && matches!(
+                    task.work,
+                    Work::DeployApplication { .. } | Work::BuildGitApplication { .. }
+                )
         })
         .map(|task| task.subject.id)
         .collect())

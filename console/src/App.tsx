@@ -153,10 +153,9 @@ export function App() {
           />
         ) : app ? (
           <AppDetail
-            // A record that moved rebuilds the form: the fields describe the
-            // Application, and the Application changed underneath them.
-            key={`${app.id}|${signature(app)}`}
+            key={app.id}
             app={app}
+            formRevision={signature(app)}
             dnsSuffix={dnsSuffix}
             metrics={metrics}
             reload={reload}
@@ -189,6 +188,8 @@ function signature(app: import("./lib/types.js").App): string {
     app.status,
     app.name,
     app.image,
+    JSON.stringify(app.git ?? null),
+    JSON.stringify(app.git_build ?? null),
     app.hostname,
     (app.aliases ?? []).join(","),
     JSON.stringify(app.last_error ?? null),

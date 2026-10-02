@@ -612,6 +612,76 @@ impl Supervisor {
         self.stop(id, timeout)?;
         self.start(id, timeout)
     }
+
+    #[cfg(target_os = "linux")]
+    pub fn exists(&self, id: &str) -> Result<bool> {
+        Ok(self.service(id)?.exists())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn exists(&self, _: &str) -> Result<bool> {
+        bail!("native supervision runs on Linux only")
+    }
+
+    /// Replace only after the existing tree is stopped. The down file keeps
+    /// stopped intent through a daemon crash between replacement and start.
+    #[cfg(target_os = "linux")]
+    pub fn replace(&self, definition: &ServiceDefinition, timeout: Duration) -> Result<()> {
+        definition.request(definition.command.clone(), Purpose::Main)?;
+        self.stop(&definition.application_id, timeout)?;
+        let service = self.service(&definition.application_id)?;
+        let stored = StoredService {
+            definition: definition.clone(),
+            cgroup_root: self.cgroup_root.path().into(),
+        };
+        linux::write(
+            &service.join("data/definition.json"),
+            &serde_json::to_vec(&stored)?,
+            0o600,
+        )
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn replace(&self, _: &ServiceDefinition, _: Duration) -> Result<()> {
+        bail!("native supervision runs on Linux only")
+    }
+
+    /// Remove generated supervision files, leaving Application data and logs.
+    #[cfg(target_os = "linux")]
+    pub fn remove(&self, id: &str, timeout: Duration) -> Result<()> {
+        use std::ffi::OsStr;
+        self.stop(id, timeout)?;
+        let service = self.service(id)?;
+        let hidden = self.root.join("services").join(format!(".removed-{id}"));
+        std::fs::rename(&service, &hidden)?;
+        std::fs::File::open(self.root.join("services"))?.sync_all()?;
+        // Once hidden, svscan cannot start a replacement while the old
+        // supervisor and logger exit.
+        for directory in [&hidden, &hidden.join("log")] {
+            linux::run_tool("s6-svc", &[OsStr::new("-dx"), directory.as_os_str()])?;
+        }
+        linux::run_tool(
+            "s6-svscanctl",
+            &[OsStr::new("-a"), self.root.join("services").as_os_str()],
+        )?;
+        let deadline = std::time::Instant::now() + timeout;
+        while linux::run_tool("s6-svok", &[hidden.as_os_str()]).is_ok()
+            || linux::run_tool("s6-svok", &[hidden.join("log").as_os_str()]).is_ok()
+        {
+            if std::time::Instant::now() >= deadline {
+                bail!("s6 did not release removed Application {id}");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::remove_dir_all(hidden)?;
+        std::fs::File::open(self.root.join("services"))?.sync_all()?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn remove(&self, _: &str, _: Duration) -> Result<()> {
+        bail!("native supervision runs on Linux only")
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]

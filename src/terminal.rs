@@ -469,6 +469,8 @@ mod tests {
             image: "example".into(),
             status: "running".into(),
             source: "image".into(),
+            git: None,
+            git_build: None,
             last_error: None,
             compose: None,
             web_service: None,

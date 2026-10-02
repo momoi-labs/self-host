@@ -66,7 +66,6 @@ pub enum Runtime {
     #[default]
     Container,
     /// A process tree on the Host under a dedicated Application Account.
-    /// Recorded shape only in this wave: refused on create and update.
     Native(NativeDefinition),
 }
 
@@ -75,6 +74,7 @@ pub enum Runtime {
 pub struct NativeDefinition {
     /// The Application Account name; `native::identity::AccountName`
     /// validates it when anything runs.
+    #[serde(default)]
     pub account: String,
     /// argv; argv[0] is the program.
     pub command: Vec<String>,
@@ -145,6 +145,10 @@ pub struct ApplicationRecord {
     pub image: String,
     pub status: String,
     pub source: String,
+    #[serde(default)]
+    pub git: Option<crate::source::GitSource>,
+    #[serde(default)]
+    pub git_build: Option<crate::source::GitBuild>,
     /// Why the last deploy failed, when `status` is `failed`. Kept as a
     /// report rather than a sentence so the console can put the failure in the
     /// alert's title and the causes in its body.
@@ -597,6 +601,8 @@ mod tests {
             image: String::new(),
             status: "pending".into(),
             source: "native".into(),
+            git: None,
+            git_build: None,
             last_error: None,
             compose: None,
             web_service: None,

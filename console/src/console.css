@@ -345,6 +345,7 @@
    ones fill the column left over, as the Kiso gallery sorts them. */
 .card-masonry { container-type: inline-size; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); grid-auto-rows: 8px; grid-auto-flow: row dense; align-items: start; column-gap: var(--spacing-xl); row-gap: 0; }
 .card-masonry > * { grid-row: span var(--masonry-rows, 1); min-width: 0; }
+#settings-git-connections { scroll-margin-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); }
 @container (min-width: 45.5rem) { .card-masonry > [data-size="wide"] { grid-column: span 2; } }
 @container (min-width: 69rem) { .card-masonry > [data-size="wide"] { order: -1; } }
 /* A form that is a card's body ends in the card's rounded corners. */

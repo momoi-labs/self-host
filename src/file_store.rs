@@ -65,6 +65,10 @@ struct ApplicationBody {
     status: String,
     source: String,
     #[serde(default)]
+    git: Option<crate::source::GitSource>,
+    #[serde(default)]
+    git_build: Option<crate::source::GitBuild>,
+    #[serde(default)]
     last_error: Option<ErrorReport>,
     #[serde(default)]
     compose_file: Option<String>,
@@ -281,6 +285,8 @@ impl FileStateStore {
             image: body.image,
             status: body.status,
             source: body.source,
+            git: body.git,
+            git_build: body.git_build,
             last_error: body.last_error,
             compose,
             web_service: body.web_service,
@@ -321,6 +327,8 @@ fn body_from(app: &ApplicationRecord, compose_file: Option<String>) -> Applicati
         image: app.image.clone(),
         status: app.status.clone(),
         source: app.source.clone(),
+        git: app.git.clone(),
+        git_build: app.git_build.clone(),
         last_error: app.last_error.clone(),
         compose_file,
         web_service: app.web_service.clone(),
@@ -937,6 +945,8 @@ mod tests {
             image: "nginx:latest".into(),
             status: STATUS_RUNNING.into(),
             source: "image".into(),
+            git: None,
+            git_build: None,
             last_error: None,
             compose: None,
             web_service: None,

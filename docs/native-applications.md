@@ -1,11 +1,11 @@
-# Native Applications
+# Native applications
 
 A Native Application is a process tree the Platform runs on the Host itself,
 without a container, under a Linux account that exists only for it. This
 page covers account provisioning, privilege dropping, cgroups and s6
-supervision. The Operator API still refuses native create and update requests
-until N3 connects the lifecycle adapter. The internal supervisor does not
-change that refusal.
+supervision. The Operator API creates and operates these Applications through
+its existing task queue. Install the protected binary and start
+`self-host-native.service` before accepting native requests.
 
 Linux only. On any other system the same functions return an `Unsupported`
 error and nothing else happens.
@@ -75,8 +75,8 @@ stdin is `/dev/null`; stdout and stderr are pipes the caller reads.
 
 Every launch has a `Purpose` (`Main`, `Hook`, `Build`, `Terminal`) and all
 of them go through the same steps. Readiness commands use `Hook` and join the
-main command's existing cgroup through the same N1 launch checks. A build or a terminal is not a way to get
-more than the Application has.
+main command's existing cgroup through the same N1 launch checks. A build
+or terminal has the Application's permissions.
 
 ## What the cgroup does
 
@@ -140,13 +140,78 @@ both when it ends, also on failure.
    there is one, is not writable by it; `sudo -n true` fails.
 10. Every `Purpose` passes the same identity checks as test 2.
 
-## What comes later
+## Operator API
 
-- The Operator API: creating, deploying and stopping a Native Application
-  through the console. Until then the record shape exists and is refused.
-- Turning a `NativeDefinition` plus the Application's Variables into a
-  `LaunchRequest`, described as a proposed shape in
-  `docs/deployment-contracts.md`.
+Create a worker through `POST /apps`. Omit `account` or send an empty
+string. The Platform assigns `sf-app-<id>` and provisions that dedicated
+non-root account. A supplied account must match the assigned identity.
+
+```json
+{
+  "name": "synthetic-worker",
+  "runtime": {
+    "kind": "native",
+    "command": ["/bin/sleep", "300"],
+    "limits": {"cpu_percent": 50, "memory_bytes": 134217728, "max_tasks": 32}
+  },
+  "publication": {"kind": "unpublished"},
+  "environment": {"SYNTHETIC": "example"}
+}
+```
+
+The account home is `/var/lib/self-host/native-data/<id>`. The root-owned
+parent is traversable but does not list its contents. Each home is `0750`
+and belongs to its account. `working_dir` is relative to that home; omit it
+to run in the home itself. The directory must exist and resolve inside the
+home. Absolute paths, `.` and `..` are refused before recording a request.
+The private supervision directory stays separate and inaccessible to
+Application Accounts.
+
+A Web Target sets `publication.kind` to `web` and a non-reserved port of at
+least 1024 in `runtime.port`. Its command must bind that port on
+`127.0.0.1` under its Application Account. The Platform checks Linux's socket
+inventory and waits for the loopback listener before publishing a route.
+A listener on `0.0.0.0`, `::`, another address or another account fails the
+task and stops the Application. A worker has no port, Hostname or route.
+The Platform refuses ports already assigned to another Application and its
+own API and proxy ports.
+
+Create and definition updates answer `202` with the existing task id. Use
+`POST /apps/id/<id>/start`, `/stop` and `/restart` for lifecycle actions.
+`PUT /apps/id/<id>` accepts the native Runtime, name, Hostname, aliases
+and route rules. Runtime kind and account cannot change. Updating a stopped
+Application replaces its definition and keeps it stopped. Name and route
+edits finish inline without restarting the process.
+
+`environment` on creation reaches the first launch. Later Variable changes
+use the existing `/apps/<name>/env` routes and task queue. `HOME`, `USER`
+and `LOGNAME` are reserved. A stopped Application stays stopped when its
+Variables change.
+
+The existing detail and log API routes report s6 observation and stream the
+Application's private s6 logs. An unavailable supervisor reports an unknown
+service state with its cause. Native console configuration, terminal and
+metrics remain a later slice.
+
+Removal stops the process tree and removes its generated supervision files.
+The Platform verifies account ownership, revokes the account and makes its
+retained home root-owned `0700`. It keeps the data and log files. Reusing a
+Linux uid cannot expose that retained home. Removal does not delete data.
+
+## Interrupted tasks and daemon restart
+
+The daemon reconnects to the running s6 tree. It does not start another
+scanner or duplicate an Application process. Tasks that were running when
+the daemon stopped fail in the audit history. The Application record is
+reconciled against s6's persistent `down` intent and ready state. A task that
+never started remains queued. If the supervisor is unavailable, an
+interrupted pending record stays pending and has no route.
+
+A definition replacement first stops the old tree and writes the new private
+definition while the `down` file remains present. A daemon failure before
+start therefore leaves the Application stopped. A later explicit start runs
+the recorded definition. Failed startup withdraws the route and records the
+failure on the Application and task.
 
 ## Supervision and intended state
 
@@ -160,8 +225,9 @@ The root-owned `down` file records stopped intent. Starting removes it and
 stopping writes it before sending a control command. Both operations sync
 the directory. s6 reads the same file after reboot. The service definition
 is private JSON, separate from Application data, and includes argv,
-Variables, limits, readiness and timeouts. N3 will map Platform State to this
-internal representation; the Operator API does not accept it yet.
+Variables, limits, readiness and timeouts. The lifecycle adapter maps
+Platform State to this internal representation. The Operator API accepts
+the public NativeDefinition shape.
 
 Each generated `run` script invokes the internal `native-run` command. That
 runner calls N1, forwards stdout and stderr, runs readiness under the same
@@ -200,7 +266,8 @@ processes. Restarting the Platform daemon does not restart this unit.
 The Linux installer opts into that unit with `SELF_HOST_NATIVE=1`. It checks
 for s6 and cgroup v2 before installing and enabling it. The default installer
 keeps its existing container-only behavior. Installing the unit does not
-enable native API requests or create any Applications.
+create any Applications. Native requests still require the privileged Linux
+daemon and protected installed binary.
 
 For development on a disposable Linux Host, install the built binary and
 unit with root ownership, then start the unit:
@@ -219,6 +286,24 @@ writes the delegated Application cgroup path to
 path and the installed executable. Missing s6, unsafe supervision paths and
 missing controllers fail before Application code runs. Use
 `journalctl -u self-host-native.service` for boot failures.
+
+## API lifecycle validation
+
+`tests/native_api_linux.rs` uses fresh root-owned fixtures, real s6 and
+cgroups, a file-backed state store and the HTTP Application API. It checks
+task outcomes, non-root identity, zero capabilities, limits, logs, stopped
+updates, Variable changes, daemon reconnect, private Web Targets, worker
+publication, unsafe binding refusal, account revocation and retained data.
+Docker is a fake boundary in this native-only fixture. The ordinary
+container suite still validates its lifecycle separately.
+
+Run these tests only on a disposable Linux Host:
+
+```sh
+cargo test --test native_api_linux -- --ignored --test-threads=1
+```
+
+A skipped ignored test is not Linux validation evidence.
 
 ## Supervision validation
 
@@ -252,3 +337,27 @@ The fixture checks that the boot id changed, the running Application started
 exactly twice, the stopped Application started once, both retained their
 data, and the running process uses a nonzero uid. It leaves the fixtures in
 place for inspection. Destroy the disposable Host when validation ends.
+
+## Fresh API reboot fixtures
+
+For N3, use `examples/native_api_reboot.rs` against the running disposable
+daemon and installed native service. Set `SELF_HOST_TEST_API` to that daemon's
+Operator API and `SELF_HOST_TEST_API_KEY` to its synthetic test key. The
+fixture manifest contains no credential. Use a new manifest for each check:
+
+```sh
+cargo build --example native_api_reboot
+sudo -E target/debug/examples/native_api_reboot prepare /var/lib/native-api-reboot-fresh.json
+```
+
+Reboot the disposable Host, start its isolated daemon with the same state,
+and run `verify` with the manifest. The check requires a changed boot id,
+exactly two starts for the running Application and one for the stopped
+Application, non-root identity, zero capabilities, and retained data:
+
+```sh
+sudo -E target/debug/examples/native_api_reboot verify /var/lib/native-api-reboot-fresh.json
+```
+
+Do not reuse old manifests or accumulated start counters. Destroy the
+disposable Host after retaining sanitized validation results.

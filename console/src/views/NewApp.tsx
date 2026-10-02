@@ -1,6 +1,5 @@
 import {
   Card,
-  CardContent,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
@@ -53,6 +52,8 @@ export function NewApp({
               ? "Bringing the Compose project up ..."
               : source === "custom-image"
                 ? "Starting the development server ..."
+              : source === "git"
+                ? "Checking out the selected commit and building its image ..."
               : `Pulling image ${body.image} ...`,
           caused_by: [],
         });
@@ -70,13 +71,11 @@ export function NewApp({
       <PageHeader>
         <PageHeaderTitle>New application</PageHeaderTitle>
         <PageHeaderDescription>
-          From a container image or a Compose file. It will be reachable on {dnsSuffix}.
+          Import a Git repository, use an image or paste a Compose file.
         </PageHeaderDescription>
       </PageHeader>
       <Card className="form-page">
-        <CardContent>
-          <AppForm dnsSuffix={dnsSuffix} onSubmit={deploy} onCancel={onCancel} />
-        </CardContent>
+        <AppForm dnsSuffix={dnsSuffix} onSubmit={deploy} onCancel={onCancel} />
       </Card>
     </>
   );

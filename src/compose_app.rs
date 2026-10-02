@@ -244,6 +244,8 @@ pub struct RenderOverrides {
     /// rendered `hostname` value.
     pub service_hostnames: IndexMap<String, String>,
     pub network_plan: Option<crate::connectivity::NetworkPlan>,
+    /// Git Application processes cannot regain root through setuid binaries.
+    pub git_nonroot: bool,
 }
 
 impl RenderOverrides {
@@ -251,6 +253,7 @@ impl RenderOverrides {
         Self {
             service_hostnames: [(service.into(), hostname.into())].into_iter().collect(),
             network_plan: None,
+            git_nonroot: false,
         }
     }
 }
@@ -459,6 +462,13 @@ impl ComposeDefinition {
             containers.push((service.name.clone(), container.clone()));
 
             body.insert("container_name".into(), container.into());
+            if overrides.git_nonroot {
+                body.insert(
+                    "security_opt".into(),
+                    Value::Sequence(vec!["no-new-privileges:true".into()]),
+                );
+                body.insert("cap_drop".into(), Value::Sequence(vec!["ALL".into()]));
+            }
             if let Some(hostname) = overrides.service_hostnames.get(&service.name) {
                 body.insert("hostname".into(), hostname.clone().into());
             }

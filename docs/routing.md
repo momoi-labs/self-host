@@ -31,8 +31,8 @@ automatic root route for that Hostname. A rule can also use another
 Application's Hostname when its path key is free. Its target must be an
 IPv4 or IPv6 loopback address with a nonzero port.
 
-An unpublished Application cannot have rules. Native API creation remains
-disabled until the native lifecycle is connected. The route contract itself
+An unpublished Application cannot have rules. Native Applications use the
+same route contract. The route contract itself
 uses socket addresses, so the proxy does not depend on how a target runs.
 
 ## Matching and validation
@@ -85,9 +85,9 @@ W2 can install its HTTP-01 handler with
 `proxy::Bound::with_challenge_router(axum::Router)` before `run`. The router
 receives the original request, including its Hostname and full challenge
 path, on both HTTP and HTTPS. The default router returns `404` for every
-challenge. Missing challenges must remain `404`; they cannot fall through
-to an Application or an HTTP-to-HTTPS redirect. W1 adds no certificate
-issuance, storage or renewal.
+challenge. Missing challenges remain `404`; they cannot fall through
+to an Application or an HTTP-to-HTTPS redirect. W2 installs the certificate manager on this boundary. See
+[public certificates](public-certificates.md) for issuance and renewal.
 
 ## Evidence
 

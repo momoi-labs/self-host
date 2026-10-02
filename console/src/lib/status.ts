@@ -49,7 +49,7 @@ export function readinessLabel(readiness: HttpReadiness | undefined): string {
 }
 
 export function isCompose(app: App): boolean {
-  return app.source === "compose";
+  return app.source === "compose" || !!app.git?.compose_path;
 }
 
 /** Every Hostname the application answers on: its Hostname, then its aliases. */

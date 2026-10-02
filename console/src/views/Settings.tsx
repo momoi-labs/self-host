@@ -5,14 +5,15 @@ import {
   PageHeaderTitle,
 } from "@momoi-labs/kiso-react";
 
+import { GitConnectionsSettings } from "../components/GitConnections.js";
 import { Masonry } from "../components/Masonry.js";
 import { ApiKeys } from "./settings/ApiKeys.js";
 import { DnsSetup, YourHost } from "./settings/DnsSetup.js";
 import { General } from "./settings/General.js";
 
-export type SettingsSection = "general" | "api-keys" | "dns-setup";
+export type SettingsSection = "general" | "api-keys" | "dns-setup" | "git-connections";
 
-export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup"];
+export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup", "git-connections"];
 
 export function isSettingsSection(value: string): value is SettingsSection {
   return (settingsSections as readonly string[]).includes(value);
@@ -55,6 +56,7 @@ export function Settings({ section }: { section: SettingsSection }) {
         <General />
         <YourHost />
         <ApiKeys />
+        <GitConnectionsSettings />
         <DnsSetup />
       </Masonry>
     </div>

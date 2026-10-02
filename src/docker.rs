@@ -4,6 +4,19 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tokio::sync::mpsc;
 
+/// Checked checkout paths and declared inputs for a Git build. Credential
+/// files stay outside the build context and never reach command arguments.
+#[derive(Clone, Debug)]
+pub struct SourceBuild {
+    pub context: std::path::PathBuf,
+    pub dockerfile: std::path::PathBuf,
+    pub tag: String,
+    pub build_args: std::collections::BTreeMap<String, String>,
+    pub secret_files: std::collections::BTreeMap<String, std::path::PathBuf>,
+    pub registry_config: Option<std::path::PathBuf>,
+    pub base_images: Vec<String>,
+}
+
 #[derive(Debug)]
 pub enum DockerError {
     /// Docker is not there to talk to: not installed, or the daemon is down.
@@ -166,6 +179,20 @@ pub struct ContainerStats {
 
 #[async_trait]
 pub trait DockerRuntime: Send + Sync {
+    async fn build_source(&self, _build: &SourceBuild) -> Result<String, DockerError> {
+        Err(DockerError::Unavailable(
+            "Git builds are unavailable in this runtime".into(),
+        ))
+    }
+    async fn pin_source_image(
+        &self,
+        _image: &str,
+        _registry_config: Option<&Path>,
+    ) -> Result<String, DockerError> {
+        Err(DockerError::Unavailable(
+            "Git image pinning is unavailable in this runtime".into(),
+        ))
+    }
     async fn ping(&self) -> Result<(), DockerError>;
     async fn container_running(&self, name: &str) -> Result<bool, DockerError>;
     /// Sorted names owned by the Application, or its legacy name when no labels match.
@@ -255,6 +282,266 @@ impl CliDocker {
 
 #[async_trait]
 impl DockerRuntime for CliDocker {
+    async fn pin_source_image(
+        &self,
+        image: &str,
+        registry_config: Option<&Path>,
+    ) -> Result<String, DockerError> {
+        source_docker(registry_config, &["pull", "--quiet", image], false).await?;
+        let info = source_image_info(registry_config, image).await?;
+        source_image_id(&info)
+    }
+
+    async fn build_source(&self, build: &SourceBuild) -> Result<String, DockerError> {
+        if build.build_args.contains_key("BUILDKIT_SYNTAX") {
+            return Err(source_refusal(
+                "BUILDKIT_SYNTAX cannot replace the checked Dockerfile frontend",
+            ));
+        }
+        let mut pinned = std::collections::BTreeMap::new();
+        let mut base_shells = std::collections::BTreeMap::new();
+        for image in &build.base_images {
+            source_docker(
+                build.registry_config.as_deref(),
+                &["pull", "--quiet", image],
+                false,
+            )
+            .await?;
+            let info = source_image_info(build.registry_config.as_deref(), image).await?;
+            if info.get("onbuild").is_some_and(|value| {
+                !value.is_null() && value.as_array().is_none_or(|values| !values.is_empty())
+            }) {
+                return Err(source_refusal(
+                    "base images with inherited ONBUILD instructions are refused",
+                ));
+            }
+            let digest = info
+                .get("digests")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| value.contains("@sha256:"))
+                .ok_or_else(|| source_refusal("base image has no immutable registry digest"))?;
+            pinned.insert(image.clone(), digest.to_string());
+            if let Some(shell) = info
+                .get("shell")
+                .and_then(serde_json::Value::as_array)
+                .filter(|shell| !shell.is_empty())
+            {
+                let shell: Option<Vec<String>> = shell
+                    .iter()
+                    .map(|value| value.as_str().map(str::to_owned))
+                    .collect();
+                base_shells.insert(
+                    digest.to_string(),
+                    shell.ok_or_else(|| source_refusal("base image shell metadata is invalid"))?,
+                );
+            }
+        }
+        let text = std::fs::read_to_string(&build.dockerfile)
+            .map_err(|_| source_refusal("Dockerfile cannot be read"))?;
+        // The source parser refuses multiline FROM and custom frontends. Only
+        // literal registry image tokens change; stage names remain intact.
+        let mut text = text
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim_start();
+                if trimmed
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|word| word.eq_ignore_ascii_case("FROM"))
+                {
+                    let words: Vec<_> = trimmed.split_whitespace().collect();
+                    if let Some(digest) = words.get(1).and_then(|image| pinned.get(*image)) {
+                        let tail = if words.len() == 4 {
+                            format!(" AS {}", words[3])
+                        } else {
+                            String::new()
+                        };
+                        return format!("FROM {digest}{tail}");
+                    }
+                }
+                line.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let needs_guard = crate::source::dockerfile_instructions(&text)
+            .map_err(|_| source_refusal("Dockerfile cannot be parsed"))?
+            .iter()
+            .any(|line| {
+                line.split_whitespace()
+                    .next()
+                    .is_some_and(|word| word.eq_ignore_ascii_case("RUN"))
+            });
+        let guard_name = format!("sf_guard_{:032x}", rand::random::<u128>());
+        let mut guard_context = None;
+        let mut cleanup = SourceBuildFiles::default();
+        if needs_guard {
+            let architecture = source_docker(
+                build.registry_config.as_deref(),
+                &["info", "--format", "{{.OSType}}/{{.Architecture}}"],
+                true,
+            )
+            .await?;
+            let architecture = String::from_utf8_lossy(&architecture);
+            let host = match std::env::consts::ARCH {
+                "aarch64" => "aarch64",
+                "x86_64" => "x86_64",
+                _ => "unsupported",
+            };
+            let server = architecture
+                .trim()
+                .replace("/arm64", "/aarch64")
+                .replace("/amd64", "/x86_64");
+            if std::env::consts::OS != "linux"
+                || server != format!("linux/{host}")
+                || host == "unsupported"
+            {
+                return Err(source_refusal(
+                    "Dockerfile RUN requires a Linux Host matching the Docker architecture",
+                ));
+            }
+            let directory = build
+                .registry_config
+                .as_deref()
+                .and_then(Path::parent)
+                .or_else(|| build.context.parent())
+                .ok_or_else(|| source_refusal("Dockerfile has no private directory"))?
+                .join(format!(".sf-guard-{:032x}", rand::random::<u128>()));
+            cleanup.directories.push(directory.clone());
+            let launcher = crate::source_build_guard::compile(&directory).map_err(|_| {
+                source_refusal(
+                    "Dockerfile RUN requires /usr/bin/cc and static libc on the Linux Host",
+                )
+            })?;
+            let context = directory.join("context");
+            std::fs::create_dir(&context)
+                .map_err(|_| source_refusal("trusted build context cannot be created"))?;
+            std::fs::set_permissions(&context, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| source_refusal("trusted build context cannot be protected"))?;
+            let guard_path = context.join(&guard_name);
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o555)
+                .open(&guard_path)
+                .map_err(|_| {
+                    source_refusal("build guard filename collided with checkout content")
+                })?;
+            cleanup.files.push(guard_path.clone());
+            file.write_all(
+                &std::fs::read(launcher)
+                    .map_err(|_| source_refusal("trusted build guard cannot be read"))?,
+            )
+            .map_err(|_| source_refusal("trusted build guard cannot be copied"))?;
+            file.set_permissions(std::fs::Permissions::from_mode(0o555))
+                .map_err(|_| source_refusal("trusted build guard cannot be protected"))?;
+            let mut ignore = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(context.join(".dockerignore"))
+                .map_err(|_| source_refusal("trusted context ignore rules cannot be written"))?;
+            ignore
+                .write_all(format!("*\n!/{guard_name}\n").as_bytes())
+                .map_err(|_| source_refusal("trusted context ignore rules cannot be written"))?;
+            guard_context = Some(context);
+            text = crate::source::guard::dockerfile(&text, &guard_name, &base_shells)
+                .map_err(|_| source_refusal("Dockerfile RUN or SHELL is unsupported"))?;
+        }
+        let prepared = build.dockerfile.with_file_name(format!(
+            ".platform-dockerfile-{:032x}",
+            rand::random::<u128>()
+        ));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&prepared)
+            .map_err(|_| source_refusal("prepared Dockerfile cannot be written"))?;
+        cleanup.files.push(prepared.clone());
+        file.write_all(text.as_bytes())
+            .map_err(|_| source_refusal("prepared Dockerfile cannot be written"))?;
+        {
+            let source_ignore = build.dockerfile.with_file_name(format!(
+                "{}.dockerignore",
+                build
+                    .dockerfile
+                    .file_name()
+                    .ok_or_else(|| source_refusal("Dockerfile name is invalid"))?
+                    .to_string_lossy()
+            ));
+            let source_ignore = if source_ignore.exists() {
+                source_ignore
+            } else {
+                build.context.join(".dockerignore")
+            };
+            let ignore = if source_ignore.exists() {
+                std::fs::read_to_string(source_ignore)
+                    .map_err(|_| source_refusal("Docker context ignore rules cannot be read"))?
+            } else {
+                String::new()
+            };
+            let prepared_ignore = prepared.with_file_name(format!(
+                "{}.dockerignore",
+                prepared.file_name().unwrap().to_string_lossy()
+            ));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&prepared_ignore)
+                .map_err(|_| {
+                    source_refusal("prepared Docker context ignore rules cannot be written")
+                })?;
+            cleanup.files.push(prepared_ignore);
+            file.write_all(ignore.as_bytes()).map_err(|_| {
+                source_refusal("prepared Docker context ignore rules cannot be written")
+            })?;
+        }
+        let mut args = vec![
+            "build".to_owned(),
+            "--progress=plain".into(),
+            "--file".into(),
+            prepared.to_string_lossy().into_owned(),
+            "--tag".into(),
+            build.tag.clone(),
+        ];
+        if let Some(context) = guard_context {
+            args.extend([
+                "--build-context".into(),
+                format!("{guard_name}={}", context.display()),
+            ]);
+        }
+        for (name, value) in &build.build_args {
+            args.extend(["--build-arg".into(), format!("{name}={value}")]);
+        }
+        for (name, path) in &build.secret_files {
+            args.extend([
+                "--secret".into(),
+                format!("id={name},src={}", path.display()),
+            ]);
+        }
+        args.push(build.context.to_string_lossy().into_owned());
+        let refs: Vec<_> = args.iter().map(String::as_str).collect();
+        let result = source_docker(build.registry_config.as_deref(), &refs, false).await;
+        result?;
+        let info = source_image_info(build.registry_config.as_deref(), &build.tag).await?;
+        if !info
+            .get("user")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(crate::source::nonroot_user)
+        {
+            return Err(source_refusal(
+                "built image must have an explicit numeric nonzero user",
+            ));
+        }
+        source_image_id(&info)
+    }
     async fn open_terminal(
         &self,
         container: &str,
@@ -669,6 +956,19 @@ impl DockerRuntime for CliDocker {
             args.extend(["--network".into(), network.clone()]);
         }
 
+        if config
+            .labels
+            .iter()
+            .any(|(key, value)| key == "sf.source" && value == "git")
+        {
+            args.extend([
+                "--security-opt".into(),
+                "no-new-privileges:true".into(),
+                "--cap-drop".into(),
+                "ALL".into(),
+            ]);
+        }
+
         for (key, value) in &config.labels {
             args.push("--label".into());
             args.push(format!("{key}={value}"));
@@ -947,10 +1247,114 @@ impl DockerRuntime for CliDocker {
 /// Images the Platform builds itself: custom images and development images.
 /// They have no registry to be pulled from.
 pub fn built_on_host(image: &str) -> bool {
-    image.starts_with("sf-img-") || image.starts_with("self-host-dev-")
+    image.starts_with("sf-img-")
+        || image.starts_with("self-host-dev-")
+        || image.starts_with("sha256:")
+        || image.starts_with("sf-source-")
 }
 
 /// Runs one `docker` command and reports a refusal in Docker's words.
+fn source_refusal(reason: &str) -> DockerError {
+    DockerError::Command(
+        "Git build runtime refused the candidate".into(),
+        Box::new(std::io::Error::other(reason.to_string())),
+    )
+}
+
+#[derive(Default)]
+struct SourceBuildFiles {
+    files: Vec<std::path::PathBuf>,
+    directories: Vec<std::path::PathBuf>,
+}
+impl Drop for SourceBuildFiles {
+    fn drop(&mut self) {
+        for file in &self.files {
+            let _ = std::fs::remove_file(file);
+        }
+        for directory in &self.directories {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+}
+
+fn fake_source_id(value: &str) -> String {
+    use sha2::Digest;
+    format!("sha256:{:x}", sha2::Sha256::digest(value.as_bytes()))
+}
+
+async fn source_docker(
+    registry_config: Option<&Path>,
+    args: &[&str],
+    capture: bool,
+) -> Result<Vec<u8>, DockerError> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    let mut command = tokio::process::Command::new("docker");
+    command
+        .args(args)
+        .env("DOCKER_BUILDKIT", "1")
+        .env_remove("BUILDKIT_SYNTAX")
+        .stderr(Stdio::null())
+        .stdout(if capture {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .kill_on_drop(true);
+    if let Some(path) = registry_config {
+        command.env("DOCKER_CONFIG", path);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|_| source_refusal("Docker could not start"))?;
+    tokio::time::timeout(std::time::Duration::from_secs(600), async {
+        let mut output = Vec::new();
+        if let Some(reader) = child.stdout.take() {
+            reader
+                .take(65537)
+                .read_to_end(&mut output)
+                .await
+                .map_err(|_| source_refusal("Docker metadata could not be read"))?;
+        }
+        if output.len() > 65536 {
+            return Err(source_refusal("Docker metadata exceeded the size limit"));
+        }
+        if !child
+            .wait()
+            .await
+            .map_err(|_| source_refusal("Docker did not finish"))?
+            .success()
+        {
+            return Err(source_refusal(
+                "Docker command failed; repository output is withheld to protect credentials",
+            ));
+        }
+        Ok(output)
+    })
+    .await
+    .map_err(|_| source_refusal("Docker source build exceeded its ten-minute limit"))?
+}
+
+async fn source_image_info(
+    registry_config: Option<&Path>,
+    image: &str,
+) -> Result<serde_json::Value, DockerError> {
+    let output = source_docker(registry_config, &["image", "inspect", "--format", "{\"onbuild\":{{json (index .Config \"OnBuild\")}},\"digests\":{{json .RepoDigests}},\"id\":{{json .Id}},\"user\":{{json (index .Config \"User\")}},\"shell\":{{json (index .Config \"Shell\")}}}", image], true).await?;
+    serde_json::from_slice(&output).map_err(|_| source_refusal("Docker image metadata is invalid"))
+}
+
+fn source_image_id(info: &serde_json::Value) -> Result<String, DockerError> {
+    info.get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| {
+            id.len() == 71
+                && id.starts_with("sha256:")
+                && id[7..].bytes().all(|c| c.is_ascii_hexdigit())
+        })
+        .map(str::to_owned)
+        .ok_or_else(|| source_refusal("Docker did not report an immutable image id"))
+}
+
 fn docker(args: &[&str], step: String) -> Result<(), DockerError> {
     let output = std::process::Command::new("docker")
         .args(args)
@@ -1277,6 +1681,19 @@ impl FakeDocker {
 
 #[async_trait]
 impl DockerRuntime for FakeDocker {
+    async fn build_source(&self, build: &SourceBuild) -> Result<String, DockerError> {
+        self.build_image(&build.context.to_string_lossy(), &build.tag)
+            .await?;
+        Ok(fake_source_id(&build.tag))
+    }
+    async fn pin_source_image(
+        &self,
+        image: &str,
+        _registry_config: Option<&Path>,
+    ) -> Result<String, DockerError> {
+        self.pull_image(image).await?;
+        Ok(fake_source_id(image))
+    }
     async fn open_terminal(
         &self,
         container: &str,
@@ -1580,6 +1997,16 @@ impl<T> DockerRuntime for std::sync::Arc<T>
 where
     T: DockerRuntime + ?Sized,
 {
+    async fn build_source(&self, build: &SourceBuild) -> Result<String, DockerError> {
+        (**self).build_source(build).await
+    }
+    async fn pin_source_image(
+        &self,
+        image: &str,
+        registry_config: Option<&Path>,
+    ) -> Result<String, DockerError> {
+        (**self).pin_source_image(image, registry_config).await
+    }
     async fn open_terminal(
         &self,
         container: &str,

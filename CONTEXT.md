@@ -79,7 +79,7 @@ How an Application runs on the Host: in a container (Docker, one container or a 
 _Avoid_: engine, executor, backend (as the name for how an Application runs)
 
 **Native Application**:
-An Application whose Runtime is a process tree on the Host, run under its own Application Account, with no container. The Platform records the shape today and runs it in a later slice.
+An Application whose Runtime is a process tree on the Host, run under its own Application Account, with no container.
 _Avoid_: bare-metal app, host process (as the product term), s6 service (the supervisor is a detail)
 
 **Application Account**:

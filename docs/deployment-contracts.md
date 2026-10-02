@@ -3,8 +3,8 @@
 An Application's record says how it runs (`runtime`), whether Consumers reach
 it by Hostname (`publication`) and how its Variables reach a Compose project
 (`variable_delivery`). It also owns path rules (`route_rules`) and private
-network grants (`network_policy`). This page separates implemented contracts
-from proposals for later slices.
+network grants (`network_policy`). This page defines the API and persistence contracts.
+Managed PostgreSQL connection references remain a proposal for P2.
 
 ## What is implemented
 
@@ -21,7 +21,9 @@ from proposals for later slices.
 A native Runtime carries `account`, `command` (argv), `working_dir` (relative
 to the account's home, or absent), `port` (the loopback port when it is a Web
 Target) and `limits` (`cpu_percent`, `memory_bytes`, `max_tasks`, each
-optional). It is recorded shape only: see the refusal below.
+optional). The account defaults to `sf-app-<id>` when omitted or empty.
+An explicit account must match that dedicated name. Native execution requires
+Linux with the installed N1/N2 supervisor.
 
 ### Invariants
 
@@ -33,7 +35,11 @@ optional). It is recorded shape only: see the refusal below.
   Application with no Host port yet answers `503` (ADR-0019).
 - `publication` is chosen at creation. An update that changes it is refused;
   the same value is a no-op.
-- `runtime: native` is refused on create and update and records nothing.
+- Runtime kind cannot change after creation. Native requests cannot carry
+  container definitions or Git sources.
+- A published native Application uses its declared loopback `port` as
+  `web_target_port`; the Platform allocates no Docker Host port. An
+  unpublished native Application has no port.
 - `variable_delivery` may change on update. On a Compose Application the
   rendered project changes with it, so the change reaches Docker.
 
@@ -41,8 +47,8 @@ optional). It is recorded shape only: see the refusal below.
 
 `POST /apps` and `PUT /apps/id/{id}` accept optional `runtime`, `publication`
 `variable_delivery`, `route_rules` and `network_policy`. Every Application
-response carries these fields. A
-request without them behaves exactly as before.
+response carries these fields. A container request without them keeps the
+existing defaults.
 
 ```json
 POST /apps
@@ -74,20 +80,24 @@ lists nothing for it.
 ```json
 POST /apps
 {"name": "api",
- "runtime": {"kind": "native", "account": "sf-app-api",
-             "command": ["/opt/api/bin/serve"], "port": 8080,
+ "runtime": {"kind": "native",
+             "command": ["/usr/bin/python3", "-m", "http.server", "8080",
+                         "--bind", "127.0.0.1"], "port": 8080,
              "limits": {"memory_bytes": 268435456}}}
 
-501 Not Implemented
-{"error": "native execution is not available yet; the Application runtime must be container",
- "caused_by": []}
+202 Accepted
+{"id": "...", "source": "native", "status": "pending",
+ "runtime": {"kind": "native", "account": "sf-app-<id>",
+             "command": ["..."], "port": 8080,
+             "limits": {"memory_bytes": 268435456}}, "task_id": "..."}
 ```
 
 ### Refusals
 
 | Request | Status | `error` |
 | --- | --- | --- |
-| `runtime: native` on create or update | `501` | `native execution is not available yet; the Application runtime must be container` |
+| A native request with an invalid identity, command or path | `400` | Native definition validation error |
+| An update changing Runtime kind | `400` | Runtime cannot change after creation |
 | `publication` on update differs from the record | `409` | `publication cannot be changed after creation yet` |
 | `unpublished` with `hostname`, `aliases`, `web_service` or `web_port` | `400` | `invalid Application Hostname: an unpublished Application has no Hostname` |
 
@@ -149,7 +159,7 @@ remain P2. Service responses include Docker's `health` when a healthcheck
 exists, including for unpublished Applications.
 
 P1's native endpoint adapter checks the dedicated non-root account and renders
-only `127.0.0.1`. It is unavailable through the API until N3. Loopback restricts
+only `127.0.0.1`. Native consumer grants remain unavailable. Loopback restricts
 reachability to the Host; database authentication still restricts clients.
 See [Compose storage and networking](compose-applications.md).
 
@@ -159,25 +169,35 @@ N2 provides protected s6 services and Linux boot delegation. N1 performs every
 Application launch, including readiness commands. The privileged daemon and
 s6 runner perform setup; Application commands execute as their dedicated
 non-root account. ADR-0031 records this choice and the helper alternative.
-Native create and update requests still return `501` until N3.
+Native API requests use this same path for deploy, lifecycle actions, status
+and logs. Missing supervision fails the Task with an actionable error; it
+never launches an Application directly or falls back to root. Updates retain
+stopped intent. Removal revokes the account and preserves inaccessible data.
+See [Native Applications](native-applications.md).
 
-## Proposed shapes, not implemented
+## Certificates by server name
 
-The remaining shapes are proposals for later slices. They do not enable
-certificate issuance, native API lifecycle or source builds in this wave.
+W2 stores its explicit configuration, ACME account credentials, status and
+atomic certificate/key bundles under `state/certificates`. Directories are
+`0700`; private files are `0600`. With no public configuration, local-CA mode
+continues to work. Each configured hostname gets its own HTTP-01 order.
 
-### W2: certificates by server name
+SNI selects an exact public certificate or a local certificate whose SAN
+covers the requested name. Unknown SNI, an expired certificate or a configured
+public hostname without a valid certificate fails the TLS handshake. A LAN
+wildcard cannot cover an unrelated public hostname. A client without SNI uses
+the local certificate for setup compatibility.
 
-Today one wildcard certificate covers the DNS Suffix. W2 adds a lookup keyed
-by server name (SNI): the proxy asks for `blog.example.invalid` and receives
-the certificate to present, falling back to the wildcard when none is
-recorded for the name. ACME HTTP-01 challenge paths
-(`/.well-known/acme-challenge/*`) are answered by the Platform before any
-Operator rule, including W1 rules, so a challenge is never forwarded to an
-Application. Certificate storage and renewal are the Platform's; an
-Application never sees a key.
+Renewal begins in the last third of a certificate's lifetime, at most 30 days
+before expiry. Failures remain visible and retry hourly; a still-valid
+certificate remains served. Successful renewal replaces it in memory without
+restarting Applications. `GET /certificates` requires Operator authentication
+and returns status, never keys. See [public certificates](public-certificates.md).
 
-### N3: from a native definition to a launch
+HTTP-01 paths (`/.well-known/acme-challenge/*`) precede redirects, management
+routes and W1 Application rules. Missing challenges return `404`.
+
+## From a native definition to a launch
 
 A `NativeDefinition` on the record plus the Application's Variables becomes
 one `native::launch::LaunchRequest` (the N1 contract):
@@ -195,10 +215,10 @@ one `native::launch::LaunchRequest` (the N1 contract):
 `definition.port` is the loopback port the Web Target answers on, so the
 proxy target is `127.0.0.1:<port>` and no Host port is allocated for a native
 Application. The account is provisioned once per Application and the cgroup
-is created per launch. The Operator API accepts `runtime: native` only once
-this mapping runs; until then the refusal above stands.
+is created per launch. Native publication checks that the account owns a
+listener bound only to loopback before it publishes the route.
 
-### P2: a connection reference
+## Proposed P2 connection reference
 
 A managed PostgreSQL Application (ADR-0029) hands a consumer its connection
 through a reference the Platform resolves into one Variable:
@@ -215,16 +235,107 @@ rotates it when asked. The consumer reads a Variable like any other; it never
 sees the database's own credentials. Removing the consumer removes the role;
 removing the database Application is refused while a reference points at it.
 
-### D2: a Git source
+## Git sources and immutable builds
 
-A source build names a repository, a ref, a build context and its build
-inputs, and the Platform pins the commit it built (ADR-0029):
+`POST /apps` accepts `git` instead of an image, Host path, inline Compose or
+development definition. Git sources use the container Runtime. `PUT
+/apps/id/{id}` accepts the same source fields and `refresh_source`, which
+defaults to `false`.
+
+`POST /source/inspect` accepts `{ "git": GitSource }` and returns the resolved
+revision, selected ref, detected build files, TCP ports and Compose service
+names. It checks out the repository without running its code or building an
+image. The response excludes manifest values and credential values.
+
+Creation can send `source_revision` to build that reviewed commit without
+permanently pinning the saved source. An update sends `source_revision` together
+with `expected_git_revision`. The Platform checks the expected deployed commit
+before queueing, before building and before replacing the current release.
+This prevents a moved branch from changing the candidate or an old review from
+replacing a newer deployment. Existing callers can omit both fields.
+
+Saved provider access uses authenticated `/source/connections` endpoints.
+`GET` lists metadata; `POST` validates and saves a name, provider and token,
+with provider `github` or `gitlab`. `PUT /{id}` reconnects without
+changing credential references; `DELETE /{id}` removes access. `GET
+/{id}/repositories?page=1` returns paginated repository metadata. Each connection
+includes `authentication`, with `token`, `github-app` or `oauth`. Older records
+default to `token`. Tokens remain in private storage, bound to the provider's
+HTTPS Git host. Reconnection preserves the connection and credential ids,
+authentication method and provider. App and OAuth reconnection also verifies
+the original authorized account or installation. Legacy token reconnection
+keeps its existing username behavior.
+
+### Provider setup and authorization
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `GET /source/integrations` | None | GitHub/GitLab configured state and non-secret setup metadata |
+| `PUT /source/integrations/gitlab` | `console_url`, `client_id`, `client_secret` | Integration metadata, without the secret |
+| `POST /source/integrations/github/register` | `console_url`, optional `organization` | Authorization state and a GitHub manifest form |
+| `POST /source/authorization/start` | `provider`, `name`, optional `connection_id` | Authorization state and provider URL |
+| `POST /source/authorization/complete` | `state`, optional `code`, numeric `installation_id`, provider `error` | Saved `connection`, updated `integrations`, or next-stage `authorization` |
+| `POST /source/authorization/cancel` | `state` | `204`, with the pending state revoked locally |
+
+All these routes require an API key. Mutations record bounded operation
+metadata in audit events. The Platform never records authorization states,
+codes, client secrets, private keys or provider response bodies in that history.
+
+`console_url` must be the console's browser origin plus `/console/`, without
+credentials, query or fragment. HTTPS is required except HTTP loopback for
+local development. Replacing an integration used by active App/OAuth connections
+is refused so existing Applications cannot acquire unrelated access.
+
+The public `GET /source/authorization/callback` serves only a popup bridge.
+It checks the pending state and sends bounded callback data to its stored exact
+origin. It performs no token exchange, creates no connection, and accepts no
+API key in the query. The page escapes JSON, uses a nonce Content Security
+Policy, and sets `no-store` and `no-referrer`. An authenticated parent window
+checks the message origin, popup source and state before completing the flow.
+
+Authorization states expire within ten minutes and are single-use. Denial,
+malformed completion and cancellation cannot reuse a state. GitLab uses
+authorization code with PKCE S256. GitHub first records the selected App
+installation, then starts user authorization in the same popup with a new
+state. The final exchange verifies the installation through the authorized
+user's installation inventory and checks the configured App.
+
+GitHub installation tokens and GitLab OAuth tokens are resolved before both
+repository listing and checkout. Renewal keeps the saved credential id.
+Concurrent renewal, reconnect and disconnect cannot publish stale credentials
+or overwrite newer connection status. Access remains restricted to GitHub.com
+or GitLab.com. Manual token access remains available through the existing
+credential and connection APIs.
 
 ```json
-{"name": "api", "source": {"git": "https://git.example.invalid/team/api.git",
- "ref": "main", "context": "services/api", "dockerfile": "Dockerfile"}}
+{
+  "name": "api",
+  "git": {
+    "repository": "https://git.example.invalid/team/api.git",
+    "git_ref": "main",
+    "context": "services/api",
+    "dockerfile": "Dockerfile"
+  }
+}
 ```
 
-The response carries `commit` once built. A redeploy builds the pinned commit
-unless the request asks for the ref's newer commit, which is reported as a
-change from one commit to another, the way a pulled image is.
+The Application response keeps `source: "git"`, its non-secret `git` inputs
+and `git_build` with the pinned commit and immutable image IDs. An old row
+reads both fields as absent. A redeploy uses the recorded commit unless the
+Operator changes the source selection or explicitly requests the newer ref.
+The build Task validates every candidate before replacing the current
+Application definition or runtime. A failed build leaves the running release
+and routes untouched; the Task records the failure.
+
+Checkout paths cannot escape the repository, including through symlinks.
+Compose `build` and `env_file` inputs are materialized from checked checkout
+files into an ordinary build-free Compose definition. Registry image and
+ordinary Compose workflows retain their behavior and P1 network defaults.
+
+Private checkout and registry credentials use IDs in source inputs. The
+Platform stores values in `state/source/credentials` with restricted modes.
+Build secrets use separate BuildKit mounts; ordinary build arguments are
+recorded configuration. Authenticated `/source/credentials` creation and
+listing return metadata only. Repository output never becomes an unrestricted
+Host shell command. Dockerfile build commands and Git Application commands
+must use explicit non-root users. See [Git source builds](git-source-builds.md).
