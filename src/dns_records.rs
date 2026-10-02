@@ -181,6 +181,10 @@ fn parse_description(input: Option<String>) -> Result<Option<String>, String> {
 /// A trait, like [`crate::routes::RouteStore`], so the API can be tested
 /// without binding port 53. Names are relative to the DNS Suffix; the Zone
 /// knows its own origin.
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to methods that already return must-use Futures"
+)]
 #[async_trait]
 pub trait Zone: Send + Sync + 'static {
     /// The addresses currently published at the wildcard.

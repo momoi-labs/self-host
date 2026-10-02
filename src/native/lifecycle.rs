@@ -21,6 +21,10 @@ const STOP: Duration = Duration::from_secs(15);
 
 /// Every implementation runs commands through N1/N2. The API can inject this
 /// boundary without making Docker pretend to be a native process supervisor.
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to methods that already return must-use Futures"
+)]
 #[async_trait]
 pub trait NativeRuntime: Send + Sync {
     async fn deploy(
