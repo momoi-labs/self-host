@@ -362,12 +362,10 @@ restart.
 
 ## Linux boot supervision
 
-Install the distribution's `s6` package. Linux must expose cgroup v2 with
-`cpu`, `memory`, `pids` and `cgroup.kill`. On Debian or Ubuntu:
-
-```sh
-sudo apt-get install s6
-```
+Linux releases include the s6 supervision tools. The installer and Linux
+packages place them in `/usr/libexec/self-host/s6`; they do not replace a
+distribution's s6 installation. Linux must expose cgroup v2 with `cpu`,
+`memory`, `pids` and `cgroup.kill`.
 
 `assets/linux/self-host-native.service` starts one root-owned s6 tree with
 `Delegate=cpu memory pids`. The boot command moves the supervisor into a
@@ -376,10 +374,15 @@ The service manager owns the scanner's lifetime; s6 owns Application
 processes. Restarting the Platform daemon does not restart this unit.
 
 The Linux installer opts into that unit with `SELF_HOST_NATIVE=1`. It checks
-for s6 and cgroup v2 before installing and enabling it. The default installer
-keeps its existing container-only behavior. Installing the unit does not
-create any Applications. Native requests still require the privileged Linux
-daemon and protected installed binary.
+the installed tools and cgroup v2 before enabling it. The default installer
+installs the bundle without enabling the unit. Installing the unit does not
+create any Applications. Native requests require the privileged Linux daemon
+and protected installed binary.
+
+Source builds can install the distribution's `s6` package, such as
+`sudo apt-get install s6` on Debian or Ubuntu. The runtime uses those tools
+only when no private release bundle is installed. An incomplete private
+bundle fails instead of mixing versions. Reinstall the release to repair it.
 
 For development on a disposable Linux Host, install the built binary and
 unit with root ownership, then start the unit:

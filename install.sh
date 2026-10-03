@@ -15,7 +15,7 @@
 #   SELF_HOST_COLIMA_CPU     CPUs for the Colima VM           (default 4)
 #   SELF_HOST_COLIMA_MEMORY  GiB of memory for the Colima VM  (default 6)
 #   SELF_HOST_NATIVE         set to 1 to install Linux s6 boot supervision
-#   SELF_HOST_BINARY_ONLY    set to 1 to install the binary and stop
+#   SELF_HOST_BINARY_ONLY    set to 1 to install binaries without Host setup
 #
 set -euo pipefail
 
@@ -121,6 +121,10 @@ install_binary() {
 	curl -fsSL "$url" -o "$tmpdir/$archive"
 	tar xzf "$tmpdir/$archive" -C "$tmpdir"
 
+	if [ "$os" = "linux" ] && [ -d "$tmpdir/s6" ]; then
+		install_bundled_s6 "$target"
+	fi
+
 	if [ ! -w "$INSTALL_DIR" ]; then
 		echo "installing to ${INSTALL_DIR} (requires sudo)..."
 		# A Mac with Homebrew in /opt/homebrew has no /usr/local/bin at all,
@@ -144,17 +148,46 @@ install_binary() {
 	echo "${BINARY} ${version} installed to ${INSTALL_DIR}/${BINARY}"
 }
 
-# Optional until the native lifecycle API is available. This installs one
-# supervisor tree; individual Applications are always supervised by s6.
-install_native_supervision() {
-	local tool unit
-	command -v systemctl >/dev/null || { echo "native boot supervision requires systemd" >&2; exit 1; }
-	for tool in s6-svscan s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock; do
-		command -v "$tool" >/dev/null || {
-			echo "missing $tool; install s6 first (sudo apt-get install s6 on Debian/Ubuntu)" >&2
+install_bundled_s6() {
+	local target="$1" tool license
+	local destination=/usr/libexec/self-host/s6
+	local licenses=/usr/share/licenses/self-host-bin/s6
+	local tools=(s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock s6-ftrigrd)
+	for tool in "${tools[@]}"; do
+		[ -f "$tmpdir/s6/bin/$tool" ] && [ -x "$tmpdir/s6/bin/$tool" ] || {
+			echo "incomplete release: missing executable s6/bin/$tool" >&2
 			exit 1
 		}
 	done
+	for license in s6 skalibs musl zig; do
+		[ -s "$tmpdir/s6/licenses/$license.txt" ] || { echo "incomplete release: missing $license license" >&2; exit 1; }
+	done
+	grep -qxF "target $target" "$tmpdir/s6/versions.txt" || { echo "release has wrong or missing s6 target metadata" >&2; exit 1; }
+	echo "installing bundled s6 (requires sudo)..."
+	sudo install -d -m 755 -o root -g root "$destination" "$licenses"
+	for tool in "${tools[@]}"; do
+		sudo install -m 755 -o root -g root "$tmpdir/s6/bin/$tool" "$destination/$tool"
+	done
+	for license in s6 skalibs musl zig; do
+		sudo install -m 644 -o root -g root "$tmpdir/s6/licenses/$license.txt" "$licenses/$license.txt"
+	done
+	sudo install -m 644 -o root -g root "$tmpdir/s6/versions.txt" "$licenses/versions.txt"
+}
+
+# Opt-in boot setup. The release always installs its private s6 tools.
+install_native_supervision() {
+	local tool unit
+	command -v systemctl >/dev/null || { echo "native boot supervision requires systemd" >&2; exit 1; }
+	if [ -d /usr/libexec/self-host/s6 ]; then
+		for tool in s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock s6-ftrigrd; do
+			[ -x "/usr/libexec/self-host/s6/$tool" ] || { echo "missing bundled $tool; reinstall the Linux release" >&2; exit 1; }
+		done
+	else
+		# Older releases and source builds can still use distribution tools.
+		for tool in s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock; do
+			command -v "$tool" >/dev/null || { echo "missing $tool; upgrade self-host or install the distribution's s6 package" >&2; exit 1; }
+		done
+	fi
 	[ -f /sys/fs/cgroup/cgroup.controllers ] || { echo "native Applications require cgroup v2 with cpu, memory and pids" >&2; exit 1; }
 	unit="$tmpdir/self-host-native.service"
 	cat >"$unit" <<EOF
@@ -181,7 +214,7 @@ EOF
 	sudo install -m 644 -o root -g root "$unit" /etc/systemd/system/self-host-native.service
 	sudo systemctl daemon-reload
 	sudo systemctl enable --now self-host-native.service
-	echo "s6 boot supervision installed; the native Operator API remains unavailable."
+	echo "Native Application boot supervision enabled."
 }
 
 detect_os() {
