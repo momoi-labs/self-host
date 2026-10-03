@@ -4,7 +4,11 @@ An Application's record says how it runs (`runtime`), whether Consumers reach
 it by Hostname (`publication`) and how its Variables reach a Compose project
 (`variable_delivery`). It also owns path rules (`route_rules`) and private
 network grants (`network_policy`). This page defines the API and persistence contracts.
-Managed PostgreSQL connection references remain a proposal for P2.
+Managed PostgreSQL connection references are implemented in P2.
+
+Git deploy triggers, health gates and immutable image recovery are documented
+in [Deployment triggers and recovery](deployments.md). Automatic Git deployment
+is disabled until the Operator enables a trigger for that Application.
 
 ## What is implemented
 
@@ -25,12 +29,20 @@ optional). The account defaults to `sf-app-<id>` when omitted or empty.
 An explicit account must match that dedicated name. Native execution requires
 Linux with the installed N1/N2 supervisor.
 
+Native `recipe` contains `dependencies` and `setup`. Dependencies use the same
+`tool`, `version` and optional npm `allow_builds` fields as custom images.
+Setup is a list of shell commands executed as the Application Account before
+startup. An old record without a recipe reads as an empty one. See
+[native Application environments](native-applications.md#application-environment)
+for installation, logging and restart behavior.
+
 ### Invariants
 
-- `unpublished` means an empty `hostname`, empty `aliases`, no `web_service`,
-  no `web_port` and no Host port. No Record in the Zone, no route in the
-  proxy, no loopback publication in the rendered Compose project. A restart
-  never gives it a port.
+- `unpublished` means an empty `hostname`, empty `aliases`, no `web_service`
+  and no `web_port`. It has no HTTP Web Target, Zone Record, proxy route or
+  HTTP Host port. Managed PostgreSQL has one transport exception: an explicit
+  Native Application connection publishes a separate PostgreSQL port only on
+  `127.0.0.1`, with credentials for that consumer. This creates no HTTP route.
 - `web` is what every Application did before the field existed. A published
   Application with no Host port yet answers `503` (ADR-0019).
 - `publication` is chosen at creation. An update that changes it is refused;
@@ -154,12 +166,13 @@ policy changes are refused in this slice; existing shared policies remain
 unchanged.
 
 Credentials remain Variables assigned explicitly to a consumer. Grants do not
-copy a provider's Variables. Managed database roles and connection references
-remain P2. Service responses include Docker's `health` when a healthcheck
+copy a provider's Variables. P2 adds managed database roles and connection
+references. Service responses include Docker's `health` when a healthcheck
 exists, including for unpublished Applications.
 
 P1's native endpoint adapter checks the dedicated non-root account and renders
-only `127.0.0.1`. Native consumer grants remain unavailable. Loopback restricts
+only `127.0.0.1`. Generic native consumer grants remain unavailable. P2 enables
+the adapter for managed database connection references. Loopback restricts
 reachability to the Host; database authentication still restricts clients.
 See [Compose storage and networking](compose-applications.md).
 
@@ -218,7 +231,7 @@ Application. The account is provisioned once per Application and the cgroup
 is created per launch. Native publication checks that the account owns a
 listener bound only to loopback before it publishes the route.
 
-## Proposed P2 connection reference
+## Managed PostgreSQL connection reference
 
 A managed PostgreSQL Application (ADR-0029) hands a consumer its connection
 through a reference the Platform resolves into one Variable:
@@ -230,10 +243,12 @@ through a reference the Platform resolves into one Variable:
 ```
 
 The Platform creates a role and a database for the consumer on the database
-Application, writes the URL into the consumer's `DATABASE_URL` Variable, and
-rotates it when asked. The consumer reads a Variable like any other; it never
-sees the database's own credentials. Removing the consumer removes the role;
-removing the database Application is refused while a reference points at it.
+Application, then applies the URL through the consumer's Task queue. The
+consumer reads a Variable like any other; it never sees the database's own
+credentials. Disconnect disables the role and removes the managed Variable,
+preserving its database. Removing either Application is refused while a live
+reference points at it. See [managed PostgreSQL](managed-postgresql.md) for
+readiness, import and explicit data-removal behavior.
 
 ## Git sources and immutable builds
 

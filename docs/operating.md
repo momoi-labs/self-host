@@ -47,6 +47,18 @@ Directories are `0700` and files `0600`. `state/` holds the Operator's API key
 and every Application's environment, secrets included. Do not loosen it, and do
 not copy it anywhere world-readable.
 
+## Application names
+
+Application and managed database names accept capitals, spaces, accents and
+punctuation. The console preserves the name as entered. Names must contain
+1 to 63 characters, with no control characters, and cannot be only whitespace.
+
+For published Applications, the Platform derives a DNS-safe Hostname when none
+is supplied. For example, `Team Portal` becomes `team-portal.home.lan`. A
+generated name collision adds the Application's ID. Renaming keeps existing
+Hostnames, accounts, directories and data; explicit Hostnames still follow DNS
+rules.
+
 ## Settings
 
 The console's Settings page (the gear in the sidebar) has three tabs: General,
@@ -258,11 +270,13 @@ file before the row that references it commits; on start the daemon collects
 what an interrupted write left behind: a Compose file no row references, and
 an Application directory that never got a row.
 
-A deploy interrupted by a restart is settled against what Docker is actually
-running: running means running, anything else is reported as failed with the
-reason. When Docker itself cannot be reached the deploy stays pending and stays
-visible, because an executor that answers nothing has observed nothing. A
-Docker outage never turns an Application into a stopped one.
+A deployment interrupted during its readiness check is recorded as failed
+before the Platform republishes routes. Running containers alone do not prove
+that the candidate passed its health checks. Older deployments without a
+readiness record are settled against Docker's observed state. When Docker
+cannot be reached, reconciliation leaves that state unresolved. A Docker
+outage never turns an Application into a stopped one. See
+[deployment history and explicit recovery](deployments.md).
 
 Every console action on an Application, a machine or a custom image is a task
 the daemon runs on its own worker, one at a time per object and oldest first
@@ -289,6 +303,12 @@ DNS, the Operator API, the console and everything in `state/` work on a Host
 where Docker is missing, stopped or broken. You can read your configuration,
 see your Applications and change settings that do not need a workload.
 
-Docker is required to run Applications, and — until the proxy moves into the
-binary — to serve public HTTPS. Operations that need it fail with what went
-wrong rather than hanging, and nothing you saved is lost.
+Docker runs container Applications and managed PostgreSQL. Native Applications
+use the Host's dedicated accounts, cgroups and s6 supervision. The Platform
+serves HTTP and HTTPS itself. Operations that need an unavailable runtime
+report the failure and retain their saved configuration.
+
+See [native Applications](native-applications.md),
+[managed PostgreSQL](managed-postgresql.md), and
+[deployment readiness, triggers and recovery](deployments.md) for their setup
+and operating limits.

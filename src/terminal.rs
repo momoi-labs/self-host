@@ -39,6 +39,7 @@ impl Size {
 #[derive(Deserialize)]
 struct Connect {
     key: String,
+    #[serde(default)]
     container: String,
     #[serde(flatten)]
     size: Size,
@@ -80,6 +81,19 @@ impl Drop for Session {
     }
 }
 impl Session {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_parts(
+        input: mpsc::Sender<Input>,
+        output: mpsc::Receiver<Output>,
+        killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    ) -> Self {
+        Self {
+            input,
+            output,
+            killer: Some(killer),
+        }
+    }
+
     pub(crate) fn fake() -> Self {
         let (input, _) = mpsc::channel(1);
         let (tx, output) = mpsc::channel(1);
@@ -186,6 +200,35 @@ async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, id:
     };
     if !authentic(&state, &request.key).await {
         fail(&mut socket, "Invalid API key.").await;
+        return;
+    }
+    if !request.size.valid() {
+        fail(&mut socket, "Invalid terminal dimensions.").await;
+        return;
+    }
+    let app = match apps::get_application(&state.store, &id).await {
+        Ok(app) => app,
+        Err(_) => {
+            fail(&mut socket, "Application not found.").await;
+            return;
+        }
+    };
+    if matches!(app.runtime, crate::store::Runtime::Native(_)) {
+        if !request.container.is_empty() {
+            fail(&mut socket, "A native terminal has no container.").await;
+            return;
+        }
+        let env = match state.store.get_all_env(&id).await {
+            Ok(env) => env,
+            Err(_) => {
+                fail(&mut socket, "Could not read Application Variables.").await;
+                return;
+            }
+        };
+        match state.native.open_terminal(&app, env, request.size).await {
+            Ok(session) => pump(socket, session).await,
+            Err(error) => fail(&mut socket, error).await,
+        }
         return;
     }
     let user = match validate(&state, &id, &request.container, request.size).await {

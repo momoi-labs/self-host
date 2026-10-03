@@ -44,31 +44,36 @@ export function gitSourceOf(fields: GitFields): GitSource {
   };
 }
 
-export function GitSourceFields({ fields, onChange, includeRepository = true }: {
+export function GitSourceFields({ fields, onChange, includeRepository = true, section = "all" }: {
   fields: GitFields;
   onChange: (fields: GitFields) => void;
   includeRepository?: boolean;
+  section?: "all" | "repository" | "build";
 }) {
   const set = (key: keyof GitFields, value: string) => onChange({ ...fields, [key]: value });
   return <>
-    {includeRepository ? <FormField id="f-git-repository" label="Repository URL" hint="HTTP or HTTPS URL.">
-      <Input id="f-git-repository" type="url" required value={fields.repository} placeholder="https://git.example.invalid/team/app.git" onChange={(event) => set("repository", event.target.value)} />
-    </FormField> : null}
-    <div className="field-row">
-      <FormField id="f-git-ref" label="Branch or tag" value={fields.gitRef} onChange={(event) => set("gitRef", event.target.value)} placeholder="HEAD" />
-      <FormField id="f-git-revision" label="Pinned commit" className="mono" value={fields.revision} onChange={(event) => set("revision", event.target.value)} hint="Optional full commit id. Updates keep this commit until you change or clear it." />
-    </div>
-    <FormField id="f-git-compose" label="Compose path" value={fields.composePath} onChange={(event) => set("composePath", event.target.value)} placeholder="compose.yaml" hint="Optional path inside the checkout. Its build and env_file inputs also stay inside the checkout." />
-    {!fields.composePath.trim() ? <div className="field-row">
-      <FormField id="f-git-context" label="Build context" value={fields.context} onChange={(event) => set("context", event.target.value)} placeholder="." />
-      <FormField id="f-git-dockerfile" label="Dockerfile path" value={fields.dockerfile} onChange={(event) => set("dockerfile", event.target.value)} placeholder="Dockerfile" hint="Relative to the checkout root. Every RUN needs a numeric nonzero USER." />
-    </div> : null}
-    <FormField id="f-git-args" label="Build arguments" hint="Ordinary inputs only. One NAME=value per line.">
-      <Textarea id="f-git-args" className="mono" rows={3} value={fields.args} onChange={(event) => set("args", event.target.value)} />
-    </FormField>
-    <FormField id="f-git-secrets" label="Build secrets" hint="One BuildKit mount name=credential id per line. Secret values stay in private storage.">
-      <Textarea id="f-git-secrets" className="mono" rows={3} value={fields.secrets} onChange={(event) => set("secrets", event.target.value)} />
-    </FormField>
-    <FormField id="f-registry-credential" label="Registry credential id" value={fields.registryCredentialId} onChange={(event) => set("registryCredentialId", event.target.value)} hint="Optional saved registry credential for private base images." />
+    {section !== "build" ? <>
+      {includeRepository ? <FormField id="f-git-repository" label="Repository URL" hint="HTTP or HTTPS URL.">
+        <Input id="f-git-repository" type="url" required value={fields.repository} placeholder="https://git.example.invalid/team/app.git" onChange={(event) => set("repository", event.target.value)} />
+      </FormField> : null}
+      <div className="field-row">
+        <FormField id="f-git-ref" label="Branch or tag" value={fields.gitRef} onChange={(event) => set("gitRef", event.target.value)} placeholder="HEAD" />
+        <FormField id="f-git-revision" label="Pinned commit" className="mono" value={fields.revision} onChange={(event) => set("revision", event.target.value)} hint="Optional full commit id. Updates keep this commit until you change or clear it." />
+      </div>
+    </> : null}
+    {section !== "repository" ? <>
+      <FormField id="f-git-compose" label="Compose path" value={fields.composePath} onChange={(event) => set("composePath", event.target.value)} placeholder="compose.yaml" hint="Optional path inside the checkout. Its build and env_file inputs also stay inside the checkout." />
+      {!fields.composePath.trim() ? <div className="field-row">
+        <FormField id="f-git-context" label="Build context" value={fields.context} onChange={(event) => set("context", event.target.value)} placeholder="." />
+        <FormField id="f-git-dockerfile" label="Dockerfile path" value={fields.dockerfile} onChange={(event) => set("dockerfile", event.target.value)} placeholder="Dockerfile" hint="Relative to the checkout root. Every RUN needs a numeric nonzero USER." />
+      </div> : null}
+      <FormField id="f-git-args" label="Build arguments" hint="Ordinary inputs only. One NAME=value per line.">
+        <Textarea id="f-git-args" className="mono" rows={3} value={fields.args} onChange={(event) => set("args", event.target.value)} />
+      </FormField>
+      <FormField id="f-git-secrets" label="Build secrets" hint="One BuildKit mount name=credential id per line. Secret values stay in private storage.">
+        <Textarea id="f-git-secrets" className="mono" rows={3} value={fields.secrets} onChange={(event) => set("secrets", event.target.value)} />
+      </FormField>
+      <FormField id="f-registry-credential" label="Registry credential id" value={fields.registryCredentialId} onChange={(event) => set("registryCredentialId", event.target.value)} hint="Optional saved registry credential for private base images." />
+    </> : null}
   </>;
 }

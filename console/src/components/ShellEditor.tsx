@@ -11,14 +11,16 @@ declare global {
 }
 
 /** Native shell editing with a Prism layer and a synced line-number gutter. */
-export function ShellEditor({ id, value, onChange, disabled, maxLength, placeholder, "aria-describedby": describedBy }: {
+export function ShellEditor({ id, value, onChange, disabled, required, maxLength, placeholder, "aria-describedby": describedBy, "aria-invalid": invalid }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  required?: boolean;
   maxLength?: number;
   placeholder?: string;
   "aria-describedby"?: ComponentProps<typeof Textarea>["aria-describedby"];
+  "aria-invalid"?: ComponentProps<typeof Textarea>["aria-invalid"];
 }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const highlight = useRef<HTMLDivElement>(null);
@@ -57,8 +59,8 @@ export function ShellEditor({ id, value, onChange, disabled, maxLength, placehol
       <div className="shell-editor-code">
         <div className="shell-highlight" ref={highlight} aria-hidden="true" />
         <Textarea ref={textarea} className="mono shell-editor-input" id={id} rows={5} wrap="off"
-          spellCheck={false} placeholder={placeholder} disabled={disabled} maxLength={maxLength}
-          aria-describedby={describedBy} value={value}
+          spellCheck={false} placeholder={placeholder} disabled={disabled} required={required} maxLength={maxLength}
+          aria-describedby={describedBy} aria-invalid={invalid} value={value}
           onChange={(event) => onChange(event.target.value)} onScroll={syncScroll} />
       </div>
     </div>

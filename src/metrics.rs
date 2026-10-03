@@ -112,6 +112,9 @@ pub struct AppSample {
     /// shows a gap instead of a zero.
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+    /// Native process/thread count. Network counters are unavailable when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<u64>,
 }
 
 impl AppSample {
@@ -124,6 +127,7 @@ impl AppSample {
             memory_limit_bytes: 0,
             rx_bytes: 0,
             tx_bytes: 0,
+            tasks: None,
         }
     }
 
@@ -521,6 +525,7 @@ fn aggregate(stats: Vec<ContainerStats>) -> BTreeMap<String, AppTick> {
             memory_limit_bytes: stat.memory_limit_bytes,
             rx_bytes: stat.rx_bytes,
             tx_bytes: stat.tx_bytes,
+            tasks: None,
         };
         let tick = applications
             .entry(stat.application.clone())
@@ -541,11 +546,30 @@ pub async fn collect_once<S: StateStore>(
     store: &S,
     docker: &dyn DockerRuntime,
     vms: &dyn crate::environments::VmRuntime,
+    native: &dyn crate::native::lifecycle::NativeRuntime,
     metrics: &Metrics,
 ) {
     match store.list_applications().await {
         Ok(applications) => {
-            let live: Vec<String> = applications.into_iter().map(|app| app.id).collect();
+            let live: Vec<String> = applications.iter().map(|app| app.id.clone()).collect();
+            for app in applications
+                .iter()
+                .filter(|app| matches!(app.runtime, crate::store::Runtime::Native(_)))
+            {
+                match native.sample(app).await {
+                    Ok(Some(sample)) => metrics.record_app_tick(
+                        &app.id,
+                        &AppTick {
+                            total: sample,
+                            containers: BTreeMap::new(),
+                        },
+                    ),
+                    Ok(None) => (),
+                    Err(error) => {
+                        tracing::debug!(application = app.id, %error, "could not sample a native Application")
+                    }
+                }
+            }
             match docker.container_stats().await {
                 Ok(stats) => {
                     for (id, tick) in aggregate(stats) {
@@ -574,6 +598,7 @@ pub async fn collect_once<S: StateStore>(
                     memory_limit_bytes: usage.memory_limit_bytes,
                     rx_bytes: usage.rx_bytes,
                     tx_bytes: usage.tx_bytes,
+                    tasks: None,
                 },
             ),
             // A machine that just booted or is mid-operation is not an error
@@ -590,6 +615,7 @@ pub fn spawn_collector<S: StateStore>(
     store: S,
     docker: Arc<dyn DockerRuntime>,
     vms: Arc<dyn crate::environments::VmRuntime>,
+    native: Arc<dyn crate::native::lifecycle::NativeRuntime>,
     metrics: Metrics,
 ) {
     tokio::spawn(async move {
@@ -600,7 +626,14 @@ pub fn spawn_collector<S: StateStore>(
         timer.tick().await;
         loop {
             timer.tick().await;
-            collect_once(&store, docker.as_ref(), vms.as_ref(), &metrics).await;
+            collect_once(
+                &store,
+                docker.as_ref(),
+                vms.as_ref(),
+                native.as_ref(),
+                &metrics,
+            )
+            .await;
         }
     });
 }
@@ -640,6 +673,7 @@ mod tests {
             memory_limit_bytes: memory * 10,
             rx_bytes: 0,
             tx_bytes: 0,
+            tasks: None,
         }
     }
 

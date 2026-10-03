@@ -24,6 +24,13 @@ const paths: Record<string, React.ReactNode> = {
       <path d="M2.5 5L8 8l5.5-3M8 8v6" />
     </>
   ),
+  more: <path d="M3 8h.01M8 8h.01M13 8h.01" />,
+  database: (
+    <>
+      <ellipse cx="8" cy="3.5" rx="5.5" ry="2" />
+      <path d="M2.5 3.5v9c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-9M2.5 8c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2" />
+    </>
+  ),
   chart: (
     <>
       <path d="M2 13.5h12" />

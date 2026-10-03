@@ -35,6 +35,7 @@
 .git-detected-plan dd { margin: 0; overflow-wrap: anywhere; }
 .git-detected-plan dd > button { margin-inline-start: var(--spacing-xs); }
 .git-application-address { overflow-wrap: anywhere; }
+.git-settings-fields .field-row { align-items: start; }
 @media (max-width: 640px) {
   .git-repository-heading { align-items: stretch; flex-direction: column; }
   .git-repository-heading > :last-child { max-width: none; }

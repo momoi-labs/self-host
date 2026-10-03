@@ -26,6 +26,7 @@ pub mod config;
 pub mod connectivity;
 pub mod console;
 pub mod custom_images;
+pub mod deployments;
 pub mod dns;
 pub mod dns_records;
 pub mod docker;
@@ -38,6 +39,7 @@ pub mod metrics;
 pub mod native;
 pub mod paths;
 pub mod ports;
+pub mod postgres;
 pub mod proxy;
 pub mod routes;
 pub mod schema;
@@ -250,6 +252,7 @@ fn build_platform_with_native<S: StateStore>(
         ));
 
     let api_routes = Router::new()
+        .merge(postgres::api::router::<S>())
         .route("/health", get(health))
         .route("/certificates", get(certificate_status))
         .route(
@@ -306,14 +309,39 @@ fn build_platform_with_native<S: StateStore>(
             get(environments::machine_log::<S>),
         )
         .route("/apps/{name}", delete(remove_app::<S>))
-        .route("/apps/id/{id}", get(get_app::<S>).put(update_app::<S>))
+        .route(
+            "/apps/id/{id}",
+            get(get_app::<S>)
+                .put(update_app::<S>)
+                .delete(remove_app_by_id::<S>),
+        )
+        .route("/apps/id/{id}/deployments", get(deployments::list::<S>))
+        .route(
+            "/apps/id/{id}/deployments/{deployment}/restore",
+            post(deployments::request_restore::<S>),
+        )
+        .route(
+            "/apps/id/{id}/deploy-trigger",
+            get(deployments::triggers::status::<S>)
+                .post(deployments::triggers::enable::<S>)
+                .delete(deployments::triggers::disable::<S>),
+        )
         .route("/apps/id/{id}/start", post(start_app::<S>))
         .route("/apps/id/{id}/stop", post(stop_app::<S>))
         .route("/apps/id/{id}/restart", post(restart_app::<S>))
         .route("/apps/{name}/env", get(get_env::<S>).post(set_env::<S>))
         .route("/apps/{name}/env/{key}", delete(unset_env::<S>))
+        .route(
+            "/apps/id/{id}/env",
+            get(get_env_by_id::<S>).post(set_env_by_id::<S>),
+        )
+        .route("/apps/id/{id}/env/{key}", delete(unset_env_by_id::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
         .route("/apps/id/{id}/logs", get(stream_logs_by_id::<S>))
+        .route(
+            "/apps/id/{id}/variable-names",
+            get(native_variable_names::<S>),
+        )
         .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
         .route("/apps/id/{id}/http-status", get(http_status::<S>))
         .route("/metrics", get(get_metrics::<S>))
@@ -341,6 +369,7 @@ fn build_platform_with_native<S: StateStore>(
         ))
         // These routes authenticate their first WebSocket frame before opening
         // a PTY: a browser cannot put a Bearer header on an upgrade.
+        .route("/deploy/{id}", post(deployments::triggers::deliver::<S>))
         .route("/apps/id/{id}/terminal", get(terminal::upgrade::<S>))
         .route(
             "/environments/{id}/terminal",
@@ -959,10 +988,13 @@ struct ApplicationResponse {
     variable_delivery: VariableDelivery,
     route_rules: Vec<crate::store::RouteRule>,
     network_policy: crate::store::NetworkPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    managed_postgres: Option<postgres::Database>,
     /// Every container of the Application and its state. Empty until Docker
     /// has been asked.
     #[serde(default)]
     services: Vec<ServiceStateResponse>,
+    readiness: deployments::readiness::Readiness,
     /// The task carrying the action out, on a `202`. Its id is the event's.
     #[serde(skip_serializing_if = "Option::is_none")]
     task_id: Option<String>,
@@ -1012,7 +1044,9 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             variable_delivery: app.variable_delivery,
             route_rules: app.route_rules,
             network_policy: app.network_policy,
+            managed_postgres: None,
             services: Vec::new(),
+            readiness: deployments::readiness::Readiness::Unknown,
             task_id: None,
         }
     }
@@ -1035,10 +1069,22 @@ async fn observed<S: StateStore>(
         .iter()
         .filter_map(|s| s.restarts)
         .reduce(|a, b| a + b);
+    let managed_postgres = postgres::metadata(&state.store, &app.id)
+        .await
+        .ok()
+        .flatten();
     ApplicationResponse {
+        managed_postgres,
         status,
         last_error,
         restarts,
+        readiness: if app.status == apps::STATUS_STOPPED {
+            deployments::readiness::Readiness::Unknown
+        } else if app.status == apps::STATUS_FAILED {
+            deployments::readiness::Readiness::Failed
+        } else {
+            deployments::readiness::observed(&services)
+        },
         services: services.into_iter().map(Into::into).collect(),
         ..ApplicationResponse::from(app)
     }
@@ -1362,6 +1408,11 @@ async fn update_app<S: StateStore>(
         Ok(app) => app,
         Err(error) => return deploy_error_response(error),
     };
+    match postgres::metadata(&state.store, &id).await {
+        Ok(Some(_)) => return postgres::api::failure(postgres::Error::Conflict("Use the managed PostgreSQL controls; its version, storage and credentials cannot be replaced through Application configuration".into())),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+        _ => {}
+    }
     if current.git.is_some() {
         let source = body.git.unwrap_or_else(|| current.git.clone().unwrap());
         let _namespace = state.dns_records.lock_namespace().await;
@@ -1795,6 +1846,24 @@ async fn remove_app<S: StateStore>(
         Ok(app) => app,
         Err(e) => return remove_error_response(e),
     };
+    remove_app_record(state, app).await
+}
+
+async fn remove_app_record<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    app: apps::ApplicationRecord,
+) -> Response {
+    if postgres::metadata(&state.store, &app.id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return postgres::api::failure(postgres::Error::Conflict(
+            "Remove PostgreSQL through its database controls and choose whether to keep its data"
+                .into(),
+        ));
+    }
     if let Err(error) = apps::require_removable(&state.store, &app).await {
         return remove_error_response(error);
     }
@@ -1808,6 +1877,16 @@ async fn remove_app<S: StateStore>(
         )
         .await,
     )
+}
+
+async fn remove_app_by_id<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match apps::get_application(&state.store, &id).await {
+        Ok(app) => remove_app_record(state, app).await,
+        Err(error) => deploy_error_response(error),
+    }
 }
 
 /// The Application a name refers to, or why there is none. Checked before
@@ -1842,7 +1921,7 @@ fn error_response(status: StatusCode, err: &dyn std::error::Error) -> Response {
 
 fn remove_error_response(err: RemoveError) -> Response {
     let status = match &err {
-        RemoveError::ConnectionsExist => StatusCode::CONFLICT,
+        RemoveError::ConnectionsExist | RemoveError::ManagedDatabase => StatusCode::CONFLICT,
         RemoveError::NotFound(_) => StatusCode::NOT_FOUND,
         RemoveError::NotInitialized => StatusCode::PRECONDITION_FAILED,
         RemoveError::Docker(_) | RemoveError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1856,6 +1935,40 @@ struct SetEnvRequest {
     value: String,
 }
 
+async fn set_env_by_id<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    body: Json<SetEnvRequest>,
+) -> Response {
+    match apps::get_application(&state.store, &id).await {
+        Ok(app) => set_env_record(state, app, body.0).await,
+        Err(error) => deploy_error_response(error),
+    }
+}
+
+async fn get_env_by_id<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match apps::get_application(&state.store, &id).await {
+        Ok(app) => match state.store.get_all_env(&app.id).await {
+            Ok(env) => Json(env).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+        },
+        Err(error) => deploy_error_response(error),
+    }
+}
+
+async fn unset_env_by_id<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path((id, key)): axum::extract::Path<(String, String)>,
+) -> Response {
+    match apps::get_application(&state.store, &id).await {
+        Ok(app) => unset_env_record(state, app, key).await,
+        Err(error) => deploy_error_response(error),
+    }
+}
+
 async fn set_env<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -1865,6 +1978,24 @@ async fn set_env<S: StateStore>(
         Ok(app) => app,
         Err(e) => return remove_error_response(e),
     };
+    set_env_record(state, app, body).await
+}
+
+async fn set_env_record<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    app: apps::ApplicationRecord,
+    body: SetEnvRequest,
+) -> Response {
+    let name = app.name.clone();
+    match postgres::managed_variable(&state.store, &app.id, &body.key).await {
+        Ok(true) => {
+            return postgres::api::failure(postgres::Error::Conflict(
+                "Disconnect the managed database connection before editing this Variable".into(),
+            ));
+        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+        _ => {}
+    }
     if matches!(app.runtime, Runtime::Native(_))
         && let Err(error) =
             native::lifecycle::validate_environment(&[(body.key.clone(), body.value.clone())])
@@ -1886,6 +2017,29 @@ async fn set_env<S: StateStore>(
     )
 }
 
+/// Configuration forms read names only. The explicit env endpoint remains
+/// the Operator's deliberate value reveal for API/CLI use.
+async fn native_variable_names<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match apps::get_application(&state.store, &id).await {
+        Ok(app) if matches!(app.runtime, Runtime::Native(_)) => (),
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorReport::plain("Application Runtime is not native.")),
+            )
+                .into_response();
+        }
+        Err(error) => return deploy_error_response(error),
+    }
+    match state.store.get_all_env(&id).await {
+        Ok(env) => Json(env.into_iter().map(|(key, _)| key).collect::<Vec<_>>()).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
 async fn get_env<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -1904,6 +2058,24 @@ async fn unset_env<S: StateStore>(
         Ok(app) => app,
         Err(e) => return remove_error_response(e),
     };
+    unset_env_record(state, app, key).await
+}
+
+async fn unset_env_record<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    app: apps::ApplicationRecord,
+    key: String,
+) -> Response {
+    let name = app.name.clone();
+    match postgres::managed_variable(&state.store, &app.id, &key).await {
+        Ok(true) => {
+            return postgres::api::failure(postgres::Error::Conflict(
+                "Disconnect the managed database connection before removing this Variable".into(),
+            ));
+        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+        _ => {}
+    }
     accepted_task(
         tasks::enqueue(
             &state,
@@ -2016,11 +2188,24 @@ async fn stream_logs_for<S: StateStore>(
             )
                 .into_response();
         }
+        let mut values = match state.store.get_all_env(&app.id).await {
+            Ok(env) => env
+                .into_iter()
+                .map(|(_, value)| value)
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>(),
+            Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+        };
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
         return match state.native.logs(&app).await {
             Ok(receiver) => {
-                let stream = tokio_stream::wrappers::ReceiverStream::new(receiver).map(|line| {
-                    Ok::<_, std::convert::Infallible>(sse::Event::default().data(line))
-                });
+                let stream =
+                    tokio_stream::wrappers::ReceiverStream::new(receiver).map(move |mut line| {
+                        for value in &values {
+                            line = line.replace(value, "[redacted]");
+                        }
+                        Ok::<_, std::convert::Infallible>(sse::Event::default().data(line))
+                    });
                 sse::Sse::new(stream)
                     .keep_alive(sse::KeepAlive::default())
                     .into_response()
@@ -2201,6 +2386,7 @@ fn deploy_error_response(err: DeployError) -> Response {
         DeployError::Route(crate::routes::RouteError::Conflict(_)) => StatusCode::CONFLICT,
         DeployError::Route(crate::routes::RouteError::Invalid(_)) => StatusCode::BAD_REQUEST,
         DeployError::Connectivity(_) => StatusCode::BAD_REQUEST,
+        DeployError::Readiness(_) => StatusCode::CONFLICT,
         DeployError::Source(source::SourceError::Invalid(_)) => StatusCode::BAD_REQUEST,
         DeployError::InvalidNative(_)
         | DeployError::InvalidName(_)
@@ -2869,7 +3055,14 @@ mod tests {
         .await;
         let record = settle(&store, "hermes").await;
 
-        metrics::collect_once(&store, &docker, &environments::FakeVmRuntime, &metrics).await;
+        metrics::collect_once(
+            &store,
+            &docker,
+            &environments::FakeVmRuntime,
+            &native::lifecycle::S6Runtime::default(),
+            &metrics,
+        )
+        .await;
 
         let response = send(&app, "/metrics", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -3964,6 +4157,7 @@ mod tests {
                 "aliases": [],
                 "image": "nginx:alpine",
                 "status": "running",
+                "readiness": "unknown",
                 "source": "image",
                 "restarts": 0,
                 "runtime": {"kind": "container"},
@@ -4003,6 +4197,128 @@ mod tests {
         )
         .await;
         assert_eq!(second.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn resolved_id_mutations_stay_on_the_same_application_after_name_reuse() {
+        let store = FakeStateStore::new();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        store.store_state("api_key", "fixture").await.unwrap();
+        let docker = Arc::new(FakeDocker::new());
+        let routes = Arc::new(routes::FakeRoutes::new());
+        let (_, state) = build_platform(
+            store.clone(),
+            docker.clone(),
+            routes.clone(),
+            metrics::Metrics::new(),
+            Arc::new(vms::LimaRuntime::default()),
+            Arc::new(dns_records::UnservedZone),
+            None,
+        );
+        let resolved = apps::deploy_from_image(
+            &store,
+            docker.as_ref(),
+            routes.as_ref(),
+            "Original / Name",
+            "nginx",
+            apps::DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        apps::update_application(
+            &store,
+            docker.as_ref(),
+            routes.as_ref(),
+            &resolved.id,
+            apps::ApplicationUpdate {
+                name: Some("Renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let other = apps::deploy_from_image(
+            &store,
+            docker.as_ref(),
+            routes.as_ref(),
+            "Original / Name",
+            "nginx",
+            apps::DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        store
+            .set_env(&other.id, "CHECK", "other-app")
+            .await
+            .unwrap();
+
+        let response = set_env_record(
+            axum::extract::State(state.clone()),
+            resolved.clone(),
+            SetEnvRequest {
+                key: "CHECK".into(),
+                value: "original-app".into(),
+            },
+        )
+        .await;
+        let accepted: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(
+            finished(&store, accepted["task_id"].as_str().unwrap())
+                .await
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            store
+                .get_env(&resolved.id, "CHECK")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("original-app")
+        );
+        assert_eq!(
+            store.get_env(&other.id, "CHECK").await.unwrap().as_deref(),
+            Some("other-app")
+        );
+
+        let response = unset_env_record(
+            axum::extract::State(state.clone()),
+            resolved.clone(),
+            "CHECK".into(),
+        )
+        .await;
+        let accepted: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(
+            finished(&store, accepted["task_id"].as_str().unwrap())
+                .await
+                .status,
+            "completed"
+        );
+        assert!(
+            store
+                .get_env(&resolved.id, "CHECK")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.get_env(&other.id, "CHECK").await.unwrap().as_deref(),
+            Some("other-app")
+        );
+
+        let response = remove_app_record(axum::extract::State(state), resolved.clone()).await;
+        let accepted: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(
+            finished(&store, accepted["task_id"].as_str().unwrap())
+                .await
+                .status,
+            "completed"
+        );
+        assert!(store.get_application(&resolved.id).await.unwrap().is_none());
+        assert!(store.get_application(&other.id).await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -4523,7 +4839,8 @@ mod deploy_path_tests {
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed["name"], json!("api"));
         assert_eq!(parsed["hostname"], json!("api.home.lan"));
-        assert_eq!(parsed["image"], json!("self-host-api:latest"));
+        let image_tag = format!("self-host-{}:latest", parsed["id"].as_str().unwrap());
+        assert_eq!(parsed["image"], json!(image_tag));
         assert_eq!(parsed["status"], json!("pending"));
 
         // The build runs on a task; wait for it before asking Docker what it
@@ -4539,10 +4856,10 @@ mod deploy_path_tests {
         let built = docker.built.lock().unwrap();
         assert_eq!(built.len(), 1);
         assert_eq!(built[0].0, "./myapp");
-        assert_eq!(built[0].1, "self-host-api:latest");
+        assert_eq!(built[0].1, image_tag);
 
         let deployed = docker.apps.lock().unwrap();
         assert_eq!(deployed.len(), 1);
-        assert_eq!(deployed[0].image, "self-host-api:latest");
+        assert_eq!(deployed[0].image, image_tag);
     }
 }

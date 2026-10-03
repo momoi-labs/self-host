@@ -27,6 +27,8 @@ import {
 import { AppForm, type Submission } from "../components/AppForm.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
+import { NativeSummary } from "../components/NativeSummary.js";
+import { DeploymentHistory, DeploymentReadiness } from "../components/DeploymentHistory.js";
 import { HttpStatus } from "../components/HttpStatus.js";
 import { GitBuildRun } from "../components/GitBuildRun.js";
 import { GitUpdateDialog } from "../components/GitUpdateDialog.js";
@@ -38,6 +40,7 @@ import { waitForTask } from "../lib/tasks.js";
 import type { App, GitSource, Metrics, Report, Settings } from "../lib/types.js";
 import { fetchEvents, useEvents } from "../lib/useEvents.js";
 import { seriesFor } from "../lib/useMetrics.js";
+import { useMediaQuery } from "../lib/useMediaQuery.js";
 
 // xterm is a third of the console's JavaScript and only the Terminal tab needs
 // it, so the chunk arrives when the Operator opens that tab.
@@ -59,13 +62,15 @@ export function AppDetail({
   onRemoved: () => void;
 }) {
   const notify = useToast();
+  const wide = useMediaQuery("(min-width: 1024px)");
+  const native = app.runtime?.kind === "native" ? app.runtime : null;
   const [confirming, setConfirming] = useState(false);
   /** The restart waiting for confirmation, or null. */
   const [restart, setRestart] = useState<{ pull: boolean } | null>(null);
   const [removing, setRemoving] = useState(false);
   const removalInFlight = useRef(false);
   const samples = seriesFor(metrics, app.id);
-  const [tab, setTab] = useState(app.git && app.status === "pending" ? "last-update" : app.git_build ? "summary" : "configuration");
+  const [tab, setTab] = useState(app.status === "pending" && native ? "logs" : app.git && app.status === "pending" ? "last-update" : native || app.git_build ? "summary" : "configuration");
   const [openedTerminal, setOpenedTerminal] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [building, setBuilding] = useState(false);
@@ -113,6 +118,7 @@ export function AppDetail({
 
   /** Opens the restart confirmation with the Platform's choice to pull. */
   async function askRestart() {
+    if (native) { setRestart({ pull: false }); return; }
     const settings = await getJson<Settings>("/settings");
     setRestart({ pull: settings?.pullNewerImages.effective ?? false });
   }
@@ -127,6 +133,7 @@ export function AppDetail({
         body: JSON.stringify(body),
       });
       if (res.status === 202) {
+        if (native) setTab("logs");
         notify("success", "Changes saved", {
           error: `${body.name} is redeploying.`,
           caused_by: [],
@@ -196,7 +203,7 @@ export function AppDetail({
     setRemoving(true);
     notify("neutral", "Removing application...");
     try {
-      const res = await api(`/apps/${encodeURIComponent(app.name)}`, { method: "DELETE" });
+      const res = await api(`/apps/id/${encodeURIComponent(app.id)}`, { method: "DELETE" });
       if (!res.ok) {
         const failure = await failureOf(res);
         notify("danger", `Could not remove ${app.name}`, failure);
@@ -214,7 +221,7 @@ export function AppDetail({
         return;
       }
       notify("success", "Application removed", {
-        error: `${app.name} and its containers are gone. Its data stays on the Host.`,
+        error: native ? `${app.name} and its processes are gone. Its data stays on the Host.` : `${app.name} and its containers are gone. Its data stays on the Host.`,
         caused_by: [],
       });
     } catch (cause) {
@@ -233,9 +240,9 @@ export function AppDetail({
   return (
     <>
       <div className="between">
-        <PageHeader>
+        <PageHeader className={wide ? "grow" : undefined}>
           <PageHeaderTitle>{app.name}</PageHeaderTitle>
-          <PageHeaderDescription>
+          {app.hostname ? <PageHeaderDescription>
             {hostnames(app).map((host, index) => (
               <span key={host}>
                 {index ? " · " : null}
@@ -244,14 +251,15 @@ export function AppDetail({
                 </a>
               </span>
             ))}
-          </PageHeaderDescription>
+          </PageHeaderDescription> : null}
           {samples ? <Glance samples={samples} /> : null}
         </PageHeader>
         <Lifecycle
           status={
             <>
-              <StatusBadge tone={statusTone(app.status)}>{app.status}</StatusBadge>
-              <HttpStatus id={app.id} status={app.status} />
+              <StatusBadge tone={native && app.status === "pending" ? "success" : statusTone(app.status)} pulse={Boolean(native && app.status === "pending")}>{native && app.status === "pending" ? "Preparing" : app.status}</StatusBadge>
+              {app.publication?.kind !== "unpublished" ? <HttpStatus id={app.id} status={app.status} /> : null}
+              {app.runtime?.kind !== "native" ? <DeploymentReadiness app={app} /> : null}
               {gitBusy ? <StatusBadge tone="success" pulse>{lastBuild?.status === "pending" ? "Queued" : "Building"}</StatusBadge> : null}
             </>
           }
@@ -310,12 +318,14 @@ export function AppDetail({
           }}
         >
           <TabsList aria-label="Application details">
-            {app.git_build ? <TabsTrigger value="summary">Summary</TabsTrigger> : null}
+            {native || app.git_build ? <TabsTrigger value="summary">Summary</TabsTrigger> : null}
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
             {app.git && (lastBuild || building || app.status === "pending") ? <TabsTrigger value="last-update">Last update</TabsTrigger> : null}
+            {app.runtime?.kind !== "native" ? <TabsTrigger value="deployments">Deployments</TabsTrigger> : null}
             <TabsTrigger value="logs">Logs</TabsTrigger>
             <TabsTrigger value="terminal">Terminal</TabsTrigger>
           </TabsList>
+          {native ? <TabsContent value="summary"><NativeSummary app={app} /></TabsContent> : null}
           {app.git_build ? <TabsContent value="summary">
             <dl className="summary-facts">
               {app.git ? <><dt>Repository</dt><dd>{app.git.repository}</dd><dt>Branch or tag</dt><dd><code>{app.git.git_ref}</code></dd></> : null}
@@ -330,20 +340,21 @@ export function AppDetail({
             <Button size="sm" disabled={removing || gitBusy} onClick={() => void rebuildCurrent()}>Rebuild current version</Button>
           </TabsContent> : null}
           <TabsContent value="configuration">
-            <AppForm key={formRevision} app={app} dnsSuffix={dnsSuffix} onSubmit={save} />
+            <AppForm key={formRevision} app={app} dnsSuffix={dnsSuffix} onSubmit={save} onReload={reload} />
           </TabsContent>
           {app.git ? <TabsContent value="last-update" className="detail-run">
             <GitBuildRun event={lastBuild} error={eventsError} busy={gitBusy} onRetry={() => setTab("configuration")} />
           </TabsContent> : null}
+          {app.runtime?.kind !== "native" ? <TabsContent value="deployments"><DeploymentHistory app={app} reload={reload} /></TabsContent> : null}
           <TabsContent value="logs" className="detail-logs">
             {/* The panel is one row tall; the Application's log brings a
                 container picker above it, so the two share a wrapper. */}
-            <div className="detail-log-pane"><AppLogPane id={app.id} /></div>
+            <div className="detail-log-pane"><AppLogPane id={app.id} native={!!native} /></div>
           </TabsContent>
           <TabsContent value="terminal" className="detail-pane" forceMount hidden={tab !== "terminal"}>
             {openedTerminal ? (
               <Suspense fallback={<Skeleton className="terminal-loading" />}>
-                <Terminal id={app.id} />
+                <Terminal id={app.id} native={!!native} account={native?.account} />
               </Suspense>
             ) : null}
           </TabsContent>
@@ -363,9 +374,9 @@ export function AppDetail({
           </AlertDialogHeader>
           <div className="dialog-body stack">
             <AlertDialogDescription>
-              <code>{app.name}</code> restarts its {isCompose(app) ? "containers" : "container"}.
+              <code>{app.name}</code> restarts its {native ? "process tree" : isCompose(app) ? "containers" : "container"}.
             </AlertDialogDescription>
-            <div className="field">
+            {!native ? <div className="field">
               <div className="check">
                 <Checkbox id="restart-pull" checked={restart?.pull ?? false}
                   onCheckedChange={(checked) => setRestart({ pull: checked === true })}
@@ -376,7 +387,7 @@ export function AppDetail({
                 Pulls each image from its registry, then recreates the containers. If a pull fails,
                 nothing restarts. Images built on this Host are not pulled.
               </p>
-            </div>
+            </div> : null}
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -405,8 +416,8 @@ export function AppDetail({
           </AlertDialogHeader>
           <div className="dialog-body">
             <AlertDialogDescription>
-              <code>{app.name}</code> and its {isCompose(app) ? "containers" : "container"} will be removed.
-              Named volumes and the data directory are kept on the Host.
+              <code>{app.name}</code> and its {native ? "processes and Application Account" : isCompose(app) ? "containers" : "container"} will be removed.
+              {native ? " The Application data stays on the Host with access revoked." : " Named volumes and the data directory are kept on the Host."}
             </AlertDialogDescription>
           </div>
           <AlertDialogFooter>

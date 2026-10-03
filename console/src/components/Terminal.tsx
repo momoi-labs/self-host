@@ -15,18 +15,18 @@ type Connection = { socket: WebSocket; terminal: Xterm; dispose: () => void };
  * picks; a Virtual machine is a single machine and opens straight into it as
  * the `dev` user.
  */
-export function Terminal({ id, machine = false }: { id: string; machine?: boolean }) {
+export function Terminal({ id, machine = false, native = false, account }: { id: string; machine?: boolean; native?: boolean; account?: string }) {
   const notify = useToast();
   const host = useRef<HTMLDivElement>(null);
   const connection = useRef<Connection | null>(null);
   const request = useRef<AbortController | null>(null);
   const [services, setServices] = useState<ServiceState[]>([]);
   const [container, setContainer] = useState("");
-  const [loading, setLoading] = useState(!machine);
+  const [loading, setLoading] = useState(!machine && !native);
   const [status, setStatus] = useState<"idle" | "connecting" | "open" | "closed">("idle");
   const active = status === "connecting" || status === "open";
   // A machine has nothing to choose, so it is ready as soon as it is on screen.
-  const ready = machine || !!container;
+  const ready = machine || native || !!container;
 
   async function refresh() {
     request.current?.abort();
@@ -49,7 +49,7 @@ export function Terminal({ id, machine = false }: { id: string; machine?: boolea
   }
 
   useEffect(() => {
-    if (!machine) void refresh();
+    if (!machine && !native) void refresh();
     return () => { request.current?.abort(); connection.current?.dispose(); connection.current = null; };
     // The Application detail is keyed by its stable identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -97,7 +97,7 @@ export function Terminal({ id, machine = false }: { id: string; machine?: boolea
     socket.onopen = () => {
       if (disposed) { socket.close(); return; }
       send(
-        machine
+        machine || native
           ? { key: apiKey(), cols: terminal.cols, rows: terminal.rows }
           : { key: apiKey(), container, cols: terminal.cols, rows: terminal.rows },
       );
@@ -138,17 +138,18 @@ export function Terminal({ id, machine = false }: { id: string; machine?: boolea
 
   return (
     <div className="container-terminal">
-      <div className="terminal-screen" ref={host} aria-label={machine ? "Virtual machine terminal" : "Container terminal"} style={{ visibility: active ? "visible" : "hidden" }} />
+      <div className="terminal-screen" ref={host} aria-label={machine ? "Virtual machine terminal" : native ? "Application terminal" : "Container terminal"} style={{ visibility: active ? "visible" : "hidden" }} />
       {!active && (
         <EmptyState variant="first-run" className="hatch terminal-empty">
           <EmptyStateIcon><TerminalIcon /></EmptyStateIcon>
-          <EmptyStateTitle>{machine ? "Virtual machine terminal" : "Container terminal"}</EmptyStateTitle>
+          <EmptyStateTitle>{machine ? "Virtual machine terminal" : native ? "Application terminal" : "Container terminal"}</EmptyStateTitle>
           <EmptyStateDescription>
             {machine
               ? "Start an interactive Bash session as dev."
+              : native ? `Start a shell as ${account || "the Application Account"}. The shell shares the Application resource limits.`
               : loading ? "Loading containers..." : container ? "Start an interactive Bash session." : "No running containers available."}
           </EmptyStateDescription>
-          {!machine && services.length > 1 && (
+          {!machine && !native && services.length > 1 && (
             <FormField id="terminal-container" label="Container" className="terminal-picker">
               <select id="terminal-container" className="input" value={container} onChange={(event) => setContainer(event.target.value)} disabled={loading}>
                 {!container && <option value="">No running containers</option>}
@@ -160,7 +161,7 @@ export function Terminal({ id, machine = false }: { id: string; machine?: boolea
           )}
           <EmptyStateActions>
             <Button variant="primary" onClick={start} disabled={loading || !ready}>Start terminal</Button>
-            {!machine && !loading && !container && <Button onClick={() => void refresh()}>Refresh containers</Button>}
+            {!machine && !native && !loading && !container && <Button onClick={() => void refresh()}>Refresh containers</Button>}
           </EmptyStateActions>
         </EmptyState>
       )}

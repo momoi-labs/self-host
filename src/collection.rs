@@ -78,6 +78,10 @@ impl<T: Serialize + DeserializeOwned + Keyed> Collection<T> {
         store.replace_records(self.kind, &rows).await
     }
 
+    pub(crate) fn row(&self, item: &T) -> Result<(String, String, String), StoreError> {
+        Ok((self.kind.into(), item.key(), self.render(item)?))
+    }
+
     fn parse(&self, body: &str) -> Result<T, StoreError> {
         serde_json::from_str(body)
             .map_err(|e| StoreError::Serialize(format!("could not read a {}: {e}", self.kind)))

@@ -35,8 +35,13 @@ export function usePlatform(): Platform {
       for (const app of next) {
         if (known.current[app.id] !== "pending" || app.status === "pending") continue;
         if (app.status === "running") {
-          notify("success", "Application deployed", {
-            error: `${app.name} is running at ${app.hostname}.`,
+          notify("success", app.managed_postgres ? "Database deployed" : "Application deployed", {
+            error: app.hostname ? `${app.name} is running at ${app.hostname}.` : `${app.name} is running.`,
+            caused_by: [],
+          });
+        } else if (app.status === "stopped") {
+          notify("success", "Changes applied", {
+            error: `${app.name} remains stopped.`,
             caused_by: [],
           });
         } else {

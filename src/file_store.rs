@@ -605,6 +605,24 @@ impl StateStore for FileStateStore {
         })
     }
 
+    async fn put_records_atomic(
+        &self,
+        rows: &[(String, String, String)],
+    ) -> Result<(), StoreError> {
+        self.transaction(|tx| {
+            for (kind, id, body) in rows {
+                tx.execute(
+                    "INSERT INTO records (kind, id, body, updated_at) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT (kind, id) DO UPDATE SET body = excluded.body,
+                                                         updated_at = excluded.updated_at",
+                    params![kind, id, body, now_iso()],
+                )
+                .map_err(|e| db_error(&self.db_path(), e))?;
+            }
+            Ok(())
+        })
+    }
+
     async fn delete_record(&self, kind: &str, id: &str) -> Result<bool, StoreError> {
         self.transaction(|tx| {
             let removed = tx
@@ -1046,6 +1064,7 @@ mod tests {
         app.runtime = Runtime::Native(crate::store::NativeDefinition {
             account: "sf-app-k3n8qz4v2x1p".into(),
             command: vec!["/opt/api/bin/serve".into()],
+            recipe: Default::default(),
             working_dir: None,
             port: Some(8080),
             limits: crate::native::ResourceLimits {

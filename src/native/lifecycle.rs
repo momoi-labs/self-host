@@ -39,6 +39,17 @@ pub trait NativeRuntime: Send + Sync {
     async fn remove(&self, record: &ApplicationRecord) -> Result<()>;
     async fn status(&self, record: &ApplicationRecord) -> Result<ServiceStatus>;
     async fn logs(&self, record: &ApplicationRecord) -> Result<mpsc::Receiver<String>>;
+    async fn open_terminal(
+        &self,
+        _: &ApplicationRecord,
+        _: Vec<(String, String)>,
+        _: crate::terminal::Size,
+    ) -> Result<crate::terminal::Session> {
+        bail!("native terminals are unavailable on this Host")
+    }
+    async fn sample(&self, _: &ApplicationRecord) -> Result<Option<crate::metrics::AppSample>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +58,7 @@ pub struct S6Runtime {
     binary: PathBuf,
     data_root: PathBuf,
     cgroup_root: Option<PathBuf>,
+    samples: std::sync::Arc<std::sync::Mutex<super::metrics::Sampler>>,
 }
 
 impl Default for S6Runtime {
@@ -56,6 +68,7 @@ impl Default for S6Runtime {
             binary: "/usr/local/bin/self-host".into(),
             data_root: "/var/lib/self-host/native-data".into(),
             cgroup_root: None,
+            samples: Default::default(),
         }
     }
 }
@@ -68,6 +81,7 @@ impl S6Runtime {
             binary,
             data_root,
             cgroup_root: Some(cgroup_root),
+            samples: Default::default(),
         }
     }
 
@@ -138,11 +152,6 @@ impl S6Runtime {
             .as_deref()
             .map(|relative| home.join(relative))
             .unwrap_or(home.clone());
-        let canonical = std::fs::canonicalize(&working_dir)
-            .context("native working directory does not exist")?;
-        if !canonical.starts_with(&home) {
-            bail!("native working directory resolves outside the Application data home");
-        }
         Ok(ServiceDefinition {
             application_id: record.id.clone(),
             account: definition.account.clone(),
@@ -150,6 +159,7 @@ impl S6Runtime {
             working_dir,
             environment: env,
             limits: definition.limits.clone(),
+            recipe: definition.recipe.clone(),
             readiness: None,
             startup_timeout_ms: STARTUP.as_millis() as u64,
             stop_grace_ms: 1000,
@@ -281,6 +291,12 @@ impl NativeRuntime for S6Runtime {
             } else {
                 supervisor.prepare(&service)?;
             }
+            supervisor.prepare_environment(&service)?;
+            let canonical = std::fs::canonicalize(&service.working_dir)
+                .context("native working directory does not exist after setup")?;
+            if !canonical.starts_with(runtime.home(&record.id)?) {
+                bail!("native working directory resolves outside the Application data home");
+            }
             if running {
                 runtime.start_checked(&supervisor, &record)?;
             }
@@ -348,37 +364,137 @@ impl NativeRuntime for S6Runtime {
         self.blocking(move |runtime| runtime.supervisor()?.status(&record.id))
             .await
     }
+    async fn sample(
+        &self,
+        record: &ApplicationRecord,
+    ) -> Result<Option<crate::metrics::AppSample>> {
+        let record = record.clone();
+        self.blocking(move |runtime| {
+            let supervisor = runtime.supervisor()?;
+            let cgroup = supervisor.application_cgroup(&record.id)?;
+            let mut samples = runtime
+                .samples
+                .lock()
+                .map_err(|_| anyhow::anyhow!("native metrics lock failed"))?;
+            if !supervisor.status(&record.id)?.running {
+                samples.forget(&record.id);
+                return Ok(None);
+            }
+            samples.sample(&record.id, cgroup.path())
+        })
+        .await
+    }
+    async fn open_terminal(
+        &self,
+        record: &ApplicationRecord,
+        env: Vec<(String, String)>,
+        size: crate::terminal::Size,
+    ) -> Result<crate::terminal::Session> {
+        #[cfg(target_os = "linux")]
+        {
+            let record = record.clone();
+            self.blocking(move |runtime| {
+                let supervisor = runtime.supervisor()?;
+                if !supervisor.status(&record.id)?.running {
+                    bail!("The Application is not running.");
+                }
+                let definition = definition(&record)?;
+                validate_environment(&env)?;
+                let account = AccountName::parse(&definition.account)?;
+                let home = runtime.home(&record.id)?;
+                super::identity::verify_owned(&ProvisionRequest {
+                    application_id: &record.id,
+                    account: &account,
+                    home: &home,
+                })?;
+                let working_dir = definition
+                    .working_dir
+                    .as_deref()
+                    .map(|relative| home.join(relative))
+                    .unwrap_or(home.clone());
+                let canonical = std::fs::canonicalize(&working_dir)?;
+                if !canonical.starts_with(runtime.home(&record.id)?) {
+                    bail!("native working directory resolves outside the Application home");
+                }
+                let cgroup = supervisor.application_cgroup(&record.id)?;
+                super::terminal::open(
+                    &cgroup,
+                    super::LaunchRequest {
+                        application_id: record.id.clone(),
+                        account,
+                        command: super::mise::command(
+                            &home,
+                            &definition.recipe,
+                            vec!["/bin/sh".into(), "-i".into()],
+                        ),
+                        working_dir,
+                        environment: super::mise::environment(&home, &env),
+                        limits: definition.limits.clone(),
+                        purpose: super::Purpose::Terminal,
+                    },
+                    size,
+                )
+            })
+            .await
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (record, env, size);
+            bail!("native terminals run on Linux only")
+        }
+    }
     async fn logs(&self, record: &ApplicationRecord) -> Result<mpsc::Receiver<String>> {
-        // s6-log owns the directory and bounded rotation. Reading only current
-        // avoids exposing arbitrary Host files or launching a privileged tail.
+        // Both files live in protected supervision storage. Preparation has
+        // its own bounded log so it is visible before the first main launch.
         let record = record.clone();
         let path = self
             .blocking(move |runtime| {
                 runtime.supervisor()?;
                 account_name_for(&record.id)?;
-                Ok(runtime.root.join("logs").join(&record.id).join("current"))
+                Ok(runtime.root.join("logs").join(&record.id))
             })
             .await?;
         let (sender, receiver) = mpsc::channel(64);
         tokio::spawn(async move {
-            let mut position = 0usize;
-            let mut partial = String::new();
+            let mut positions = [0usize; 2];
+            let mut identities = [0u64; 2];
+            let mut partials = [String::new(), String::new()];
             loop {
                 tokio::select! { _ = sender.closed() => break, _ = tokio::time::sleep(Duration::from_millis(100)) => () }
-                let Ok(bytes) = tokio::fs::read(&path).await else {
-                    continue;
-                };
-                if bytes.len() < position {
-                    position = 0;
-                    partial.clear();
-                }
-                partial.push_str(&String::from_utf8_lossy(&bytes[position..]));
-                position = bytes.len();
-                while let Some(end) = partial.find('\n') {
-                    let line = partial[..end].to_owned();
-                    partial.drain(..=end);
-                    if sender.send(line).await.is_err() {
-                        return;
+                for (index, name) in ["recipe.log", "current"].iter().enumerate() {
+                    use tokio::io::AsyncReadExt;
+                    let Ok(mut file) = tokio::fs::File::open(path.join(name)).await else {
+                        continue;
+                    };
+                    let Ok(metadata) = file.metadata().await else {
+                        continue;
+                    };
+                    #[cfg(unix)]
+                    let identity = {
+                        use std::os::unix::fs::MetadataExt;
+                        metadata.ino()
+                    };
+                    #[cfg(not(unix))]
+                    let identity = 0;
+                    let mut bytes = Vec::new();
+                    if file.read_to_end(&mut bytes).await.is_err() {
+                        continue;
+                    }
+                    let position = &mut positions[index];
+                    let partial = &mut partials[index];
+                    if identities[index] != identity || bytes.len() < *position {
+                        *position = 0;
+                        partial.clear();
+                    }
+                    identities[index] = identity;
+                    partial.push_str(&String::from_utf8_lossy(&bytes[*position..]));
+                    *position = bytes.len();
+                    while let Some(end) = partial.find('\n') {
+                        let line = partial[..end].to_owned();
+                        partial.drain(..=end);
+                        if sender.send(line).await.is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -400,6 +516,7 @@ pub fn validate_definition(
     definition: &mut NativeDefinition,
     publication: Publication,
 ) -> Result<()> {
+    definition.recipe.validate().map_err(anyhow::Error::msg)?;
     let account = account_name_for(id)?.to_string();
     if definition.account.is_empty() {
         definition.account = account.clone();
@@ -470,6 +587,14 @@ pub async fn validate_port(
     let Some(port) = port else {
         return Ok(());
     };
+    if crate::postgres::reserved_ports(store)
+        .await?
+        .contains(&port)
+    {
+        return Err(DeployError::InvalidNative(
+            "native Web Target port is reserved for a managed database".into(),
+        ));
+    }
     if store
         .list_applications()
         .await?
@@ -499,6 +624,7 @@ pub fn validate_environment(env: &[(String, String)]) -> Result<()> {
             || key.contains(['=', '\0'])
             || value.contains('\0')
             || ["HOME", "USER", "LOGNAME"].contains(&key.as_str())
+            || super::mise::reserved_variable(key)
         {
             bail!("invalid or reserved native Application Variable '{key}'");
         }
@@ -514,6 +640,13 @@ pub async fn deploy(
     running: bool,
 ) -> Result<ApplicationRecord, DeployError> {
     routes.withdraw(&record.id);
+    // The service keeps intent even after a failed recipe changed the row's
+    // status. Reapplying configuration must not turn a stopped app on.
+    let running = runtime
+        .status(&record)
+        .await
+        .map(|s| s.intended_running)
+        .unwrap_or(running);
     let env = store.get_all_env(&record.id).await?;
     settle(
         store,
@@ -623,8 +756,35 @@ pub async fn environment(
         .find_application_by_name(name)
         .await?
         .ok_or_else(|| DeployError::NotFound(name.into()))?;
-    validate_environment(&[(key.into(), value.unwrap_or_default().into())])
-        .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
+    apply_environment(store, runtime, routes, record, key, value).await
+}
+
+pub(crate) async fn environment_by_id(
+    store: &impl StateStore,
+    runtime: &dyn NativeRuntime,
+    routes: &dyn RouteStore,
+    id: &str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<ApplicationRecord, DeployError> {
+    let record = apps::get_application(store, id).await?;
+    apply_environment(store, runtime, routes, record, key, value).await
+}
+
+async fn apply_environment(
+    store: &impl StateStore,
+    runtime: &dyn NativeRuntime,
+    routes: &dyn RouteStore,
+    record: ApplicationRecord,
+    key: &str,
+    value: Option<&str>,
+) -> Result<ApplicationRecord, DeployError> {
+    // Old records may contain paths that became Platform-owned when native
+    // mise environments were added. Operators must still be able to remove them.
+    if value.is_some() || !super::mise::reserved_variable(key) {
+        validate_environment(&[(key.into(), value.unwrap_or_default().into())])
+            .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
+    }
     let running = runtime
         .status(&record)
         .await
@@ -654,6 +814,9 @@ pub async fn reconcile(
             && let Ok(status) = &observation
         {
             if !status.intended_running {
+                // A previous daemon may have died during non-root recipe
+                // preparation, outside the already-down s6 service.
+                runtime.stop(&record).await.map_err(DeployError::Native)?;
                 record.status = apps::STATUS_STOPPED.into();
                 record.last_error = None;
             } else if status.running && status.ready {
@@ -721,6 +884,7 @@ mod tests {
             working_dir: None,
             port: None,
             limits: Default::default(),
+            recipe: Default::default(),
         }
     }
     #[test]
@@ -758,9 +922,48 @@ mod tests {
     }
     #[test]
     fn identity_variables_are_refused_before_any_record_or_launch() {
-        for key in ["HOME", "USER", "LOGNAME", "", "A=B"] {
+        for key in [
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "",
+            "A=B",
+            "MISE_DATA_DIR",
+            "MISE_AUTO_INSTALL",
+            "XDG_CONFIG_HOME",
+            "CARGO_HOME",
+        ] {
             assert!(validate_environment(&[(key.into(), "value".into())]).is_err());
         }
         validate_environment(&[("SYNTHETIC".into(), "value".into())]).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stopped_database_keeps_its_native_transport_port_reserved() {
+        let store = crate::store::FakeStateStore::new();
+        crate::postgres::DATABASES
+            .upsert(
+                &store,
+                &crate::postgres::Database {
+                    application_id: "synthetic-database".into(),
+                    major: 17,
+                    volume: "synthetic-data".into(),
+                    native_port: Some(28432),
+                },
+            )
+            .await
+            .unwrap();
+
+        // No running container or socket is needed for the reservation.
+        let error = validate_port(&store, "synthetic-native", Some(28432))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DeployError::InvalidNative(_)));
+        validate_port(&store, "synthetic-native", Some(28433))
+            .await
+            .unwrap();
+        validate_port(&store, "synthetic-native", None)
+            .await
+            .unwrap();
     }
 }

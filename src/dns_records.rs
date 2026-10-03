@@ -1142,7 +1142,7 @@ mod tests {
             assert!(message.contains(id), "{message}");
         }
         for body in [
-            json!({"name": "foo", "image": "nginx:alpine"}),
+            json!({"name": "foo", "image": "nginx:alpine", "hostname": "foo.home.lan"}),
             json!({"name": "other", "image": "nginx:alpine", "aliases": ["foo.home.lan"]}),
         ] {
             let (status, error) = call(&app, "POST", "/apps", body).await;
@@ -1155,6 +1155,19 @@ mod tests {
                 "{error}"
             );
         }
+        let (status, generated) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({"name": "foo", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{generated}");
+        assert_eq!(generated["name"], "foo");
+        assert_eq!(
+            generated["hostname"],
+            format!("foo-{}.home.lan", generated["id"].as_str().unwrap())
+        );
     }
 
     #[tokio::test]
@@ -1168,7 +1181,6 @@ mod tests {
         )
         .await;
         for body in [
-            json!({"name": "nas", "image": "nginx:alpine"}),
             json!({"name": "other", "image": "nginx:alpine", "hostname": "nas.home.lan"}),
             json!({"name": "other", "image": "nginx:alpine", "aliases": ["nas.home.lan"]}),
         ] {
@@ -1179,6 +1191,19 @@ mod tests {
                 "{error}"
             );
         }
+        let (status, generated) = call(
+            &app,
+            "POST",
+            "/apps",
+            json!({"name": "nas", "image": "nginx:alpine"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{generated}");
+        assert_eq!(generated["name"], "nas");
+        assert_eq!(
+            generated["hostname"],
+            format!("nas-{}.home.lan", generated["id"].as_str().unwrap())
+        );
         let (_, application) = call(
             &app,
             "POST",
@@ -1240,7 +1265,7 @@ mod tests {
             &app,
             "POST",
             "/apps",
-            json!({"name": "admin", "image": "nginx"}),
+            json!({"name": "admin", "image": "nginx", "hostname": "admin.home.lan"}),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");

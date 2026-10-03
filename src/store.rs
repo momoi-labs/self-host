@@ -86,6 +86,9 @@ pub struct NativeDefinition {
     pub port: Option<u16>,
     #[serde(default)]
     pub limits: crate::native::ResourceLimits,
+    /// Tools and non-root setup commands installed before the process starts.
+    #[serde(default)]
+    pub recipe: crate::native::mise::NativeRecipe,
 }
 
 /// Whether Consumers reach the Application by its Hostname (ADR-0028).
@@ -308,6 +311,16 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     async fn list_records(&self, kind: &str) -> Result<Vec<String>, StoreError>;
     async fn get_record(&self, kind: &str, id: &str) -> Result<Option<String>, StoreError>;
     async fn put_record(&self, kind: &str, id: &str, body: &str) -> Result<(), StoreError>;
+    /// Writes related collection rows in one commit. Used for a delivery receipt
+    /// and its Task so a restart can never observe only one of them.
+    async fn put_records_atomic(
+        &self,
+        _rows: &[(String, String, String)],
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Serialize(
+            "atomic collection writes are unavailable".into(),
+        ))
+    }
     async fn delete_record(&self, kind: &str, id: &str) -> Result<bool, StoreError>;
     /// Replaces the whole collection in one commit.
     async fn replace_records(
@@ -537,6 +550,21 @@ impl StateStore for FakeStateStore {
         Ok(())
     }
 
+    async fn put_records_atomic(
+        &self,
+        rows: &[(String, String, String)],
+    ) -> Result<(), StoreError> {
+        let mut records = self.records.write().await;
+        for (kind, id, body) in rows {
+            let items = records.entry(kind.clone()).or_default();
+            match items.iter_mut().find(|(key, _)| key == id) {
+                Some(item) => item.1 = body.clone(),
+                None => items.push((id.clone(), body.clone())),
+            }
+        }
+        Ok(())
+    }
+
     async fn delete_record(&self, kind: &str, id: &str) -> Result<bool, StoreError> {
         let mut records = self.records.write().await;
         let Some(items) = records.get_mut(kind) else {
@@ -616,6 +644,7 @@ mod tests {
             runtime: Runtime::Native(NativeDefinition {
                 account: "sf-app-k3n8qz4v2x1p".into(),
                 command: vec!["/opt/api/bin/serve".into(), "--port".into(), "8080".into()],
+                recipe: Default::default(),
                 working_dir: Some("app".into()),
                 port: Some(8080),
                 limits: crate::native::ResourceLimits {

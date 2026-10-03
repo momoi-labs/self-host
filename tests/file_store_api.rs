@@ -22,6 +22,117 @@ use tower::ServiceExt;
 const API_KEY: &str = "test-key";
 
 #[tokio::test]
+async fn human_names_round_trip_and_id_routes_handle_dots_slashes_and_unicode() {
+    let dir = TempDir::new("human-names");
+    let (app, store) = boot(&dir.state()).await;
+    let mut saved = Vec::new();
+    for name in ["Teste", "teste", "  Café / API #1?  ", "数据库", ".", ".."] {
+        let (status, created) = call(
+            &app,
+            "POST",
+            "/apps",
+            Some(json!({"name":name,"image":"nginx:alpine"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{created}");
+        assert_eq!(created["name"], name);
+        let id = created["id"].as_str().unwrap().to_owned();
+        let stored = settled(&app, &id).await;
+        let hostname = stored["hostname"].as_str().unwrap().to_owned();
+        assert!(hostname.is_ascii());
+        let (_, changed) = call_task(
+            &app,
+            "POST",
+            &format!("/apps/id/{id}/env"),
+            Some(json!({"key":"CHECK","value":"fixture"})),
+        )
+        .await;
+        assert_eq!(changed["status"], "completed", "{changed}");
+        assert_eq!(changed["subject"]["id"], id);
+        assert_eq!(changed["subject"]["name"], name);
+        assert_eq!(
+            call(&app, "GET", &format!("/apps/id/{id}/env"), None)
+                .await
+                .1,
+            json!([["CHECK", "fixture"]])
+        );
+        let (_, removed) =
+            call_task(&app, "DELETE", &format!("/apps/id/{id}/env/CHECK"), None).await;
+        assert_eq!(removed["status"], "completed");
+        assert_eq!(
+            call(&app, "GET", &format!("/apps/id/{id}/env"), None)
+                .await
+                .1,
+            json!([])
+        );
+        if name.contains('/') {
+            // Old exact-name routes and their audit identity remain compatible.
+            let encoded = name
+                .bytes()
+                .map(|byte| format!("%{byte:02X}"))
+                .collect::<String>();
+            let (_, event) = call_task(
+                &app,
+                "POST",
+                &format!("/apps/{encoded}/env"),
+                Some(json!({"key":"LEGACY","value":"kept"})),
+            )
+            .await;
+            assert_eq!(event["status"], "completed");
+            assert_eq!(event["subject"]["id"], id);
+            assert_eq!(event["subject"]["name"], name);
+            assert_eq!(
+                call(&app, "GET", &format!("/apps/{encoded}/env"), None)
+                    .await
+                    .1,
+                json!([["LEGACY", "kept"]])
+            );
+        }
+        saved.push((id, name.to_owned(), hostname));
+    }
+    assert_ne!(saved[0].2, saved[1].2);
+    drop(app);
+    drop(store);
+    let (app, _) = boot(&dir.state()).await;
+    for (id, name, hostname) in saved {
+        let (_, current) = call(&app, "GET", &format!("/apps/id/{id}"), None).await;
+        assert_eq!(current["name"], name);
+        assert_eq!(current["hostname"], hostname);
+        let (_, removed) = call_task(&app, "DELETE", &format!("/apps/id/{id}"), None).await;
+        assert_eq!(removed["status"], "completed", "{removed}");
+        assert_eq!(removed["subject"]["id"], id);
+        assert_eq!(
+            call(&app, "GET", &format!("/apps/id/{id}"), None).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
+#[tokio::test]
+async fn concurrent_human_names_with_the_same_slug_get_distinct_hostnames() {
+    let dir = TempDir::new("name-collisions");
+    let (app, _) = boot(&dir.state()).await;
+    let (first, second) = tokio::join!(
+        call(
+            &app,
+            "POST",
+            "/apps",
+            Some(json!({"name":"Teste","image":"nginx:alpine"}))
+        ),
+        call(
+            &app,
+            "POST",
+            "/apps",
+            Some(json!({"name":"teste","image":"nginx:alpine"}))
+        ),
+    );
+    assert_eq!(first.0, StatusCode::ACCEPTED, "{first:?}");
+    assert_eq!(second.0, StatusCode::ACCEPTED, "{second:?}");
+    assert_ne!(first.1["hostname"], second.1["hostname"]);
+    assert_ne!(first.1["id"], second.1["id"]);
+}
+
+#[tokio::test]
 async fn concurrent_record_and_application_claims_have_one_winner() {
     let temp = TempDir::new("dns-namespace");
     let (app, _) = boot(&temp.state()).await;
@@ -36,7 +147,7 @@ async fn concurrent_record_and_application_claims_have_one_winner() {
             &app,
             "POST",
             "/apps",
-            Some(json!({"name": "nas", "image": "nginx"}))
+            Some(json!({"name": "nas", "hostname": "nas.home.lan", "image": "nginx"}))
         ),
     );
     assert_ne!(
@@ -946,7 +1057,11 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
             "startedAt": if started { json!("2026-09-21T10:00:01.000000000Z") } else { Value::Null },
             "finishedAt": null, "updatedAt": "2026-09-21T10:00:01.000000000Z",
             "apiName": "laptop", "description": "Operation queued.",
-            "subject": {"kind": "application", "id": id, "name": "blog"}
+            "subject": {"kind": "application", "id": id, "name": "blog"},
+            "progress": if started { json!({"stages": [{
+                "id": "container", "label": "Starting container", "status": "running",
+                "startedAt": "2026-09-21T10:00:01.000000000Z", "output": ["Starting container."]
+            }]}) } else { Value::Null }
         }));
     }
     events.push(json!({
@@ -1002,6 +1117,16 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
         "The Platform restarted before this task finished."
     );
     assert_eq!(interrupted["startedAt"], "2026-09-21T10:00:01.000000000Z");
+    assert_eq!(interrupted["progress"]["stages"][0]["status"], "failed");
+    assert_eq!(
+        interrupted["progress"]["stages"][0]["error"],
+        interrupted["error"]
+    );
+    assert!(interrupted["progress"]["stages"][0]["finishedAt"].is_string());
+    assert_eq!(
+        interrupted["progress"]["stages"][0]["output"],
+        json!(["Starting container."])
+    );
     let orphan = finished(&app, "event-orphan").await;
     assert_eq!(orphan["status"], "failed");
     assert_eq!(

@@ -1,5 +1,5 @@
 //! A small, durable history of authenticated mutations and task results.
-//! Only action metadata and the failure's own words are recorded. Request
+//! Only action metadata, safe progress observations and failures are recorded. Request
 //! bodies, credentials, environment values and build output never enter the
 //! audit history.
 //!
@@ -16,7 +16,7 @@ use crate::{
 use axum::{
     Json,
     body::{Body, to_bytes},
-    extract::{MatchedPath, Request, State},
+    extract::{FromRequestParts, MatchedPath, RawPathParams, Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -80,6 +80,28 @@ pub struct Event {
     /// not only that something was changed but from what to what.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changes: Option<Vec<Change>>,
+    /// Stages the worker actually began, with bounded, credential-free output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<RunProgress>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RunProgress {
+    pub stages: Vec<RunStage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStage {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    pub output: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +141,7 @@ pub fn event(
         subject,
         error: None,
         changes: None,
+        progress: None,
     }
 }
 
@@ -165,7 +188,7 @@ impl Journal {
         retention: std::time::Duration,
     ) -> Result<(), StoreError> {
         let _guard = self.write.lock().await;
-        let merged = match store.get_audit_event(&event.id).await? {
+        let mut merged = match store.get_audit_event(&event.id).await? {
             Some(body) => {
                 let mut existing = parse(&body)?;
                 // A fast worker can finish before the HTTP handler returns 202.
@@ -180,7 +203,9 @@ impl Journal {
                 if event.changes.is_some() {
                     existing.changes = event.changes;
                 }
-                if !event.subject.id.is_empty() {
+                if !event.subject.id.is_empty()
+                    && !(existing.subject.kind == "database" && event.subject.kind == "application")
+                {
                     existing.subject = event.subject;
                 }
                 if existing.started_at.is_none() {
@@ -190,9 +215,88 @@ impl Journal {
             }
             None => event,
         };
+        // Restart recovery and cancelled workers finish the current stage too.
+        // A late stage update cannot leave a terminal Task looking active.
+        if is_terminal(&merged.status)
+            && let Some(progress) = &mut merged.progress
+        {
+            for stage in &mut progress.stages {
+                if stage.status == "running" {
+                    stage.status = merged.status.clone();
+                    stage.finished_at = merged.finished_at.clone();
+                    stage.error = merged.error.clone();
+                }
+            }
+        }
         store.put_audit_event(&row(&merged)?).await?;
         store.prune_audit_events(&cutoff(retention)).await?;
         Ok(())
+    }
+
+    /// Changes only a running Task. Stage writes share the outcome lock, so a
+    /// late worker cannot revive an interrupted or completed operation.
+    pub(crate) async fn stage<S: StateStore>(
+        &self,
+        store: &S,
+        event_id: &str,
+        id: &str,
+        label: &str,
+        outcome: Option<Result<&str, &ErrorReport>>,
+    ) -> Result<(), StoreError> {
+        let _guard = self.write.lock().await;
+        let Some(body) = store.get_audit_event(event_id).await? else {
+            return Ok(());
+        };
+        let mut event = parse(&body)?;
+        if event.status != "running" {
+            return Ok(());
+        }
+        let at = timestamp();
+        let progress = event.progress.get_or_insert_with(Default::default);
+        if let Some(outcome) = outcome {
+            let Some(stage) = progress
+                .stages
+                .iter_mut()
+                .rev()
+                .find(|stage| stage.id == id && stage.status == "running")
+            else {
+                return Ok(());
+            };
+            stage.finished_at = Some(at.clone());
+            match outcome {
+                Ok(output) => {
+                    stage.status = "completed".into();
+                    if !output.is_empty() {
+                        stage.output.push(output.chars().take(1024).collect());
+                    }
+                }
+                Err(error) => {
+                    stage.status = "failed".into();
+                    stage.error = Some(error.clone());
+                }
+            }
+        } else {
+            if progress.stages.len() >= 32
+                || progress
+                    .stages
+                    .iter()
+                    .any(|stage| stage.status == "running")
+            {
+                return Ok(());
+            }
+            progress.stages.push(RunStage {
+                id: id.chars().take(64).collect(),
+                label: label.chars().take(128).collect(),
+                status: "running".into(),
+                started_at: at.clone(),
+                finished_at: None,
+                output: vec![format!("{label}.").chars().take(1024).collect()],
+                error: None,
+            });
+            event.description = label.chars().take(128).collect();
+        }
+        event.updated_at = Some(at);
+        store.put_audit_event(&row(&event)?).await
     }
 }
 
@@ -252,6 +356,19 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
     match read(&state.store).await {
         Ok(mut events) => {
             let apps = state.store.list_applications().await.ok();
+            let databases = crate::postgres::DATABASES.list(&state.store).await.ok();
+            let mut known_databases: std::collections::HashSet<String> = events
+                .iter()
+                .filter(|event| event.subject.kind == "database")
+                .map(|event| event.subject.id.clone())
+                .collect();
+            if let Some(databases) = &databases {
+                known_databases.extend(
+                    databases
+                        .iter()
+                        .map(|database| database.application_id.clone()),
+                );
+            }
             let keys = state.store.list_api_keys().await.ok();
             let machines: Option<Vec<String>> = MACHINES
                 .list(&state.store)
@@ -269,7 +386,18 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
                 .map(|records| records.iter().map(|record| record.key()).collect());
             for event in &mut events {
                 let id = &event.subject.id;
+                // Older releases recorded database work as Application work.
+                // Retained database events also identify a deleted provider.
+                // Normalize the response without rewriting stored history.
+                if event.subject.kind == "application" && known_databases.contains(id) {
+                    event.subject.kind = "database".into();
+                }
                 event.subject.available = match event.subject.kind.as_str() {
+                    "database" => databases.as_ref().map(|databases| {
+                        databases
+                            .iter()
+                            .any(|database| &database.application_id == id)
+                    }),
                     "application" => apps
                         .as_ref()
                         .map(|apps| apps.iter().any(|app| &app.id == id)),
@@ -299,12 +427,21 @@ fn action(method: &str, route: &str, body: &Value) -> Option<(&'static str, &'st
     Some(match (method, route) {
         ("POST", "/apps") => ("create", "application"),
         ("PUT", "/apps/id/{id}") => ("configure", "application"),
+        ("POST", "/apps/id/{id}/deploy-trigger")
+        | ("DELETE", "/apps/id/{id}/deploy-trigger")
+        | ("POST", "/apps/id/{id}/deployments/{deployment}/restore") => {
+            ("configure", "application")
+        }
         ("POST", "/apps/id/{id}/start") => ("start", "application"),
         ("POST", "/apps/id/{id}/stop") => ("stop", "application"),
         ("POST", "/apps/id/{id}/restart") => ("restart", "application"),
-        ("DELETE", "/apps/{name}") => ("delete", "application"),
-        ("POST", "/apps/{name}/env") => ("configure", "application"),
-        ("DELETE", "/apps/{name}/env/{key}") => ("configure", "application"),
+        ("DELETE", "/apps/{name}") | ("DELETE", "/apps/id/{id}") => ("delete", "application"),
+        ("POST", "/apps/{name}/env") | ("POST", "/apps/id/{id}/env") => {
+            ("configure", "application")
+        }
+        ("DELETE", "/apps/{name}/env/{key}") | ("DELETE", "/apps/id/{id}/env/{key}") => {
+            ("configure", "application")
+        }
         ("POST", "/environments") => ("create", "virtual-machine"),
         ("PUT", "/environments/{id}") => ("configure", "virtual-machine"),
         ("POST", "/environments/{id}/actions") => (
@@ -357,6 +494,7 @@ async fn subject<S: StateStore>(
     kind: &str,
     route: &str,
     path: &str,
+    decoded_name: Option<&str>,
     body: &Value,
 ) -> Subject {
     let parts: Vec<_> = path.trim_matches('/').split('/').collect();
@@ -367,10 +505,11 @@ async fn subject<S: StateStore>(
     };
     let mut name = field(body, "/name");
     if kind == "application" {
+        let path_name = decoded_name.unwrap_or(parts.get(1).copied().unwrap_or_default());
         let record = if route.contains("{name}") {
             state
                 .store
-                .find_application_by_name(parts[1])
+                .find_application_by_name(path_name)
                 .await
                 .ok()
                 .flatten()
@@ -380,7 +519,7 @@ async fn subject<S: StateStore>(
             None
         };
         if route.contains("{name}") && name.is_empty() {
-            name = parts[1].to_owned();
+            name = path_name.to_owned();
         }
         if let Some(record) = record {
             id = record.id;
@@ -454,6 +593,16 @@ async fn subject<S: StateStore>(
             id.clone()
         };
     }
+    let kind = if kind == "application"
+        && crate::postgres::DATABASES
+            .exists(&state.store, &id)
+            .await
+            .unwrap_or(false)
+    {
+        "database"
+    } else {
+        kind
+    };
     Subject {
         kind: kind.into(),
         id,
@@ -477,14 +626,24 @@ pub(crate) async fn capture<S: StateStore>(
         return next.run(req).await;
     }
     let path = req.uri().path().to_owned();
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
+    // The exact-name routes remain supported. Use the router's decoded value
+    // so punctuation and Unicode identify the same Application in history.
+    let parameters = RawPathParams::from_request_parts(&mut parts, &state)
+        .await
+        .ok();
+    let decoded_name = parameters.as_ref().and_then(|parameters| {
+        parameters
+            .iter()
+            .find_map(|(key, value)| (key == "name").then_some(value))
+    });
     let bytes = match to_bytes(body, 2 * 1024 * 1024).await {
         Ok(bytes) => bytes,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
     let payload: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let (action, kind) = action(&method, &route, &payload).unwrap();
-    let subject = subject(&state, kind, &route, &path, &payload).await;
+    let subject = subject(&state, kind, &route, &path, decoded_name, &payload).await;
     let mut entry = event(action, subject, "pending", actor(), "Operation queued.");
     let retention = crate::settings::audit_events_max_age(&state).await;
     if let Err(error) = state
@@ -850,6 +1009,175 @@ mod tests {
         assert_eq!(events[0].status, "failed");
         assert_eq!(events[0].error, failed.error);
         assert_eq!(events[0].finished_at, failed.finished_at);
+    }
+
+    #[tokio::test]
+    async fn interrupted_progress_finishes_and_late_stage_writes_cannot_revive_it() {
+        let store = FakeStateStore::new();
+        let journal = Journal::default();
+        let mut running = sample("running", "PostgreSQL provisioning running.");
+        running.subject = Subject::new("database", "provider", "fixture");
+        journal
+            .upsert(&store, running.clone(), RETENTION)
+            .await
+            .unwrap();
+        journal
+            .stage(
+                &store,
+                &running.id,
+                "image",
+                "Preparing PostgreSQL image",
+                None,
+            )
+            .await
+            .unwrap();
+        journal
+            .stage(
+                &store,
+                &running.id,
+                "image",
+                "",
+                Some(Ok("Image is available.")),
+            )
+            .await
+            .unwrap();
+        journal
+            .stage(
+                &store,
+                &running.id,
+                "ready",
+                "Waiting for PostgreSQL readiness",
+                None,
+            )
+            .await
+            .unwrap();
+        let before = read(&store).await.unwrap().remove(0);
+        assert_eq!(
+            before.progress.as_ref().unwrap().stages[1].status,
+            "running"
+        );
+
+        let mut failed = running.clone();
+        failed.status = "failed".into();
+        failed.finished_at = Some(timestamp());
+        failed.error = Some(ErrorReport::plain(
+            "The Platform restarted before this task finished.",
+        ));
+        journal
+            .upsert(&store, failed.clone(), RETENTION)
+            .await
+            .unwrap();
+        journal
+            .stage(&store, &running.id, "ready", "", Some(Ok("Late success")))
+            .await
+            .unwrap();
+        journal
+            .stage(&store, &running.id, "late", "Must not start", None)
+            .await
+            .unwrap();
+        running.subject.kind = "application".into();
+        journal.upsert(&store, running, RETENTION).await.unwrap();
+        let final_event = read(&store).await.unwrap().remove(0);
+        let stages = &final_event.progress.unwrap().stages;
+        assert_eq!(final_event.subject.kind, "database");
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[0].status, "completed");
+        assert_eq!(
+            stages[0].output,
+            ["Preparing PostgreSQL image.", "Image is available."]
+        );
+        assert_eq!(stages[1].status, "failed");
+        assert_eq!(stages[1].error, failed.error);
+        assert_eq!(stages[1].finished_at, failed.finished_at);
+        assert_eq!(stages[1].output, ["Waiting for PostgreSQL readiness."]);
+    }
+
+    #[tokio::test]
+    async fn progress_is_bounded_and_does_not_invent_future_stages() {
+        let store = FakeStateStore::new();
+        let journal = Journal::default();
+        let running = sample("running", "Operation is running.");
+        journal
+            .upsert(&store, running.clone(), RETENTION)
+            .await
+            .unwrap();
+        for number in 0..40 {
+            let id = number.to_string();
+            journal
+                .stage(&store, &running.id, &id, "Actual step", None)
+                .await
+                .unwrap();
+            journal
+                .stage(&store, &running.id, &id, "", Some(Ok(&"x".repeat(2000))))
+                .await
+                .unwrap();
+        }
+        let event = read(&store).await.unwrap().remove(0);
+        let stages = event.progress.unwrap().stages;
+        assert_eq!(stages.len(), 32);
+        assert!(stages.iter().all(|stage| stage.status == "completed"
+            && stage.output.last().unwrap().len() == 1024
+            && stage.output.len() == 2));
+    }
+
+    #[tokio::test]
+    async fn historical_database_subjects_are_normalized_without_rewriting_history() {
+        let (app, store) = setup().await;
+        crate::postgres::DATABASES
+            .upsert(
+                &store,
+                &crate::postgres::Database {
+                    application_id: "provider".into(),
+                    major: 17,
+                    volume: "fixture_data".into(),
+                    native_port: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut old = sample("completed", "Action completed.");
+        old.subject = Subject::new("application", "provider", "fixture");
+        Journal::default()
+            .upsert(&store, old.clone(), RETENTION)
+            .await
+            .unwrap();
+        let (status, events) = call(&app, "GET", "/events", "root-secret", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        let event = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["id"] == old.id)
+            .unwrap();
+        assert_eq!(event["subject"]["kind"], "database");
+        assert_eq!(event["subject"]["available"], true);
+        assert!(event.get("progress").is_none());
+        assert_eq!(read(&store).await.unwrap()[0].subject.kind, "application");
+
+        crate::postgres::DATABASES
+            .remove(&store, "provider")
+            .await
+            .unwrap();
+        let deleted = super::event(
+            "delete",
+            Subject::new("database", "provider", "fixture"),
+            "completed",
+            None,
+            "Database removed.",
+        );
+        Journal::default()
+            .upsert(&store, deleted, RETENTION)
+            .await
+            .unwrap();
+        let (_, events) = call(&app, "GET", "/events", "root-secret", Value::Null).await;
+        let historic = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["id"] == old.id)
+            .unwrap();
+        assert_eq!(historic["subject"]["kind"], "database");
+        assert_eq!(historic["subject"]["available"], false);
     }
 
     #[tokio::test]

@@ -32,6 +32,9 @@ const INTERRUPTED: &str = "The Platform restarted before this task finished.";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Work {
+    Postgres {
+        operation: crate::postgres::Operation,
+    },
     /// Boxed, as is the image below: the two payloads a queue entry may
     /// carry are far larger than the ids the other variants hold.
     DeployApplication {
@@ -39,6 +42,15 @@ pub enum Work {
     },
     BuildGitApplication {
         pending: Box<apps::PendingGitDeploy>,
+    },
+    TriggerGitApplication {
+        id: String,
+        source: Box<crate::source::GitSource>,
+        revision: Option<String>,
+    },
+    RecoverApplication {
+        id: String,
+        deployment: String,
     },
     StartApplication {
         id: String,
@@ -146,11 +158,37 @@ impl std::error::Error for CouldNotStart {
 }
 
 fn key(subject: &Subject) -> Key {
-    (subject.kind.clone(), subject.id.clone())
+    // A database is still the same runtime object as its Application record.
+    // Reclassifying its audit subject must not create a second worker queue.
+    (
+        if subject.kind == "database" {
+            "application".into()
+        } else {
+            subject.kind.clone()
+        },
+        subject.id.clone(),
+    )
+}
+
+async fn queue_key<S: StateStore>(state: &AppState<S>, task: &Task) -> Result<Key, StoreError> {
+    if let Work::Postgres {
+        operation: crate::postgres::Operation::Import { connection_id, .. },
+    } = &task.work
+        && let Some(connection) = crate::postgres::CONNECTIONS
+            .get(&state.store, connection_id)
+            .await?
+    {
+        // Import changes database data, but must exclude consumer starts.
+        return Ok(("application".into(), connection.consumer_application_id));
+    }
+    Ok(key(&task.subject))
 }
 
 fn event(task: &Task, status: &str, description: impl Into<String>) -> audit::Event {
-    let description = if matches!(task.work, Work::BuildGitApplication { .. }) {
+    let description = if matches!(
+        task.work,
+        Work::BuildGitApplication { .. } | Work::TriggerGitApplication { .. }
+    ) {
         match status {
             "pending" => "Git build queued.",
             "running" => "Git build and deployment are running.",
@@ -158,6 +196,36 @@ fn event(task: &Task, status: &str, description: impl Into<String>) -> audit::Ev
             _ => "Git build or deployment failed.",
         }
         .to_owned()
+    } else if let Work::Postgres { operation } = &task.work {
+        let operation = match operation {
+            crate::postgres::Operation::Provision {
+                recreate: false, ..
+            } => "PostgreSQL provisioning",
+            crate::postgres::Operation::Provision { recreate: true, .. } => "PostgreSQL recreation",
+            crate::postgres::Operation::Connect { .. } => "Database connection",
+            crate::postgres::Operation::Disconnect { .. } => "Database access revocation",
+            crate::postgres::Operation::ApplyVariable { .. } => "Database Variable update",
+            crate::postgres::Operation::Import { .. } => "Database import",
+            crate::postgres::Operation::Remove { .. } => "Database removal",
+        };
+        format!(
+            "{operation} {}.",
+            if status == "pending" {
+                "queued"
+            } else {
+                status
+            }
+        )
+    } else if task.subject.kind == "database" {
+        format!(
+            "Database {} {}.",
+            task.action,
+            if status == "pending" {
+                "queued"
+            } else {
+                status
+            }
+        )
     } else {
         description.into()
     };
@@ -178,10 +246,17 @@ fn event(task: &Task, status: &str, description: impl Into<String>) -> audit::Ev
 pub(crate) async fn enqueue<S: StateStore>(
     state: &AppState<S>,
     action: &str,
-    subject: Subject,
+    mut subject: Subject,
     work: Work,
 ) -> Result<String, StoreError> {
     recover(state).await;
+    if subject.kind == "application"
+        && crate::postgres::DATABASES
+            .exists(&state.store, &subject.id)
+            .await?
+    {
+        subject.kind = "database".into();
+    }
     let task = Task {
         id: audit::event_id().unwrap_or_else(|| format!("event-{:032x}", rand::random::<u128>())),
         action: action.into(),
@@ -190,6 +265,7 @@ pub(crate) async fn enqueue<S: StateStore>(
         status: "pending".into(),
         work,
     };
+    let queue = queue_key(state, &task).await?;
     let retention = crate::settings::audit_events_max_age(state).await;
     state
         .audit
@@ -200,12 +276,46 @@ pub(crate) async fn enqueue<S: StateStore>(
         )
         .await?;
     persist(state, |tasks| tasks.push(task.clone())).await?;
-    schedule(state, task.clone());
+    schedule(state, task.clone(), queue);
     Ok(task.id)
 }
 
-fn schedule<S: StateStore>(state: &AppState<S>, task: Task) {
-    let key = key(&task.subject);
+/// The receipt and task share one commit. Holding the scheduler write lock
+/// also orders concurrent deliveries before a worker can pick them up.
+pub(crate) async fn enqueue_once<S: StateStore>(
+    state: &AppState<S>,
+    subject: Subject,
+    work: Work,
+    mut delivery: crate::deployments::triggers::Delivery,
+) -> Result<(String, bool), StoreError> {
+    use crate::deployments::triggers::DELIVERIES;
+    recover(state).await;
+    let _write = state.tasks.write.lock().await;
+    if let Some(previous) = DELIVERIES.get(&state.store, &delivery.id).await? {
+        if previous.fingerprint != delivery.fingerprint {
+            return Err(StoreError::AlreadyExists("delivery".into()));
+        }
+        return Ok((previous.task_id, true));
+    }
+    let task = Task {
+        id: format!("event-{:032x}", rand::random::<u128>()),
+        action: "configure".into(),
+        subject,
+        api_name: audit::actor(),
+        status: "pending".into(),
+        work,
+    };
+    delivery.task_id = task.id.clone();
+    state
+        .store
+        .put_records_atomic(&[TASKS.row(&task)?, DELIVERIES.row(&delivery)?])
+        .await?;
+    audit::record(state, event(&task, "pending", "Operation queued.")).await;
+    schedule(state, task.clone(), key(&task.subject));
+    Ok((task.id, false))
+}
+
+fn schedule<S: StateStore>(state: &AppState<S>, task: Task, key: Key) {
     let mut queues = state.tasks.queues.lock().unwrap();
     queues
         .waiting
@@ -250,12 +360,18 @@ async fn run<S: StateStore>(state: &AppState<S>, task: Task) {
         audit::record(state, failed).await;
         return;
     }
-    audit::record(state, event(&task, "running", "Operation is running.")).await;
+    let description = if matches!(&task.work, Work::DeployApplication { pending } if pending.native_intent().is_some())
+    {
+        "Preparing native environment and applying the Application."
+    } else {
+        "Operation is running."
+    };
+    audit::record(state, event(&task, "running", description)).await;
     let scoped = audit::EVENT_ID.scope(
         Some(task.id.clone()),
         audit::ACTOR.scope(
             task.api_name.clone(),
-            execute(state.clone(), task.work.clone()),
+            execute(state.clone(), task.work.clone(), task.subject.id.clone()),
         ),
     );
     let result = match tokio::spawn(scoped).await {
@@ -272,6 +388,14 @@ async fn run<S: StateStore>(state: &AppState<S>, task: Task) {
         outcome.changes = Some(changes.clone());
     }
     if let Err(error) = result {
+        let error = if matches!(task.work, Work::Postgres { .. }) {
+            // Database stages already produce bounded, credential-free errors.
+            error
+        } else {
+            // A regular consumer lifecycle can fail after Compose interpolates
+            // its managed database URL. Do not persist or trace that output.
+            crate::postgres::runtime_report(&state.store, &task.subject.id, error).await
+        };
         tracing::warn!(task = %task.id, action = %task.action, subject = %task.subject.name, "{error}");
         outcome.error = Some(error);
     }
@@ -286,11 +410,61 @@ async fn run<S: StateStore>(state: &AppState<S>, task: Task) {
 async fn execute<S: StateStore>(
     state: AppState<S>,
     work: Work,
+    subject_id: String,
 ) -> Result<Vec<audit::Change>, ErrorReport> {
     let store = &state.store;
     let docker = state.docker.as_ref();
     let routes = state.routes.as_ref();
+    let provider_id = match &work {
+        Work::StartApplication { id }
+        | Work::StopApplication { id }
+        | Work::RestartApplication { id, .. }
+        | Work::RemoveApplication { id }
+        | Work::RecoverApplication { id, .. } => Some(id.as_str()),
+        Work::DeployApplication { pending } => Some(pending.record.id.as_str()),
+        _ => None,
+    };
+    let _database_operation = match provider_id {
+        Some(id) => crate::postgres::lock_if_managed(store, id)
+            .await
+            .map_err(|e| ErrorReport::new(&e))?,
+        None => None,
+    };
+    if let Work::SetEnvironment { key, .. } | Work::UnsetEnvironment { key, .. } = &work
+        && let Some(app) = store
+            .get_application(&subject_id)
+            .await
+            .map_err(|e| ErrorReport::new(&e))?
+        && crate::postgres::managed_variable(store, &app.id, key)
+            .await
+            .map_err(|e| ErrorReport::new(&e))?
+    {
+        return Err(ErrorReport::plain(
+            "This Variable is owned by a managed database connection. Disconnect it first",
+        ));
+    }
     let done = match work {
+        Work::Postgres { operation } => crate::postgres::run(&state, operation).await,
+        Work::TriggerGitApplication {
+            id,
+            source,
+            revision,
+        } => {
+            return crate::deployments::triggers::execute(
+                store, docker, routes, &id, &source, revision,
+            )
+            .await
+            .map_err(|error| ErrorReport::new(&error));
+        }
+        Work::RecoverApplication { id, deployment } => {
+            // Metadata-only edits bypass the task queue. Serialize them with
+            // the snapshot read and replacement so recovery keeps their name.
+            let _namespace = state.dns_records.lock_namespace().await;
+            return crate::deployments::restore(store, docker, routes, &id, &deployment)
+                .await
+                .map(|_| Vec::new())
+                .map_err(|error| ErrorReport::new(&error));
+        }
         Work::BuildGitApplication { pending } => {
             return apps::finish_git_deploy(store, docker, routes, *pending)
                 .await
@@ -316,6 +490,9 @@ async fn execute<S: StateStore>(
                 .map_err(|e| ErrorReport::new(&e));
         }
         Work::StartApplication { id } => {
+            if _database_operation.is_some() {
+                return crate::postgres::operate(&state, &id, "start", false).await;
+            }
             if native_application(store, &id).await? {
                 crate::native::lifecycle::operate(
                     store,
@@ -335,6 +512,9 @@ async fn execute<S: StateStore>(
             }
         }
         Work::StopApplication { id } => {
+            if _database_operation.is_some() {
+                return crate::postgres::operate(&state, &id, "stop", false).await;
+            }
             if native_application(store, &id).await? {
                 crate::native::lifecycle::operate(store, state.native.as_ref(), routes, &id, "stop")
                     .await
@@ -348,6 +528,9 @@ async fn execute<S: StateStore>(
             }
         }
         Work::RestartApplication { id, pull } => {
+            if _database_operation.is_some() {
+                return crate::postgres::operate(&state, &id, "restart", pull).await;
+            }
             if native_application(store, &id).await? {
                 return crate::native::lifecycle::operate(
                     store,
@@ -384,13 +567,13 @@ async fn execute<S: StateStore>(
                 Err(e) => Err(ErrorReport::new(&e)),
             }
         }
-        Work::SetEnvironment { name, key, value } => {
-            if native_named(store, &name).await? {
-                return crate::native::lifecycle::environment(
+        Work::SetEnvironment { key, value, .. } => {
+            if native_application(store, &subject_id).await? {
+                return crate::native::lifecycle::environment_by_id(
                     store,
                     state.native.as_ref(),
                     routes,
-                    &name,
+                    &subject_id,
                     &key,
                     Some(&value),
                 )
@@ -398,17 +581,17 @@ async fn execute<S: StateStore>(
                 .map(|_| Vec::new())
                 .map_err(|e| ErrorReport::new(&e));
             }
-            apps::set_env(store, docker, &name, &key, &value)
+            apps::change_env(store, docker, &subject_id, &key, Some(&value))
                 .await
                 .map_err(|e| ErrorReport::new(&e))
         }
-        Work::UnsetEnvironment { name, key } => {
-            if native_named(store, &name).await? {
-                crate::native::lifecycle::environment(
+        Work::UnsetEnvironment { key, .. } => {
+            if native_application(store, &subject_id).await? {
+                crate::native::lifecycle::environment_by_id(
                     store,
                     state.native.as_ref(),
                     routes,
-                    &name,
+                    &subject_id,
                     &key,
                     None,
                 )
@@ -416,7 +599,7 @@ async fn execute<S: StateStore>(
                 .map(drop)
                 .map_err(|e| ErrorReport::new(&e))
             } else {
-                apps::unset_env(store, docker, &name, &key)
+                apps::change_env(store, docker, &subject_id, &key, None)
                     .await
                     .map_err(|e| ErrorReport::new(&e))
             }
@@ -438,14 +621,6 @@ async fn native_application(store: &impl StateStore, id: &str) -> Result<bool, E
             .runtime,
         crate::store::Runtime::Native(_)
     ))
-}
-
-async fn native_named(store: &impl StateStore, name: &str) -> Result<bool, ErrorReport> {
-    Ok(store
-        .find_application_by_name(name)
-        .await
-        .map_err(|e| ErrorReport::new(&e))?
-        .is_some_and(|app| matches!(app.runtime, crate::store::Runtime::Native(_))))
 }
 
 async fn load<S: StateStore>(store: &S) -> Result<Vec<Task>, StoreError> {
@@ -478,7 +653,10 @@ pub async fn queued_application_ids<S: StateStore>(store: &S) -> Result<Vec<Stri
             task.status == "pending"
                 && matches!(
                     task.work,
-                    Work::DeployApplication { .. } | Work::BuildGitApplication { .. }
+                    Work::DeployApplication { .. }
+                        | Work::BuildGitApplication { .. }
+                        | Work::TriggerGitApplication { .. }
+                        | Work::RecoverApplication { .. }
                 )
         })
         .map(|task| task.subject.id)
@@ -497,6 +675,10 @@ pub(crate) async fn recover<S: StateStore>(state: &AppState<S>) {
 }
 
 async fn requeue<S: StateStore>(state: &AppState<S>) {
+    if let Err(error) = crate::deployments::recover(&state.store).await {
+        tracing::error!(%error, "could not settle interrupted deployments");
+    }
+
     let tasks = match load(&state.store).await {
         Ok(tasks) => tasks,
         Err(error) => {
@@ -533,6 +715,9 @@ async fn requeue<S: StateStore>(state: &AppState<S>) {
     }
     for task in pending {
         tracing::info!(task = %task.id, action = %task.action, subject = %task.subject.name, "requeued after a restart");
-        schedule(state, task);
+        match queue_key(state, &task).await {
+            Ok(queue) => schedule(state, task, queue),
+            Err(error) => tracing::error!(%error, task = %task.id, "Could not requeue the task"),
+        }
     }
 }
