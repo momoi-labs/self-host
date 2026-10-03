@@ -27,14 +27,14 @@ export function Glance({ samples }: { samples: AppSample[] }) {
       </span>
       <Sparkline values={samples.map((sample) => sample.memory_bytes)} height={18} />
       <span className="sep">·</span>
-      <span>
+      {latest.tasks !== undefined ? <span><span className="k">Tasks</span> <b>{latest.tasks}</b></span> : <span>
         <span className="k">Net</span>{" "}
         <b>
           <span className="network-down">↓ {formatBytes(latest.rx_bytes)}</span>
           <span className="muted"> · </span>
           <span className="network-up">↑ {formatBytes(latest.tx_bytes)}</span>
         </b>
-      </span>
+      </span>}
     </div>
   );
 }

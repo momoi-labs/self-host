@@ -552,6 +552,7 @@ async fn api_requeues_unstarted_native_work_once() {
                 self_host::store::NativeDefinition {
                     account: String::new(),
                     command: worker(),
+                    recipe: Default::default(),
                     working_dir: None,
                     port: None,
                     limits: Default::default(),
@@ -602,4 +603,484 @@ async fn api_requeues_unstarted_native_work_once() {
             .status,
         "running"
     );
+}
+
+#[tokio::test]
+#[ignore = "provisions accounts, cgroups and s6; root on disposable Linux"]
+async fn native_terminal_auth_identity_cgroup_cleanup_and_metrics() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let fixture = Fixture::new().await;
+    let mut command = worker();
+    command[2] = command[2].replace(
+        "echo native-api-synthetic-log",
+        "printf 'private value: %s\\n' \"$SYNTHETIC\"; printf 'private error: %s\\n' \"$SYNTHETIC\" >&2; echo native-api-synthetic-log",
+    );
+    let created = fixture
+        .create(
+            "synthetic-terminal",
+            command,
+            None,
+            json!({"SYNTHETIC":"synthetic-private-value"}),
+        )
+        .await;
+    let id = created["id"].as_str().unwrap();
+    let home = fixture.home(id);
+    wait(|| home.join("cgroup").exists()).await;
+    let record = fixture.store.get_application(id).await.unwrap().unwrap();
+    let group = fixture.cgroup.join(format!("sf-app-{id}"));
+    let limits = fs::read_to_string(group.join("pids.max")).unwrap();
+    let before = fs::metadata(&group).unwrap().ino();
+    let ws_url = format!(
+        "{}/apps/id/{id}/terminal",
+        fixture.url.replace("http://", "ws://")
+    );
+    let (mut denied, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    denied
+        .send(Message::Text(
+            json!({"key":"wrong","cols":80,"rows":24})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let reply = denied.next().await.unwrap().unwrap();
+    assert!(reply.to_text().unwrap().contains("Invalid API key"));
+    drop(denied);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    ws.send(Message::Text(
+        json!({"key":"synthetic-native-api-key","cols":100,"rows":35})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(reply.to_text().unwrap()).unwrap()["type"],
+        "ready"
+    );
+    let script = concat!(
+        "id -u > terminal-uid; id -G > terminal-groups; cat /proc/self/cgroup > terminal-cgroup; cat /proc/self/status > terminal-identity; env > terminal-env; stty size > terminal-size; ",
+        r#"python3 -c 'import subprocess; child = subprocess.Popen(["sleep", "300"], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); open("terminal-child", "w").write(str(child.pid))'"#,
+        "\n"
+    );
+    ws.send(Message::Text(
+        json!({"type":"input","data":script}).to_string().into(),
+    ))
+    .await
+    .unwrap();
+    wait(|| home.join("terminal-child").exists()).await;
+    assert_eq!(
+        fs::read_to_string(home.join("terminal-uid")).unwrap(),
+        fs::read_to_string(home.join("uid")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("terminal-cgroup")).unwrap(),
+        fs::read_to_string(home.join("cgroup")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("terminal-size"))
+            .unwrap()
+            .trim(),
+        "35 100"
+    );
+    let identity = fs::read_to_string(home.join("terminal-identity")).unwrap();
+    for cap in ["CapEff", "CapPrm", "CapBnd", "CapAmb"] {
+        assert!(
+            identity.contains(&format!("{cap}:\t0000000000000000")),
+            "{identity}"
+        );
+    }
+    assert!(identity.contains("NoNewPrivs:\t1"));
+    let env = fs::read_to_string(home.join("terminal-env")).unwrap();
+    assert!(env.contains(&format!("USER=sf-app-{id}")));
+    assert!(env.contains(&format!("HOME={}", home.display())));
+    assert!(env.contains("SYNTHETIC=synthetic-private-value"));
+    assert!(!env.contains("SSH_AUTH_SOCK="));
+    assert!(!env.contains("SUDO_USER="));
+    assert!(!env.contains("CARGO="));
+    let child: u32 = fs::read_to_string(home.join("terminal-child"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let child_group = fs::read_to_string(format!("/proc/{child}/cgroup")).unwrap();
+    assert_eq!(
+        child_group,
+        fs::read_to_string(home.join("cgroup")).unwrap()
+    );
+    let uid: u32 = fs::read_to_string(home.join("uid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(fs::metadata(format!("/proc/{child}")).unwrap().uid(), uid);
+    let sample = fixture.runtime.sample(&record).await.unwrap().unwrap();
+    assert!(sample.memory_bytes > 0);
+    assert_eq!(sample.memory_limit_bytes, 134217728);
+    assert!(sample.tasks.unwrap() >= 3);
+    let names = fixture
+        .request(
+            reqwest::Method::GET,
+            &format!("/apps/id/{id}/variable-names"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(names.0, 200);
+    assert_eq!(names.1, json!(["SYNTHETIC"]));
+    assert!(!names.1.to_string().contains("synthetic-private-value"));
+    ws.close(None).await.unwrap();
+    drop(ws);
+    wait(|| {
+        !fs::read_to_string(group.join("cgroup.procs"))
+            .unwrap_or_default()
+            .lines()
+            .any(|pid| pid == child.to_string())
+    })
+    .await;
+    assert!(fixture.runtime.status(&record).await.unwrap().running);
+    assert_eq!(fs::metadata(&group).unwrap().ino(), before);
+    assert_eq!(fs::read_to_string(group.join("pids.max")).unwrap(), limits);
+    assert_eq!(fixture.count(id), 1);
+    let log_path = fixture
+        .root
+        .join("supervision/logs")
+        .join(id)
+        .join("current");
+    wait(|| {
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        log.contains("private value: [redacted]") && log.contains("private error: [redacted]")
+    })
+    .await;
+    assert!(
+        !fs::read_to_string(&log_path)
+            .unwrap()
+            .contains("synthetic-private-value")
+    );
+    fixture.action(id, "stop").await;
+    assert!(fixture.runtime.sample(&record).await.unwrap().is_none());
+    let (mut stopped, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    stopped
+        .send(Message::Text(
+            json!({"key":"synthetic-native-api-key","cols":80,"rows":24})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        stopped
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .contains("not running")
+    );
+}
+
+#[tokio::test]
+#[ignore = "provisions accounts, cgroups and s6; root on disposable Linux"]
+async fn native_logs_redact_values_split_between_stdout_and_stderr() {
+    let fixture = Fixture::new().await;
+    let created = fixture
+        .create(
+            "synthetic-split-log",
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf 'combined: token-'; exec 1>&-; sleep 0.2; printf 'long\\n' >&2; exec sleep 300".into(),
+            ],
+            None,
+            json!({"TOKEN":"token-long"}),
+        )
+        .await;
+    let id = created["id"].as_str().unwrap();
+    let log_path = fixture
+        .root
+        .join("supervision/logs")
+        .join(id)
+        .join("current");
+    wait(|| {
+        fs::read_to_string(&log_path)
+            .unwrap_or_default()
+            .contains("combined: [redacted]")
+    })
+    .await;
+    assert!(!fs::read_to_string(log_path).unwrap().contains("token-long"));
+    fixture.action(id, "stop").await;
+}
+
+#[tokio::test]
+#[ignore = "provisions accounts, cgroups and s6; root on disposable Linux"]
+async fn native_recipe_runs_once_non_root_preserves_stop_and_blocks_failed_setup() {
+    let mut fixture = Fixture::new().await;
+    // The fake mise executable avoids network in this boundary regression.
+    // scripts/test-native-mise.py checks actual tool downloads and versions.
+    let fake = "#!/bin/sh\ncase \"$1\" in install) id -u >> \"$HOME/installations\";; reshim) :;; exec) shift; test \"$1\" = --; shift; exec \"$@\";; *) exit 99;; esac\n";
+    let created = fixture.create("synthetic-recipe", vec![
+        "/bin/sh".into(), "-ec".into(),
+        "printf '%s' \"$1\" > .self-host/mise/bin/mise; chmod 700 .self-host/mise/bin/mise; echo $$ >> starts; exec sleep 300".into(),
+        "seed-mise".into(), fake.into(),
+    ], None, json!({"SYNTHETIC":"recipe-private-value"})).await;
+    let id = created["id"].as_str().unwrap();
+    let home = fixture.home(id);
+    wait(|| fixture.count(id) == 1).await;
+    fixture.action(id, "stop").await;
+    let mut definition = json!({
+        "kind":"native", "account":format!("sf-app-{id}"),
+        "command":["/bin/sh","-ec","echo $$ >> \"$HOME/starts\"; id -u > main-uid; printf '%s' \"$MISE_CONFIG_DIR\" > main-config; cat /proc/self/cgroup > main-cgroup; exec sleep 300"],
+        "working_dir":"app", "limits":{"max_tasks":32,"memory_bytes":134217728},
+        "recipe":{"dependencies":[{"tool":"node","version":"24"}],"setup":["mkdir -p app; id -u > setup-uid; cat /proc/self/cgroup > setup-cgroup; printf '%s' \"$MISE_CONFIG_DIR\" > setup-config; printf '%s' \"$MISE_AUTO_INSTALL\" > setup-auto-install; echo setup >> setups; printf 'private setup: %s\\n' \"$SYNTHETIC\""]}
+    });
+    let updated = fixture
+        .request(
+            reqwest::Method::PUT,
+            &format!("/apps/id/{id}"),
+            json!({"runtime":definition}),
+        )
+        .await;
+    fixture.finish(updated, "completed").await;
+    let record = fixture.store.get_application(id).await.unwrap().unwrap();
+    assert_eq!(record.status, "stopped");
+    assert_eq!(
+        fixture.count(id),
+        1,
+        "setup must not start the main process"
+    );
+    assert!(
+        !fixture
+            .runtime
+            .status(&record)
+            .await
+            .unwrap()
+            .intended_running
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("setup-uid"))
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap(),
+        fs::metadata(&home).unwrap().uid()
+    );
+    assert_ne!(fs::metadata(&home).unwrap().uid(), 0);
+    assert_eq!(
+        fs::read_to_string(home.join("setup-config")).unwrap(),
+        home.join(".self-host/mise/config").display().to_string()
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("setup-auto-install")).unwrap(),
+        "0"
+    );
+    let log = fs::read_to_string(
+        fixture
+            .root
+            .join("supervision/logs")
+            .join(id)
+            .join("recipe.log"),
+    )
+    .unwrap();
+    assert!(log.contains("private setup: [redacted]"), "{log}");
+    assert!(!log.contains("recipe-private-value"));
+    let mut logs = fixture.runtime.logs(&record).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !logs
+            .recv()
+            .await
+            .unwrap()
+            .contains("private setup: [redacted]")
+        {}
+    })
+    .await
+    .unwrap();
+    drop(logs);
+    let installations = fs::read_to_string(home.join("installations")).unwrap();
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::POST,
+                    "/apps/synthetic-recipe/env",
+                    json!({"key":"SYNTHETIC","value":"rotated-recipe-value"}),
+                )
+                .await,
+            "completed",
+        )
+        .await;
+    assert_eq!(fixture.count(id), 1);
+    assert_eq!(
+        fs::read_to_string(home.join("installations")).unwrap(),
+        installations
+    );
+    fixture.action(id, "start").await;
+    wait(|| fixture.count(id) == 2).await;
+    wait(|| home.join("app/main-cgroup").exists()).await;
+    assert_eq!(
+        fs::read_to_string(home.join("app/main-uid")).unwrap(),
+        fs::read_to_string(home.join("setup-uid")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("app/main-config")).unwrap(),
+        fs::read_to_string(home.join("setup-config")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("app/main-cgroup")).unwrap(),
+        fs::read_to_string(home.join("setup-cgroup")).unwrap()
+    );
+    fixture.action(id, "restart").await;
+    wait(|| fixture.count(id) == 3).await;
+    fixture.action(id, "stop").await;
+    assert_eq!(
+        fs::read_to_string(home.join("installations")).unwrap(),
+        installations
+    );
+    assert_eq!(fs::read_to_string(home.join("setups")).unwrap(), "setup\n");
+
+    let successful = definition.clone();
+    definition["recipe"]["setup"] = json!(["printf 'failed setup: %s\\n' \"$SYNTHETIC\"; false"]);
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::PUT,
+                    &format!("/apps/id/{id}"),
+                    json!({"runtime":definition}),
+                )
+                .await,
+            "failed",
+        )
+        .await;
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/apps/id/{id}/start"),
+                    Value::Null,
+                )
+                .await,
+            "failed",
+        )
+        .await;
+    assert_eq!(fixture.count(id), 3, "failed setup must block Start");
+    assert!(!fixture.runtime.status(&record).await.unwrap().running);
+    assert!(
+        !fixture
+            .root
+            .join("supervision/services")
+            .join(id)
+            .join("data/recipe-sha256")
+            .exists()
+    );
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::PUT,
+                    &format!("/apps/id/{id}"),
+                    json!({"runtime":successful}),
+                )
+                .await,
+            "completed",
+        )
+        .await;
+    assert_eq!(
+        fixture
+            .store
+            .get_application(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "stopped",
+        "repair must preserve s6's stopped intent after failed setup"
+    );
+    assert_eq!(fixture.count(id), 3);
+    assert_eq!(
+        fs::read_to_string(home.join("setups")).unwrap(),
+        "setup\nsetup\n"
+    );
+
+    // A pre-mise Variable must remain removable through the existing API.
+    fixture
+        .store
+        .set_env(id, "CARGO_HOME", "/synthetic/legacy")
+        .await
+        .unwrap();
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::DELETE,
+                    "/apps/synthetic-recipe/env/CARGO_HOME",
+                    Value::Null,
+                )
+                .await,
+            "completed",
+        )
+        .await;
+    assert_eq!(fixture.store.get_env(id, "CARGO_HOME").await.unwrap(), None);
+    assert_eq!(fixture.count(id), 3);
+
+    // Simulate a preparation left behind when the API daemon died while s6
+    // was down. Boot reconciliation must kill it before reporting stopped.
+    let mut orphan = self_host::native::launch(
+        &CgroupRoot::at(&fixture.cgroup).unwrap(),
+        &self_host::native::LaunchRequest {
+            application_id: id.into(),
+            account: AccountName::parse(&format!("sf-app-{id}")).unwrap(),
+            command: vec!["/bin/sleep".into(), "300".into()],
+            working_dir: home,
+            environment: Vec::new(),
+            limits: self_host::native::ResourceLimits::NONE,
+            purpose: self_host::native::Purpose::Build,
+        },
+    )
+    .unwrap();
+    fixture.connect().await;
+    assert!(!orphan.child.wait().unwrap().success());
+    assert!(!fixture.cgroup.join(format!("sf-app-{id}")).exists());
+}
+
+#[tokio::test]
+#[ignore = "provisions accounts, cgroups and s6; root on disposable Linux"]
+async fn native_recipe_never_writes_through_home_symlinks_as_root() {
+    let fixture = Fixture::new().await;
+    let witness = fixture.root.join("root-only-witness");
+    fs::write(&witness, "unchanged").unwrap();
+    fs::set_permissions(&witness, fs::Permissions::from_mode(0o600)).unwrap();
+    let created = fixture.create("synthetic-recipe-symlink", vec![
+        "/bin/sh".into(), "-ec".into(),
+        "ln -s \"$1\" .self-host/mise/config/config.toml.new; echo $$ >> starts; exec sleep 300".into(),
+        "symlink-fixture".into(), witness.display().to_string(),
+    ], None, json!({})).await;
+    let id = created["id"].as_str().unwrap();
+    wait(|| fixture.count(id) == 1).await;
+    fixture.action(id, "stop").await;
+    let update = json!({"runtime":{"kind":"native","account":format!("sf-app-{id}"),"command":["/bin/sleep","300"],"recipe":{"setup":["true"]}}});
+    fixture
+        .finish(
+            fixture
+                .request(reqwest::Method::PUT, &format!("/apps/id/{id}"), update)
+                .await,
+            "failed",
+        )
+        .await;
+    assert_eq!(fs::read_to_string(witness).unwrap(), "unchanged");
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/apps/id/{id}/start"),
+                    Value::Null,
+                )
+                .await,
+            "failed",
+        )
+        .await;
+    assert_eq!(fixture.count(id), 1);
 }

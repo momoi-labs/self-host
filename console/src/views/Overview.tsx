@@ -54,6 +54,7 @@ export function Overview({
   onOpenEnvironment,
   onDeploy,
   onNewMachine,
+  onOpenDatabases,
 }: {
   apps: App[];
   environments: Environment[];
@@ -63,19 +64,22 @@ export function Overview({
   onOpenEnvironment: (id: string) => void;
   onDeploy: () => void;
   onNewMachine: () => void;
+  onOpenDatabases: () => void;
 }) {
   // Each section holds its own term. The Overview lists two kinds of workload
   // and one box filtering both said nothing about which list it was thinning.
   const [appQuery, setAppQuery] = useState("");
   const [machineQuery, setMachineQuery] = useState("");
+  const applications = apps.filter((app) => !app.managed_postgres);
+  const databases = apps.filter((app) => app.managed_postgres);
 
-  const rows: Row[] = apps.map((app) => ({
+  const rows: Row[] = applications.map((app) => ({
     key: app.id,
     id: app.id,
     name: app.name,
     hostname: app.hostname,
     aliases: (app.aliases ?? []).length,
-    image: app.image,
+    image: app.runtime?.kind === "native" ? `Native: ${app.runtime.command[0]}` : app.image,
     status: app.status,
     restarts: app.restarts,
     samples: seriesFor(metrics, app.id),
@@ -85,7 +89,7 @@ export function Overview({
   const machines = environments.filter((one) =>
     matches(one.config.name, machineQuery),
   );
-  const empty = rows.length === 0 && environments.length === 0;
+  const empty = apps.length === 0 && environments.length === 0;
 
   const open = (row: Row) => onOpenApp(row.id);
 
@@ -97,9 +101,12 @@ export function Overview({
           {apps.length === 0 && environments.length === 0
             ? `Nothing deployed on ${dnsSuffix} yet.`
             : [
-                apps.length === 0
+                applications.length === 0
                   ? null
-                  : `${apps.length} ${apps.length === 1 ? "application" : "applications"}`,
+                  : `${applications.length} ${applications.length === 1 ? "application" : "applications"}`,
+                databases.length === 0
+                  ? null
+                  : `${databases.length} ${databases.length === 1 ? "database" : "databases"}`,
                 environments.length === 0
                   ? null
                   : `${environments.length} ${environments.length === 1 ? "virtual machine" : "virtual machines"}`,
@@ -134,7 +141,7 @@ export function Overview({
         </Card>
       ) : (
         <div className="stack">
-          <GroupedSummary apps={apps} environments={environments} metrics={metrics} />
+          <GroupedSummary apps={applications} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} />
 
           <div className="section-heading">
             <h2 className="section-title">Applications</h2>
@@ -160,7 +167,7 @@ export function Overview({
                   <TableRow>
                     <TableHead scope="col">Name</TableHead>
                     <TableHead scope="col">Hostname</TableHead>
-                    <TableHead scope="col">Image</TableHead>
+                    <TableHead scope="col">Definition</TableHead>
                     <TableHead scope="col">Status</TableHead>
                     <TableHead scope="col" className="num">
                       Restarts
@@ -173,7 +180,7 @@ export function Overview({
                   {visible.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="muted">
-                        No applications match your filters.
+                        {applications.length ? "No applications match your filters." : "No applications yet."}
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -349,10 +356,12 @@ export function Overview({
  * the reading is the answer, and the tables below are where anything
  * deeper gets inspected.
  */
-function GroupedSummary({ apps, environments, metrics }: {
+function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabases }: {
   apps: App[];
+  databases: App[];
   environments: Environment[];
   metrics: Metrics | null;
+  onOpenDatabases: () => void;
 }) {
   const running = apps.filter((app) => app.status === "running").length;
   const awake = environments.filter((one) => one.state === "running").length;
@@ -376,6 +385,14 @@ function GroupedSummary({ apps, environments, metrics }: {
           <b>{awake}</b>/{environments.length} VMs
           <span className="sep">·</span>
           <b>{running}</b>/{apps.length} apps
+          {databases.length ? <>
+            <span className="sep">·</span>
+            <a href="/console/#databases" onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onOpenDatabases();
+            }}><b>{databases.filter((database) => database.status === "running").length}</b>/{databases.length} databases</a>
+          </> : null}
         </p>
       </div>
       <div className="summary-group">
@@ -389,7 +406,7 @@ function GroupedSummary({ apps, environments, metrics }: {
         </p>
       </div>
       <div className="summary-group">
-        <p className="t-caps">Network</p>
+        <p className="t-caps">{apps.some((app) => app.runtime?.kind === "native") ? "Container and VM network" : "Network"}</p>
         <p className="summary-line">
           <b>
             <span className="network-down">

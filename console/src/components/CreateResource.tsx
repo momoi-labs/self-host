@@ -14,15 +14,18 @@ import { Icon } from "./Icon.js";
 export function CreateResource({
   onDeploy,
   onCreateMachine,
+  onCreateDatabase,
 }: {
   onDeploy: () => void;
   onCreateMachine: () => void;
+  onCreateDatabase: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const trigger = useRef<HTMLButtonElement>(null);
   const actions = [
     { label: "Deploy application", run: onDeploy },
+    { label: "New database", run: onCreateDatabase },
     { label: "New virtual machine", run: onCreateMachine },
   ].filter((action) => action.label.toLowerCase().includes(query.trim().toLowerCase()));
 

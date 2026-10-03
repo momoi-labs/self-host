@@ -121,6 +121,8 @@ export function hostNetworkSeries(metrics: Metrics | null): Pick<AppSample, "at"
   const ticks = new Map<number, Pick<AppSample, "at" | "rx_bytes" | "tx_bytes">>();
   for (const workload of [...(metrics?.applications ?? []), ...(metrics?.machines ?? [])]) {
     for (const sample of workload.samples) {
+      // Native cgroups have no network counters. Do not invent zero readings.
+      if (sample.tasks !== undefined) continue;
       const total = ticks.get(sample.at) ?? { at: sample.at, rx_bytes: 0, tx_bytes: 0 };
       total.rx_bytes += sample.rx_bytes;
       total.tx_bytes += sample.tx_bytes;

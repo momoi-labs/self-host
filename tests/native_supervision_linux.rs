@@ -72,6 +72,7 @@ impl Fixture {
             working_dir: self.home.clone(), environment: vec![], limits: ResourceLimits { max_tasks: Some(32), ..ResourceLimits::NONE },
             readiness: Some(vec!["/bin/sh".into(), "-c".into(), "test $(id -u) -ne 0 && cat /proc/self/status > readiness-identity && cat /proc/self/cgroup > readiness-cgroup && test -s descendant".into()]),
             startup_timeout_ms: 5000, stop_grace_ms: 100,
+            recipe: Default::default(),
         }
     }
 }

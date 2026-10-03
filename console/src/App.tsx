@@ -7,6 +7,9 @@ import { useEnvironments } from "./lib/useEnvironments.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
 import { Dns } from "./views/Dns.js";
+import { ManagedPostgres } from "./views/ManagedPostgres.js";
+import { Databases } from "./views/Databases.js";
+import { NewDatabase } from "./views/NewDatabase.js";
 import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
@@ -36,6 +39,10 @@ export function App() {
   const crumb =
     view.view === "dns"
       ? "DNS"
+      : view.view === "databases"
+      ? "Databases"
+      : view.view === "database-new"
+      ? "New database"
       : view.view === "events"
       ? "Events"
       : view.view === "app"
@@ -81,6 +88,16 @@ export function App() {
         active: view.view === "new",
         onClick: () => go({ view: "new", id: null }),
       }}
+      databases={{
+        href: "/console/#databases",
+        active: view.view === "databases" || view.view === "database-new" || !!app?.managed_postgres,
+        onClick: () => go({ view: "databases", id: null }),
+      }}
+      newDatabase={{
+        href: "/console/#new-database",
+        active: view.view === "database-new",
+        onClick: () => go({ view: "database-new", id: null }),
+      }}
       newMachine={{
         href: "/console/#new-environment",
         active: view.view === "environment-new",
@@ -120,6 +137,10 @@ export function App() {
             if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
             go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
           }} />
+        ) : view.view === "databases" ? (
+          <Databases apps={apps} ready={ready} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
+        ) : view.view === "database-new" ? (
+          <NewDatabase reload={reload} onCancel={() => go({ view: "databases", id: null })} onCreated={(id) => go({ view: "app", id })} />
         ) : view.view === "settings" ? (
           <Settings section={view.id} />
         ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
@@ -151,6 +172,8 @@ export function App() {
               )
             }
           />
+        ) : app?.managed_postgres ? (
+          <ManagedPostgres key={app.id} app={app} apps={apps} metrics={metrics} reload={reload} onRemoved={() => go({ view: "databases", id: null })} />
         ) : app ? (
           <AppDetail
             key={app.id}
@@ -171,6 +194,7 @@ export function App() {
             onOpenEnvironment={(id) => go({ view: "environments", id })}
             onDeploy={() => go({ view: "new", id: null })}
             onNewMachine={() => go({ view: "environment-new", id: null })}
+            onOpenDatabases={() => go({ view: "databases", id: null })}
           />
         )}
       </section>
@@ -188,6 +212,8 @@ function signature(app: import("./lib/types.js").App): string {
     app.status,
     app.name,
     app.image,
+    JSON.stringify(app.runtime ?? null),
+    JSON.stringify(app.publication ?? null),
     JSON.stringify(app.git ?? null),
     JSON.stringify(app.git_build ?? null),
     app.hostname,

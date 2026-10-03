@@ -265,63 +265,63 @@ pub(crate) fn launch_in(
     cgroup: &ApplicationCgroup,
     request: &LaunchRequest,
 ) -> Result<LaunchedProcess, LaunchError> {
-    use std::os::unix::io::AsRawFd;
-    use std::os::unix::process::CommandExt;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
+    let child = command_in(cgroup, request)?
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(LaunchError::Spawn)?;
+    Ok(LaunchedProcess {
+        pid: child.id(),
+        child,
+        cgroup: cgroup.clone(),
+    })
+}
 
+/// Main processes and terminals share the exact privilege-drop boundary.
+/// Opening an existing cgroup never rewrites its limits or its membership.
+#[cfg(target_os = "linux")]
+pub(crate) fn command_in(
+    cgroup: &ApplicationCgroup,
+    request: &LaunchRequest,
+) -> Result<std::process::Command, LaunchError> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
     let account = super::identity::resolve(&request.account)?;
     working_dir_within(&account.home, &request.working_dir)?;
     validate(request)?;
     let last_cap = read_cap_last_cap()?;
-
-    // Opened here, while still privileged and before forking, so the child
-    // only has to write to it: no path lookup after fork.
     let procs_path = cgroup.path().join("cgroup.procs");
-    let procs = match std::fs::OpenOptions::new().write(true).open(&procs_path) {
-        Ok(file) => file,
-        Err(source) => {
-            return Err(CgroupError::Io {
-                path: procs_path,
-                source,
-            }
-            .into());
-        }
-    };
-
-    let mut command = Command::new(&request.command[0]);
+    let procs = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&procs_path)
+        .map_err(|source| CgroupError::Io {
+            path: procs_path,
+            source,
+        })?;
+    let mut command = std::process::Command::new(&request.command[0]);
     command
         .args(&request.command[1..])
         .env_clear()
-        .envs(environment_for(&account, request))
-        .current_dir(&request.working_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let procs_fd = procs.as_raw_fd();
+        .envs(environment_for(&account, request));
+    let directory = std::ffi::CString::new(request.working_dir.as_os_str().as_bytes())
+        .map_err(|_| LaunchError::Spawn(std::io::Error::from_raw_os_error(libc::EINVAL)))?;
     let (uid, gid) = (account.uid, account.gid);
-    // SAFETY: `become_account` only makes raw system calls on stack data and
-    // never allocates or takes a lock, so it is safe between fork and exec in
-    // a multithreaded parent.
+    // SAFETY: only raw system calls run after fork. The captured file keeps
+    // the cgroup fd open until spawn completes and is closed on exec.
     unsafe {
-        command.pre_exec(move || become_account(procs_fd, uid, gid, last_cap));
+        command.pre_exec(move || {
+            become_account(procs.as_raw_fd(), uid, gid, last_cap)?;
+            // Resolve the working directory only after dropping privileges.
+            if libc::chdir(directory.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
-
-    match command.spawn() {
-        Ok(child) => {
-            drop(procs);
-            Ok(LaunchedProcess {
-                pid: child.id(),
-                child,
-                cgroup: cgroup.clone(),
-            })
-        }
-        Err(e) => {
-            // A refused pre_exec step or a missing program: the child is gone
-            // and never ran the command, so the cgroup is empty.
-            drop(procs);
-            Err(LaunchError::Spawn(e))
-        }
-    }
+    Ok(command)
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -52,6 +52,8 @@ export function NewApp({
               ? "Bringing the Compose project up ..."
               : source === "custom-image"
                 ? "Starting the development server ..."
+              : source === "native"
+                ? "Starting the process under its dedicated Application Account ..."
               : source === "git"
                 ? "Checking out the selected commit and building its image ..."
               : `Pulling image ${body.image} ...`,
@@ -71,7 +73,7 @@ export function NewApp({
       <PageHeader>
         <PageHeaderTitle>New application</PageHeaderTitle>
         <PageHeaderDescription>
-          Import a Git repository, use an image or paste a Compose file.
+          Deploy a container or native process.
         </PageHeaderDescription>
       </PageHeader>
       <Card className="form-page">

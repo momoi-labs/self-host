@@ -20,6 +20,7 @@ import type { App, ComposeService, GitInspection, GitSource, Inspection, Publica
 import { gitFieldsOf, gitSourceOf, type GitFields } from "./GitSourceFields.js";
 import { GitWorkflowFields, type GitSourceMode } from "./GitWorkflowFields.js";
 import type { GitRepository } from "./GitRepositoryPicker.js";
+import { NativeAppForm } from "./NativeAppForm.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
 import { customImageTemplate } from "../lib/customImageTemplates.js";
@@ -36,6 +37,8 @@ export type Submission = {
   refresh_source?: boolean;
   source_revision?: string;
   publication?: Publication;
+  runtime?: import("../lib/types.js").Runtime;
+  environment?: Record<string, string>;
   development?: {
     image_id: string;
     tag: string;
@@ -84,9 +87,9 @@ function gitKey(fields: GitFields) {
   return JSON.stringify(fields);
 }
 
-/** Whitespace and alias order are not edits. */
+/** Normalize technical fields while preserving the display name. */
 function same(a: Fields, b: Fields) {
-  const norm = (f: Fields) => JSON.stringify({ ...f, aliases: parseAliases(f.aliases), name: f.name.trim(), hostname: f.hostname.trim(), image: f.image.trim(), startCommand: f.startCommand.trim(), port: f.port.trim() });
+  const norm = (f: Fields) => JSON.stringify({ ...f, aliases: parseAliases(f.aliases), hostname: f.hostname.trim(), image: f.image.trim(), startCommand: f.startCommand.trim(), port: f.port.trim() });
   return norm(a) === norm(b);
 }
 
@@ -100,15 +103,17 @@ export function AppForm({
   dnsSuffix,
   onSubmit,
   onCancel,
+  onReload,
 }: {
   app?: App;
   dnsSuffix: string;
   onSubmit: (body: Submission, source: string) => Promise<Report | null>;
   onCancel?: () => void;
+  onReload?: () => Promise<App[]>;
 }) {
   const creating = !app;
   const saved = fieldsOf(app);
-  const [source, setSource] = useState(creating ? "image" : app?.git ? "git" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
+  const [source, setSource] = useState(creating ? "image" : app?.runtime?.kind === "native" ? "native" : app?.git ? "git" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
   const [git, setGit] = useState(saved.git);
   const [gitMode, setGitMode] = useState<GitSourceMode>("repositories");
   const [gitSetup, setGitSetup] = useState(false);
@@ -238,7 +243,7 @@ export function AppForm({
       if (result.build_files.length === 1) setRecipeChosen(true);
       if (!name.trim()) {
         const repositoryName = selected.repository.replace(/\.git\/?$/, "").split("/").pop() ?? "";
-        setName(repositoryName.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63));
+        setName(repositoryName);
       }
       const service = selected.composePath.trim()
         ? result.services.find((service) => service.name === webService) ?? result.services.find((service) => service.ports.length) ?? result.services[0]
@@ -413,7 +418,7 @@ export function AppForm({
       setFailure(null);
 
       const sent = source === "git" && unpublished ? [] : parseAliases(aliases);
-      const body: Submission = { name: name.trim(), aliases: sent };
+      const body: Submission = { name, aliases: sent };
       // Editing always sends the Hostname: an empty one is a mistake here, not
       // a request for the default.
       if ((hostname.trim() || !creating) && !(source === "git" && unpublished)) body.hostname = hostname.trim();
@@ -574,7 +579,7 @@ export function AppForm({
         error={errors.hostname}
         hint={
           creating
-            ? "Leave empty to use the application name and DNS suffix."
+            ? "Leave empty to generate a hostname."
             : "Takes effect immediately; the container keeps running."
         }
       >
@@ -584,7 +589,7 @@ export function AppForm({
           id="f-hostname"
           value={hostname}
           onChange={(event) => setHostname(event.target.value)}
-          placeholder={`my-app.${dnsSuffix}`}
+          placeholder={creating ? "Automatic" : `my-app.${dnsSuffix}`}
           required={!creating}
         />
       </FormField>
@@ -609,20 +614,21 @@ export function AppForm({
 
   </>;
 
+  if (source === "native") return <NativeAppForm app={app} dnsSuffix={dnsSuffix} onSubmit={onSubmit} onCancel={onCancel} onReload={onReload} onChangeDefinition={creating ? () => setSource("image") : undefined} />;
+
   return (
     <Form id="app-form" onSubmit={submit}>
       <div className="form-body">
       {source !== "git" ? <p className="t-caps">Configuration</p> : null}
 
-      {!(creating && source === "git") ? <FormField
+      {source !== "git" ? <FormField
         label="Name"
         id="f-name"
         value={name}
         onChange={(event) => setName(event.target.value)}
-        placeholder="my-app"
+        placeholder="My app"
         required
         autoFocus={creating}
-        hint="Lowercase letters, numbers and hyphens; at most 63 characters."
       /> : null}
 
       {creating ? (
@@ -633,6 +639,7 @@ export function AppForm({
             ["custom-image", "Custom image"],
             ["compose", "Compose file"],
             ["git", "Git repository"],
+            ["native", "Native process"],
           ].map(([value, label]) => (
             <label className="row" key={value}>
               <input
@@ -662,6 +669,12 @@ export function AppForm({
         onPortChange={(next) => { portEdited.current = true; setPort(next); }}
         webService={webService} onWebServiceChange={chooseGitService}
         unpublished={unpublished} onUnpublishedChange={setUnpublished} dnsSuffix={dnsSuffix}
+        routingFields={!unpublished && (!creating || gitSetup) ? creating ? (
+          <details className="disclosure" open={gitDomains} onToggle={(event) => setGitDomains(event.currentTarget.open)}>
+            <summary>Domain settings</summary>
+            <div className="git-settings-fields">{routingFields}</div>
+          </details>
+        ) : routingFields : null}
       /> : source === "compose" ? composeFields : source === "custom-image" ? (
         <>
           <FormField id="f-custom-image" label="Custom image">
@@ -717,12 +730,7 @@ export function AppForm({
         </>
       ) : imageField}
 
-      {source !== "git" ? routingFields : !unpublished && (!creating || gitSetup) ? creating ? (
-        <details className="disclosure" open={gitDomains} onToggle={(event) => setGitDomains(event.currentTarget.open)}>
-          <summary>Domain settings</summary>
-          <div className="git-settings-fields">{routingFields}</div>
-        </details>
-      ) : routingFields : null}
+      {source !== "git" ? routingFields : null}
 
       {failure ? <Failure failure={failure} /> : null}
       </div>

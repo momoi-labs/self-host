@@ -12,6 +12,7 @@ export type ServiceState = {
   state: string;
   exit_code?: number;
   restarts?: number;
+  health?: string | null;
 };
 
 /** Limits on a native Application's whole process tree; a missing field is
@@ -22,6 +23,12 @@ export type ResourceLimits = {
   max_tasks?: number;
 };
 
+/** Runtime tools and setup commands owned by one native Application. */
+export type NativeRecipe = {
+  dependencies: ImageDependency[];
+  setup: string[];
+};
+
 /** What a native Application runs and under which Application Account. */
 export type NativeDefinition = {
   account: string;
@@ -29,6 +36,7 @@ export type NativeDefinition = {
   working_dir?: string | null;
   port?: number | null;
   limits?: ResourceLimits;
+  recipe?: NativeRecipe;
 };
 
 /** How an Application runs (ADR-0028). Every Application predating the field
@@ -70,6 +78,7 @@ export type GitInspection = {
 };
 
 export type App = {
+  managed_postgres?: { application_id: string; major: number; volume: string; native_port: number | null };
   id: string;
   name: string;
   image: string;
@@ -78,6 +87,7 @@ export type App = {
   status: string;
   /** The task carrying an accepted action out; only on a 202. */
   task_id?: string;
+  readiness?: "ready" | "checking" | "failed" | "unknown";
   source?: string;
   git?: GitSource;
   git_build?: GitBuild;
@@ -158,6 +168,8 @@ export type AppSample = {
   memory_limit_bytes: number;
   rx_bytes: number;
   tx_bytes: number;
+  /** Present for native process trees; their network counters are unavailable. */
+  tasks?: number;
 };
 
 /** What the Platform's own proxy and DNS did during one interval. */

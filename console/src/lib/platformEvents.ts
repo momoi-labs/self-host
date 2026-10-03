@@ -15,13 +15,24 @@ export type PlatformEvent = {
   error?: Report | null;
   /** What a configure changed, setting by setting. */
   changes?: { setting: string; from: string; to: string }[] | null;
+  progress?: { stages: OperationStage[] } | null;
   subject: {
-    kind: "application" | "virtual-machine" | "custom-image" | "api-key" | "dns-record" | "settings";
+    kind: "application" | "database" | "virtual-machine" | "custom-image" | "api-key" | "dns-record" | "settings";
     id: string;
     name: string;
     service?: string;
     available?: boolean;
   };
+};
+
+export type OperationStage = {
+  id: string;
+  label: string;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  finishedAt?: string | null;
+  output: string[];
+  error?: Report | null;
 };
 
 export function eventSubjectHref(subject: PlatformEvent["subject"]): string | null {
@@ -45,7 +56,7 @@ export function filterEvents(events: readonly PlatformEvent[], query: string, st
 
 export function eventActionLabel(event: PlatformEvent): string {
   const actions = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure" };
-  const resources = { application: "application", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key", "dns-record": "DNS record", settings: "settings" };
+  const resources = { application: "application", database: "database", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key", "dns-record": "DNS record", settings: "settings" };
   return `${actions[event.action]} ${resources[event.subject.kind]}`;
 }
 

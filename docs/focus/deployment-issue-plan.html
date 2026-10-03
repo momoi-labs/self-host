@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployment implementation issues</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: light-dark(#f4f2ee, #211f1c);
+    --surface: light-dark(#faf9f7, #2d2b28);
+    --fg: light-dark(#1b1a1e, #eeece9);
+    --muted: light-dark(#5f5b57, #aba9a5);
+    --line: light-dark(#e0dcd6, #494744);
+    --accent: light-dark(#5b3fc4, #a793f4);
+    --accent-soft: light-dark(#f7f4ff, #2d2843);
+    --primary: light-dark(#5b3fc4, #684bb5);
+    --primary-hover: light-dark(#46309e, #795dc9);
+    --on-primary: light-dark(#ffffff, #f7f5fe);
+    --done: light-dark(#0c6b43, #5bd295);
+  }
+  [data-theme="light"] { color-scheme: light; }
+  [data-theme="dark"] { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; max-width: 48rem; padding: 3rem 2rem 4rem;
+    background: var(--bg); color: var(--fg);
+    font: 100%/1.6 Inter, system-ui, -apple-system, sans-serif;
+    overflow-wrap: anywhere;
+  }
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 2rem; }
+  .meta { color: var(--muted); font-size: 0.75rem; margin: 0; }
+  .facts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin: 0 0 2rem; }
+  .chip { font-size: 0.75rem; color: var(--muted); }
+  #chip-count { border: 1px solid var(--line); border-radius: 4px; padding: 0.125rem 0.5rem; }
+  button {
+    font: inherit; font-size: 0.875rem; font-weight: 500; cursor: pointer;
+    min-height: 36px; padding: 0 0.75rem; border-radius: 6px;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--line);
+  }
+  button:hover { background: var(--accent-soft); }
+  .theme-toggle { color: var(--muted); font-size: 0.75rem; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  h1 { font-size: 1.875rem; font-weight: 500; letter-spacing: -0.02rem; line-height: 1.2; margin: 0 0 1rem; }
+  .tldr { margin: 0 0 2rem; max-width: 65ch; }
+  .tldr p { margin: 0.75rem 0; }
+  .tldr p:first-child { font-size: 1.125rem; line-height: 1.5; }
+  .tldr p + p { color: var(--muted); }
+  .next { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 1.5rem; margin: 0 0 2rem; background: var(--surface); }
+  .next .label { font-size: 0.75rem; font-weight: 600; color: var(--accent); margin: 0 0 0.5rem; }
+  .next .task { font-size: 1.125rem; font-weight: 600; margin: 0; }
+  .next button { margin-top: 1rem; background: var(--primary); color: var(--on-primary); border-color: transparent; }
+  .next button:hover { background: var(--primary-hover); }
+  .next.all-done { border-left-color: var(--done); }
+  .next.all-done .label { color: var(--done); }
+  .progress { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .progress .bar { height: 100%; width: 0; background: var(--done); border-radius: 4px; }
+  .count { color: var(--muted); font-size: 0.75rem; margin: 0.5rem 0 2rem; }
+  details { border-top: 1px solid var(--line); padding: 1rem 0; margin: 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  summary::marker { color: var(--muted); font-size: 0.75rem; }
+  details[open] > summary { margin-bottom: 1rem; }
+  ul.tasks { list-style: none; padding: 0; margin: 0; }
+  ul.tasks li { border-top: 1px solid var(--line); padding: 1rem 0; }
+  ul.tasks li:first-child { border-top: 0; }
+  ul.tasks li.is-next { border-left: 3px solid var(--accent); padding-left: 1rem; }
+  ul.tasks li:last-child { padding-bottom: 0; }
+  ul.tasks label { display: flex; gap: 0.75rem; align-items: flex-start; cursor: pointer; }
+  ul.tasks input { flex: none; width: 1.125rem; height: 1.125rem; accent-color: var(--done); margin: 0.25rem 0 0; }
+  ul.tasks .body { min-width: 0; }
+  ul.tasks .text { font-weight: 600; }
+  ul.tasks .detail { display: block; color: var(--muted); font-size: 0.875rem; margin-top: 0.25rem; }
+  li.is-done .text { color: var(--muted); text-decoration: line-through; }
+  .context { font-size: 0.875rem; }
+  .context > summary { font-size: 1rem; }
+  .context p { margin: 0.75rem 0; }
+  .context ul { padding-left: 1.25rem; }
+  .context li { margin: 0.5rem 0; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.875em; }
+  footer { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  footer button { background: transparent; color: var(--muted); }
+  #fb-mode { margin-left: auto; }
+  @media (max-width: 520px) {
+    body { padding: 1.5rem 1rem 3rem; }
+    .topbar { margin-bottom: 1.5rem; }
+    h1 { font-size: 1.5rem; }
+    .next { padding: 1rem; }
+  }
+  @media (pointer: coarse) { button, summary, ul.tasks label { min-height: 44px; } }
+  body.commenting, body.commenting * { cursor: crosshair; }
+  .has-fb { outline: 2px dashed var(--accent); outline-offset: 3px; }
+  .fb-panel, .fb-form {
+    position: fixed; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 0.6rem; padding: 0.75rem; font-size: 0.9rem; z-index: 10;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  }
+  .fb-panel { display: none; right: 1rem; bottom: 1rem; width: 19rem; max-width: calc(100vw - 2rem); }
+  .fb-panel.visible { display: block; }
+  .fb-panel ul { list-style: none; padding: 0; margin: 0.5rem 0; }
+  .fb-panel li { display: flex; justify-content: space-between; gap: 0.5rem; border-top: 1px solid var(--line); padding: 0.35rem 0; }
+  .fb-panel li button { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0; }
+  .fb-form { display: none; left: 50%; transform: translateX(-50%); bottom: 1rem; width: 24rem; max-width: calc(100vw - 2rem); border-color: var(--accent); }
+  .fb-form.visible { display: block; }
+  .fb-form textarea, .fb-out { background: var(--bg); color: var(--fg); border: 1px solid var(--line); padding: 0.5rem; }
+  .fb-panel { max-height: 50vh; overflow: auto; }
+  .fb-form textarea { width: 100%; min-height: 4rem; font: inherit; margin-bottom: 0.5rem; }
+  .fb-out { width: 100%; min-height: 5rem; display: none; margin-top: 0.5rem; font-size: 0.8rem; }
+
+  /* Source document with task margin. */
+  body { max-width: 78rem; }
+  .document-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(19rem, 1fr); gap: 2rem; align-items: start; }
+  .source-column, .task-margin { min-width: 0; }
+  .task-margin { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; padding: 0 0.5rem 0 1.5rem; border-left: 1px solid var(--line); }
+  .source-document { font-size: 1rem; }
+  .source-document h2 { font-size: 1.5rem; line-height: 1.3; }
+  .source-document h3 { font-size: 1.125rem; }
+  .source-document section { padding: 1rem; border-top: 1px solid var(--line); scroll-margin-top: 1rem; }
+  .source-document li { margin: 0.5rem 0; }
+  .source-document ul, .source-document ol { padding-left: 1.5rem; }
+  .source-document .eyebrow, .source-document .notice, .source-hint { color: var(--muted); font-size: 0.875rem; }
+  .source-document .source-selected { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+  .task-row { display: flex; gap: 0.75rem; align-items: flex-start; }
+  ul.tasks li[data-source] { cursor: pointer; }
+  ul.tasks .body[role="button"] { flex: 1; border-radius: 4px; }
+  ul.tasks .body[role="button"]:hover .text { color: var(--accent); }
+  @media (max-width: 800px) {
+    .document-layout { display: flex; flex-direction: column; }
+    .task-margin { position: static; max-height: none; order: -1; width: 100%; border-left: 0; padding: 0; }
+  }
+
+  .source-column[hidden] { display: none; }
+  body:not(.showing-details) { max-width: 48rem; }
+  body:not(.showing-details) .document-layout { display: block; }
+  body:not(.showing-details) .task-margin { position: static; max-height: none; padding: 0; border: 0; }
+  .details-toggle { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; cursor: pointer; }
+  .details-toggle input { width: 1.125rem; height: 1.125rem; accent-color: var(--primary); }
+  .overview { margin: 0 0 2rem; }
+  .overview h2 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+  .overview p { font-size: 0.875rem; }
+  .overview .notice { color: var(--muted); }
+  .lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+  .lanes > div { padding: 0.75rem 1rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+  .lanes h3 { margin: 0; font-size: 1rem; }
+  .lanes p { margin: 0.25rem 0 0; color: var(--muted); }
+  .wave-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin: 1rem 0; }
+  .wave-table th, .wave-table td { text-align: left; vertical-align: top; padding: 0.5rem; border-bottom: 1px solid var(--line); }
+  .issue-tag { font-size: 0.75rem; font-weight: normal; color: var(--muted); white-space: nowrap; }
+  h4 { margin: 1rem 0 0.5rem; font-size: 0.875rem; }
+  @media (max-width: 480px) { .lanes { grid-template-columns: 1fr; } }
+</style>
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem("focusdoc-theme");
+    if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body data-plan-id="deployment-issue-plan">
+  <div class="topbar">
+    <p class="meta">Updated 2026-09-30 · issue plan</p>
+    <button type="button" class="theme-toggle" id="theme-toggle">Auto</button>
+  </div>
+  <h1 data-fb="title">Deployment implementation issues</h1>
+  <p class="facts" data-fb="facts">
+    <span class="chip" id="chip-count"></span>
+    <span class="chip">self-host</span>
+    <span class="chip">Sanitized issue drafts</span>
+  </p>
+  <div class="tldr" data-fb="tldr">
+
+    <p><strong>One shared foundation, four parallel workstreams, then a release rehearsal.</strong></p>
+    <p>The plan has 15 delivery issues, reuses #40, and keeps Linux account/cgroup work independent from Compose fixes at the start. Public issue content contains product requirements and synthetic examples only.</p>
+  </div>
+
+
+
+
+<section class="overview" data-fb="parallel-map"><h2>One epic, four workstreams</h2>
+<p><strong>15 delivery issues</strong>, including the refreshed #40. Create one new epic, 14 new delivery issues and reuse #40 for N3. IDs below are draft references, not GitHub numbers.</p>
+<div class="lanes">
+<div><h3>Web</h3>
+<p>W1 routes + W2 certificates<br>then W3 public console</p>
+</div>
+<div><h3>Native</h3>
+<p>N1 accounts/cgroups &rarr; N2 s6<br>&rarr; N3 lifecycle (#40) &rarr; N4 console</p>
+</div>
+<div><h3>Deployment</h3>
+<p>D1 Compose &rarr; D2 Git builds<br>&rarr; D3 triggers/readiness</p>
+</div>
+<div><h3>Data</h3>
+<p>P1 storage/connectivity<br>&rarr; P2 local PostgreSQL</p>
+</div>
+</div>
+<p class="notice"><strong>Start together:</strong> F0 contracts, N1 identity/cgroups and D1 Compose. After F0, W1/W2 can start; P1 and D2 also need D1. Finish with R1 recovery and V1 release rehearsal.</p>
+</section>
+  <div class="progress" data-fb="progress"><div class="bar" id="bar"></div></div>
+  <p class="count" id="count"></p>
+
+  <label class="details-toggle"><input type="checkbox" id="show-details" aria-controls="source-column" autocomplete="off"> Show details</label>
+  <main class="document-layout">
+    <div class="source-column" id="source-column" hidden>
+      <article class="source-document" data-fb="source">
+
+      <header><h2>Issue drafts</h2><p class="notice">Derived from the sanitized readiness assessment and repository review. Snapshot: 2026-09-30. Draft IDs are local to this plan.</p>
+<a href="../research/deployment-readiness.md">Read the readiness assessment</a></header>
+<section id="issue-f0"><h3>F0 / Define runtime and publication contracts</h3>
+<p class="eyebrow">Workstream: Integration · Blocked by: None</p>
+<p><strong>Problem.</strong> Application records assume Docker and one published HTTP target. Independent branches would otherwise change the same persistence and API contracts.</p>
+<p><strong>Scope.</strong> Add the smallest compatible model for container/native execution and explicit publication. Distinguish no route from a route whose target is unavailable. Preserve Application identity. Agree on route records, certificate lookup, native launch requests and database connection references before implementing adapters.</p>
+<h4>Acceptance</h4>
+<ul><li>Old state and old API requests retain container behavior and their root route; migration is covered by a fixture.</li>
+<li>An unpublished Application has no DNS/proxy entry or allocated web port. A pending published Application retains its unavailable response.</li>
+<li>Publish example payloads and ownership boundaries for W1, W2, N3 and P2. Keep new execution paths disabled until their implementations exist.</li>
+<li>Record the proposed Git/Dockerfile workflow and standalone PostgreSQL Application decision. Update domain docs through the repository domain workflow.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> src/store.rs, src/file_store.rs, request/response types in src/lib.rs, shared console types</p>
+<p class="notice"><strong>Outside this issue.</strong> No universal runtime framework, background-controller rewrite, process execution or console redesign.</p>
+</section>
+<section id="issue-w1"><h3>W1 / Route hostnames and paths to local targets</h3>
+<p class="eyebrow">Workstream: Web · Blocked by: <a href="#issue-f0">F0</a></p>
+<p><strong>Problem.</strong> The proxy can publish only one target per hostname. An Operator cannot map a root route and a separate path to different local ports.</p>
+<p><strong>Scope.</strong> Add persisted hostname/path rules with loopback targets, explicit preserve/strip behavior and deterministic precedence. Support container and native targets through the same routing contract.</p>
+<h4>Acceptance</h4>
+<ul><li>On a synthetic hostname, / reaches one target and /app reaches another. /apple does not match the /app path segment.</li>
+<li>Longest matching path wins; duplicate conflicting rules fail validation. Removing an Application removes only its own rules.</li>
+<li>Queries, redirects, assets, streaming and authenticated WebSockets work in representative upstream fixtures. Report when an upstream cannot run under a prefix.</li>
+<li>Rule changes take effect without restarting unrelated Applications. Reserved management and certificate-challenge routes cannot be overwritten.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> src/routes.rs; route table and request dispatch in src/proxy.rs; routing API adapter</p>
+<p class="notice"><strong>Outside this issue.</strong> No arbitrary remote upstreams or automatic rewriting of every upstream HTML response.</p>
+</section>
+<section id="issue-w2"><h3>W2 / Manage public certificates in the embedded proxy</h3>
+<p class="eyebrow">Workstream: Web · Blocked by: <a href="#issue-f0">F0</a></p>
+<p><strong>Problem.</strong> The local certificate workflow does not issue or renew public certificates for independent hostnames.</p>
+<p><strong>Scope.</strong> Add ACME HTTP-01 issuance, persisted account/certificate keys, SNI selection, renewal and live certificate replacement. Preserve local-CA mode. Use the challenge-handler contract agreed in F0.</p>
+<h4>Acceptance</h4>
+<ul><li>Use a local ACME test service and a controlled staging test to issue certificates for multiple synthetic test hosts and aliases.</li>
+<li>HTTP challenges precede redirects and user path rules. Unknown SNI and missing certificates have a defined safe response.</li>
+<li>Restart preserves account and certificate state. Renewal replaces the served certificate without restarting Applications.</li>
+<li>Renewal failures remain visible and retain a still-valid certificate; keys have restricted permissions and never appear in logs.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> src/tls.rs; a certificate manager module; TLS acceptor integration in src/proxy.rs</p>
+<p class="notice"><strong>Outside this issue.</strong> No external proxy dependency, wildcard certificates or provider-specific DNS automation.</p>
+</section>
+<section id="issue-w3"><h3>W3 / Expose public routing and TLS controls safely</h3>
+<p class="eyebrow">Workstream: Web · Blocked by: <a href="#issue-w1">W1</a>, <a href="#issue-w2">W2</a></p>
+<p><strong>Problem.</strong> The Operator needs one place to manage public routes and certificates without exposing a plaintext management API.</p>
+<p><strong>Scope.</strong> Add route editing, certificate status/retry and an explicit console hostname using the embedded proxy. Keep backend management and database listeners private. Reuse the existing Operator authentication model.</p>
+<h4>Acceptance</h4>
+<ul><li>An Operator can add, edit and delete a route and inspect issuance/renewal failures from the console.</li>
+<li>The public console uses trusted HTTPS. The plaintext API is restricted, and unauthenticated API/terminal requests fail through the final public path.</li>
+<li>App rules cannot shadow management endpoints. Spoofed forwarded headers do not grant trust; direct-edge operation has defined client address handling.</li>
+<li>Follow skills/add-page/SKILL.md and verify the real console against cargo run -- serve after rebuilding it.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> src/main.rs listener configuration; route/certificate console components and API adapters</p>
+<p class="notice"><strong>Outside this issue.</strong> No multi-Operator roles or trusted-upstream proxy product in this slice.</p>
+</section>
+<section id="issue-n1"><h3>N1 / Launch native processes under isolated Linux accounts</h3>
+<p class="eyebrow">Workstream: Native · Blocked by: None</p>
+<p><strong>Problem.</strong> Native execution must never run Application commands as root, and resource limits must cover descendants.</p>
+<p><strong>Scope.</strong> Provision a dedicated non-login account, owned home/data directories and a delegated cgroup v2 context. Define a launch request that can apply identity, environment and limits before executing a command. This module does not expose an Application API yet.</p>
+<h4>Acceptance</h4>
+<ul><li>Reject missing, empty, unknown and UID 0 identities. Failed group setup, privilege drop or cgroup assignment prevents execution with no root fallback.</li>
+<li>Main commands, hooks, build commands and later terminals use the same identity policy. Clear inherited privileged credentials, capabilities and supplementary groups; prevent privilege escalation.</li>
+<li>CPU, memory and task limits cover forked and detached descendants. Stopping the process tree leaves no Application process behind.</li>
+<li>Linux integration tests prove separate private directories, denied Platform credential access and no default sudo or container-engine access. Cgroups are documented as resource controls, not a filesystem or network sandbox.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> New native identity and cgroup modules with a narrow privileged provisioning boundary</p>
+<p class="notice"><strong>Outside this issue.</strong> No general user-management console, interactive Linux login management or macOS native runtime.</p>
+</section>
+<section id="issue-n2"><h3>N2 / Supervise native process trees with s6 on Linux</h3>
+<p class="eyebrow">Workstream: Native · Blocked by: <a href="#issue-n1">N1</a></p>
+<p><strong>Problem.</strong> A safe launch primitive still needs process supervision, logs and recovery across daemon or Host restarts.</p>
+<p><strong>Scope.</strong> Install/detect s6, generate protected service directories and implement start, stop, restart, readiness and log capture. Provide Linux boot supervision and cgroup delegation. The Host service manager may bootstrap/delegate; s6 owns Application processes.</p>
+<h4>Acceptance</h4>
+<ul><li>Use N1 before any Application command executes, including readiness hooks. Applications cannot modify supervisor wrappers.</li>
+<li>A synthetic process recovers from failure; stop/restart cleans up descendants and retains Application data.</li>
+<li>Platform restart reconnects to existing supervision without duplicate processes. Host reboot restores intended running/stopped states.</li>
+<li>Missing s6, unsupported cgroup delegation and unhealthy startup produce actionable errors. Logs rotate and retain per-Application ownership.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> New s6 runtime module; Linux service assets; targeted install.sh changes</p>
+<p class="notice"><strong>Outside this issue.</strong> No per-Application systemd backend or replacement of Docker supervision.</p>
+</section>
+<section id="issue-n3"><h3>N3 / Integrate native Applications into lifecycle operations <span class="issue-tag">Reuse #40</span></h3>
+<p class="eyebrow">Workstream: Native · Blocked by: <a href="#issue-f0">F0</a>, <a href="#issue-n2">N2</a></p>
+<p><strong>Problem.</strong> Application creation, status and lifecycle operations still assume a container.</p>
+<p><strong>Scope.</strong> Refresh existing issue #40 around the embedded proxy and s6 implementation. Connect native definitions to existing task/audit infrastructure, persisted intent, status, logs and loopback publication. Keep the current container path intact.</p>
+<h4>Acceptance</h4>
+<ul><li>Create a native Application with command, working directory, dedicated account, environment, data path and resource limits.</li>
+<li>Start, stop, restart, update and remove report coherent task/status results. Interrupted work and daemon restart reconcile safely.</li>
+<li>A native web target binds privately and can be published; a native worker can remain unpublished. W1 performs the final path-routing integration.</li>
+<li>Removal revokes runtime access and preserves data unless the Operator explicitly requests deletion. Existing container lifecycle tests still pass.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> src/apps.rs native dispatch; lifecycle API adapter; native persistence adapter</p>
+<p class="notice"><strong>Outside this issue.</strong> Do not carry the old issue&#x27;s external-runtime stage, obsolete proxy assumptions or full controller redesign into this release.</p>
+</section>
+<section id="issue-n4"><h3>N4 / Operate native Applications from the console</h3>
+<p class="eyebrow">Workstream: Native · Blocked by: <a href="#issue-n3">N3</a></p>
+<p><strong>Problem.</strong> The Operator needs native setup and diagnosis without an administrative shell.</p>
+<p><strong>Scope.</strong> Expose native configuration, lifecycle actions, logs, resource usage and an authenticated terminal under the Application account. Show the execution identity and the difference between resource limits and access permissions.</p>
+<h4>Acceptance</h4>
+<ul><li>Create and restart a synthetic native Application in the real console; logs, readiness and resource usage reflect the process tree.</li>
+<li>Configure each Application's mise dependencies and setup commands with the shared dependency editor. Installation, setup, the main process and terminal use its dedicated account and limits. Keep tools, configuration and caches private to that Application.</li>
+<li>Apply recipe changes before startup, report installation failures, and preserve stopped intent. Ordinary restarts and Variable edits do not repeat a successfully applied recipe.</li>
+<li>The terminal and every child use the dedicated non-root account and the same cgroup. No inherited administrative credentials are available.</li>
+<li>Environment and credential editing keep secrets out of ordinary responses and logs. Display only deliberate connection/secret reveals.</li>
+<li>Follow skills/add-page/SKILL.md, rebuild the console and verify it against the real backend.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> Native console form/detail components; src/terminal.rs native adapter; src/metrics.rs native collector</p>
+<p class="notice"><strong>Outside this issue.</strong> No new Operator-role system or automatic copying of an Operator&#x27;s home directory and credentials.</p>
+</section>
+<section id="issue-d1"><h3>D1 / Resolve Compose configuration deterministically</h3>
+<p class="eyebrow">Workstream: Deployment · Blocked by: None</p>
+<p><strong>Problem.</strong> Saved variables are broadcast to services but do not define Compose interpolation. Supported YAML/storage behavior is also incomplete.</p>
+<p><strong>Scope.</strong> Normalize extension/merge syntax and define a documented supported Compose subset. Resolve variables from explicit Application inputs, including defaults, required values and literal dollar signs. Preserve supported commands, users, health checks and dependency declarations.</p>
+<h4>Acceptance</h4>
+<ul><li>Table-driven fixtures cover missing/default/required values, escaping and YAML merges. Ambient daemon variables do not silently change the result.</li>
+<li>Only services explicitly using a secret receive it. Preserve existing Applications through an explicit compatibility/migration policy rather than silently removing injected values.</li>
+<li>Unsupported keys or volume options fail with a precise error instead of disappearing. Do not claim full Compose compatibility.</li>
+<li>Provide a stable normalized definition to D2 and P1. Repository-relative env files and builds are materialized by D2; arbitrary Host file reads are rejected.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> src/compose_app.rs parser and renderer; focused Compose fixtures</p>
+<p class="notice"><strong>Outside this issue.</strong> No replicas, orchestration cluster or one-shot-job product unless a separate requirement establishes the need.</p>
+</section>
+<section id="issue-d2"><h3>D2 / Build immutable releases from Git sources</h3>
+<p class="eyebrow">Workstream: Deployment · Blocked by: <a href="#issue-f0">F0</a>, <a href="#issue-d1">D1</a></p>
+<p><strong>Problem.</strong> A Host filesystem path does not reproduce repository checkout, build inputs or an Application&#x27;s release revision.</p>
+<p><strong>Scope.</strong> Implement the proposed minimal Git workflow: repository/ref, pinned commit, build context, Dockerfile and declared build inputs. Materialize supported Compose build/env_file inputs inside that checkout. Keep the existing registry-image workflow.</p>
+<h4>Acceptance</h4>
+<ul><li>A selected commit builds an immutable image and records revision/build results. A failed build leaves the running release untouched.</li>
+<li>Resolve paths inside the checkout and reject escapes. User build steps execute in the controlled build runtime, never an unrestricted root shell on the Host.</li>
+<li>Private checkout/registry credentials have restricted storage and redacted output. Treat build secrets separately from ordinary build arguments.</li>
+<li>The console can configure the source and trigger a build. No provider-specific OAuth application or automatic buildpack detection is required.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> New source checkout/build module; narrow Docker build adapter; source console form</p>
+<p class="notice"><strong>Outside this issue.</strong> Native package/tool installation remains an explicit non-root command flow owned by N1/N3; this ticket builds container releases.</p>
+</section>
+<section id="issue-d3"><h3>D3 / Trigger releases and report readiness failures</h3>
+<p class="eyebrow">Workstream: Deployment · Blocked by: <a href="#issue-d2">D2</a></p>
+<p><strong>Problem.</strong> Source updates need an authenticated repeatable trigger and a clear outcome when a candidate release is unhealthy.</p>
+<p><strong>Scope.</strong> Add a signed webhook or scoped authenticated deploy trigger, branch filtering and per-Application serialization. Reuse deployment tasks and retain the previous immutable image/revision for explicit recovery.</p>
+<h4>Acceptance</h4>
+<ul><li>Invalid authentication and irrelevant branches do not build. Duplicate deliveries do not start duplicate releases; concurrent deploys serialize.</li>
+<li>The UI distinguishes running from ready and reports failed health checks within a defined timeout.</li>
+<li>A failed candidate does not report successful deployment. The Operator can redeploy the previous immutable release, with downtime behavior documented.</li>
+<li>Integration tests cover API-triggered image deployment as well as Git triggers, without leaking trigger credentials.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> Source trigger module; deployment task integration; readiness/status console updates</p>
+<p class="notice"><strong>Outside this issue.</strong> No promised zero-downtime rollout or automatic database rollback. A release gate must explicitly accept the initial availability policy.</p>
+</section>
+<section id="issue-p1"><h3>P1 / Preserve storage and private connectivity for stateful apps</h3>
+<p class="eyebrow">Workstream: Data · Blocked by: <a href="#issue-f0">F0</a>, <a href="#issue-d1">D1</a></p>
+<p><strong>Problem.</strong> Generated volume names can start an Application on empty storage, and shared networking does not provide private database access.</p>
+<p><strong>Scope.</strong> Add explicit named-volume mapping or a verified copy path, safe bind-mount handling and consumer-scoped database connectivity. Enable container Applications without an HTTP Web Target through F0.</p>
+<h4>Acceptance</h4>
+<ul><li>A synthetic existing volume is mapped deliberately or copied with a manifest/check. Restart, redeploy and ordinary removal preserve its data.</li>
+<li>File mounts remain files and directory mounts remain directories. Supported long syntax and read-only settings retain their meaning; unsupported options fail.</li>
+<li>Standalone stateful services have lifecycle/health reporting without a hostname, web-port allocation or proxy route.</li>
+<li>Only declared consumers receive database network access/credentials. Container connectivity and loopback-only access for native consumers have explicit tests; there is no public database listener.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> src/compose_app.rs volume/network rendering; src/docker.rs project materialization; storage adapter</p>
+<p class="notice"><strong>Outside this issue.</strong> No automatic adoption of arbitrary live workloads or silent migration of all existing network policies.</p>
+</section>
+<section id="issue-p2"><h3>P2 / Provision local PostgreSQL through the console</h3>
+<p class="eyebrow">Workstream: Data · Blocked by: <a href="#issue-p1">P1</a></p>
+<p><strong>Problem.</strong> The Operator currently has to author database Compose definitions and wire persistence and credentials manually.</p>
+<p><strong>Scope.</strong> Use a managed container Application with no HTTP publication. Offer a pinned PostgreSQL major version, database/user creation, generated credentials, durable storage, readiness and explicit consumer connections. This is the proposed first implementation of local PostgreSQL.</p>
+<h4>Acceptance</h4>
+<ul><li>Create a database in the real console, connect a declared consumer and preserve a test row across restart/redeploy.</li>
+<li>Show readiness and actionable startup failures. Connection details use private paths and are revealed only through authenticated controls.</li>
+<li>Accept a compatible logical import with clear job status and validate the imported data. Do not upgrade the major version as part of data migration.</li>
+<li>Disconnecting a consumer revokes its Platform-managed connection. Removing the database requires an explicit separate choice before deleting data.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> New PostgreSQL provisioning/template module; database console form; connection API adapter</p>
+<p class="notice"><strong>Outside this issue.</strong> No high availability, replication manager or additional database engines.</p>
+</section>
+<section id="issue-r1"><h3>R1 / Export and restore Platform and Application data</h3>
+<p class="eyebrow">Workstream: Recovery · Blocked by: <a href="#issue-w2">W2</a>, <a href="#issue-n3">N3</a>, <a href="#issue-d2">D2</a>, <a href="#issue-p2">P2</a></p>
+<p><strong>Problem.</strong> A Platform configuration copy does not restore databases, file volumes, native home data or queued work.</p>
+<p><strong>Scope.</strong> Provide explicit backup/restore operations and a runbook covering consistent Platform State, TLS/source credentials, PostgreSQL logical backups, file volumes and native data. Record required stops or queue drains. Produce an artifact the Operator can store off-host.</p>
+<h4>Acceptance</h4>
+<ul><li>Restore into an isolated empty installation and verify records, credentials, certificate state, database rows and representative Application files.</li>
+<li>The restore path checks compatibility, ownership and permissions and never attaches the same live database directory to two writers.</li>
+<li>Backups and logs protect secrets. Failures and incomplete backups are visible; a completed export includes a manifest and verification result.</li>
+<li>State the manual backup schedule and retention responsibility. Automated scheduling/remote storage integrations remain separately tracked unless made a release requirement.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> Backup/restore module or commands; docs/operating.md; isolated recovery fixtures</p>
+<p class="notice"><strong>Outside this issue.</strong> No automatic production restore, cloud-storage provider integration or zero-data-loss claim.</p>
+</section>
+<section id="issue-v1"><h3>V1 / Rehearse recovery and validate a migration-ready release</h3>
+<p class="eyebrow">Workstream: Release · Blocked by: <a href="#issue-w3">W3</a>, <a href="#issue-n4">N4</a>, <a href="#issue-d3">D3</a>, <a href="#issue-p2">P2</a>, <a href="#issue-r1">R1</a></p>
+<p><strong>Problem.</strong> Merged capabilities do not prove that a complete deployment can survive restart, failed release and data restore.</p>
+<p><strong>Scope.</strong> Validate one released build on disposable Linux infrastructure using synthetic web, worker, database and native workloads. Keep any actual migration inventory and access details outside the repository.</p>
+<h4>Acceptance</h4>
+<ul><li>Verify public certificate issuance/renewal, route precedence, authentication, assets and WebSockets through the final embedded proxy.</li>
+<li>Verify source triggers, container updates, database import, persisted worker data and native non-root identity/child limits.</li>
+<li>Reboot the Host, recover interrupted work, restore a backup and exercise a failed deployment followed by explicit release recovery.</li>
+<li>Record the exact tested release and accepted downtime/backup limits in the private operational record. Public evidence contains only synthetic examples.</li>
+<li>After the release passes, prepare a separate private cutover plan with backup, traffic switch and rollback checkpoints. Do not perform cutover as part of this implementation issue.</li>
+</ul>
+<p class="notice"><strong>Primary ownership.</strong> Synthetic end-to-end fixtures; release checklist; sanitized operating documentation</p>
+<p class="notice"><strong>Outside this issue.</strong> A passing unit suite alone does not close this issue; production migration remains a later operation.</p>
+</section>
+      </article>
+    <details class="context" data-fb="context" open>
+      <summary>Context</summary>
+
+      <details open><summary>Scope decisions</summary>
+<p>The requirements come from the sanitized readiness assessment and the Operator's choices in this conversation. This plan proposes implementation boundaries; it does not report shipped capabilities.</p>
+<ul><li>The embedded proxy owns public HTTPS and hostname/path routing.</li>
+<li>One console Operator is enough. Per-Application Linux accounts are execution identities.</li>
+<li>s6 owns native process supervision. Every Application command and terminal runs under a dedicated non-root account.</li>
+<li>The first local PostgreSQL flow uses a standalone container Application with no HTTP route. This is a proposed implementation choice to settle in F0.</li>
+<li>The proposed source workflow is Git plus declared Dockerfile/Compose build inputs. An external image-publishing replacement remains possible, but choosing it requires rewriting D2/D3 before marking them ready.</li>
+<li>Manual backup export and explicit deployment recovery are the first proposed recovery baseline. V1 requires an explicit decision about acceptable downtime and scheduling before migration.</li>
+</ul>
+</details>
+<details open><summary>How to run the work in parallel</summary>
+<p>Use one worktree and branch per active issue. Keep one owner per workstream. F0's owner coordinates shared state/API wiring and final integration.</p>
+<ol><li>Start F0, N1 and D1 together. N1 and D1 stay behind their module boundaries and add no public native API.</li>
+<li>Merge F0 before adapters change shared state. Rebase each branch onto it. W1 and W2 are independent implementations, but Web's owner serializes their edits to src/proxy.rs.</li>
+<li>After D1 merges, Data owns the volume/network renderer changes in P1. Deployment owns checkout/build work in D2. Coordinate the small Docker adapter patches.</li>
+<li>Build runtime-specific forms in separate components. Serialize registration changes in AppForm, shared console API types and navigation. Each new/reviewed screen follows skills/add-page/SKILL.md.</li>
+<li>Only the integrator lands changes to shared persistence, request/response types and common lifecycle dispatch during the same merge window. Feature owners supply narrow patches. This is merge coordination, not a new abstraction layer.</li>
+<li>Merge complete dependent slices. Do not enable native execution before N1/N2 enforce identity and cgroups. Begin recovery fixtures early, then close R1 after all persisted-state producers are integrated.</li>
+</ol>
+<p>Four workstreams are a maximum, not a requirement for four simultaneous agents. With three execution slots, finish F0/N1/D1 first, then alternate Deployment and Data as blockers clear.</p>
+</details>
+<details open id="execution-waves"><summary>Approved execution waves</summary>
+<p>The Operator approved this plan on 2026-09-30. Run up to three implementation tasks per wave, plus one coordinator. Each task uses its own worktree. These waves sequence the existing scope; they add no delivery issues.</p>
+<table class="wave-table">
+<thead><tr><th scope="col">Wave</th><th scope="col">Parallel tasks</th><th scope="col">Exit gate</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>F0, N1, D1</td><td>Shared contracts, safe launch boundary and deterministic Compose behavior verified.</td></tr>
+<tr><td>2</td><td>W1, N2, P1</td><td>Path routing, s6 supervision and storage/private connectivity verified.</td></tr>
+<tr><td>3</td><td>W2, N3 (#40), D2</td><td>Certificates, native lifecycle and immutable source builds verified.</td></tr>
+<tr><td>4</td><td>N4, P2, D3</td><td>Native console, local PostgreSQL and deployment triggers/readiness verified.</td></tr>
+<tr><td>5</td><td>W3, R1</td><td>Public management access and isolated backup restoration verified.</td></tr>
+<tr><td>6</td><td>V1</td><td>The selected release passes the full rehearsal. Live cutover remains a later operation.</td></tr>
+</tbody></table>
+<p>Routing and certificate work use different waves to avoid concurrent proxy edits. Volume/network rendering lands before source-build integration. Within a wave, the coordinator serializes shared API, persistence and console-registration edits.</p>
+<p>Wave 4 implementation and validation are recorded in <a href="../research/wave-4-validation.md">Wave 4 validation</a>. W3/R1 and V1 remain release gates.</p>
+<p>Start a wave only after its prerequisite work is integrated and its relevant checks have passed. A handoff file, a closed checkbox or code written without the required Linux checks does not satisfy a gate. Implementation sessions stop after their selected wave and report remaining blockers.</p>
+</details>
+<details open><summary>GitHub publication and completion rules</summary>
+<p><strong>Drafts only.</strong> No GitHub issues were created or changed for this plan. The local checkboxes track preparation of issue handoffs, not implemented functionality or GitHub status.</p>
+<p>Create a parent epic titled <code>Support public and native Application deployments</code>. Copy each draft's problem, scope, acceptance and exclusions into a child issue. Refresh #40 as N3 before linking it; its existing body describes an older architecture.</p>
+<p>Use GitHub sub-issues and native blocked-by dependencies per <a href="../agents/issue-tracker.md">the issue-tracker guide</a>. If unavailable, use explicit parent task lists and <code>Blocked by</code> lines. Assign <code>ready-for-agent</code> only after scope is settled and all open blockers are resolved.</p>
+<p>Each implementation PR needs relevant automated checks and concrete manual acceptance. Console work must use a rebuilt console with the real <code>cargo run -- serve</code> backend. Privilege, s6, cgroup and reboot checks require a disposable Linux Host. A macOS-only test pass cannot prove those behaviors.</p>
+<p>Dependency list: F0 []; W1 [F0]; W2 [F0]; W3 [W1,W2]; N1 []; N2 [N1]; N3 [F0,N2]; N4 [N3]; D1 []; D2 [F0,D1]; D3 [D2]; P1 [F0,D1]; P2 [P1]; R1 [W2,N3,D2,P2]; V1 [W3,N4,D3,P2,R1].</p>
+</details>
+<details open><summary>Coverage and release limits</summary>
+<ul><li>W1/W2/W3 cover routing, trusted HTTPS, public console access and restricted management listeners.</li>
+<li>N1/N2/N3/N4 cover accounts, cgroups, supervision, boot recovery, lifecycle, logs, metrics and terminals.</li>
+<li>D1/D2/D3 cover supported Compose input, variable handling, builds, deploy triggers, readiness and explicit previous-release recovery.</li>
+<li>P1/P2 cover persistence, private connections, local database creation and data import. R1 covers independent state/data restoration.</li>
+<li>V1 combines these capabilities and validates existing container lifecycle, streaming and authentication against the selected release.</li>
+<li>Additional console roles, macOS native execution, scaling, arbitrary workload adoption, one-shot job support, durable monitoring/alerts, DNS-provider automation and zero-downtime releases are outside this proposed first release.</li>
+<li>Direct public IPv6 support is a separate existing issue (#82). Verify the chosen public DNS/listener path privately before cutover; do not leave unsupported address records active.</li>
+<li>Do not import unrelated issues into this epic. No live deployment identities, inventories, values, measurements, credentials or access instructions belong in its tickets or PRs.</li>
+</ul>
+</details>
+<details><summary>Session log</summary><ul>
+<li>Reviewed runtime, proxy, source deployment, storage and recovery gaps.</li>
+<li>Recorded integrated HTTPS, single-Operator access, local PostgreSQL and non-root native execution requirements.</li>
+<li>Replaced deployment-specific notes with a generic readiness assessment.</li>
+<li>Checked existing issues and identified #40 for reuse with an updated scope.</li>
+<li>Prepared this dependency map and sanitized issue drafts. No implementation, publication or production migration has run.</li>
+<li>The Operator approved the plan and requested implementation handoffs grouped into waves. Added six waves without changing scope.</li>
+</ul>
+</details>
+
+    </details>
+    </div>
+    <aside class="task-margin" aria-label="Tasks linked to source">
+      <p class="source-hint">Click a task to open its issue draft. Checkboxes track handoff preparation only.</p>
+    <details open data-fb="tasks">
+      <summary>Prepare issue handoffs</summary>
+      <ul class="tasks" id="task-list">
+
+        <li data-source="issue-f0"><div class="task-row"><input type="checkbox" aria-label="Complete: Prepare the shared-contract handoff" data-task="prepare-foundation"><span class="body" role="button" tabindex="0" aria-label="Read issue draft: Prepare the shared-contract handoff"><span class="text">Prepare the shared-contract handoff</span><span class="detail">Start with F0. Confirm the small state/API contracts, proposed Git and PostgreSQL choices, then give one integrator ownership. Done when other streams can use the same payloads.</span></span></div></li>
+<li data-source="issue-n1"><div class="task-row"><input type="checkbox" aria-label="Complete: Prepare the native execution issues" data-task="prepare-native"><span class="body" role="button" tabindex="0" aria-label="Read issue draft: Prepare the native execution issues"><span class="text">Prepare the native execution issues</span><span class="detail">N1 can start immediately. Hand off N1/N2 and refresh #40 for N3; attach N4 afterward. Done when Linux security acceptance and the dependency chain are explicit.</span></span></div></li>
+<li data-source="issue-d1"><div class="task-row"><input type="checkbox" aria-label="Complete: Prepare the Compose and deployment issues" data-task="prepare-deployment"><span class="body" role="button" tabindex="0" aria-label="Read issue draft: Prepare the Compose and deployment issues"><span class="text">Prepare the Compose and deployment issues</span><span class="detail">D1 can start immediately. Give D2/D3 the agreed source and readiness contracts. Done when parser ownership and build credential handling are assigned.</span></span></div></li>
+<li data-source="issue-w1"><div class="task-row"><input type="checkbox" aria-label="Complete: Prepare the routing and certificate issues" data-task="prepare-web"><span class="body" role="button" tabindex="0" aria-label="Read issue draft: Prepare the routing and certificate issues"><span class="text">Prepare the routing and certificate issues</span><span class="detail">W1/W2 wait for F0; W3 waits for both. Assign one Web owner to coordinate proxy edits. Done when path/challenge precedence and console acceptance are attached.</span></span></div></li>
+<li data-source="issue-p1"><div class="task-row"><input type="checkbox" aria-label="Complete: Prepare the PostgreSQL and recovery issues" data-task="prepare-data"><span class="body" role="button" tabindex="0" aria-label="Read issue draft: Prepare the PostgreSQL and recovery issues"><span class="text">Prepare the PostgreSQL and recovery issues</span><span class="detail">P1 waits for F0/D1, then P2. Name the R1/V1 owners and retain the release gate. Done when storage preservation, restore evidence and cutover boundaries are explicit.</span></span></div></li>
+      </ul>
+    </details>
+
+</aside>
+  </main>
+
+  <footer data-fb="footer">
+    <button type="button" id="reset">Reset checkboxes</button>
+    <button type="button" id="fb-mode">Comment mode</button>
+  </footer>
+
+  <aside class="fb-panel" id="fb-panel">
+    <strong>Feedback</strong>
+    <ul id="fb-list"></ul>
+    <button type="button" id="fb-copy">Copy for agent</button>
+    <button type="button" id="fb-clear">Clear all</button>
+    <textarea aria-label="Feedback to copy" class="fb-out" id="fb-out" readonly></textarea>
+  </aside>
+
+  <form class="fb-form" id="fb-form">
+    <label for="fb-text">Your comment</label>
+    <textarea id="fb-text" placeholder="What is wrong here?"></textarea>
+    <button type="button" id="fb-save">Save</button>
+    <button type="button" id="fb-cancel">Cancel</button>
+  </form>
+
+<script>
+(function () {
+  var key = "focusdoc:" + document.body.dataset.planId;
+  var state = {};
+  try { state = JSON.parse(localStorage.getItem(key)) || {}; } catch (e) {}
+  var taskList = document.getElementById("task-list");
+  var boxes = Array.prototype.slice.call(taskList.querySelectorAll("input[data-task]"));
+
+  var detailsToggle = document.getElementById('show-details');
+  function setDetails(visible) {
+    detailsToggle.checked = visible;
+    document.getElementById('source-column').hidden = !visible;
+    document.body.classList.toggle('showing-details', visible);
+  }
+  // Each document opening starts with tasks only, including browser history restoration.
+  setDetails(false);
+  window.addEventListener('pageshow', function () { setDetails(false); });
+  detailsToggle.addEventListener('change', function () { setDetails(this.checked); });
+
+  function revealSource(row) {
+    var target = document.getElementById(row.dataset.source);
+    if (!target) return;
+    setDetails(true);
+    document.querySelectorAll('.source-selected').forEach(function (el) { el.classList.remove('source-selected'); });
+    target.classList.add('source-selected');
+    target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'start', behavior: 'instant' });
+  }
+  document.querySelectorAll('li[data-source]').forEach(function (row) {
+    row.addEventListener('click', function (event) {
+      if (document.body.classList.contains('commenting') || event.target.closest('input, a, button')) return;
+      revealSource(row);
+    });
+    row.querySelector('[role="button"]').addEventListener('keydown', function (event) {
+      if (document.body.classList.contains('commenting')) return;
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); revealSource(row); }
+    });
+  });
+
+
+  var themeBtn = document.getElementById("theme-toggle");
+  var themeOrder = ["auto", "light", "dark"];
+  var themeLabels = { auto: "Auto", light: "Light", dark: "Dark" };
+
+  function currentTheme() {
+    var t = document.documentElement.getAttribute("data-theme");
+    return t === "light" || t === "dark" ? t : "auto";
+  }
+
+  function setTheme(t) {
+    if (t === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", t);
+    themeBtn.textContent = themeLabels[t];
+    try { localStorage.setItem("focusdoc-theme", t); } catch (e) {}
+  }
+
+  themeBtn.addEventListener("click", function () {
+    setTheme(themeOrder[(themeOrder.indexOf(currentTheme()) + 1) % themeOrder.length]);
+  });
+  themeBtn.textContent = themeLabels[currentTheme()];
+
+  function isDone(box) {
+    return Object.prototype.hasOwnProperty.call(state, box.dataset.task)
+      ? state[box.dataset.task] === true : box.hasAttribute("checked");
+  }
+
+  function render() {
+    var done = 0;
+    boxes.forEach(function (box) {
+      var d = isDone(box);
+      box.checked = d;
+      if (d) done++;
+      box.closest("li").classList.toggle("is-done", d);
+    });
+    var total = boxes.length;
+    var pct = total ? Math.round((done / total) * 100) : 0;
+    var pendingN = 0;
+    boxes.forEach(function (b) { if (!isDone(b) && taskList.contains(b)) pendingN++; });
+    document.getElementById("chip-count").textContent = pendingN + " handoffs remaining";
+    document.getElementById("bar").style.width = pct + "%";
+    document.getElementById("count").textContent =
+      pendingN + " of " + total + " issue handoffs remaining" + (total && pct === 100 ? ": all clear" : "");
+    var next = null;
+    for (var i = 0; i < boxes.length; i++) {
+      if (!isDone(boxes[i]) && taskList.contains(boxes[i])) { next = boxes[i]; break; }
+    }
+    boxes.forEach(function (box) { box.closest("li").classList.toggle("is-next", box === next); });
+    var label = document.getElementById("next-label");
+    var task = document.getElementById("next-task");
+    var btn = document.getElementById("next-done");
+    var card = document.getElementById("next");
+    if (!card || !label || !task || !btn) return;
+    if (next) {
+      document.getElementById("next").classList.remove("all-done");
+      label.textContent = "Do this now";
+      task.textContent = next.closest("li").querySelector(".text").textContent;
+      btn.style.display = "";
+      btn.dataset.task = next.dataset.task;
+    } else {
+      document.getElementById("next").classList.add("all-done");
+      label.textContent = "All done";
+      task.textContent = "Everything is checked. Close the laptop.";
+      btn.style.display = "none";
+    }
+  }
+
+  function save() {
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch (e) {}
+  }
+
+  boxes.forEach(function (box) {
+    box.addEventListener("change", function () {
+      state[box.dataset.task] = box.checked;
+      save();
+      render();
+    });
+  });
+
+  var nextDone = document.getElementById("next-done");
+  if (nextDone) nextDone.addEventListener("click", function () {
+    state[this.dataset.task] = true;
+    save();
+    render();
+  });
+
+  document.getElementById("reset").addEventListener("click", function () {
+    state = {};
+    save();
+    render();
+  });
+
+  var fbKey = key + ":fb";
+  var fb = [];
+  try { fb = JSON.parse(localStorage.getItem(fbKey)) || []; } catch (e) {}
+  var fbMode = false;
+  var fbModeBtn = document.getElementById("fb-mode");
+  var fbPanel = document.getElementById("fb-panel");
+  var fbForm = document.getElementById("fb-form");
+  var fbText = document.getElementById("fb-text");
+  var fbWhere = null;
+
+  function fbLabel(c) { return c.task ? "task " + c.task : c.block; }
+
+  function fbSave() {
+    try { localStorage.setItem(fbKey, JSON.stringify(fb)); } catch (e) {}
+  }
+
+  function fbMark() {
+    Array.prototype.forEach.call(document.querySelectorAll(".has-fb"), function (el) {
+      el.classList.remove("has-fb");
+    });
+    fb.forEach(function (c) {
+      var el = c.task
+        ? document.querySelector('[data-task="' + c.task + '"]')
+        : document.querySelector('[data-fb="' + c.block + '"]');
+      if (el && el.tagName === "INPUT") el = el.closest("li");
+      if (el && fbMode) el.classList.add("has-fb");
+    });
+  }
+
+  function fbRender() {
+    var list = document.getElementById("fb-list");
+    list.innerHTML = "";
+    fb.forEach(function (c) {
+      var li = document.createElement("li");
+      var b = document.createElement("strong");
+      b.textContent = fbLabel(c);
+      li.appendChild(b);
+      li.appendChild(document.createTextNode(c.text));
+      var del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "x";
+      del.addEventListener("click", function () {
+        fb.splice(fb.indexOf(c), 1);
+        fbSave(); fbRender(); fbMark();
+      });
+      li.appendChild(del);
+      list.appendChild(li);
+    });
+    fbPanel.classList.toggle("visible", fbMode);
+    document.getElementById("fb-copy").style.display = fb.length ? "" : "none";
+    document.getElementById("fb-clear").style.display = fb.length ? "" : "none";
+  }
+
+  fbModeBtn.addEventListener("click", function () {
+    fbMode = document.body.classList.toggle("commenting");
+    fbModeBtn.textContent = fbMode ? "Commenting: click an element" : "Comment mode";
+    fbRender(); fbMark();
+    if (!fbMode) fbForm.classList.remove("visible");
+  });
+
+  document.body.addEventListener("click", function (e) {
+    if (!fbMode) return;
+    if (fbPanel.contains(e.target) || fbForm.contains(e.target) || fbModeBtn.contains(e.target)) return;
+    var taskRow = e.target.closest("li");
+    var taskBox = e.target.closest("[data-task]") || (taskRow && taskRow.querySelector("input[data-task]"));
+    var block = e.target.closest("[data-fb]");
+    if (!taskBox && !block) return;
+    e.preventDefault();
+    e.stopPropagation();
+    fbWhere = taskBox ? { task: taskBox.dataset.task } : { block: block.dataset.fb };
+    fbText.value = "";
+    fbForm.classList.add("visible");
+    fbText.focus();
+  }, true);
+
+  document.getElementById("fb-save").addEventListener("click", function () {
+    if (fbWhere && fbText.value.trim()) {
+      fb.push({ block: fbWhere.block, task: fbWhere.task || null, text: fbText.value.trim() });
+      fbSave(); fbRender(); fbMark();
+    }
+    fbForm.classList.remove("visible");
+    fbWhere = null;
+  });
+
+  document.getElementById("fb-cancel").addEventListener("click", function () {
+    fbForm.classList.remove("visible");
+    fbWhere = null;
+  });
+
+  document.getElementById("fb-copy").addEventListener("click", function () {
+    var lines = ["## Focus doc feedback: " + document.body.dataset.planId, ""];
+    fb.forEach(function (c) { lines.push("- " + fbLabel(c) + ": " + c.text); });
+    var out = lines.join("\n");
+    var ta = document.getElementById("fb-out");
+    ta.value = out;
+    ta.style.display = "block";
+    ta.focus();
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    try { navigator.clipboard.writeText(out); } catch (e) {}
+  });
+
+  document.getElementById("fb-clear").addEventListener("click", function () {
+    fb = [];
+    fbSave(); fbRender(); fbMark();
+    document.getElementById("fb-out").style.display = "none";
+  });
+
+  fbRender();
+  fbMark();
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Chip,
   ChipInput,
@@ -74,11 +74,13 @@ export function Dependencies({
   onChange,
   disabled,
   id = "dependency-search",
+  hint,
 }: {
   value: ImageDependency[];
   onChange: (value: ImageDependency[]) => void;
   disabled: boolean;
   id?: string;
+  hint?: ReactNode;
 }) {
   const [tools, setTools] = useState<MiseTool[]>([]);
   const [loading, setLoading] = useState(false);
@@ -229,9 +231,9 @@ export function Dependencies({
         ) : null}
       </ChipInput>
       <small className="field-hint" id={`${id}-help`}>
-        Type a mise key or search for one. Enter and Tab take a suggestion,
+        {hint ?? <>Type a mise key or search for one. Enter and Tab take a suggestion,
         Backspace removes the last chip. Press a version to change it. npm tools
-        take <code>allow_builds=name, name</code> on their <code>+</code>.
+        take <code>allow_builds=name, name</code> on their <code>+</code>.</>}
       </small>
       {unversioned.length ? (
         <ValidationMessage>

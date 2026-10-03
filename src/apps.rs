@@ -65,6 +65,7 @@ pub enum DeployError {
     MissingImage,
     MissingPath,
     MissingCompose,
+    Readiness(String),
     InvalidDevelopment(String),
     InvalidCompose(ComposeDefinitionError),
     Docker(DockerError),
@@ -103,6 +104,7 @@ impl std::fmt::Display for DeployError {
             }
             DeployError::MissingImage => write!(f, "image is required"),
             DeployError::MissingPath => write!(f, "path is required"),
+            DeployError::Readiness(message) => write!(f, "{message}"),
             DeployError::MissingCompose => write!(f, "a Compose definition is required"),
             DeployError::InvalidDevelopment(message) => {
                 write!(f, "invalid custom image: {message}")
@@ -170,32 +172,97 @@ impl From<ComposeDefinitionError> for DeployError {
 }
 
 pub fn validate_app_name(name: &str) -> Result<(), DeployError> {
-    if name.is_empty() {
-        return Err(DeployError::InvalidName("must not be empty".into()));
+    if name.trim().is_empty() {
+        return Err(DeployError::InvalidName("must not be blank".into()));
     }
-    if name.len() > 63 {
+    if name.chars().count() > 63 {
         return Err(DeployError::InvalidName(
             "must be at most 63 characters".into(),
         ));
     }
-    let valid = name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    if !valid {
+    if name.chars().any(char::is_control) {
         return Err(DeployError::InvalidName(
-            "must be lowercase alphanumeric and hyphens".into(),
-        ));
-    }
-    if name.starts_with('-') || name.ends_with('-') {
-        return Err(DeployError::InvalidName(
-            "must not start or end with a hyphen".into(),
+            "must not contain control characters".into(),
         ));
     }
     Ok(())
 }
 
-pub fn default_hostname(name: &str, dns_suffix: &str) -> String {
-    format!("{name}.{dns_suffix}")
+pub fn default_hostname(label: &str, dns_suffix: &str) -> String {
+    format!("{label}.{dns_suffix}")
+}
+
+/// Display names never become machine identifiers verbatim. DNS labels use
+/// only ASCII; a name with no ASCII letters or digits uses its stable id.
+fn technical_label(name: &str, id: &str) -> String {
+    let mut label = String::new();
+    let mut separator = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !label.is_empty() {
+                label.push('-');
+            }
+            label.push(character.to_ascii_lowercase());
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    if label.is_empty() {
+        id.into()
+    } else {
+        label.truncate(63);
+        label.trim_end_matches('-').into()
+    }
+}
+
+/// Called only for a new, published Application with no explicit Hostname.
+/// The API holds the shared DNS namespace lock through its record write.
+async fn generated_hostname(
+    store: &impl StateStore,
+    name: &str,
+    id: &str,
+    suffix: &str,
+) -> Result<String, DeployError> {
+    let mut occupied = std::collections::HashSet::from([format!("admin.{suffix}")]);
+    for app in store.list_applications().await? {
+        occupied.extend(
+            crate::routes::hostnames(&app)
+                .into_iter()
+                .map(str::to_owned),
+        );
+    }
+    occupied.extend(
+        crate::dns_records::load(store)
+            .await?
+            .into_iter()
+            .map(|record| format!("{}.{suffix}", record.name)),
+    );
+    occupied.extend(
+        crate::environments::load(store)
+            .await?
+            .into_iter()
+            .map(|machine| machine.hostname),
+    );
+    let label = technical_label(name, id);
+    for attempt in 0..=occupied.len() {
+        let candidate = if attempt == 0 {
+            label.clone()
+        } else {
+            let tail = if attempt == 1 {
+                id.into()
+            } else {
+                format!("{id}-{attempt}")
+            };
+            let prefix = label.chars().take(63 - tail.len() - 1).collect::<String>();
+            format!("{}-{tail}", prefix.trim_end_matches('-'))
+        };
+        let hostname = default_hostname(&candidate, suffix);
+        if !occupied.contains(&hostname) {
+            return Ok(hostname);
+        }
+    }
+    unreachable!("there are more candidates than occupied Hostnames")
 }
 
 /// A Hostname is matched against the `Host` header of every request, so
@@ -354,8 +421,10 @@ async fn record_outcome(
         Err(e) => {
             // The deploy error is what the caller needs; a failure to write the
             // reason down must not replace it.
+            let report =
+                crate::postgres::runtime_report(store, &record.id, ErrorReport::new(&e)).await;
             let _ = store
-                .set_application_outcome(&record.id, STATUS_FAILED, Some(ErrorReport::new(&e)))
+                .set_application_outcome(&record.id, STATUS_FAILED, Some(report))
                 .await;
             Err(e)
         }
@@ -480,6 +549,16 @@ async fn pending_record(
         .ok_or(DeployError::NotInitialized)?;
 
     let existing = store.find_application_by_name(name).await?;
+    if let Some(app) = &existing
+        && crate::postgres::metadata(store, &app.id).await?.is_some()
+    {
+        return Err(DeployError::Connectivity(
+            crate::connectivity::ConnectivityError(
+                "Use the managed PostgreSQL controls to preserve its version, credentials and data"
+                    .into(),
+            ),
+        ));
+    }
     let id = existing
         .as_ref()
         .map(|a| a.id.clone())
@@ -529,7 +608,7 @@ async fn pending_record(
             let hostname = match (&options.hostname, &existing) {
                 (Some(h), _) => h.clone(),
                 (None, Some(app)) => app.hostname.clone(),
-                (None, None) => default_hostname(name, &dns_suffix),
+                (None, None) => generated_hostname(store, name, &id, &dns_suffix).await?,
             };
             let aliases = match (&options.aliases, &existing) {
                 (Some(a), _) => a.clone(),
@@ -651,12 +730,13 @@ fn validate_development(settings: &DevelopmentApplication) -> Result<(), DeployE
 /// outside the Platform depends on the number, but an Operator reading
 /// `docker ps` should not find it different every time.
 async fn allocate_web_target_port(store: &impl StateStore) -> Result<u16, DeployError> {
-    let taken = store
+    let mut taken: std::collections::BTreeSet<u16> = store
         .list_applications()
         .await?
         .iter()
         .filter_map(|app| app.web_target_port)
         .collect();
+    taken.extend(crate::postgres::reserved_ports(store).await?);
     ports::allocate(&taken).map_err(DeployError::NoWebTargetPort)
 }
 
@@ -699,6 +779,12 @@ pub struct PendingDeploy {
 }
 
 impl PendingDeploy {
+    pub(crate) fn managed_compose(record: ApplicationRecord) -> Self {
+        Self {
+            record,
+            work: DeployWork::ComposeUp,
+        }
+    }
     /// True when there is nothing left for Docker to do, and therefore nothing
     /// to wait for.
     pub fn is_settled(&self) -> bool {
@@ -731,6 +817,7 @@ enum DeployWork {
     /// Pulls each image a registry serves first, then `docker compose up`,
     /// which also recreates the services whose image changed.
     PullComposeUp,
+    RecoverCompose,
 }
 
 /// Accepts a native definition without touching Docker or starting code.
@@ -1045,17 +1132,25 @@ pub async fn project_for(
     let definition = ComposeDefinition::parse_with(compose, &env, Resolution::Run)?;
     // Only a published Application has a Web Target to put on loopback; an
     // unpublished project stays on the Application network (ADR-0028).
-    let published = match (record.publication, record.web_target_port) {
+    let mut published = match (record.publication, record.web_target_port) {
         (Publication::Web, Some(host_port)) => Some(compose_app::PublishedTarget {
             target: definition.web_target(record.web_service.as_deref(), record.web_port)?,
             host_port,
         }),
         _ => None,
     };
+    if published.is_none() {
+        published = crate::postgres::native_publication(store, &record.id).await?;
+    }
     let mut overrides = record
         .development
         .as_ref()
-        .map(|_| compose_app::RenderOverrides::service_hostname("web", &record.name))
+        .map(|_| {
+            compose_app::RenderOverrides::service_hostname(
+                "web",
+                technical_label(&record.name, &record.id),
+            )
+        })
         .unwrap_or_default();
     overrides.git_nonroot = record.git.is_some();
     crate::connectivity::validate_definition(&record.network_policy, &definition)
@@ -1110,6 +1205,7 @@ pub async fn finish_deploy_reporting(
         return Ok((current, Vec::new()));
     }
 
+    let mut deployment = crate::deployments::begin(store, &record).await?;
     let mut changes = Vec::new();
     let result = async {
         reconcile_private_connections(store, docker).await?;
@@ -1125,26 +1221,87 @@ pub async fn finish_deploy_reporting(
                     .remove_container(&container_name_for(&record.id))
                     .await;
             }
-            DeployWork::ComposeUp | DeployWork::PullComposeUp => {
+            DeployWork::ComposeUp | DeployWork::PullComposeUp | DeployWork::RecoverCompose => {
                 if matches!(work, DeployWork::PullComposeUp) {
                     changes = pull_images(docker, &registry_images(&record)).await?;
                 }
                 let project = project_for(store, &record).await?;
-                docker.compose_up(&project).await?;
-                return Ok(());
+                if matches!(work, DeployWork::RecoverCompose) {
+                    docker.compose_up_pinned(&project).await?;
+                } else {
+                    docker.compose_up(&project).await?;
+                }
+                return crate::deployments::complete(store, docker, &mut deployment).await;
             }
             DeployWork::Native { .. } => return Err(DeployError::NativeUnavailable),
             DeployWork::Settled | DeployWork::NetworksOnly => unreachable!(),
         }
         start_container(store, docker, &record).await?;
-        Ok(())
+        crate::deployments::complete(store, docker, &mut deployment).await
     }
     .await;
 
+    if let Err(error) = &result {
+        crate::deployments::failed(store, &mut deployment, error).await;
+        routes.withdraw(&record.id);
+    }
     let current = record_outcome(store, record, result).await?;
     // Publish after the container is up, using the names currently on record.
     routes.publish(&current);
     Ok((current, changes))
+}
+
+/// Reuses an immutable snapshot. The caller verified every local image first.
+pub(crate) async fn restore_snapshot(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    routes: &(impl RouteStore + ?Sized),
+    mut snapshot: ApplicationRecord,
+) -> Result<(), DeployError> {
+    validate_routing(store, &snapshot).await?;
+    validate_connectivity(store, &snapshot).await?;
+    if snapshot.compose.is_some() {
+        project_for(store, &snapshot).await?;
+    }
+    if snapshot.status == STATUS_STOPPED {
+        let current = get_application(store, &snapshot.id).await?;
+        if current.compose.is_some() {
+            docker
+                .compose_down(&project_for(store, &current).await?)
+                .await?;
+        } else if docker
+            .container_state(&container_name_for(&current.id))
+            .await?
+            .is_some()
+        {
+            docker
+                .remove_container(&container_name_for(&current.id))
+                .await?;
+        }
+        snapshot.last_error = None;
+        store.insert_application(&snapshot).await?;
+        routes.withdraw(&snapshot.id);
+        return Ok(());
+    }
+    snapshot.status = STATUS_PENDING.into();
+    snapshot.last_error = None;
+    let work = if snapshot.compose.is_some() {
+        DeployWork::RecoverCompose
+    } else {
+        DeployWork::Recreate { pull: false }
+    };
+    store.insert_application(&snapshot).await?;
+    finish_deploy(
+        store,
+        docker,
+        routes,
+        PendingDeploy {
+            record: snapshot,
+            work,
+        },
+    )
+    .await
+    .map(drop)
 }
 
 /// Gives an Application deployed before the Platform served HTTP itself a Host
@@ -1199,6 +1356,7 @@ pub async fn reconcile(
     docker: &(impl DockerRuntime + ?Sized),
     routes: &(impl RouteStore + ?Sized),
 ) -> Result<(), DeployError> {
+    crate::deployments::recover(store).await?;
     // An executor that cannot be reached observes nothing. Settling a deploy
     // against that silence would report every Application as failed because
     // Docker is down, so an interrupted deploy stays pending and stays visible.
@@ -1359,6 +1517,15 @@ pub async fn prepare_update(
     }
 
     let current = get_application(store, id).await?;
+    if crate::postgres::metadata(store, id).await?.is_some() {
+        return Err(DeployError::Connectivity(
+            crate::connectivity::ConnectivityError(
+                "Use the managed PostgreSQL controls to preserve its version, credentials and data"
+                    .into(),
+            ),
+        ));
+    }
+
     if matches!(current.runtime, Runtime::Native(_)) {
         return prepare_native_update(store, current, update).await;
     }
@@ -1548,8 +1715,18 @@ pub async fn prepare_deploy_from_path(
         return Err(DeployError::NotInitialized);
     }
 
-    let image_tag = format!("self-host-{name}:latest");
-    let record = pending_record(store, name, image_tag, SOURCE_PATH, None, &options).await?;
+    // Preserve legacy build tags on redeploy. New tags use immutable identity
+    // so human names and later renames cannot collide in Docker's registry.
+    let image_tag = store
+        .find_application_by_name(name)
+        .await?
+        .filter(|app| app.source == SOURCE_PATH)
+        .map(|app| app.image)
+        .unwrap_or_default();
+    let mut record = pending_record(store, name, image_tag, SOURCE_PATH, None, &options).await?;
+    if record.image.is_empty() {
+        record.image = format!("self-host-{}:latest", record.id);
+    }
     store.insert_application(&record).await?;
 
     Ok(PendingDeploy {
@@ -1585,6 +1762,7 @@ pub fn system_container_name(role: &str) -> String {
 #[derive(Debug)]
 pub enum RemoveError {
     ConnectionsExist,
+    ManagedDatabase,
     NotInitialized,
     NotFound(String),
     Docker(DockerError),
@@ -1594,6 +1772,10 @@ pub enum RemoveError {
 impl std::fmt::Display for RemoveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            RemoveError::ManagedDatabase => write!(
+                f,
+                "remove PostgreSQL through its database controls and choose whether to keep its data"
+            ),
             RemoveError::ConnectionsExist => write!(
                 f,
                 "remove private connection grants before removing the Application"
@@ -1637,12 +1819,16 @@ pub async fn require_removable(
     store: &impl StateStore,
     app: &ApplicationRecord,
 ) -> Result<(), RemoveError> {
+    if crate::postgres::metadata(store, &app.id).await?.is_some() {
+        return Err(RemoveError::ManagedDatabase);
+    }
     let applications = store.list_applications().await?;
     let grants = |record: &ApplicationRecord| match &record.network_policy {
         crate::store::NetworkPolicy::Private { consumers } => consumers.clone(),
         _ => Vec::new(),
     };
-    if !grants(app).is_empty()
+    if crate::postgres::active_reference(store, &app.id).await?
+        || !grants(app).is_empty()
         || applications
             .iter()
             .any(|other| grants(other).contains(&app.id))
@@ -1737,11 +1923,10 @@ pub async fn start_application(
         reconcile_private_connections(store, docker).await?;
         if app.compose.is_some() {
             docker.compose_up(&project_for(store, &app).await?).await?;
-        } else if app.git.is_some()
-            && docker
-                .container_state(&container_name_for(&app.id))
-                .await?
-                .is_none()
+        } else if docker
+            .container_state(&container_name_for(&app.id))
+            .await?
+            .is_none()
         {
             start_container(store, docker, &app).await?;
         } else {
@@ -1776,6 +1961,15 @@ pub async fn restart_application(
         Vec::new()
     };
     let changes = pull_images(docker, &images).await?;
+    let mut deployment = if images.is_empty() {
+        None
+    } else {
+        let deployment = crate::deployments::begin(store, &app).await?;
+        store
+            .set_application_outcome(id, STATUS_PENDING, None)
+            .await?;
+        Some(deployment)
+    };
     let result = async {
         match (app.compose.is_some(), images.is_empty()) {
             (true, true) => {
@@ -1798,9 +1992,16 @@ pub async fn restart_application(
                 start_container(store, docker, &app).await?;
             }
         }
+        if let Some(deployment) = &mut deployment {
+            crate::deployments::complete(store, docker, deployment).await?;
+        }
         Ok(())
     }
     .await;
+    if let (Some(deployment), Err(error)) = (&mut deployment, &result) {
+        crate::deployments::failed(store, deployment, error).await;
+        routes.withdraw(&app.id);
+    }
     let current = record_outcome(store, app, result).await?;
     routes.publish(&current);
     Ok((current, changes))
@@ -2049,12 +2250,7 @@ pub async fn set_env(
         .await?
         .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
 
-    store.set_env(&app.id, key, value).await?;
-
-    // Apply: recreate container with updated env
-    recreate_with_env(store, docker, app_name).await?;
-
-    Ok(())
+    change_env(store, docker, &app.id, key, Some(value)).await
 }
 
 pub async fn get_all_env(
@@ -2083,24 +2279,40 @@ pub async fn unset_env(
         .await?
         .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
 
-    store.unset_env(&app.id, key).await?;
+    change_env(store, docker, &app.id, key, None).await
+}
 
-    // Apply: recreate container with updated env
-    recreate_with_env(store, docker, app_name).await?;
-
-    Ok(())
+/// Task identity stays pinned even if the display name changes while queued.
+pub(crate) async fn change_env(
+    store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
+    app_id: &str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), EnvError> {
+    if !store.is_initialized().await? {
+        return Err(EnvError::NotInitialized);
+    }
+    if store.get_application(app_id).await?.is_none() {
+        return Err(EnvError::NotFound(app_id.into()));
+    }
+    match value {
+        Some(value) => store.set_env(app_id, key, value).await?,
+        None => store.unset_env(app_id, key).await?,
+    }
+    recreate_with_env(store, docker, app_id).await
 }
 
 async fn recreate_with_env(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
-    app_name: &str,
+    app_id: &str,
 ) -> Result<(), EnvError> {
-    let apps = store.list_applications().await?;
-    let app = apps
-        .iter()
-        .find(|a| a.name == app_name)
-        .ok_or_else(|| EnvError::NotFound(app_name.to_string()))?;
+    let app = store
+        .get_application(app_id)
+        .await?
+        .ok_or_else(|| EnvError::NotFound(app_id.into()))?;
+    let app = &app;
 
     ensure_application_networks(store, docker, app)
         .await
@@ -3019,6 +3231,233 @@ mod tests {
     #[test]
     fn default_hostname_uses_dns_suffix() {
         assert_eq!(default_hostname("blog", "home.lan"), "blog.home.lan");
+    }
+
+    #[tokio::test]
+    async fn display_names_keep_their_spelling_while_hostnames_and_identity_stay_separate() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let name = "  T3 Code / API $1  ";
+        let app = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            name,
+            "nginx",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.name, name);
+        assert_eq!(app.hostname, "t3-code-api-1.home.lan");
+        assert_eq!(
+            docker.apps.lock().unwrap()[0].name,
+            container_name_for(&app.id)
+        );
+        assert!(
+            docker.apps.lock().unwrap()[0]
+                .labels
+                .contains(&("sf.app.name".into(), name.into()))
+        );
+        let renamed = update_application(
+            &store,
+            &docker,
+            &routes,
+            &app.id,
+            ApplicationUpdate {
+                name: Some("Outra Aplicação!".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.name, "Outra Aplicação!");
+        assert_eq!(renamed.id, app.id);
+        assert_eq!(renamed.hostname, app.hostname);
+        assert_eq!(docker.apps.lock().unwrap().len(), 1);
+
+        let first = prepare_deploy_from_image(&store, "Teste", "nginx", DeployOptions::default())
+            .await
+            .unwrap()
+            .record;
+        let second = prepare_deploy_from_image(&store, "teste", "nginx", DeployOptions::default())
+            .await
+            .unwrap()
+            .record;
+        assert_eq!(first.hostname, "teste.home.lan");
+        assert_eq!(second.hostname, format!("teste-{}.home.lan", second.id));
+        assert_ne!(first.id, second.id);
+        assert_eq!(
+            store
+                .find_application_by_name("Teste")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            first.id
+        );
+        assert_eq!(
+            store
+                .find_application_by_name("teste")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            second.id
+        );
+        let unicode =
+            prepare_deploy_from_image(&store, "数据库", "nginx", DeployOptions::default())
+                .await
+                .unwrap()
+                .record;
+        assert_eq!(unicode.name, "数据库");
+        assert_eq!(unicode.hostname, format!("{}.home.lan", unicode.id));
+    }
+
+    #[tokio::test]
+    async fn automatic_hostnames_avoid_dns_records_and_reserved_names_without_changing_explicit_names()
+     {
+        let store = initialized_store().await;
+        crate::collection::RECORDS
+            .upsert(
+                &store,
+                &crate::dns_records::Record {
+                    name: "office".into(),
+                    record_type: crate::dns_records::RecordType::A,
+                    value: "192.0.2.5".parse().unwrap(),
+                    ttl: 60,
+                    description: None,
+                    owner: crate::dns_records::Owner::Operator,
+                },
+            )
+            .await
+            .unwrap();
+        for name in ["Office", "Admin"] {
+            let app = prepare_deploy_from_image(&store, name, "nginx", DeployOptions::default())
+                .await
+                .unwrap()
+                .record;
+            assert_eq!(
+                app.hostname,
+                format!("{}-{}.home.lan", name.to_ascii_lowercase(), app.id)
+            );
+        }
+        let explicit = prepare_deploy_from_image(
+            &store,
+            "Explicit Name",
+            "nginx",
+            DeployOptions {
+                hostname: Some("office.home.lan".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(matches!(explicit, Err(DeployError::InvalidHostname(_))));
+        let unique = prepare_deploy_from_image(
+            &store,
+            "Separate Name",
+            "nginx",
+            DeployOptions {
+                hostname: Some("chosen.home.lan".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .record;
+        assert_eq!(unique.hostname, "chosen.home.lan");
+    }
+
+    #[tokio::test]
+    async fn native_git_compose_and_path_sources_preserve_names_and_use_safe_runtime_identifiers() {
+        let store = initialized_store().await;
+        let native = prepare_deploy_native(
+            &store,
+            "T3 Code",
+            DeployOptions {
+                runtime: Some(Runtime::Native(
+                    serde_json::from_value(serde_json::json!({"command":["/bin/sleep","1"]}))
+                        .unwrap(),
+                )),
+                publication: Some(Publication::Unpublished),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap()
+        .record;
+        assert_eq!(native.name, "T3 Code");
+        let Runtime::Native(definition) = native.runtime else {
+            unreachable!()
+        };
+        assert_eq!(definition.account, format!("sf-app-{}", native.id));
+
+        let git = prepare_git_create(
+            &store,
+            "Git / Production",
+            serde_json::from_value(
+                serde_json::json!({"repository":"https://example.invalid/repo.git"}),
+            )
+            .unwrap(),
+            None,
+            None,
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap()
+        .record;
+        assert_eq!(git.name, "Git / Production");
+        assert_eq!(git.hostname, "git-production.home.lan");
+
+        let compose = prepare_deploy_from_compose(
+            &store,
+            "My $API / Service",
+            "services:\n  web:\n    image: nginx\n    ports: ['80']\n",
+            None,
+            None,
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap()
+        .record;
+        let project = project_for(&store, &compose).await.unwrap();
+        assert_eq!(project.name, format!("sf-app-{}", compose.id));
+        assert!(project.dir.ends_with(&compose.id));
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&project.yaml).unwrap();
+        assert_eq!(
+            yaml["services"]["web"]["labels"]["sf.app.name"],
+            "My $$API / Service"
+        );
+
+        let path = prepare_deploy_from_path(
+            &store,
+            "Local Build #1",
+            "/synthetic/build",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap()
+        .record;
+        assert_eq!(path.name, "Local Build #1");
+        assert_eq!(path.image, format!("self-host-{}:latest", path.id));
+        let mut legacy = path.clone();
+        legacy.name = "legacy".into();
+        legacy.image = "self-host-legacy:latest".into();
+        store.insert_application(&legacy).await.unwrap();
+        let legacy_again = prepare_deploy_from_path(
+            &store,
+            "legacy",
+            "/synthetic/build",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap()
+        .record;
+        assert_eq!(legacy_again.id, legacy.id);
+        assert_eq!(legacy_again.image, legacy.image);
+        assert_eq!(legacy_again.hostname, legacy.hostname);
     }
 
     #[test]
@@ -3960,8 +4399,23 @@ services:
     }
 
     #[test]
-    fn validate_app_name_rejects_uppercase() {
-        assert!(validate_app_name("Blog").is_err());
+    fn validate_app_name_preserves_human_names() {
+        for name in [
+            "Blog",
+            "T3 Code",
+            "Produção / API #1",
+            "数据库",
+            "  Name  ",
+            ".",
+            "..",
+        ] {
+            assert!(validate_app_name(name).is_ok(), "{name:?}");
+        }
+        assert!(validate_app_name(&"界".repeat(63)).is_ok());
+        assert!(validate_app_name(&"界".repeat(64)).is_err());
+        for name in ["", " \u{2003} ", "line\nbreak", "tab\tname", "null\0name"] {
+            assert!(validate_app_name(name).is_err(), "{name:?}");
+        }
     }
 
     #[test]
@@ -3986,6 +4440,7 @@ services:
             working_dir: None,
             port: Some(8080),
             limits: Default::default(),
+            recipe: Default::default(),
         })
     }
 

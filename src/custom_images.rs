@@ -83,7 +83,7 @@ ENTRYPOINT ["/usr/local/bin/self-host-custom-image-entrypoint"]
 CMD ["sleep", "infinity"]
 "#;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Dependency {
     pub tool: String,
     pub version: String,

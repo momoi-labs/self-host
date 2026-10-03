@@ -818,3 +818,308 @@ async fn reviewed_git_workflow_pins_candidates_when_refs_move() {
     assert_eq!(selected_tag.git_build.as_ref().unwrap().revision, first);
     assert_execution(&container);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an explicitly opted-in disposable Linux Host with Docker"]
+async fn optional_git_trigger_checks_scope_branch_commit_and_delivery_replay() {
+    let fixture = Fixture::new().await;
+    let (created, _) = fixture.finish(fixture.request(reqwest::Method::POST, "/apps", json!({
+        "name":"trigger-fixture", "git":{"repository":fixture.source,"git_ref":"main"},
+        "publication":{"kind":"unpublished"}
+    })).await, "completed").await;
+    let id = created["id"].as_str().unwrap();
+    let settings_path = format!("/apps/id/{id}/deploy-trigger");
+    assert_eq!(
+        fixture
+            .request(reqwest::Method::GET, &settings_path, Value::Null)
+            .await
+            .1,
+        json!({"enabled":false})
+    );
+    let trigger_url = format!("{}/deploy/{id}", fixture.url);
+    let unauthorized = fixture
+        .client
+        .post(&trigger_url)
+        .json(&json!({"delivery_id":"first", "branch":"main"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let enabled = fixture
+        .request(
+            reqwest::Method::POST,
+            &settings_path,
+            json!({"branch":"main"}),
+        )
+        .await;
+    assert_eq!(enabled.0, 200);
+    let token = enabled.1["token"].as_str().unwrap();
+    assert!(
+        !fixture
+            .request(reqwest::Method::GET, &settings_path, Value::Null)
+            .await
+            .1
+            .to_string()
+            .contains(token)
+    );
+    let ignored = fixture
+        .client
+        .post(&trigger_url)
+        .bearer_auth(token)
+        .json(&json!({"delivery_id":"ignored", "branch":"other"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ignored.status(), reqwest::StatusCode::OK);
+    assert_eq!(ignored.json::<Value>().await.unwrap()["ignored"], true);
+    fs::write(
+        fixture.repo.join("payload"),
+        "synthetic triggered release\n",
+    )
+    .unwrap();
+    let revision = fixture.commit("fixture trigger update");
+    let body = json!({"delivery_id":"second", "branch":"main", "revision":revision});
+    let send = || {
+        fixture
+            .client
+            .post(&trigger_url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+    };
+    let (a, b) = tokio::join!(send(), send());
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_eq!(a.status(), reqwest::StatusCode::ACCEPTED);
+    assert_eq!(b.status(), reqwest::StatusCode::ACCEPTED);
+    let a: Value = a.json().await.unwrap();
+    let b: Value = b.json().await.unwrap();
+    assert_eq!(a["task_id"], b["task_id"]);
+    assert_ne!(a["duplicate"], b["duplicate"]);
+    fixture.finish((202, a.clone()), "completed").await;
+    assert_eq!(
+        fixture.record(id).await.git_build.unwrap().revision,
+        revision
+    );
+    assert_eq!(
+        command(
+            "docker",
+            &[
+                "exec",
+                &self_host::apps::container_name_for(id),
+                "cat",
+                "/payload"
+            ]
+        ),
+        "synthetic triggered release"
+    );
+    let history = fixture
+        .request(
+            reqwest::Method::GET,
+            &format!("/apps/id/{id}/deployments"),
+            Value::Null,
+        )
+        .await
+        .1;
+    assert_eq!(
+        history.as_array().unwrap().len(),
+        2,
+        "one build per delivery"
+    );
+    let replay = fixture
+        .client
+        .post(&trigger_url)
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(replay["task_id"], a["task_id"]);
+    assert_eq!(replay["duplicate"], true);
+    let wrong_commit = fixture
+        .client
+        .post(&trigger_url)
+        .bearer_auth(token)
+        .json(&json!({"delivery_id":"wrong-commit", "branch":"main", "revision":"0".repeat(40)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_commit.status(), reqwest::StatusCode::ACCEPTED);
+    fixture
+        .finish((202, wrong_commit.json().await.unwrap()), "failed")
+        .await;
+    assert_eq!(
+        fixture.record(id).await.git_build.unwrap().revision,
+        revision
+    );
+    assert!(
+        !fixture
+            .store
+            .list_audit_events()
+            .await
+            .unwrap()
+            .join("")
+            .contains(token)
+    );
+    assert!(
+        !fixture
+            .store
+            .list_records("task")
+            .await
+            .unwrap()
+            .join("")
+            .contains(token)
+    );
+    assert!(
+        !fixture
+            .store
+            .list_records("deploy-trigger")
+            .await
+            .unwrap()
+            .join("")
+            .contains(token)
+    );
+    assert_eq!(
+        fixture
+            .request(reqwest::Method::DELETE, &settings_path, Value::Null)
+            .await
+            .0,
+        204
+    );
+    assert_eq!(
+        fixture
+            .client
+            .post(&trigger_url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an explicitly opted-in disposable Linux Host with Docker"]
+async fn image_api_records_real_health_failure_and_recovers_without_pulling() {
+    let fixture = Fixture::new().await;
+    // A registry image follows the same deployment gate as a Git build.
+    let (created, _) = fixture.finish(fixture.request(reqwest::Method::POST, "/apps", json!({
+        "name":"image-recovery-fixture", "image":"nginx:alpine", "publication":{"kind":"unpublished"}
+    })).await, "completed").await;
+    let id = created["id"].as_str().unwrap();
+    let history_path = format!("/apps/id/{id}/deployments");
+    let first = fixture
+        .request(reqwest::Method::GET, &history_path, Value::Null)
+        .await
+        .1[0]
+        .clone();
+    let first_image = first["images"]["app"].as_str().unwrap();
+    immutable(first_image);
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/apps/id/{id}/restart"),
+                    json!({"pull":true}),
+                )
+                .await,
+            "completed",
+        )
+        .await;
+    let releases = fixture
+        .request(reqwest::Method::GET, &history_path, Value::Null)
+        .await
+        .1;
+    assert_eq!(releases.as_array().unwrap().len(), 2);
+    assert_eq!(releases[0]["status"], "completed");
+    immutable(releases[0]["images"]["app"].as_str().unwrap());
+    fixture
+        .store
+        .store_state("deployment_health_timeout_seconds", "2")
+        .await
+        .unwrap();
+    let compose = "services:\n  app:\n    image: nginx:alpine\n    healthcheck:\n      test: [CMD, /bin/false]\n      interval: 1s\n      timeout: 1s\n      retries: 1\n";
+    // Compose is a separate synthetic workload, since image Applications keep
+    // their source kind. Its failed candidate must never complete successfully.
+    let (unhealthy, failure) = fixture.finish(fixture.request(reqwest::Method::POST, "/apps", json!({
+        "name":"health-recovery-fixture", "compose":compose, "publication":{"kind":"unpublished"}
+    })).await, "failed").await;
+    assert!(failure.error.unwrap().error.contains("health check"));
+    let unhealthy_id = unhealthy["id"].as_str().unwrap();
+    let unhealthy_state = fixture
+        .request(
+            reqwest::Method::GET,
+            &format!("/apps/id/{unhealthy_id}"),
+            Value::Null,
+        )
+        .await
+        .1;
+    assert_eq!(unhealthy_state["status"], "failed");
+    assert_eq!(unhealthy_state["readiness"], "failed");
+    let (_, restart_failure) = fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/apps/id/{unhealthy_id}/restart"),
+                    json!({"pull":true}),
+                )
+                .await,
+            "failed",
+        )
+        .await;
+    assert!(
+        restart_failure
+            .error
+            .unwrap()
+            .error
+            .contains("health check")
+    );
+    let releases = fixture
+        .request(
+            reqwest::Method::GET,
+            &format!("/apps/id/{unhealthy_id}/deployments"),
+            Value::Null,
+        )
+        .await
+        .1;
+    assert_eq!(releases.as_array().unwrap().len(), 2);
+    assert_eq!(releases[0]["status"], "failed");
+    assert_eq!(releases[0]["readiness"], "failed");
+    // A bad registry reference fails while keeping the earlier immutable image.
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::PUT,
+                    &format!("/apps/id/{id}"),
+                    json!({"image":"nginx:synthetic-tag-that-does-not-exist"}),
+                )
+                .await,
+            "failed",
+        )
+        .await;
+    let recovered = fixture
+        .request(
+            reqwest::Method::POST,
+            &format!(
+                "/apps/id/{id}/deployments/{}/restore",
+                first["id"].as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
+    fixture.finish(recovered, "completed").await;
+    let container = self_host::apps::container_name_for(id);
+    assert_eq!(
+        command("docker", &["inspect", "--format", "{{.Image}}", &container]),
+        first_image
+    );
+    assert_eq!(fixture.record(id).await.image, first_image);
+}

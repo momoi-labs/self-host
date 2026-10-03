@@ -20,6 +20,8 @@ pub struct ServiceDefinition {
     pub working_dir: PathBuf,
     pub environment: Vec<(String, String)>,
     pub limits: ResourceLimits,
+    #[serde(default)]
+    pub recipe: super::mise::NativeRecipe,
     /// An optional command that must exit successfully before s6 reports ready.
     pub readiness: Option<Vec<String>>,
     pub startup_timeout_ms: u64,
@@ -29,12 +31,14 @@ pub struct ServiceDefinition {
 #[cfg(target_os = "linux")]
 impl ServiceDefinition {
     fn request(&self, command: Vec<String>, purpose: Purpose) -> Result<LaunchRequest> {
+        let account = AccountName::parse(&self.account)?;
+        let home = super::resolve(&account)?.home;
         Ok(LaunchRequest {
             application_id: self.application_id.clone(),
-            account: AccountName::parse(&self.account)?,
-            command,
+            account,
+            command: super::mise::command(&home, &self.recipe, command),
             working_dir: self.working_dir.clone(),
-            environment: self.environment.clone(),
+            environment: super::mise::environment(&home, &self.environment),
             limits: self.limits.clone(),
             purpose,
         })
@@ -197,6 +201,28 @@ mod linux {
         Ok(stored)
     }
 
+    pub(super) fn require_environment(
+        service: &Path,
+        definition: &ServiceDefinition,
+    ) -> Result<()> {
+        if definition.recipe.is_empty() {
+            return Ok(());
+        }
+        let receipt = service.join("data/recipe-sha256");
+        if !receipt.exists() {
+            bail!(
+                "native environment preparation has not succeeded; reapply the Application configuration and inspect its logs"
+            );
+        }
+        protected(&receipt)?;
+        if fs::read_to_string(receipt)? != definition.recipe.fingerprint() {
+            bail!(
+                "native environment recipe has changed; reapply the Application configuration before starting"
+            );
+        }
+        Ok(())
+    }
+
     pub fn finish_service(service: &Path) -> Result<()> {
         let stored = read_service(service)?;
         let root = CgroupRoot::at(stored.cgroup_root).context("cgroup delegation unavailable; enable cpu, memory and pids for self-host-native.service")?;
@@ -205,16 +231,23 @@ mod linux {
         Ok(())
     }
 
-    fn forward(reader: impl Read + Send + 'static) -> std::thread::JoinHandle<()> {
+    fn forward(
+        reader: impl Read + Send + 'static,
+        output: std::sync::mpsc::SyncSender<Vec<u8>>,
+    ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buffer = [0_u8; 8192];
-            while let Ok(count) = reader.read(&mut buffer) {
-                if count == 0 {
-                    break;
-                }
-                if std::io::stdout().write_all(&buffer[..count]).is_err() {
-                    break;
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if output.send(buffer[..count].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                 }
             }
         })
@@ -223,18 +256,20 @@ mod linux {
     fn pipes(
         process: &mut super::super::LaunchedProcess,
         readers: &mut Vec<std::thread::JoinHandle<()>>,
+        output: &std::sync::mpsc::SyncSender<Vec<u8>>,
     ) {
         if let Some(pipe) = process.child.stdout.take() {
-            readers.push(forward(pipe));
+            readers.push(forward(pipe, output.clone()));
         }
         if let Some(pipe) = process.child.stderr.take() {
-            readers.push(forward(pipe));
+            readers.push(forward(pipe, output.clone()));
         }
     }
 
     pub fn run_service(service: &Path) -> Result<()> {
         let stored = read_service(service)?;
         let definition = &stored.definition;
+        require_environment(service, definition)?;
         let inherited = fs::metadata("/proc/self/fd/4")
             .context("native-run must be launched by s6 with its service lock")?;
         let expected = fs::metadata(service.join("data/runner-lock"))?;
@@ -258,7 +293,10 @@ mod linux {
         let mut main = super::super::launch(&root, &definition.request(definition.command.clone(), Purpose::Main)?)
             .context("native startup refused by N1; check the account, working directory, command and cgroup delegation")?;
         let mut readers = Vec::new();
-        pipes(&mut main, &mut readers);
+        let (output, chunks) = std::sync::mpsc::sync_channel(16);
+        let redactor = super::super::redaction::Redactor::new(&definition.environment);
+        let logger = std::thread::spawn(move || redactor.forward(chunks, std::io::stdout()));
+        pipes(&mut main, &mut readers, &output);
         let outcome = (|| -> Result<()> {
             let deadline = Instant::now() + Duration::from_millis(definition.startup_timeout_ms);
             if let Some(command) = &definition.readiness {
@@ -279,7 +317,7 @@ mod linux {
                         &definition.request(command.clone(), Purpose::Hook)?,
                     )
                     .context("readiness launch refused by N1")?;
-                    pipes(&mut check, &mut readers);
+                    pipes(&mut check, &mut readers, &output);
                     let status = loop {
                         if let Some(status) = check.child.try_wait()? {
                             break Some(status);
@@ -327,6 +365,11 @@ mod linux {
         for reader in readers {
             let _ = reader.join();
         }
+        drop(output);
+        logger
+            .join()
+            .map_err(|_| anyhow::anyhow!("native log forwarding thread failed"))?
+            .context("could not forward native output to s6-log")?;
         outcome
     }
 
@@ -426,6 +469,55 @@ impl Supervisor {
         Ok(self.root.join("services").join(id))
     }
 
+    pub(crate) fn application_cgroup(&self, id: &str) -> Result<super::ApplicationCgroup> {
+        Ok(self.cgroup_root.application(id)?)
+    }
+
+    /// The receipt and bounded log are in root-controlled service storage.
+    /// Only the N1 child writes configuration or packages inside the home.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_environment(&self, definition: &ServiceDefinition) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let service = self.service(&definition.application_id)?;
+        linux::protected(&service.join("data"))?;
+        let receipt = service.join("data/recipe-sha256");
+        let fingerprint = definition.recipe.fingerprint();
+        if receipt.exists() {
+            linux::protected(&receipt)?;
+            if std::fs::read_to_string(&receipt)? == fingerprint {
+                return Ok(());
+            }
+            std::fs::remove_file(&receipt)?;
+        }
+        // A daemon exit during a previous preparation must not strand its
+        // children. The caller has stopped s6 before reaching this point.
+        self.cgroup_root
+            .application(&definition.application_id)?
+            .kill(Duration::from_secs(5))?;
+        let logs = self.root.join("logs").join(&definition.application_id);
+        linux::protected(&logs)?;
+        let log_path = logs.join("recipe.log");
+        linux::write(&log_path, b"", 0o600)?;
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(log_path)?;
+        let result = super::mise::apply(&self.cgroup_root, definition, log.try_clone()?);
+        if result.is_ok() {
+            linux::write(&receipt, fingerprint.as_bytes(), 0o600)?;
+        } else {
+            log.write_all(b"\nNative environment preparation failed.\n")?;
+        }
+        result
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn prepare_environment(&self, _: &ServiceDefinition) -> Result<()> {
+        bail!("native environments run on Linux only")
+    }
+
     /// Materializes a new, stopped service. Never overwrites a live definition.
     #[cfg(target_os = "linux")]
     pub fn prepare(&self, definition: &ServiceDefinition) -> Result<()> {
@@ -517,6 +609,11 @@ impl Supervisor {
         use std::ffi::OsStr;
         let service = self.service(id)?;
         linux::protected(&service)?;
+        if running {
+            let stored: StoredService =
+                serde_json::from_slice(&std::fs::read(service.join("data/definition.json"))?)?;
+            linux::require_environment(&service, &stored.definition)?;
+        }
         let deadline = std::time::Instant::now() + timeout;
         while linux::run_tool("s6-svok", &[service.as_os_str()]).is_err() {
             if std::time::Instant::now() >= deadline {
@@ -606,7 +703,11 @@ impl Supervisor {
         self.change(id, true, timeout)
     }
     pub fn stop(&self, id: &str, timeout: Duration) -> Result<()> {
-        self.change(id, false, timeout)
+        self.change(id, false, timeout)?;
+        // Preparation runs through N1 while s6 is down. A daemon crash can
+        // leave that tree behind even though s6 has no runner to stop.
+        self.cgroup_root.application(id)?.kill(timeout)?;
+        Ok(())
     }
     pub fn restart(&self, id: &str, timeout: Duration) -> Result<()> {
         self.stop(id, timeout)?;

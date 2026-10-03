@@ -12,6 +12,9 @@ _Avoid_: PaaS (as a vague synonym), cluster, Kubernetes
 A workload managed as a unit by the Platform and made available to Consumers on the LAN. An Application may consist of several services; its identity is independent of how those services run.
 _Avoid_: binary (reserved for the Platform), service (overloaded), site
 
+**Application name**:
+The Operator's display name for an Application, preserved as entered. It is separate from the Application's permanent identity and its Hostname.
+
 **Bootstrap**:
 Preparing the Host to run the Platform and bringing up the Platform Infra required to operate.
 _Avoid_: install script as a domain concept, setup
@@ -39,7 +42,7 @@ The Operator action that makes an Application available on the LAN from its defi
 _Avoid_: release, publish, ship (as official synonyms)
 
 **Application Hostname**:
-The DNS name Consumers use to reach an Application on the LAN, usually `name.<suffix>` with an optional explicit override. Served by a Record the Platform manages.
+The DNS name Consumers use to reach an Application on the LAN, generated from its name and the DNS Suffix unless the Operator chooses one. It is separate from the display name and served by a Record the Platform manages.
 _Avoid_: URL (URLs include scheme/path), public domain
 
 **Hostname Alias**:

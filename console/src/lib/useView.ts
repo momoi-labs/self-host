@@ -6,6 +6,8 @@ export type View =
   | { view: "overview"; id: null }
   | { view: "events"; id: null }
   | { view: "dns"; id: null }
+  | { view: "databases"; id: null }
+  | { view: "database-new"; id: null }
   | { view: "app"; id: string }
   | { view: "new"; id: null }
   | { view: "custom-image"; id: string | null }
@@ -23,6 +25,8 @@ const overview: View = { view: "overview", id: null };
 function fromHash(): View | null {
   const hash = location.hash;
   if (hash === "#dns") return { view: "dns", id: null };
+  if (hash === "#databases") return { view: "databases", id: null };
+  if (hash === "#new-database") return { view: "database-new", id: null };
   if (hash === "#settings") return { view: "settings", id: "general" };
   if (hash.startsWith("#settings/") && isSettingsSection(hash.slice(10)))
     return { view: "settings", id: hash.slice(10) as SettingsSection };
@@ -42,6 +46,8 @@ function fromHash(): View | null {
 function fromHistory(): View {
   const state = history.state as View | null;
   if (state?.view === "dns") return { view: "dns", id: null };
+  if (state?.view === "databases") return { view: "databases", id: null };
+  if (state?.view === "database-new") return { view: "database-new", id: null };
   if (state?.view === "events") return { view: "events", id: null };
   if (state?.view === "app") return state;
   if (state?.view === "new") return { view: "new", id: null };
@@ -62,6 +68,8 @@ function fromHistory(): View {
 /** The fragment a view is addressed by, for the views that keep one. */
 function hashFor(view: View): string | undefined {
   if (view.view === "dns") return "#dns";
+  if (view.view === "databases") return "#databases";
+  if (view.view === "database-new") return "#new-database";
   if (view.view === "settings") return view.id === "general" ? "#settings" : `#settings/${view.id}`;
   return undefined;
 }

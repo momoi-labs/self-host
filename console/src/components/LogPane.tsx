@@ -16,12 +16,13 @@ import { Logs } from "./Logs.js";
 /**
  * Multiple containers get a picker; switching replaces the stream.
  */
-export function AppLogPane({ id }: { id: string }) {
+export function AppLogPane({ id, native = false }: { id: string; native?: boolean }) {
   const [containers, setContainers] = useState<string[] | null>(null);
   const [chosen, setChosen] = useState("");
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (native) return;
     let cancelled = false;
     setContainers(null);
     setChosen("");
@@ -39,7 +40,7 @@ export function AppLogPane({ id }: { id: string }) {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, native]);
 
   if (failed) {
     return (
@@ -76,7 +77,7 @@ export function AppLogPane({ id }: { id: string }) {
       <Logs
         label="Logs"
         url={
-          chosen
+          native ? `/apps/id/${encodeURIComponent(id)}/logs` : chosen
             ? `/apps/id/${encodeURIComponent(id)}/logs?container=${encodeURIComponent(chosen)}`
             : null
         }

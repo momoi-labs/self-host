@@ -1,7 +1,7 @@
 # Source builds come from a Git repository, and local PostgreSQL is an unpublished Application
 
-Git source builds are implemented in D2. Managed PostgreSQL remains a P2
-proposal. The Platform still accepts the existing Host `path` source and
+Git source builds are implemented in D2. Managed PostgreSQL is implemented in
+P2. The Platform still accepts the existing Host `path` source and
 refuses `build:` in pasted Compose files (ADR-0015). Git Compose inputs come
 from an owned checkout. Applications that need a database can continue to
 run one inside their own Compose file.
@@ -28,6 +28,15 @@ into a Variable of the consumer. It is neither Platform Infra, which ADR-0018
 and ADR-0019 removed, nor a service inside each Application's Compose file.
 This is slice P2.
 
+P2 uses an unpublished Compose Application with a selected PostgreSQL major
+version, a named volume and generated credentials. Each consumer connection
+owns a PostgreSQL role and database. Container consumers use private network
+grants; Native Applications use a loopback-only transport plus their database
+credentials. Connection references and database metadata are separate typed
+Platform State collections. The ordinary Application record keeps its existing
+container lifecycle. Removal preserves data unless the Operator explicitly
+chooses to delete the volume. See [managed PostgreSQL](../managed-postgresql.md).
+
 ## Considered options
 
 - **Keep building from Host paths.** Rejected as the shape to grow: the
@@ -44,7 +53,8 @@ This is slice P2.
   own in a container any more, and a database for Applications is not the
   Platform's state (ADR-0027).
 
-**Status:** Git sources accepted and implemented in D2. Managed PostgreSQL proposed.
+**Status:** Git sources accepted and implemented in D2. Managed PostgreSQL
+accepted and implemented in P2.
 
 **Extends:** [ADR-0015](0015-compose-service-ownership-and-routing.md) (the
 `build:` refusal), [ADR-0028](0028-runtime-and-publication-are-recorded-explicitly.md)

@@ -44,6 +44,8 @@ export function Shell({
   overview,
   deploy,
   newMachine = { href: "/console/#new-environment", active: false },
+  databases = { href: "/console/#databases", active: false },
+  newDatabase = { href: "/console/#new-database", active: false },
   customImages = { href: "/console/#custom-images", active: false },
   dns = { href: "/console/#dns", active: false },
   events = { href: "/console/#events", active: false },
@@ -61,6 +63,8 @@ export function Shell({
   overview: Destination;
   deploy: Destination;
   newMachine?: Destination;
+  databases?: Destination;
+  newDatabase?: Destination;
   customImages?: Destination;
   events?: Destination;
   dns?: Destination;
@@ -70,6 +74,7 @@ export function Shell({
   children: ReactNode;
 }) {
   const [theme, setTheme] = useTheme();
+  const applications = apps.filter((app) => !app.managed_postgres);
 
   const navigate = (destination: Destination) => {
     if (destination.onClick) destination.onClick();
@@ -91,12 +96,13 @@ export function Shell({
         </div>
       }
       primaryAction={
-        <CreateResource onDeploy={() => navigate(deploy)} onCreateMachine={() => navigate(newMachine)} />
+        <CreateResource onDeploy={() => navigate(deploy)} onCreateMachine={() => navigate(newMachine)} onCreateDatabase={() => navigate(newDatabase)} />
       }
       navigation={[
         {
           destinations: [
             { ...overview, label: "Overview", leading: <Icon name="chart" /> },
+            { ...databases, label: "Databases", leading: <Icon name="database" /> },
             { ...dns, label: "DNS", leading: <Icon name="globe" /> },
             { ...events, label: "Events", leading: <Icon name="history" /> },
             {
@@ -110,8 +116,8 @@ export function Shell({
           destinations: [],
           empty: (
             <>
-              {apps.length > 0 && (
-                <ResourceLinks label="Applications" items={apps.map((app) => ({
+              {applications.length > 0 && (
+                <ResourceLinks label="Applications" items={applications.map((app) => ({
                   ...application(app), name: app.name, status: app.status,
                 }))} />
               )}

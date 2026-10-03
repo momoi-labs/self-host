@@ -106,7 +106,7 @@ enum Command {
 enum AppsCommand {
     /// Deploy an Application from a Docker image or local build path
     Add {
-        /// Application name (used in the default Hostname)
+        /// Human-readable Application name
         #[arg(long)]
         name: String,
         /// Docker image reference
@@ -839,10 +839,11 @@ async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
         AppsCommand::Stop { name } => run_lifecycle(&config, &client, &name, "stop").await?,
         AppsCommand::Restart { name } => run_lifecycle(&config, &client, &name, "restart").await?,
         AppsCommand::Remove { name } => {
+            let id = application_id(&config, &client, &name).await?;
             let url = format!(
-                "{}/apps/{}",
+                "{}/apps/id/{}",
                 config.api_base_url.trim_end_matches('/'),
-                name
+                id
             );
             let response = client
                 .delete(&url)
@@ -875,24 +876,7 @@ async fn run_lifecycle(
     verb: &str,
 ) -> anyhow::Result<()> {
     let base = config.api_base_url.trim_end_matches('/');
-
-    let response = client
-        .get(format!("{base}/apps"))
-        .bearer_auth(&config.api_key)
-        .send()
-        .await?;
-    let status = response.status();
-    let body = response.text().await?;
-    if !status.is_success() {
-        return Err(api_error("List failed", status, &body));
-    }
-    let apps: Vec<serde_json::Value> = serde_json::from_str(&body)?;
-    let id = apps
-        .iter()
-        .find(|a| a["name"].as_str() == Some(name))
-        .and_then(|a| a["id"].as_str())
-        .ok_or_else(|| anyhow::anyhow!("Application '{name}' not found"))?;
-
+    let id = application_id(config, client, name).await?;
     let response = client
         .post(format!("{base}/apps/id/{id}/{verb}"))
         .bearer_auth(&config.api_key)
@@ -916,19 +900,50 @@ async fn run_lifecycle(
     Ok(())
 }
 
+/// Human names are matched exactly. Only immutable IDs enter URL paths.
+async fn application_id(
+    config: &CliConfig,
+    client: &reqwest::Client,
+    name: &str,
+) -> anyhow::Result<String> {
+    let base = config.api_base_url.trim_end_matches('/');
+    let response = client
+        .get(format!("{base}/apps"))
+        .bearer_auth(&config.api_key)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(api_error("List failed", status, &body));
+    }
+    let apps: Vec<serde_json::Value> = serde_json::from_str(&body)?;
+    apps.iter()
+        .find(|a| a["name"].as_str() == Some(name))
+        .and_then(|a| a["id"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("Application '{name}' not found"))
+}
+
 async fn run_env_command(
     config: &CliConfig,
     client: &reqwest::Client,
     command: EnvCommand,
 ) -> anyhow::Result<()> {
     let base = config.api_base_url.trim_end_matches('/');
+    let name = match &command {
+        EnvCommand::Set { app, .. }
+        | EnvCommand::Get { app, .. }
+        | EnvCommand::Unset { app, .. } => app,
+    };
+    let id = application_id(config, client, name).await?;
 
     match command {
         EnvCommand::Set { app, key_value } => {
             let (key, value) = key_value
                 .split_once('=')
                 .ok_or_else(|| anyhow::anyhow!("env must be in KEY=value format"))?;
-            let url = format!("{base}/apps/{app}/env");
+            let url = format!("{base}/apps/id/{id}/env");
             let response = client
                 .post(&url)
                 .bearer_auth(&config.api_key)
@@ -945,7 +960,7 @@ async fn run_env_command(
         }
         EnvCommand::Get { app, key } => {
             if let Some(key) = key {
-                let url = format!("{base}/apps/{app}/env");
+                let url = format!("{base}/apps/id/{id}/env");
                 let response = client.get(&url).bearer_auth(&config.api_key).send().await?;
                 let status = response.status();
                 if !status.is_success() {
@@ -959,7 +974,7 @@ async fn run_env_command(
                     eprintln!("env key '{key}' not found on '{app}'");
                 }
             } else {
-                let url = format!("{base}/apps/{app}/env");
+                let url = format!("{base}/apps/id/{id}/env");
                 let response = client.get(&url).bearer_auth(&config.api_key).send().await?;
                 let status = response.status();
                 if !status.is_success() {
@@ -977,9 +992,13 @@ async fn run_env_command(
             }
         }
         EnvCommand::Unset { app, key } => {
-            let url = format!("{base}/apps/{app}/env/{key}");
+            let mut url = reqwest::Url::parse(&format!("{base}/apps/id/{id}/env/"))?;
+            url.path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("invalid API URL"))?
+                .pop_if_empty()
+                .push(&key);
             let response = client
-                .delete(&url)
+                .delete(url)
                 .bearer_auth(&config.api_key)
                 .send()
                 .await?;
@@ -1004,17 +1023,15 @@ async fn run_logs_command(app_name: &str) -> anyhow::Result<()> {
         )
     })?;
 
+    let client = platform_api_client()?;
+    let id = application_id(&config, &client, app_name).await?;
     let url = format!(
-        "{}/apps/{}/logs",
+        "{}/apps/id/{}/logs",
         config.api_base_url.trim_end_matches('/'),
-        app_name
+        id
     );
 
-    let response = platform_api_client()?
-        .get(&url)
-        .bearer_auth(&config.api_key)
-        .send()
-        .await?;
+    let response = client.get(&url).bearer_auth(&config.api_key).send().await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -1308,6 +1325,7 @@ async fn run_api_server(
         store.clone(),
         docker.clone(),
         vm_runtime.clone(),
+        Arc::new(self_host::native::lifecycle::S6Runtime::default()),
         metrics.clone(),
     );
 

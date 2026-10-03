@@ -15,7 +15,13 @@ pub mod cgroup;
 pub mod identity;
 pub mod launch;
 pub mod lifecycle;
+pub mod metrics;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod mise;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod redaction;
 pub mod supervision;
+pub mod terminal;
 
 pub use cgroup::{ApplicationCgroup, CgroupError, CgroupRoot};
 pub use identity::{

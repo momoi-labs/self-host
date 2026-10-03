@@ -1,3 +1,5 @@
+mod private_networks;
+
 use crate::compose_app::ComposeProject;
 use async_trait::async_trait;
 use std::os::unix::fs::PermissionsExt;
@@ -183,6 +185,14 @@ pub struct ContainerStats {
 )]
 #[async_trait]
 pub trait DockerRuntime: Send + Sync {
+    async fn postgres(
+        &self,
+        _request: &crate::postgres::runtime::Request,
+    ) -> Result<String, DockerError> {
+        Err(DockerError::Unavailable(
+            "PostgreSQL operations are unavailable in this runtime".into(),
+        ))
+    }
     async fn build_source(&self, _build: &SourceBuild) -> Result<String, DockerError> {
         Err(DockerError::Unavailable(
             "Git builds are unavailable in this runtime".into(),
@@ -240,6 +250,9 @@ pub trait DockerRuntime: Send + Sync {
 
     /// The container's state, or `None` when there is no such container.
     async fn container_state(&self, name: &str) -> Result<Option<ContainerState>, DockerError>;
+    /// The immutable image the container actually runs, never its moving tag.
+    async fn container_image_id(&self, name: &str) -> Result<String, DockerError>;
+
     /// Resource usage of every running Application container, joined to its
     /// Application by label. Containers the Platform does not own are not
     /// the Platform's to report.
@@ -257,6 +270,8 @@ pub trait DockerRuntime: Send + Sync {
     /// Writes the project and brings it up. Images are pulled as needed and
     /// only the services whose definition changed are recreated.
     async fn compose_up(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    /// Explicit recovery must use local immutable images and never pull.
+    async fn compose_up_pinned(&self, project: &ComposeProject) -> Result<(), DockerError>;
     async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError>;
     async fn compose_stop(&self, project: &ComposeProject) -> Result<(), DockerError>;
     async fn compose_restart(&self, project: &ComposeProject) -> Result<(), DockerError>;
@@ -286,6 +301,12 @@ impl CliDocker {
 
 #[async_trait]
 impl DockerRuntime for CliDocker {
+    async fn postgres(
+        &self,
+        request: &crate::postgres::runtime::Request,
+    ) -> Result<String, DockerError> {
+        crate::postgres::runtime::execute(request).await
+    }
     async fn pin_source_image(
         &self,
         image: &str,
@@ -753,67 +774,12 @@ impl DockerRuntime for CliDocker {
         container: &str,
         networks: &[String],
     ) -> Result<(), DockerError> {
-        if networks
-            .iter()
-            .any(|network| !network.starts_with("sf-private-"))
-        {
-            return Err(DockerError::Unavailable(
-                "private network synchronization requires Platform private networks".into(),
-            ));
-        }
-        let inspect = std::process::Command::new("docker")
-            .args([
-                "inspect",
-                "--type",
-                "container",
-                "--format",
-                "{{json .NetworkSettings.Networks}}",
-                container,
-            ])
-            .output()
-            .map_err(|error| DockerError::spawn("failed to inspect container networks", error))?;
-        if !inspect.status.success() {
-            return Err(DockerError::refused(
-                "failed to inspect container networks",
-                &inspect,
-            ));
-        }
-        let current: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(&inspect.stdout).map_err(|error| {
-                DockerError::Command("failed to read container networks".into(), Box::new(error))
-            })?;
-        for network in current
-            .keys()
-            .filter(|name| name.starts_with("sf-private-") && !networks.contains(name))
-        {
-            let output = std::process::Command::new("docker")
-                .args(["network", "disconnect", network, container])
+        private_networks::reconcile(container, networks, |args, step| {
+            std::process::Command::new("docker")
+                .args(args)
                 .output()
-                .map_err(|error| {
-                    DockerError::spawn("failed to revoke private network access", error)
-                })?;
-            if !output.status.success() {
-                return Err(DockerError::refused(
-                    "failed to revoke private network access",
-                    &output,
-                ));
-            }
-        }
-        for network in networks.iter().filter(|name| !current.contains_key(*name)) {
-            let output = std::process::Command::new("docker")
-                .args(["network", "connect", network, container])
-                .output()
-                .map_err(|error| {
-                    DockerError::spawn("failed to grant private network access", error)
-                })?;
-            if !output.status.success() {
-                return Err(DockerError::refused(
-                    "failed to grant private network access",
-                    &output,
-                ));
-            }
-        }
-        Ok(())
+                .map_err(|error| DockerError::spawn(step, error))
+        })
     }
 
     async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError> {
@@ -956,6 +922,10 @@ impl DockerRuntime for CliDocker {
             config.network.clone(),
         ];
 
+        if crate::deployments::immutable_image(&config.image) {
+            args.extend(["--pull".into(), "never".into()]);
+        }
+
         for network in &config.additional_networks {
             args.extend(["--network".into(), network.clone()]);
         }
@@ -1089,14 +1059,16 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn container_state(&self, name: &str) -> Result<Option<ContainerState>, DockerError> {
-        let output = std::process::Command::new("docker")
+        let output = tokio::process::Command::new("docker")
             .args([
                 "inspect",
                 "-f",
                 "{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{end}}",
                 name,
             ])
+            .kill_on_drop(true)
             .output()
+            .await
             .map_err(|e| DockerError::spawn(format!("failed to inspect container '{name}'"), e))?;
 
         // No such container is an answer, not an error.
@@ -1115,6 +1087,22 @@ impl DockerRuntime for CliDocker {
             restarts,
             health: parts.next().map(str::to_owned),
         }))
+    }
+
+    async fn container_image_id(&self, name: &str) -> Result<String, DockerError> {
+        let output = tokio::process::Command::new("docker")
+            .args(["inspect", "--format", "{{.Image}}", name])
+            .kill_on_drop(true)
+            .output()
+            .await
+            .map_err(|e| DockerError::spawn("could not read the deployed image", e))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(
+                "could not read the deployed image",
+                &output,
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
     async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError> {
@@ -1199,6 +1187,15 @@ impl DockerRuntime for CliDocker {
             project,
             &["up", "-d", "--remove-orphans"],
             "failed to bring the Application up",
+        )
+    }
+
+    async fn compose_up_pinned(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        write_project(project)?;
+        compose(
+            project,
+            &["up", "-d", "--remove-orphans", "--pull", "never"],
+            "failed to recover the Application",
         )
     }
 
@@ -1571,6 +1568,12 @@ fn fake_stats(container: &str, application: &str) -> ContainerStats {
 pub type RecordedTerminal = (String, crate::terminal::Size, Option<String>);
 pub type RecordedNetworkSync = (String, Vec<String>);
 
+#[derive(Default)]
+pub struct FakeImageLookupPause {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+
 #[derive(Clone, Default)]
 pub struct FakeDocker {
     pub apps: std::sync::Arc<std::sync::Mutex<Vec<ApplicationContainer>>>,
@@ -1597,6 +1600,7 @@ pub struct FakeDocker {
     pub terminals: std::sync::Arc<std::sync::Mutex<Vec<RecordedTerminal>>>,
     /// The id each image has on the Host, by reference.
     pub images: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    pub image_lookup_pause: Option<std::sync::Arc<FakeImageLookupPause>>,
     /// The id a pull would fetch, by reference: what the registry has now.
     pub registry: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// Compose projects recreated, by name.
@@ -1620,6 +1624,7 @@ impl FakeDocker {
             run_failure: None,
             terminals: Default::default(),
             images: Default::default(),
+            image_lookup_pause: None,
             registry: Default::default(),
             recreated: Default::default(),
             network_syncs: Default::default(),
@@ -1821,6 +1826,10 @@ impl DockerRuntime for FakeDocker {
     }
 
     async fn image_id(&self, image: &str) -> Result<Option<String>, DockerError> {
+        if let Some(pause) = &self.image_lookup_pause {
+            pause.entered.notify_one();
+            pause.release.notified().await;
+        }
         Ok(self.images.lock().unwrap().get(image).cloned())
     }
 
@@ -1892,6 +1901,45 @@ impl DockerRuntime for FakeDocker {
         }))
     }
 
+    async fn container_image_id(&self, name: &str) -> Result<String, DockerError> {
+        let single = self
+            .apps
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|app| app.name == name)
+            .map(|app| app.image.clone());
+        let image = single
+            .or_else(|| {
+                self.projects.lock().unwrap().iter().find_map(|project| {
+                    let (service, _) = project
+                        .containers
+                        .iter()
+                        .find(|(_, container)| container == name)?;
+                    let yaml: serde_yaml::Value = serde_yaml::from_str(&project.yaml).ok()?;
+                    yaml["services"][service]["image"]
+                        .as_str()
+                        .map(str::to_owned)
+                })
+            })
+            .ok_or_else(|| DockerError::Unavailable("container image is missing".into()))?;
+        let mut images = self.images.lock().unwrap();
+        let id = images.get(&image).cloned().unwrap_or_else(|| {
+            if crate::deployments::immutable_image(&image) {
+                image.clone()
+            } else {
+                fake_source_id(&image)
+            }
+        });
+        let id = if crate::deployments::immutable_image(&id) {
+            id
+        } else {
+            fake_source_id(&id)
+        };
+        images.insert(id.clone(), id.clone());
+        Ok(id)
+    }
+
     async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError> {
         let stopped = self.stopped.lock().unwrap();
         let mut stats = Vec::new();
@@ -1949,6 +1997,10 @@ impl DockerRuntime for FakeDocker {
             stopped.remove(container);
         }
         Ok(())
+    }
+
+    async fn compose_up_pinned(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        self.compose_up(project).await
     }
 
     async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError> {
@@ -2104,6 +2156,10 @@ where
         (**self).container_state(name).await
     }
 
+    async fn container_image_id(&self, name: &str) -> Result<String, DockerError> {
+        (**self).container_image_id(name).await
+    }
+
     async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError> {
         (**self).container_stats().await
     }
@@ -2122,6 +2178,10 @@ where
 
     async fn compose_up(&self, project: &ComposeProject) -> Result<(), DockerError> {
         (**self).compose_up(project).await
+    }
+
+    async fn compose_up_pinned(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_up_pinned(project).await
     }
 
     async fn compose_start(&self, project: &ComposeProject) -> Result<(), DockerError> {

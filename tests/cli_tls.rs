@@ -72,9 +72,9 @@ impl Host {
                             assert_eq!(request.headers()["authorization"], "Bearer cli-test-key");
                             let body = match request.uri().path() {
                                 "/apps" => {
-                                    r#"[{"name":"hermes","hostname":"hermes.home.lan","source":"compose","status":"running"}]"#
+                                    r#"[{"id":"fixture-app","name":"Teste / ..","hostname":"teste.home.lan","source":"compose","status":"running"}]"#
                                 }
-                                "/apps/hermes/logs" => "data: hermes is ready\n\n",
+                                "/apps/id/fixture-app/logs" => "data: application is ready\n\n",
                                 path => panic!("unexpected CLI request: {path}"),
                             };
                             Ok::<_, Infallible>(hyper::Response::new(Full::new(
@@ -119,7 +119,7 @@ impl Host {
     async fn assert_commands_succeed(&self) {
         for (args, expected) in [
             (["apps", "list"], "running"),
-            (["logs", "hermes"], "hermes is ready"),
+            (["logs", "Teste / .."], "application is ready"),
         ] {
             let output = self.run(&args).await;
             assert!(
@@ -166,7 +166,7 @@ async fn cli_rejects_an_unknown_ca_and_a_wrong_hostname() {
             host.ca.clone()
         };
         std::fs::write(host.ca_path(), local_ca).unwrap();
-        for args in [["apps", "list"], ["logs", "hermes"]] {
+        for args in [["apps", "list"], ["logs", "Teste / .."]] {
             let output = host.run(&args).await;
             assert!(!output.status.success(), "{args:?} accepted {cert_name}");
             assert!(

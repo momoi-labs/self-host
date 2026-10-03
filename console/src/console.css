@@ -158,7 +158,7 @@
 
 .custom-image-list { min-width: 0; }
 .custom-image-list > .table-wrap { min-width: 0; }
-.form-steps { counter-reset: form-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
+.form-steps { max-width: 760px; counter-reset: form-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
 .form-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
 .form-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
 /* The number hangs in the gutter the fields are indented by, on the title's
