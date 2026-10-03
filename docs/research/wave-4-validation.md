@@ -108,6 +108,25 @@ be overwritten; recovery now shares the metadata update lock.
   Discard behavior. Git creation and configuration use the shared numbered
   steps, with publication fields in their own step and stacked fields on phones.
 
+## Linux release packaging
+
+- Built pinned s6 and skalibs sources for x86_64 and aarch64 with Zig 0.13.0.
+  All ten supervision executables are static and match their target architecture.
+- Generated all four archives and six Linux package formats with GoReleaser's
+  prebuilt import path, using a placeholder self-host executable to isolate
+  packaging. Verified binary paths, executable modes, licenses and metadata.
+  macOS archives contain no s6 files. No release was published.
+- A clean ARM64 container without distribution s6 rejected an incomplete
+  bundle, then installed the complete archive. Readiness, logging, crash
+  recovery and shutdown passed using only the private tools.
+- The real Linux build passed 550 ordinary tests and 18 privileged native
+  API, isolation and supervision checks with the bundled tools. The Linux
+  reboot example compiled after adding its missing recipe field. Clippy with
+  warnings denied passed for all targets.
+- Nine release tests, GoReleaser configuration, shell syntax and workflow
+  validation passed. CI also builds both bundles and runs the clean-container
+  supervision check on x86_64.
+
 ## Remaining release work
 
 Wave 5 still owns W3 public routing/certificate/console management and R1

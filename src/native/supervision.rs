@@ -160,6 +160,18 @@ mod linux {
     }
 
     pub(super) fn tool(name: &str) -> Result<PathBuf> {
+        // A release bundle is one versioned set. Never mix an incomplete
+        // bundle with distribution tools or accept a user-controlled PATH.
+        let bundle = Path::new("/usr/libexec/self-host/s6");
+        if bundle.try_exists()? {
+            let path = bundle.join(name);
+            protected(&path)?;
+            let metadata = fs::metadata(&path)?;
+            if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
+                bail!("{} must be an executable file", path.display());
+            }
+            return Ok(path);
+        }
         for directory in ["/usr/bin", "/bin", "/usr/local/bin"] {
             let path = Path::new(directory).join(name);
             // Debian's /bin is a symlink to /usr/bin. Canonicalize only a
@@ -171,7 +183,9 @@ mod linux {
                 }
             }
         }
-        bail!("missing {name}; install the s6 package (apt-get install s6 on Debian/Ubuntu)")
+        bail!(
+            "missing {name}; reinstall the self-host Linux release or install the distribution's s6 package"
+        )
     }
 
     pub(super) fn run_tool(name: &str, arguments: &[&std::ffi::OsStr]) -> Result<()> {
@@ -378,6 +392,7 @@ mod linux {
         protected(&std::env::current_exe()?)?;
         for name in [
             "s6-svscan",
+            "s6-supervise",
             "s6-svscanctl",
             "s6-svc",
             "s6-svwait",
@@ -387,6 +402,9 @@ mod linux {
             "s6-setlock",
         ] {
             tool(name)?;
+        }
+        if Path::new("/usr/libexec/self-host/s6").try_exists()? {
+            tool("s6-ftrigrd")?;
         }
         directory(root, 0o700)?;
         directory(&root.join("services"), 0o700)?;

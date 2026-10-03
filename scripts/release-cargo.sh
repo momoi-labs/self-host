@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# GoReleaser's Rust tool hook: place a matrix-built binary where the Rust
-# builder expects Cargo's output. Never compile in the publishing job.
+# Import matrix-built artifacts without compiling in the publishing job.
 set -euo pipefail
 
 : "${SELF_HOST_PREBUILT_DIR:?Set SELF_HOST_PREBUILT_DIR to the downloaded build artifacts}"
@@ -22,5 +21,23 @@ if [[ ! -f "$source_binary" || ! -x "$source_binary" ]]; then
   exit 1
 fi
 
+if [[ "$target" == *-linux-gnu ]]; then
+  bundle="$SELF_HOST_PREBUILT_DIR/$target/s6"
+  for tool in s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock s6-ftrigrd; do
+    if [[ ! -f "$bundle/bin/$tool" || ! -x "$bundle/bin/$tool" ]]; then
+      echo "Missing executable s6 artifact: $bundle/bin/$tool" >&2
+      exit 1
+    fi
+  done
+  for license in s6 skalibs musl zig; do
+    [[ -s "$bundle/licenses/$license.txt" ]] || { echo "Missing s6 license: $license" >&2; exit 1; }
+  done
+  grep -qxF "target $target" "$bundle/versions.txt" || { echo "Wrong or missing s6 target metadata" >&2; exit 1; }
+fi
+
 mkdir -p "target/$target/release"
 cp "$source_binary" "target/$target/release/self-host"
+if [[ "$target" == *-linux-gnu ]]; then
+  rm -rf "target/$target/release/s6"
+  cp -R "$bundle" "target/$target/release/s6"
+fi

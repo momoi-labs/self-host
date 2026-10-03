@@ -25,6 +25,39 @@ jobs:
           version: v2.18.2
           args: check
 
+  s6-bundle:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+      - run: ./scripts/release-s6.sh ${{ matrix.target }}
+      - name: Verify static ELF executables
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          machine='Advanced Micro Devices X86-64'
+          if [[ "$TARGET" == aarch64-* ]]; then machine=AArch64; fi
+          for binary in target/"$TARGET"/release/s6/bin/*; do
+            readelf -h "$binary" | grep -q "Machine:.*$machine"
+            if readelf -l "$binary" | grep -q INTERP; then
+              echo "$binary needs a dynamic loader"
+              exit 1
+            fi
+          done
+      - name: Test installation and supervision without system s6
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          docker run --rm --network none -e SELF_HOST_RELEASE_TEST=1 \
+            -v "$PWD:/source:ro" ubuntu:24.04 \
+            bash /source/scripts/test-release-s6.sh \
+            /source/target/x86_64-unknown-linux-gnu/release/s6 /source/install.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

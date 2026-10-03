@@ -92,8 +92,18 @@ jobs:
 
       - run: cargo ${{ matrix.command }} --release --locked --target ${{ matrix.target }}
 
+      - name: Build bundled s6
+        if: runner.os == 'Linux'
+        run: ./scripts/release-s6.sh ${{ matrix.target }}
+
       # Tar preserves the executable mode when transferring between runners.
-      - run: tar czf ${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release self-host
+      - name: Pack build artifacts
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          files=(self-host)
+          if [[ "$TARGET" == *-linux-gnu ]]; then files+=(s6); fi
+          tar czf "$TARGET.tar.gz" -C "target/$TARGET/release" "${files[@]}"
 
       - uses: actions/upload-artifact@v4
         with:
