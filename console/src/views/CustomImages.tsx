@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   StatusBadge,
   Button, Card,
@@ -14,10 +15,13 @@ import { CustomImageEditor } from "../components/CustomImageEditor.js";
 import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
 import { api, asReport, failureOf } from "../lib/api.js";
+import { customImagesQuery } from "../lib/queries.js";
 import { buildLabel, buildTone } from "../lib/status.js";
 import { waitForTask } from "../lib/tasks.js";
 import type { CustomImage, Report } from "../lib/types.js";
 import { fetchEvents } from "../lib/useEvents.js";
+
+const noImages: CustomImage[] = [];
 
 /**
  * The saved images and their latest build. This owns the records and the
@@ -29,45 +33,23 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
   onOpen: (id: string | null) => void;
   onList: () => void;
 }) {
-  const [images, setImages] = useState<CustomImage[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [loadFailure, setLoadFailure] = useState<Report | null>(null);
+  const queryClient = useQueryClient();
+  const list = useQuery({ ...customImagesQuery, refetchInterval: 1000 });
+  const images = list.data ?? noImages;
+  const loaded = list.data !== undefined;
+  const loadFailure = list.error ? asReport(list.error) : null;
   const [failure, setFailure] = useState<Report | null>(null);
   const [query, setQuery] = useState("");
   const [confirming, setConfirming] = useState<CustomImage | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [refresh, setRefresh] = useState(0);
   const current = images.find((image) => image.id === selected);
-
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const controller = new AbortController();
-    async function poll() {
-      try {
-        const response = await api("/custom-images", { signal: controller.signal });
-        if (!response.ok) throw await failureOf(response);
-        const records = await response.json() as CustomImage[];
-        if (!active) return;
-        setImages(records);
-        setLoadFailure(null);
-        setLoaded(true);
-      } catch (cause) {
-        if (active) setLoadFailure(asReport(cause));
-      } finally {
-        if (active) timer = setTimeout(poll, 1000);
-      }
-    }
-    void poll();
-    return () => { active = false; controller.abort(); clearTimeout(timer); };
-  }, [refresh]);
 
   /** A saved recipe is the record the editor reopens, so it lands here before
    * the next poll does. */
   function saved(image: CustomImage) {
-    setImages((records) => [image, ...records.filter((item) => item.id !== image.id)]);
+    queryClient.setQueryData(customImagesQuery.queryKey, (records = noImages) => [image, ...records.filter((item) => item.id !== image.id)]);
     onOpen(image.id);
-    setRefresh((value) => value + 1);
+    void list.refetch();
   }
 
   const visible = images.filter((image) => image.name.toLowerCase().includes(query.trim().toLowerCase()));
@@ -82,8 +64,8 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
       const { task_id } = (await response.json()) as { task_id: string };
       const outcome = await waitForTask(task_id, { events: fetchEvents });
       if (outcome.status === "failed") throw outcome.error ?? new Error("Could not delete the image.");
-      setImages((images) => images.filter((item) => item.id !== image.id));
-      setRefresh((value) => value + 1);
+      queryClient.setQueryData(customImagesQuery.queryKey, (records = noImages) => records.filter((item) => item.id !== image.id));
+      void list.refetch();
     } catch (cause) {
       setFailure(asReport(cause));
     } finally {

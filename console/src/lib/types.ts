@@ -262,6 +262,15 @@ export type Environment = {
   installed_versions?: unknown;
 };
 
+/** What `GET /bootstrap/status` answers: the Host as its DNS publishes it. */
+export type BootstrapStatus = {
+  initialized: boolean;
+  host_ip: string | null;
+  host_addresses: string[];
+  dns_suffix: string | null;
+  forwarders: string[];
+};
+
 /** What `GET /settings` answers. */
 export type Settings = {
   auditEventsMaxAge: {

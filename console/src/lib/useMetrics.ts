@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { getJson } from "./api.js";
+import { readJson } from "./api.js";
 import type { AppSample, ContainerSeries, Metrics } from "./types.js";
 
 /** What the collector ticks at until the daemon has said otherwise. */
@@ -12,24 +12,14 @@ const ASSUMED_INTERVAL_SECONDS = 10;
  * interval is the daemon's to set, so the first answer sets the cadence.
  */
 export function useMetrics(): Metrics | null {
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const interval = metrics?.interval_seconds ?? ASSUMED_INTERVAL_SECONDS;
+  const { data } = useQuery({
+    queryKey: ["metrics"],
+    queryFn: ({ signal }) => readJson<Metrics>("/metrics", signal),
+    refetchInterval: (query) =>
+      ((query.state.data?.interval_seconds ?? ASSUMED_INTERVAL_SECONDS) * 1000) / 2,
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      const next = await getJson<Metrics>("/metrics");
-      if (!cancelled && next) setMetrics(next);
-    };
-    void load();
-    const timer = window.setInterval(() => void load(), (interval * 1000) / 2);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [interval]);
-
-  return metrics;
+  return data ?? null;
 }
 
 /** The series of one Application, oldest first, or `null` before the first

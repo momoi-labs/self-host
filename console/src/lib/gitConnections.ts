@@ -1,5 +1,6 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { api, failureOf } from "./api.js";
+import { queryClient } from "./queryClient.js";
 
 export type GitProvider = "github" | "gitlab";
 export type GitConnection = {
@@ -47,27 +48,6 @@ export type GitConnectionRequest = {
   token: string;
 };
 
-type Snapshot = { connections: GitConnection[]; loading: boolean; error: string | null };
-let snapshot: Snapshot = { connections: [], loading: true, error: null };
-let loaded = false;
-let pending: Promise<void> | null = null;
-const listeners = new Set<() => void>();
-type IntegrationSnapshot = { integrations: IntegrationSettings | null; loading: boolean; error: string | null };
-let integrationSnapshot: IntegrationSnapshot = { integrations: null, loading: true, error: null };
-let integrationsLoaded = false;
-let integrationsPending: Promise<void> | null = null;
-const integrationListeners = new Set<() => void>();
-
-function setIntegrations(next: IntegrationSnapshot) {
-  integrationSnapshot = next;
-  for (const listener of integrationListeners) listener();
-}
-
-function setSnapshot(next: Snapshot) {
-  snapshot = next;
-  for (const listener of listeners) listener();
-}
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -79,23 +59,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return await response.json() as T;
 }
 
+/*
+ * Read once per page, like the saved credentials they describe, and again
+ * after anything here changes them.
+ */
+const connectionsQuery = queryOptions({
+  queryKey: ["source", "connections"],
+  queryFn: ({ signal }) => request<GitConnection[]>("/source/connections", { signal }),
+  staleTime: Infinity,
+});
+
+const integrationsQuery = queryOptions({
+  queryKey: ["source", "integrations"],
+  queryFn: ({ signal }) => request<IntegrationSettings>("/source/integrations", { signal }),
+  staleTime: Infinity,
+});
+
+const noConnections: GitConnection[] = [];
+
 export function refreshGitConnections(): Promise<void> {
-  if (pending) return pending;
-  setSnapshot({ ...snapshot, loading: true, error: null });
-  pending = request<GitConnection[]>("/source/connections").then(
-    (connections) => setSnapshot({ connections, loading: false, error: null }),
-    (error: Error) => setSnapshot({ ...snapshot, loading: false, error: error.message }),
-  ).finally(() => { loaded = true; pending = null; });
-  return pending;
+  return queryClient.invalidateQueries({ queryKey: connectionsQuery.queryKey });
 }
 
 export function useGitConnections() {
-  const state = useSyncExternalStore(
-    (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    () => snapshot,
-  );
-  useEffect(() => { if (!loaded) void refreshGitConnections(); }, []);
-  return { ...state, refresh: refreshGitConnections };
+  const { data, isLoading, error } = useQuery(connectionsQuery);
+  return { connections: data ?? noConnections, loading: isLoading, error: error?.message ?? null, refresh: refreshGitConnections };
 }
 
 export async function saveGitConnection(requestBody: GitConnectionRequest, id?: string): Promise<GitConnection> {
@@ -123,22 +111,12 @@ export async function listGitRepositories(id: string, page = 1): Promise<GitRepo
 }
 
 export function refreshGitIntegrations(): Promise<void> {
-  if (integrationsPending) return integrationsPending;
-  setIntegrations({ ...integrationSnapshot, loading: true, error: null });
-  integrationsPending = request<IntegrationSettings>("/source/integrations").then(
-    (integrations) => setIntegrations({ integrations, loading: false, error: null }),
-    (error: Error) => setIntegrations({ ...integrationSnapshot, loading: false, error: error.message }),
-  ).finally(() => { integrationsLoaded = true; integrationsPending = null; });
-  return integrationsPending;
+  return queryClient.invalidateQueries({ queryKey: integrationsQuery.queryKey });
 }
 
 export function useGitIntegrations() {
-  const state = useSyncExternalStore(
-    (listener) => { integrationListeners.add(listener); return () => { integrationListeners.delete(listener); }; },
-    () => integrationSnapshot,
-  );
-  useEffect(() => { if (!integrationsLoaded) void refreshGitIntegrations(); }, []);
-  return { ...state, refresh: refreshGitIntegrations };
+  const { data, isLoading, error } = useQuery(integrationsQuery);
+  return { integrations: data ?? null, loading: isLoading, error: error?.message ?? null, refresh: refreshGitIntegrations };
 }
 
 export function startGitAuthorization(provider: GitProvider, name: string, connectionId?: string, useExistingInstallation = false) {
@@ -155,17 +133,13 @@ export function registerGithubIntegration(consoleUrl: string, organization?: str
 
 export async function saveGitlabIntegration(body: { console_url: string; client_id: string; client_secret: string }) {
   const integrations = await request<IntegrationSettings>("/source/integrations/gitlab", { method: "PUT", body: JSON.stringify(body) });
-  setIntegrations({ integrations, loading: false, error: null });
-  integrationsLoaded = true;
+  queryClient.setQueryData(integrationsQuery.queryKey, integrations);
   return integrations;
 }
 
 export async function completeGitAuthorization(body: AuthorizationCompletion) {
   const result = await request<AuthorizationResult>("/source/authorization/complete", { method: "POST", body: JSON.stringify(body) });
-  if (result.integrations) {
-    setIntegrations({ integrations: result.integrations, loading: false, error: null });
-    integrationsLoaded = true;
-  }
+  if (result.integrations) queryClient.setQueryData(integrationsQuery.queryKey, result.integrations);
   if (result.connection) await refreshGitConnections();
   return result;
 }

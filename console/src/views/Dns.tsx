@@ -1,4 +1,5 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Button, Card, CardContent, CardHeader,
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -10,15 +11,10 @@ import {
 
 import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
-import { api, asReport, failureOf } from "../lib/api.js";
+import { api, asReport, failureOf, readJson } from "../lib/api.js";
 import { recordRows, type DnsRecord, type RecordRow } from "../lib/dnsRecords.js";
+import { bootstrapStatusQuery } from "../lib/queries.js";
 import type { App, Environment, Report } from "../lib/types.js";
-
-type Diagnostics = {
-  dns_suffix: string | null;
-  host_addresses: string[];
-  forwarders: string[];
-};
 
 type Editor = { mode: "create" } | { mode: "edit" | "delete"; record: RecordRow };
 
@@ -28,10 +24,15 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
   onOpenApplication: (id: string) => void;
   onOpenVirtualMachine: (id: string) => void;
 }) {
-  const [inventory, setInventory] = useState<DnsRecord[] | null>(null);
-  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
-  const [loadFailure, setLoadFailure] = useState<Report | null>(null);
-  const [refresh, setRefresh] = useState(0);
+  const records = useQuery({
+    queryKey: ["dns", "records"],
+    queryFn: ({ signal }) => readJson<DnsRecord[]>("/dns/records", signal),
+    refetchInterval: 5000,
+  });
+  const status = useQuery({ ...bootstrapStatusQuery, refetchInterval: 5000 });
+  const inventory = records.data ?? null;
+  const diagnostics = status.data ?? null;
+  const loadFailure = records.error ?? status.error;
   const [query, setQuery] = useState("");
   const [owner, setOwner] = useState("all");
   const [editor, setEditor] = useState<Editor | null>(null);
@@ -41,34 +42,10 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
   const [failure, setFailure] = useState<Report | null>(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const controller = new AbortController();
-    async function poll() {
-      try {
-        const responses = await Promise.all([
-          api("/dns/records", { signal: controller.signal }),
-          api("/bootstrap/status", { signal: controller.signal }),
-        ]);
-        for (const response of responses) {
-          if (!response.ok) throw await failureOf(response);
-        }
-        const [records, status] = await Promise.all(responses.map(response => response.json()));
-        if (active) {
-          setInventory(records);
-          setDiagnostics(status);
-          setLoadFailure(null);
-        }
-      } catch (cause) {
-        if (active) setLoadFailure(asReport(cause));
-      } finally {
-        if (active) timer = setTimeout(poll, 5000);
-      }
-    }
-    void poll();
-    return () => { active = false; clearTimeout(timer); controller.abort(); };
-  }, [refresh]);
+  function refresh() {
+    void records.refetch();
+    void status.refetch();
+  }
 
   function open(next: Editor) {
     setEditor(next);
@@ -96,7 +73,7 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
       });
       if (!response.ok) throw await failureOf(response);
       setEditor(null);
-      setRefresh(current => current + 1);
+      refresh();
     } catch (cause) {
       setFailure(asReport(cause));
     } finally {
@@ -118,7 +95,7 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
         <PageHeaderTitle>DNS</PageHeaderTitle>
         <PageHeaderDescription>Names the Platform answers for, and the Records you manage.</PageHeaderDescription>
       </PageHeader>
-      {loadFailure ? <Failure failure={loadFailure} actionLabel="Retry" onAction={() => setRefresh(current => current + 1)} /> : null}
+      {loadFailure ? <Failure failure={loadFailure} actionLabel="Retry" onAction={refresh} /> : null}
       <div className="list-filters">
         <Search aria-label="Search records" placeholder="Search records..." value={query} onChange={event => setQuery(event.target.value)} />
         <Select value={owner} onValueChange={setOwner}>

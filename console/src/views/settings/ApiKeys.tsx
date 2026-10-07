@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Alert,
   AlertContent,
@@ -27,26 +28,26 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../../components/Icon.js";
-import { api, getJson, requireKey } from "../../lib/api.js";
+import { api, readJson, requireKey } from "../../lib/api.js";
 import type { ApiKey } from "../../lib/types.js";
+
+const noKeys: ApiKey[] = [];
 
 /** The API keys card of Settings. It is wide: a table needs the room. */
 export function ApiKeys() {
-  const [keys, setKeys] = useState<ApiKey[]>([]);
+  const { data: keys = noKeys, refetch: load } = useQuery({
+    queryKey: ["api-keys"],
+    queryFn: ({ signal }) => readJson<ApiKey[]>("/api-keys", signal),
+  });
   const [label, setLabel] = useState("");
   const [created, setCreated] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
-  const load = useCallback(async () => {
-    setKeys((await getJson<ApiKey[]>("/api-keys")) ?? []);
-  }, []);
-
   useEffect(() => {
-    if (!requireKey()) return;
-    void load();
-  }, [load]);
+    requireKey();
+  }, []);
 
   async function create(event: FormEvent) {
     event.preventDefault();

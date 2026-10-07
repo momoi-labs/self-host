@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
@@ -9,7 +10,9 @@ import {
   KVValue,
 } from "@momoi-labs/kiso-react";
 
-import { getJson, requireKey } from "../../lib/api.js";
+import { requireKey } from "../../lib/api.js";
+import { bootstrapStatusQuery } from "../../lib/queries.js";
+import type { BootstrapStatus } from "../../lib/types.js";
 
 /**
  * The DNS setup cards of Settings: the Host a device points at, and how to
@@ -45,22 +48,13 @@ function Steps({ platform, hostIp }: { platform: string; hostIp: string }) {
   );
 }
 
-type BootstrapStatus = {
-  dns_suffix?: string | null;
-  host_ip?: string | null;
-  host_addresses?: string[] | null;
-};
-
 /** `undefined` while loading, `null` when the Platform did not answer. */
-function useBootstrapStatus() {
-  const [status, setStatus] = useState<BootstrapStatus | null>();
+function useBootstrapStatus(): BootstrapStatus | null | undefined {
   useEffect(() => {
-    if (!requireKey()) return;
-    void (async () => {
-      setStatus(await getJson<BootstrapStatus>("/bootstrap/status"));
-    })();
+    requireKey();
   }, []);
-  return status;
+  const { data, isError } = useQuery(bootstrapStatusQuery);
+  return data ?? (isError ? null : undefined);
 }
 
 /** The Host a device on the LAN points its DNS at. */

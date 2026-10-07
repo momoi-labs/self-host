@@ -1,38 +1,32 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, FormField, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@momoi-labs/kiso-react";
-import { api, failureOf } from "../lib/api.js";
+import { api, failureOf, readJson } from "../lib/api.js";
 import { fetchEvents } from "../lib/useEvents.js";
 import { waitForTask } from "../lib/tasks.js";
 import type { App, Report } from "../lib/types.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
 
+const noNames: string[] = [];
+
 /** Existing values stay on the Host. Editing starts with an empty replacement. */
 export function NativeVariables({ app, reload, disabled, onEditingChange }: {
   app: App; reload?: () => Promise<App[]>; disabled: boolean; onEditingChange: (editing: boolean) => void;
 }) {
-  const [names, setNames] = useState<string[]>([]);
+  // Identity owns this panel; changing configuration does not reveal values.
+  const list = useQuery({
+    queryKey: ["apps", app.id, "variable-names"],
+    queryFn: ({ signal }) => readJson<string[]>(`/apps/id/${encodeURIComponent(app.id)}/variable-names`, signal),
+  });
+  const names = list.data ?? noNames;
+  const loading = list.isPending;
   const [editor, setEditor] = useState<"add" | "replace" | "remove" | null>(null);
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<Report | null>(null);
-  async function refresh(signal?: AbortSignal) {
-    const response = await api(`/apps/id/${encodeURIComponent(app.id)}/variable-names`, { signal });
-    if (!response.ok) throw await failureOf(response);
-    const next = await response.json() as string[];
-    if (!signal?.aborted) setNames(next);
-  }
-  useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal).catch(() => {
-      if (!controller.signal.aborted) setFailure({ error: "Could not load variable names.", caused_by: [] });
-    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-    // Identity owns this panel; changing configuration does not reveal values.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app.id]);
+  const loadFailure = list.isError ? { error: "Could not load variable names.", caused_by: [] } : null;
 
   function edit(mode: typeof editor, name = "") {
     setEditor(mode); setKey(name); setValue(""); setFailure(null);
@@ -52,7 +46,7 @@ export function NativeVariables({ app, reload, disabled, onEditingChange }: {
       const outcome = await waitForTask(accepted.task_id, { events: fetchEvents });
       if (outcome.status === "failed") setFailure(outcome.error ?? { error: "Could not update the variable.", caused_by: [] });
       else edit(null);
-      await refresh();
+      await list.refetch();
       await reload?.();
     } catch { setFailure({ error: "Could not update the variable.", caused_by: [] }); }
     finally { setBusy(false); }
@@ -67,7 +61,7 @@ export function NativeVariables({ app, reload, disabled, onEditingChange }: {
         <TableCell className="col-tight"><DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" type="button" variant="ghost" className="btn-icon" disabled={disabled} aria-label={`Actions for ${name}`}><Icon name="more" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => edit("replace", name)}>Replace</DropdownMenuItem><DropdownMenuItem variant="destructive" onSelect={() => edit("remove", name)}>Remove</DropdownMenuItem></DropdownMenuContent></DropdownMenu></TableCell>
       </TableRow>)}</TableBody>
     </Table></div></div> : <p className="muted">No variables.</p>}
-    {!editor && failure ? <Failure failure={failure} /> : null}
+    {!editor && (failure ?? loadFailure) ? <Failure failure={failure ?? loadFailure} /> : null}
     <Dialog open={editor !== null} onOpenChange={(open) => { if (!open && !busy) edit(null); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{editor === "remove" ? "Remove variable" : editor === "replace" ? "Replace variable" : "Add variable"}</DialogTitle></DialogHeader>

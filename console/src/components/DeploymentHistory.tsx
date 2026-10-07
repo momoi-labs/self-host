@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   Button, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -7,7 +8,7 @@ import {
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, StatusBadge,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
-import { api, failureOf } from "../lib/api.js";
+import { api, asReport, failureOf } from "../lib/api.js";
 import { fetchEvents } from "../lib/useEvents.js";
 import { waitForTask } from "../lib/tasks.js";
 import type { App, Report } from "../lib/types.js";
@@ -21,6 +22,21 @@ type Deployment = {
   error?: Report | null; recoverable: boolean;
 };
 type Trigger = { enabled: boolean; branch?: string; token?: string };
+
+const noDeployments: Deployment[] = [];
+
+/** A read that never reached the Host says what it was reading. */
+async function read<T>(path: string, failure: string, signal: AbortSignal): Promise<T> {
+  let response: Response;
+  try {
+    response = await api(path, { signal });
+  } catch (cause) {
+    const report: Report = { error: failure, caused_by: [(cause as Error).message] };
+    throw report;
+  }
+  if (!response.ok) throw await failureOf(response);
+  return await response.json() as T;
+}
 
 function healthLabel(value: string) {
   return value === "ready" ? "Health checks passed" : value === "checking" ? "Checking health" : value === "failed" ? "Health checks failed" : "Health unverified";
@@ -36,11 +52,16 @@ export function DeploymentReadiness({ app }: { app: App }) {
 }
 
 export function DeploymentHistory({ app, reload }: { app: App; reload: () => Promise<App[]> }) {
-  const [entries, setEntries] = useState<Deployment[]>([]);
+  const path = `/apps/id/${encodeURIComponent(app.id)}`;
+  const deployments = useQuery({
+    queryKey: ["apps", app.id, "deployments"],
+    queryFn: ({ signal }) => read<Deployment[]>(`${path}/deployments`, "Could not read deployment history", signal),
+    refetchInterval: 3000,
+  });
+  const entries = deployments.data ?? noDeployments;
+  const loadError = deployments.error ? asReport(deployments.error) : null;
+  const loading = deployments.isPending;
   const [error, setError] = useState<Report | null>(null);
-  const [loadError, setLoadError] = useState<Report | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [selected, setSelected] = useState<string | null>(null);
@@ -48,7 +69,6 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const notify = useToast();
-  const path = `/apps/id/${encodeURIComponent(app.id)}`;
   const details = entries.find((entry) => entry.id === selected);
   const filtering = query.trim() !== "" || status !== "all";
   const visible = entries.filter((entry) => {
@@ -56,30 +76,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
     return searchable.includes(query.trim().toLowerCase()) && (status === "all" || entry.status === status);
   });
   const clear = () => { setQuery(""); setStatus("all"); };
-  const retry = () => { setLoading(true); setAttempt((value) => value + 1); };
-
-  useEffect(() => {
-    const controller = new AbortController();
-    let reading = false;
-    async function read() {
-      if (reading) return;
-      reading = true;
-      try {
-        const response = await api(`${path}/deployments`, { signal: controller.signal });
-        if (!response.ok) { setLoadError(await failureOf(response)); return; }
-        setEntries(await response.json() as Deployment[]);
-        setLoadError(null);
-      } catch (cause) {
-        if (!controller.signal.aborted) setLoadError({ error: "Could not read deployment history", caused_by: [(cause as Error).message] });
-      } finally {
-        reading = false;
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    }
-    void read();
-    const timer = window.setInterval(() => void read(), 3000);
-    return () => { controller.abort(); window.clearInterval(timer); };
-  }, [path, app.status, attempt]);
+  const retry = () => void deployments.refetch();
 
   async function restore() {
     if (!recovery || inFlight.current) return;
@@ -93,7 +90,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
       if (outcome.status === "failed") setError(outcome.error ?? { error: "Recovery failed", caused_by: [] });
       else notify("success", app.status === "stopped" ? "Previous deployment saved. Application remains stopped." : "Previous deployment restored");
     } catch (cause) { setError({ error: "Could not recover application", caused_by: [(cause as Error).message] }); }
-    finally { inFlight.current = false; setBusy(false); await reload(); }
+    finally { inFlight.current = false; setBusy(false); void deployments.refetch(); await reload(); }
   }
 
   return <div className="stack">
@@ -173,27 +170,28 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
 }
 
 function DeployTrigger({ app }: { app: App }) {
-  const [trigger, setTrigger] = useState<Trigger | null>(null);
+  const queryClient = useQueryClient();
+  const path = `/apps/id/${encodeURIComponent(app.id)}/deploy-trigger`;
+  const triggerKey = ["apps", app.id, "deploy-trigger"];
+  const triggerQuery = useQuery({
+    queryKey: triggerKey,
+    queryFn: ({ signal }) => read<Trigger>(path, "Could not read deploy trigger", signal),
+  });
+  const trigger = triggerQuery.data ?? null;
+  const setTrigger = (next: Trigger) => queryClient.setQueryData(triggerKey, next);
   const [open, setOpen] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<Report | null>(null);
-  const path = `/apps/id/${encodeURIComponent(app.id)}/deploy-trigger`;
-  useEffect(() => {
-    const controller = new AbortController();
-    void api(path, { signal: controller.signal }).then(async (response) => {
-      if (response.ok) setTrigger(await response.json() as Trigger); else setError(await failureOf(response));
-    }).catch((cause: Error) => { if (!controller.signal.aborted) setError({ error: "Could not read deploy trigger", caused_by: [cause.message] }); });
-    return () => controller.abort();
-  }, [path]);
+  const [changeError, setChangeError] = useState<Report | null>(null);
+  const error = changeError ?? (triggerQuery.error ? asReport(triggerQuery.error) : null);
   async function change(enable: boolean) {
-    setBusy(true); setError(null); setToken(null);
+    setBusy(true); setChangeError(null); setToken(null);
     try {
       const response = await api(path, { method: enable ? "POST" : "DELETE", ...(enable ? { body: JSON.stringify({ branch: app.git?.git_ref }) } : {}) });
-      if (!response.ok) { setError(await failureOf(response)); return; }
+      if (!response.ok) { setChangeError(await failureOf(response)); return; }
       if (enable) { const created = await response.json() as Trigger; setTrigger({ enabled: true, branch: created.branch }); setToken(created.token ?? null); }
       else { setTrigger({ enabled: false }); setOpen(false); }
-    } catch (cause) { setError({ error: "Could not change deploy trigger", caused_by: [(cause as Error).message] }); }
+    } catch (cause) { setChangeError({ error: "Could not change deploy trigger", caused_by: [(cause as Error).message] }); }
     finally { setBusy(false); }
   }
   return <>
@@ -205,7 +203,7 @@ function DeployTrigger({ app }: { app: App }) {
       <Button size="sm" disabled={!trigger || busy} onClick={() => setOpen(true)}>{trigger?.enabled ? "Manage trigger" : "Enable trigger"}</Button>
     </div>
     {error && !open ? <Failure failure={error} /> : null}
-    <Dialog open={open} onOpenChange={(next) => { if (!busy) { setOpen(next); if (!next) { setToken(null); setError(null); } } }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) { setOpen(next); if (!next) { setToken(null); setChangeError(null); } } }}>
       <DialogContent><DialogHeader><DialogTitle>Deploy trigger</DialogTitle>
         <DialogDescription>This credential deploys this application without manual review.</DialogDescription>
       </DialogHeader><DialogBody>

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, Card, Checkbox, Form, FormActions, FormField, Label, Lifecycle, PageHeader, PageHeaderTitle, StatusBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@momoi-labs/kiso-react";
 
-import { api, asReport, failureOf } from "../lib/api.js";
+import { api, asReport, failureOf, readJson } from "../lib/api.js";
 import type { App, Metrics, Report } from "../lib/types.js";
 import { Glance } from "../components/Glance.js";
 import { seriesFor } from "../lib/useMetrics.js";
@@ -19,9 +20,15 @@ type Database = { major: number; volume: string; readiness: string; connections:
 
 export function ManagedPostgres({ app, apps, metrics, reload, onRemoved }: { app: App; apps: App[]; metrics: Metrics | null; reload: () => Promise<App[]>; onRemoved: () => void }) {
   const wide = useMediaQuery("(min-width: 1024px)");
-  const [database, setDatabase] = useState<Database | null>(null);
+  const databaseQuery = useQuery({
+    queryKey: ["databases", app.id],
+    queryFn: ({ signal }) => readJson<Database>(`/databases/${app.id}`, signal),
+    refetchInterval: 3000,
+  });
+  const database = databaseQuery.data ?? null;
+  const loadFailure = databaseQuery.error ? asReport(databaseQuery.error) : null;
+  const { refetch: load } = databaseQuery;
   const [failure, setFailure] = useState<Report | null>(null);
-  const [loadFailure, setLoadFailure] = useState<Report | null>(null);
   const [tab, setTab] = useState(app.status === "pending" ? "last-operation" : "summary");
   const [busy, setBusy] = useState(false);
   const [importConnection, setImportConnection] = useState("");
@@ -40,15 +47,6 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved }: { app
   const taskBusy = Boolean(taskId && !acceptedTask) || currentTask?.status === "pending" || currentTask?.status === "running";
   const phase = currentTask?.progress?.stages.find((stage) => stage.status === "running")?.label ?? (currentTask !== acceptedTask ? "Applying variable" : operationLabel);
 
-  const load = useCallback(async () => {
-    try {
-      const response = await api(`/databases/${app.id}`);
-      if (!response.ok) throw await failureOf(response);
-      setDatabase(await response.json() as Database);
-      setLoadFailure(null);
-    } catch (error) { setLoadFailure(asReport(error)); }
-  }, [app.id]);
-  useEffect(() => { void load(); const timer = setInterval(() => { void load(); }, 3000); return () => clearInterval(timer); }, [load]);
   useEffect(() => { if (!taskId || !currentTask || taskBusy || handledTasks.current.has(currentTask.id)) return; handledTasks.current.add(currentTask.id); void reload().then((next) => { if (!next.some((candidate) => candidate.id === app.id)) onRemoved(); }); }, [currentTask, taskId, taskBusy, app.id, reload, onRemoved]);
 
   async function operation(path: string, method: string, body?: object | File) {

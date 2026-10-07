@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Lifecycle,
   StatusBadge,
@@ -22,40 +23,21 @@ import { recipeBody } from "../lib/customImageRecipe.js";
 import {
   ALLOW_BUILDS, isKey, isVersion, readOption, splitKey, suggest, takesAllowBuilds,
 } from "../lib/dependencies.js";
+import { toolCatalogQuery, type MiseTool } from "../lib/queries.js";
 
 type Dependency = ImageDependency;
-type MiseTool = { name: string; description?: string; backends: string[] };
 
-
-let toolCatalog: Promise<MiseTool[]> | null = null;
-
-function loadToolCatalog(): Promise<MiseTool[]> {
-  if (!toolCatalog) toolCatalog = (async () => {
-    const response = await api("/custom-images/tools");
-    if (!response.ok) throw await failureOf(response);
-    const payload: unknown = await response.json();
-    if (!Array.isArray(payload)) throw new Error("Invalid tool search response");
-    return payload.flatMap((entry: unknown): MiseTool[] => {
-      if (typeof entry === "string") return [{ name: entry, backends: [] }];
-      if (!entry || typeof entry !== "object" || !("name" in entry) || typeof entry.name !== "string") return [];
-      return [{
-        name: entry.name,
-        backends: "backends" in entry && Array.isArray(entry.backends)
-          ? entry.backends.filter((key): key is string => typeof key === "string") : [],
-      }];
-    });
-  })().catch((error) => { toolCatalog = null; throw error; });
-  return toolCatalog;
-}
+const noTools: MiseTool[] = [];
 
 function Dependencies({ value, onChange, disabled }: {
   value: Dependency[];
   onChange: (value: Dependency[]) => void;
   disabled: boolean;
 }) {
-  const [tools, setTools] = useState<MiseTool[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [searchFailed, setSearchFailed] = useState(false);
+  const catalog = useQuery(toolCatalogQuery);
+  const tools = catalog.data ?? noTools;
+  const loading = catalog.isLoading;
+  const searchFailed = catalog.isError;
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
   const typed = query.trim();
@@ -67,16 +49,6 @@ function Dependencies({ value, onChange, disabled }: {
     [tools],
   );
   const unversioned = value.filter((dep) => !isVersion(dep.version));
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    void loadToolCatalog()
-      .then((results) => { if (active) setTools(results); })
-      .catch(() => { if (active) setSearchFailed(true); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, []);
 
   // A new dependency starts at latest because that is what most recipes want,
   // and the version is one press away in the chip itself.

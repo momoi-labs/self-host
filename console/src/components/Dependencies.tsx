@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Chip,
   ChipInput,
@@ -17,7 +18,6 @@ import {
   ValidationMessage,
 } from "@momoi-labs/kiso-react";
 
-import { api, failureOf } from "../lib/api.js";
 import type { ImageDependency } from "../lib/customImageTemplates.js";
 import {
   ALLOW_BUILDS,
@@ -28,45 +28,9 @@ import {
   suggest,
   takesAllowBuilds,
 } from "../lib/dependencies.js";
+import { toolCatalogQuery, type MiseTool } from "../lib/queries.js";
 
-type MiseTool = { name: string; backends: string[] };
-let toolCatalog: Promise<MiseTool[]> | null = null;
-
-function loadToolCatalog(): Promise<MiseTool[]> {
-  if (!toolCatalog)
-    toolCatalog = (async () => {
-      const response = await api("/custom-images/tools");
-      if (!response.ok) throw await failureOf(response);
-      const payload: unknown = await response.json();
-      if (!Array.isArray(payload))
-        throw new Error("Invalid tool search response");
-      return payload.flatMap((entry: unknown): MiseTool[] => {
-        if (typeof entry === "string") return [{ name: entry, backends: [] }];
-        if (
-          !entry ||
-          typeof entry !== "object" ||
-          !("name" in entry) ||
-          typeof entry.name !== "string"
-        )
-          return [];
-        return [
-          {
-            name: entry.name,
-            backends:
-              "backends" in entry && Array.isArray(entry.backends)
-                ? entry.backends.filter(
-                    (key): key is string => typeof key === "string",
-                  )
-                : [],
-          },
-        ];
-      });
-    })().catch((error) => {
-      toolCatalog = null;
-      throw error;
-    });
-  return toolCatalog;
-}
+const noTools: MiseTool[] = [];
 
 /** Shared catalog-backed mise dependency editor for images and environments. */
 export function Dependencies({
@@ -82,9 +46,10 @@ export function Dependencies({
   id?: string;
   hint?: ReactNode;
 }) {
-  const [tools, setTools] = useState<MiseTool[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [searchFailed, setSearchFailed] = useState(false);
+  const catalog = useQuery(toolCatalogQuery);
+  const tools = catalog.data ?? noTools;
+  const loading = catalog.isLoading;
+  const searchFailed = catalog.isError;
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
   const typed = query.trim();
@@ -98,24 +63,6 @@ export function Dependencies({
     [tools],
   );
   const unversioned = value.filter((dep) => !isVersion(dep.version));
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    void loadToolCatalog()
-      .then((results) => {
-        if (active) setTools(results);
-      })
-      .catch(() => {
-        if (active) setSearchFailed(true);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   function add(tool: string) {
     setQuery("");
