@@ -6,6 +6,9 @@ reboot without anyone logging in (ADR-0013).
 
 ## Status of validation
 
+Native process support has a separate [MVP validation record](macos-native-applications.md).
+The unattended-startup observation below predates that runtime.
+
 **Unattended startup was observed on the real Mac on 2026-09-08.** The Host
 returned from a reboot with nobody logged in, served DNS, the console and a
 running Application, and every risk listed below was settled. What is still

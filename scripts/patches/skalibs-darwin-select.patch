@@ -1,0 +1,11 @@
+--- a/src/libstddjb/iopause_select.c
++++ b/src/libstddjb/iopause_select.c
+@@ -57,7 +57,7 @@
+   if (r > 0)
+     for (unsigned int i = 0 ; i < len ; i++) if (x[i].fd >= 0)
+     {
+-      if (FD_ISSET(x[i].fd, &rfds)) x[i].revents |= IOPAUSE_READ ;
++      if (FD_ISSET(x[i].fd, &rfds)) x[i].revents |= IOPAUSE_READ & ~IOPAUSE_EXCEPT ;
+       if (FD_ISSET(x[i].fd, &wfds)) x[i].revents |= IOPAUSE_WRITE ;
+       if (FD_ISSET(x[i].fd, &xfds)) x[i].revents |= IOPAUSE_EXCEPT | x[i].events ;
+     }

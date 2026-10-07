@@ -7,10 +7,12 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+#[cfg(not(target_os = "macos"))]
+use super::CgroupRoot;
+use super::account_name_for;
 use super::supervision::{ServiceDefinition, ServiceStatus, Supervisor};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{AccountName, ProvisionRequest, provision};
-use super::{CgroupRoot, account_name_for};
 use crate::apps::{self, ApplicationRecord, DeployError};
 use crate::error::ErrorReport;
 use crate::routes::RouteStore;
@@ -52,22 +54,40 @@ pub trait NativeRuntime: Send + Sync {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub type HostRuntime = super::macos::HelperRuntime;
+#[cfg(not(target_os = "macos"))]
+pub type HostRuntime = S6Runtime;
+
 #[derive(Debug, Clone)]
 pub struct S6Runtime {
     root: PathBuf,
     binary: PathBuf,
     data_root: PathBuf,
+    #[cfg(not(target_os = "macos"))]
     cgroup_root: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
     samples: std::sync::Arc<std::sync::Mutex<super::metrics::Sampler>>,
 }
 
 impl Default for S6Runtime {
     fn default() -> Self {
         Self {
+            #[cfg(not(target_os = "macos"))]
             root: "/var/lib/self-host/native".into(),
+            #[cfg(target_os = "macos")]
+            root: super::macos::ROOT.into(),
+            #[cfg(not(target_os = "macos"))]
             binary: "/usr/local/bin/self-host".into(),
+            #[cfg(target_os = "macos")]
+            binary: super::macos::HELPER.into(),
+            #[cfg(not(target_os = "macos"))]
             data_root: "/var/lib/self-host/native-data".into(),
+            #[cfg(target_os = "macos")]
+            data_root: super::macos::DATA.into(),
+            #[cfg(not(target_os = "macos"))]
             cgroup_root: None,
+            #[cfg(target_os = "linux")]
             samples: Default::default(),
         }
     }
@@ -75,16 +95,19 @@ impl Default for S6Runtime {
 
 impl S6Runtime {
     /// Explicit paths are for a protected, disposable Linux fixture.
+    #[cfg(not(target_os = "macos"))]
     pub fn at(root: PathBuf, binary: PathBuf, cgroup_root: PathBuf, data_root: PathBuf) -> Self {
         Self {
             root,
             binary,
             data_root,
             cgroup_root: Some(cgroup_root),
+            #[cfg(target_os = "linux")]
             samples: Default::default(),
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn supervisor(&self) -> Result<Supervisor> {
         let cgroup = match &self.cgroup_root {
             Some(path) => path.clone(),
@@ -101,12 +124,17 @@ impl S6Runtime {
         )
     }
 
+    #[cfg(target_os = "macos")]
+    fn supervisor(&self) -> Result<Supervisor> {
+        Supervisor::connect(self.root.clone(), self.binary.clone())
+    }
+
     pub fn home(&self, id: &str) -> Result<PathBuf> {
         account_name_for(id)?;
         Ok(self.data_root.join(id))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn setup(
         &self,
         record: &ApplicationRecord,
@@ -166,9 +194,9 @@ impl S6Runtime {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn setup(&self, _: &ApplicationRecord, _: Vec<(String, String)>) -> Result<ServiceDefinition> {
-        bail!("native Applications run on Linux only")
+        bail!("native Applications require Linux or macOS")
     }
 
     fn start_checked(&self, supervisor: &Supervisor, record: &ApplicationRecord) -> Result<()> {
@@ -207,9 +235,38 @@ impl S6Runtime {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn wait_for_web(&self, _: &ApplicationRecord) -> Result<()> {
-        bail!("native Applications run on Linux only")
+        bail!("native Applications require Linux or macOS")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn wait_for_web(&self, record: &ApplicationRecord) -> Result<()> {
+        if record.publication == Publication::Unpublished {
+            return Ok(());
+        }
+        let definition = definition(record)?;
+        let port = definition.port.context("native Web Target needs a port")?;
+        let uid = super::resolve(&AccountName::parse(&definition.account)?)?.uid;
+        let deadline = std::time::Instant::now() + STARTUP;
+        loop {
+            let pid = self
+                .supervisor()?
+                .status(&record.id)?
+                .runner_pid
+                .context("native runner stopped before readiness")?;
+            if super::macos::private_listener(port, uid, pid)? {
+                std::net::TcpStream::connect_timeout(
+                    &([127, 0, 0, 1], port).into(),
+                    Duration::from_millis(250),
+                )?;
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                bail!("native Web Target did not bind its loopback port; inspect Application logs");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     async fn blocking<T: Send + 'static>(
@@ -221,7 +278,7 @@ impl S6Runtime {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn protected_parent(path: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     if !path.is_absolute()
@@ -330,7 +387,7 @@ impl NativeRuntime for S6Runtime {
             if supervisor.exists(&record.id)? {
                 supervisor.remove(&record.id, STOP)?;
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let home = runtime.home(&record.id)?;
@@ -364,6 +421,7 @@ impl NativeRuntime for S6Runtime {
         self.blocking(move |runtime| runtime.supervisor()?.status(&record.id))
             .await
     }
+    #[cfg(target_os = "linux")]
     async fn sample(
         &self,
         record: &ApplicationRecord,
@@ -503,7 +561,7 @@ impl NativeRuntime for S6Runtime {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn definition(record: &ApplicationRecord) -> Result<&NativeDefinition> {
     match &record.runtime {
         Runtime::Native(definition) => Ok(definition),
@@ -559,6 +617,10 @@ pub fn validate_definition(
         || definition.limits.max_tasks == Some(0)
     {
         bail!("native resource limits must be nonzero when set");
+    }
+    #[cfg(target_os = "macos")]
+    if definition.limits != super::ResourceLimits::NONE {
+        bail!("native resource limits are unavailable on macOS");
     }
     Ok(())
 }
@@ -877,6 +939,40 @@ pub async fn service_states(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_rejects_each_resource_limit() {
+        for limits in [
+            super::super::ResourceLimits {
+                cpu_percent: Some(100),
+                ..Default::default()
+            },
+            super::super::ResourceLimits {
+                memory_bytes: Some(1048576),
+                ..Default::default()
+            },
+            super::super::ResourceLimits {
+                max_tasks: Some(32),
+                ..Default::default()
+            },
+        ] {
+            let mut definition = NativeDefinition {
+                account: String::new(),
+                command: vec!["/bin/sleep".into(), "60".into()],
+                working_dir: None,
+                port: None,
+                recipe: Default::default(),
+                limits,
+            };
+            assert!(
+                validate_definition("fixture", &mut definition, Publication::Unpublished)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unavailable on macOS")
+            );
+        }
+    }
     fn spec() -> NativeDefinition {
         NativeDefinition {
             account: String::new(),

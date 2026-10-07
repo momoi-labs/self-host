@@ -1,16 +1,20 @@
 //! Application Accounts: the execution identity of a native Application.
 //!
-//! An Application Account is a dedicated Linux system account, one per
-//! Application, that nobody logs in as. The Platform provisions it as root
-//! and launches the Application's commands as it, never as root. Everything
-//! in here that talks to the Host is Linux only; the name rules and the
-//! provisioning marker are pure and hold everywhere.
+//! Each Application gets a dedicated non-login account. Linux uses useradd;
+//! macOS uses the local directory through the restricted helper. Both reject
+//! root, the Platform identity, and accounts without our ownership marker.
 
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+#[path = "identity_macos.rs"]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{provision, revoke};
+
 /// The marker `provision` writes into the account's comment field, followed
 /// by the Application id. An existing account without it is not ours.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 const COMMENT_MARKER: &str = "self-host Application ";
 
 /// The prefix every Application Account name carries, the same one the
@@ -66,7 +70,7 @@ pub fn account_name_for(application_id: &str) -> Result<AccountName, IdentityErr
 }
 
 /// The comment `provision` records on the account it creates.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn comment_for(application_id: &str) -> String {
     format!("{COMMENT_MARKER}{application_id}")
 }
@@ -74,7 +78,7 @@ fn comment_for(application_id: &str) -> String {
 /// Whether an existing account's comment says the Platform created it for
 /// this Application. Anything else, including another Application's marker,
 /// is an account we must not touch.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn comment_marks_ours(comment: &str, application_id: &str) -> bool {
     comment == comment_for(application_id)
 }
@@ -127,7 +131,7 @@ impl std::fmt::Display for IdentityError {
                 "the Application Account '{name}' is the account the Platform runs as"
             ),
             IdentityError::Lookup(_) => write!(f, "failed to look up the Application Account"),
-            IdentityError::Unsupported => write!(f, "native Applications run on Linux only"),
+            IdentityError::Unsupported => write!(f, "native Applications require Linux or macOS"),
         }
     }
 }
@@ -178,7 +182,7 @@ fn check_account(name: &AccountName, entry: &PasswdEntry) -> Result<(), Identity
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn lookup(name: &AccountName) -> Result<PasswdEntry, IdentityError> {
     use std::ffi::{CStr, CString};
 
@@ -237,7 +241,7 @@ fn lookup(name: &AccountName) -> Result<PasswdEntry, IdentityError> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn lookup(_name: &AccountName) -> Result<PasswdEntry, IdentityError> {
     Err(IdentityError::Unsupported)
 }
@@ -258,6 +262,8 @@ pub fn verify_owned(request: &ProvisionRequest) -> Result<ResolvedAccount, Provi
         return Err(ProvisionError::NotOurs(request.account.as_str().to_owned()));
     }
     check_account(request.account, &entry)?;
+    #[cfg(target_os = "macos")]
+    macos::verify(request, &entry)?;
     Ok(ResolvedAccount {
         name: request.account.clone(),
         uid: entry.uid,
@@ -295,7 +301,7 @@ pub fn revoke(request: &ProvisionRequest) -> Result<(), ProvisionError> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn revoke(_: &ProvisionRequest) -> Result<(), ProvisionError> {
     Err(ProvisionError::Unsupported)
 }
@@ -353,7 +359,7 @@ impl std::fmt::Display for ProvisionError {
             ProvisionError::Command { step, .. } | ProvisionError::Failed { step, .. } => {
                 write!(f, "failed to {step}")
             }
-            ProvisionError::Unsupported => write!(f, "native Applications run on Linux only"),
+            ProvisionError::Unsupported => write!(f, "native Applications require Linux or macOS"),
         }
     }
 }
@@ -454,7 +460,7 @@ pub fn provision(request: &ProvisionRequest) -> Result<ResolvedAccount, Provisio
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn provision(_request: &ProvisionRequest) -> Result<ResolvedAccount, ProvisionError> {
     Err(ProvisionError::Unsupported)
 }
@@ -622,7 +628,7 @@ mod tests {
         assert_eq!(report.caused_by.len(), 1);
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn resolving_and_provisioning_are_unsupported_off_linux() {
         let name = AccountName::parse("sf-app-k3n8qz4v2x1p").unwrap();

@@ -28,6 +28,7 @@ import {
 import { AppForm, type Submission } from "../components/AppForm.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
+import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { NativeSummary } from "../components/NativeSummary.js";
 import { DeploymentHistory, DeploymentReadiness } from "../components/DeploymentHistory.js";
 import { HttpStatus } from "../components/HttpStatus.js";
@@ -63,6 +64,7 @@ export function AppDetail({
   reload: () => Promise<App[]>;
   onRemoved: () => void;
 }) {
+  const { capabilities } = useNativeCapabilities();
   const notify = useToast();
   const queryClient = useQueryClient();
   const wide = useMediaQuery("(min-width: 1024px)");
@@ -255,7 +257,7 @@ export function AppDetail({
               </span>
             ))}
           </PageHeaderDescription> : null}
-          {samples ? <Glance samples={samples} /> : null}
+          {samples && (!native || capabilities?.metrics) ? <Glance samples={samples} /> : null}
         </PageHeader>
         <Lifecycle
           status={
@@ -326,7 +328,7 @@ export function AppDetail({
             {app.git && (lastBuild || building || app.status === "pending") ? <TabsTrigger value="last-update">Last update</TabsTrigger> : null}
             {app.runtime?.kind !== "native" ? <TabsTrigger value="deployments">Deployments</TabsTrigger> : null}
             <TabsTrigger value="logs">Logs</TabsTrigger>
-            <TabsTrigger value="terminal">Terminal</TabsTrigger>
+            {!native || capabilities?.terminal ? <TabsTrigger value="terminal">Terminal</TabsTrigger> : null}
           </TabsList>
           {native ? <TabsContent value="summary"><NativeSummary app={app} /></TabsContent> : null}
           {app.git_build ? <TabsContent value="summary">
@@ -355,7 +357,7 @@ export function AppDetail({
             <div className="detail-log-pane"><AppLogPane id={app.id} native={!!native} /></div>
           </TabsContent>
           <TabsContent value="terminal" className="detail-pane" forceMount hidden={tab !== "terminal"}>
-            {openedTerminal ? (
+            {openedTerminal && (!native || capabilities?.terminal) ? (
               <Suspense fallback={<Skeleton className="terminal-loading" />}>
                 <Terminal id={app.id} native={!!native} account={native?.account} />
               </Suspense>

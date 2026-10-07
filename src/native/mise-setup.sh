@@ -1,4 +1,4 @@
-# Invoked only after N1 has dropped privileges and joined the app cgroup.
+# Invoked only after the launcher drops privileges to the Application Account.
 umask 077
 config=$1
 install=$2

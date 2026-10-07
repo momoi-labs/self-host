@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,17 +27,17 @@ function fixture(t) {
       const file = join(directory, "self-host");
       writeFileSync(file, Buffer.from(`binary for ${target}\0\xff`, "latin1"));
       chmodSync(file, mode);
-      if (target.endsWith("-linux-gnu")) {
+      {
         const bundle = join(directory, "s6");
         mkdirSync(join(bundle, "bin"), { recursive: true });
         mkdirSync(join(bundle, "licenses"));
         for (const tool of s6Tools) {
           writeFileSync(join(bundle, "bin", tool), `binary ${tool} for ${target}`, { mode: 0o755 });
         }
-        for (const license of ["s6", "skalibs", "musl", "zig"]) {
+        for (const license of (target.endsWith("-linux-gnu") ? ["s6", "skalibs", "musl", "zig"] : ["s6", "skalibs"])) {
           writeFileSync(join(bundle, "licenses", `${license}.txt`), `${license} license`);
         }
-        writeFileSync(join(bundle, "versions.txt"), `target ${target}\n`);
+        writeFileSync(join(bundle, "versions.txt"), `target ${target}\nprefix /Library/PrivilegedHelperTools/dev.momoi.self-host.s6\n`);
       }
       return file;
     },
@@ -61,19 +61,17 @@ test("imports all four targets without changing their bytes or executable mode",
     assert.deepEqual(readFileSync(output), readFileSync(source));
     assert.ok(statSync(output).mode & 0o111);
     const s6 = join(f.cwd, "target", target, "release", "s6");
-    if (target.endsWith("-linux-gnu")) {
+    {
       for (const tool of s6Tools) {
         assert.equal(readFileSync(join(s6, "bin", tool), "utf8"), `binary ${tool} for ${target}`);
         assert.ok(statSync(join(s6, "bin", tool)).mode & 0o111);
       }
       assert.equal(readFileSync(join(s6, "licenses", "s6.txt"), "utf8"), "s6 license");
-    } else {
-      assert.equal(existsSync(s6), false);
     }
   }
 });
 
-test("rejects an incomplete Linux bundle even when a previous complete build exists", (t) => {
+test("rejects an incomplete bundle even when a previous complete build exists", (t) => {
   const f = fixture(t);
   const target = targets[0];
   f.artifact(target);
@@ -97,12 +95,24 @@ test("rejects missing license notices or a bundle for the wrong architecture", (
   writeFileSync(join(bundle, "versions.txt"), `target ${targets[1]}\n`);
   assert.notEqual(f.run(target).status, 0);
   writeFileSync(join(bundle, "versions.txt"), `target ${target}\n`);
-  for (const license of ["s6", "skalibs", "musl", "zig"]) {
+  for (const license of (target.endsWith("-linux-gnu") ? ["s6", "skalibs", "musl", "zig"] : ["s6", "skalibs"])) {
     const path = join(bundle, "licenses", `${license}.txt`);
     rmSync(path);
     assert.notEqual(f.run(target).status, 0);
     writeFileSync(path, `${license} license`);
   }
+});
+
+test("refuses a macOS test prefix or incomplete macOS bundle", (t) => {
+  const f = fixture(t);
+  const target = targets[2];
+  f.artifact(target);
+  const bundle = join(f.cwd, "downloaded binaries", target, "s6");
+  writeFileSync(join(bundle, "versions.txt"), `target ${target}\nprefix /tmp/s6/bin\n`);
+  assert.notEqual(f.run(target).status, 0);
+  writeFileSync(join(bundle, "versions.txt"), `target ${target}\nprefix /Library/PrivilegedHelperTools/dev.momoi.self-host.s6\n`);
+  rmSync(join(bundle, "bin", "s6-ftrigrd"));
+  assert.notEqual(f.run(target).status, 0);
 });
 
 test("rejects missing and non-executable artifacts even with an old build present", (t) => {

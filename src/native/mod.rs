@@ -1,13 +1,8 @@
 //! Native Applications: a process tree on the Host under a dedicated account.
 //!
-//! This is the execution side of an Application whose Runtime is native
-//! (ADR-0014 deferred it; ADR-0028 records the shape). The identity and
-//! cgroup modules provision the account and the resource context and launch
-//! a command under them, on Linux only. Nothing in here is reachable from the
-//! Operator API yet: the lifecycle integration is a later slice.
-//!
-//! `ResourceLimits` lives here because it crosses the seam. The Application
-//! record persists it, and the launcher applies it to the whole process tree.
+//! Linux uses cgroups for resource controls and whole-tree cleanup. macOS
+//! uses a restricted helper and s6 foreground process groups. Both use the
+//! existing lifecycle API and a separate Application Account for every app.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +10,8 @@ pub mod cgroup;
 pub mod identity;
 pub mod launch;
 pub mod lifecycle;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod metrics;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod mise;
@@ -29,6 +26,38 @@ pub use identity::{
     account_name_for, provision, resolve,
 };
 pub use launch::{LaunchError, LaunchRequest, LaunchedProcess, Purpose, StopError, launch};
+
+#[derive(Debug, Serialize)]
+pub struct Capabilities {
+    pub available: bool,
+    pub resource_limits: bool,
+    pub metrics: bool,
+    pub terminal: bool,
+    pub managed_postgres: bool,
+    pub reason: Option<&'static str>,
+}
+
+pub fn capabilities() -> Capabilities {
+    let linux = cfg!(target_os = "linux");
+    #[cfg(target_os = "macos")]
+    let available = supervision::host::protected(std::path::Path::new(macos::HELPER)).is_ok();
+    #[cfg(not(target_os = "macos"))]
+    let available = linux;
+    Capabilities {
+        available,
+        resource_limits: linux,
+        metrics: linux,
+        terminal: linux,
+        managed_postgres: linux,
+        reason: if available {
+            None
+        } else {
+            Some(
+                "Install native supervision with the self-host installer before deploying native Applications.",
+            )
+        },
+    }
+}
 
 /// Limits on a native Application's whole process tree, applied through
 /// cgroup v2 controllers. `None` leaves the controller at its default, which

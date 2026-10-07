@@ -21,6 +21,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    NativeControl,
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    NativeUninstall,
     #[command(hide = true)]
     NativeRun {
         #[arg(long)]
@@ -30,6 +36,9 @@ enum Command {
     NativeFinish {
         #[arg(long)]
         service: std::path::PathBuf,
+        #[cfg(target_os = "macos")]
+        #[arg(long)]
+        process_group: i32,
     },
     #[command(hide = true)]
     NativeScan {
@@ -226,9 +235,24 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        #[cfg(target_os = "macos")]
+        Some(Command::NativeControl) => native_result(self_host::native::macos::control().await),
+        #[cfg(target_os = "macos")]
+        Some(Command::NativeUninstall) => {
+            native_result(self_host::native::macos::uninstall().await)
+        }
+        #[cfg(target_os = "macos")]
+        Some(Command::NativeFinish {
+            service,
+            process_group,
+        }) => native_result(self_host::native::supervision::finish_service(
+            &service,
+            process_group,
+        )),
         Some(Command::NativeRun { service }) => {
             native_result(self_host::native::supervision::run_service(&service))
         }
+        #[cfg(not(target_os = "macos"))]
         Some(Command::NativeFinish { service }) => {
             native_result(self_host::native::supervision::finish_service(&service))
         }
@@ -1325,7 +1349,7 @@ async fn run_api_server(
         store.clone(),
         docker.clone(),
         vm_runtime.clone(),
-        Arc::new(self_host::native::lifecycle::S6Runtime::default()),
+        Arc::new(self_host::native::lifecycle::HostRuntime::default()),
         metrics.clone(),
     );
 

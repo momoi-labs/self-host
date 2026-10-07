@@ -13,6 +13,8 @@ import { Step, Steps } from "./Steps.js";
 import { Icon } from "./Icon.js";
 import { NativeVariables } from "./NativeVariables.js";
 
+import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
+
 function fieldsOf(app?: App) {
   const native = app?.runtime?.kind === "native" ? app.runtime : null;
   return {
@@ -34,6 +36,7 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, onChangeDefin
   onCancel?: () => void; onChangeDefinition?: () => void;
   onReload?: () => Promise<App[]>;
 }) {
+  const { capabilities, error: capabilitiesError } = useNativeCapabilities();
   const saved = fieldsOf(app);
   const [fields, setFields] = useState(saved);
   const [variables, setVariables] = useState<{ key: string; value: string }[]>([]);
@@ -48,7 +51,7 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, onChangeDefin
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (saving || editingVariable || !validDependencies) return;
+    if (saving || editingVariable || !validDependencies || !capabilities?.available) return;
     setFailure(null);
     setCommandError(null);
     let command: string[];
@@ -75,11 +78,11 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, onChangeDefin
           recipe: nativeRecipe(fields),
           working_dir: fields.workingDir.trim() || null,
           port: fields.web ? Number(fields.port) : null,
-          limits: {
+          limits: capabilities?.resource_limits ? {
             ...(fields.cpu ? { cpu_percent: Number(fields.cpu) } : {}),
             ...(fields.memory ? { memory_bytes: Math.round(Number(fields.memory) * 1048576) } : {}),
             ...(fields.tasks ? { max_tasks: Number(fields.tasks) } : {}),
-          },
+          } : {},
         },
         ...(!app ? { environment: Object.fromEntries(variables.map(({ key, value }) => [key.trim(), value])) } : {}),
       }, "native");
@@ -106,18 +109,19 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, onChangeDefin
           </FormField>
         </Step>
         <Step title="Process">
-          <FormField id="native-command" label="Start command" error={commandError} hint="Use sh -c for shell syntax.">
+          <FormField id="native-command" label="Start command" error={commandError} hint="Run in the foreground. Use sh -c for shell syntax.">
             <ShellEditor id="native-command" required placeholder="node server.js --port 3000" value={fields.command} disabled={saving} onChange={(command) => { change("command", command); setCommandError(null); }} />
           </FormField>
           <FormField id="native-directory" label="Working directory" value={fields.workingDir} onChange={(event) => change("workingDir", event.target.value)} disabled={saving} placeholder="Application home" hint="Relative to the app home. Setup can create it." />
         </Step>
-        <Step title="Resource limits">
+        {capabilities?.resource_limits ? <Step title="Resource limits">
           <div className="field-row">
             <FormField id="native-cpu" label="CPU (%)" type="number" min={1} step={1} value={fields.cpu} onChange={(event) => change("cpu", event.target.value)} disabled={saving} placeholder="Unlimited" />
             <FormField id="native-memory" label="Memory (MiB)" type="number" min={1} step={1} value={fields.memory} onChange={(event) => change("memory", event.target.value)} disabled={saving} placeholder="Unlimited" />
           </div>
           <FormField id="native-tasks" label="Processes and threads" type="number" min={1} step={1} value={fields.tasks} onChange={(event) => change("tasks", event.target.value)} disabled={saving} placeholder="Unlimited" />
         </Step>
+        : null}
         <Step title="Publication">
           {app ? <KV><KVKey>Access</KVKey><KVValue>{fields.web ? "Hostname" : "No hostname"}</KVValue></KV> : (
             <Select value={fields.web ? "web" : "unpublished"} onValueChange={(value) => change("web", value === "web")} disabled={saving}>
@@ -146,12 +150,14 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, onChangeDefin
           </>}
         </Step>
       </Steps>
+      {capabilitiesError ? <Failure failure={{ error: "Could not read native Host capabilities.", caused_by: [] }} /> : null}
+      {capabilities?.reason ? <p role="status">{capabilities.reason}</p> : null}
       {failure ? <Failure failure={failure} /> : null}
     </div>
     <FormActions sticky tone={failure || commandError ? "danger" : dirty ? "warning" : "neutral"} message={app ? dirty ? "Unsaved changes." : "Saved." : undefined}>
       {onCancel ? <Button type="button" size="sm" onClick={onCancel}>Cancel</Button> : null}
       {app && dirty ? <Button type="button" size="sm" disabled={saving} onClick={() => { setFields(saved); setFailure(null); setCommandError(null); }}>Discard</Button> : null}
-      <Button type="submit" size="sm" variant="primary" disabled={saving || editingVariable || !validDependencies || !fields.name.trim() || !fields.command.trim() || (fields.web && !fields.port)}>{saving ? "Saving..." : app ? "Save" : "Deploy"}</Button>
+      <Button type="submit" size="sm" variant="primary" disabled={!capabilities?.available || saving || editingVariable || !validDependencies || !fields.name.trim() || !fields.command.trim() || (fields.web && !fields.port)}>{saving ? "Saving..." : app ? "Save" : "Deploy"}</Button>
     </FormActions>
   </Form>;
 }

@@ -1,10 +1,12 @@
 //! Protected s6 service directories. The daemon connects to an existing scan
 //! tree; the Host service manager owns its lifetime, independently of the API.
 
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
+use super::CgroupRoot;
+use super::ResourceLimits;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{AccountName, LaunchRequest, Purpose};
-use super::{CgroupRoot, ResourceLimits};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::Context;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -28,7 +30,7 @@ pub struct ServiceDefinition {
     pub stop_grace_ms: u64,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl ServiceDefinition {
     fn request(&self, command: Vec<String>, purpose: Purpose) -> Result<LaunchRequest> {
         let account = AccountName::parse(&self.account)?;
@@ -45,14 +47,15 @@ impl ServiceDefinition {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredService {
     definition: ServiceDefinition,
+    #[cfg(target_os = "linux")]
     cgroup_root: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceStatus {
     pub running: bool,
     pub ready: bool,
@@ -66,11 +69,12 @@ pub struct ServiceStatus {
 pub struct Supervisor {
     root: PathBuf,
     binary: PathBuf,
+    #[cfg(not(target_os = "macos"))]
     cgroup_root: CgroupRoot,
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) mod host {
     use super::*;
     use std::fs::{self, OpenOptions};
     use std::io::{Read, Write};
@@ -86,7 +90,7 @@ mod linux {
         STOP.store(true, Ordering::SeqCst);
     }
 
-    pub(super) fn require_root() -> Result<()> {
+    pub(crate) fn require_root() -> Result<()> {
         // SAFETY: geteuid has no arguments or memory effects.
         if unsafe { libc::geteuid() } != 0 {
             bail!(
@@ -97,7 +101,7 @@ mod linux {
     }
 
     /// Follow no symlinks and reject every writable ancestor, not only the leaf.
-    pub(super) fn protected(path: &Path) -> Result<()> {
+    pub(crate) fn protected(path: &Path) -> Result<()> {
         if !path.is_absolute()
             || path.components().any(|c| {
                 !matches!(
@@ -127,7 +131,7 @@ mod linux {
         Ok(())
     }
 
-    pub(super) fn directory(path: &Path, mode: u32) -> Result<()> {
+    pub(crate) fn directory(path: &Path, mode: u32) -> Result<()> {
         if !path.exists() {
             protected(path.parent().context("directory needs a parent")?)?;
             fs::create_dir(path)?;
@@ -136,7 +140,7 @@ mod linux {
         protected(path)
     }
 
-    pub(super) fn write(path: &Path, content: &[u8], mode: u32) -> Result<()> {
+    pub(crate) fn write(path: &Path, content: &[u8], mode: u32) -> Result<()> {
         protected(path.parent().context("file needs a parent")?)?;
         // A stale temporary file after power loss must not block the next boot.
         let temporary = path.with_extension(format!("new-{}", rand::random::<u64>()));
@@ -159,10 +163,13 @@ mod linux {
         Ok(())
     }
 
-    pub(super) fn tool(name: &str) -> Result<PathBuf> {
+    pub(crate) fn tool(name: &str) -> Result<PathBuf> {
         // A release bundle is one versioned set. Never mix an incomplete
         // bundle with distribution tools or accept a user-controlled PATH.
+        #[cfg(target_os = "linux")]
         let bundle = Path::new("/usr/libexec/self-host/s6");
+        #[cfg(target_os = "macos")]
+        let bundle = Path::new(super::super::macos::S6);
         if bundle.try_exists()? {
             let path = bundle.join(name);
             protected(&path)?;
@@ -172,6 +179,7 @@ mod linux {
             }
             return Ok(path);
         }
+        #[cfg(target_os = "linux")]
         for directory in ["/usr/bin", "/bin", "/usr/local/bin"] {
             let path = Path::new(directory).join(name);
             // Debian's /bin is a symlink to /usr/bin. Canonicalize only a
@@ -183,19 +191,17 @@ mod linux {
                 }
             }
         }
-        bail!(
-            "missing {name}; reinstall the self-host Linux release or install the distribution's s6 package"
-        )
+        bail!("missing {name}; reinstall the self-host release with its complete s6 bundle")
     }
 
-    pub(super) fn run_tool(name: &str, arguments: &[&std::ffi::OsStr]) -> Result<()> {
+    pub(crate) fn run_tool(name: &str, arguments: &[&std::ffi::OsStr]) -> Result<()> {
         let output = Command::new(tool(name)?)
             .args(arguments)
             .env_clear()
             .output()?;
         if !output.status.success() {
             bail!(
-                "{name} failed: {}; check that self-host-native.service is running and its cgroup controllers are delegated",
+                "{name} failed: {}; check that the native supervisor is running",
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
@@ -215,7 +221,7 @@ mod linux {
         Ok(stored)
     }
 
-    pub(super) fn require_environment(
+    pub(crate) fn require_environment(
         service: &Path,
         definition: &ServiceDefinition,
     ) -> Result<()> {
@@ -237,6 +243,7 @@ mod linux {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     pub fn finish_service(service: &Path) -> Result<()> {
         let stored = read_service(service)?;
         let root = CgroupRoot::at(stored.cgroup_root).context("cgroup delegation unavailable; enable cpu, memory and pids for self-host-native.service")?;
@@ -283,16 +290,24 @@ mod linux {
     pub fn run_service(service: &Path) -> Result<()> {
         let stored = read_service(service)?;
         let definition = &stored.definition;
+        #[cfg(target_os = "linux")]
         require_environment(service, definition)?;
-        let inherited = fs::metadata("/proc/self/fd/4")
-            .context("native-run must be launched by s6 with its service lock")?;
+        // fstat works on both kernels and does not depend on /proc.
+        // SAFETY: fstat fills this stack value, and failure returns before
+        // reading it. It also rejects a direct invocation without descriptor 4.
+        let mut inherited: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(4, &mut inherited) } != 0 {
+            bail!("native-run must inherit its s6 lock");
+        }
         let expected = fs::metadata(service.join("data/runner-lock"))?;
-        if inherited.dev() != expected.dev() || inherited.ino() != expected.ino() {
+        if inherited.st_dev as u64 != expected.dev() || inherited.st_ino as u64 != expected.ino() {
             bail!("native-run requires the s6 service lock; direct invocation is refused");
         }
+        #[cfg(target_os = "linux")]
         let root = CgroupRoot::at(stored.cgroup_root).context("cgroup delegation unavailable; enable cpu, memory and pids for self-host-native.service")?;
         // s6-setlock prevents simultaneous runners. Clean orphaned trees
         // before a new launch, including a previous SIGKILL or power loss.
+        #[cfg(target_os = "linux")]
         root.application(&definition.application_id)?
             .kill(Duration::from_secs(5))?;
         STOP.store(false, Ordering::SeqCst);
@@ -304,7 +319,18 @@ mod linux {
             libc::fcntl(3, libc::F_SETFD, libc::FD_CLOEXEC);
             libc::fcntl(4, libc::F_SETFD, libc::FD_CLOEXEC);
         }
-        let mut main = super::super::launch(&root, &definition.request(definition.command.clone(), Purpose::Main)?)
+        #[cfg(target_os = "macos")]
+        if service.join("data/preparing").exists() {
+            return prepare_service(service, definition);
+        }
+        #[cfg(target_os = "macos")]
+        require_environment(service, definition)?;
+        let request = definition.request(definition.command.clone(), Purpose::Main)?;
+        #[cfg(target_os = "linux")]
+        let launched = super::super::launch(&root, &request);
+        #[cfg(target_os = "macos")]
+        let launched = super::super::launch(&request);
+        let mut main = launched
             .context("native startup refused by N1; check the account, working directory, command and cgroup delegation")?;
         let mut readers = Vec::new();
         let (output, chunks) = std::sync::mpsc::sync_channel(16);
@@ -326,11 +352,15 @@ mod linux {
                             "readiness timed out; check the readiness command and startup_timeout_ms"
                         );
                     }
-                    let mut check = super::super::launch::launch_in(
+                    #[cfg(target_os = "linux")]
+                    let launched = super::super::launch::launch_in(
                         &main.cgroup,
                         &definition.request(command.clone(), Purpose::Hook)?,
-                    )
-                    .context("readiness launch refused by N1")?;
+                    );
+                    #[cfg(target_os = "macos")]
+                    let launched =
+                        super::super::launch(&definition.request(command.clone(), Purpose::Hook)?);
+                    let mut check = launched.context("readiness launch refused by N1")?;
                     pipes(&mut check, &mut readers, &output);
                     let status = loop {
                         if let Some(status) = check.child.try_wait()? {
@@ -376,15 +406,81 @@ mod linux {
         })();
         main.stop(Duration::from_millis(definition.stop_grace_ms))
             .context("failed to clean the Application's process tree")?;
+        #[cfg(target_os = "linux")]
         for reader in readers {
             let _ = reader.join();
         }
+        #[cfg(target_os = "macos")]
+        super::super::macos::drain_readers(readers);
         drop(output);
+        #[cfg(target_os = "macos")]
+        if !logger.is_finished() {
+            return outcome;
+        }
         logger
             .join()
             .map_err(|_| anyhow::anyhow!("native log forwarding thread failed"))?
             .context("could not forward native output to s6-log")?;
         outcome
+    }
+
+    #[cfg(target_os = "macos")]
+    fn prepare_service(service: &Path, definition: &ServiceDefinition) -> Result<()> {
+        let logs = service
+            .parent()
+            .and_then(Path::parent)
+            .context("invalid service path")?
+            .join("logs")
+            .join(&definition.application_id);
+        protected(&logs)?;
+        let log_path = logs.join("recipe.log");
+        write(&log_path, b"", 0o600)?;
+        let log = OpenOptions::new()
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(log_path)?;
+        let result = super::super::mise::apply(definition, log);
+        match result {
+            Ok(()) => write(
+                &service.join("data/recipe-sha256"),
+                definition.recipe.fingerprint().as_bytes(),
+                0o600,
+            )?,
+            Err(error) => write(
+                &service.join("data/recipe-error"),
+                format!("{error:#}").as_bytes(),
+                0o600,
+            )?,
+        }
+        // The caller observes the receipt/error before requesting a stop.
+        // Preparation stays under s6 even when the API or helper exits.
+        if unsafe { libc::write(3, b"\n".as_ptr().cast(), 1) } != 1 {
+            bail!("s6 preparation notification failed");
+        }
+        unsafe {
+            libc::close(3);
+        }
+        while !STOP.load(Ordering::SeqCst) {
+            std::thread::sleep(POLL);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn finish_service(service: &Path, process_group: i32) -> Result<()> {
+        read_service(service)?;
+        // s6 passes the previous run's group as finish's fourth argument.
+        // Detached descendants are outside this foreground-only boundary.
+        if process_group <= 1 || process_group == unsafe { libc::getpgrp() } {
+            bail!("invalid s6 process group");
+        }
+        if unsafe { libc::kill(-process_group, libc::SIGKILL) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error.into());
+            }
+        }
+        Ok(())
     }
 
     pub fn boot_scan(root: &Path) -> Result<()> {
@@ -408,34 +504,37 @@ mod linux {
         }
         directory(root, 0o700)?;
         directory(&root.join("services"), 0o700)?;
-        // Move the supervisor into a leaf before enabling domain controllers.
-        let membership = fs::read_to_string("/proc/self/cgroup")?;
-        let relative = membership
-            .lines()
-            .find_map(|line| line.strip_prefix("0::"))
-            .context("cgroup v2 is required; use a unified Linux cgroup hierarchy")?;
-        if relative == "/" {
-            bail!(
-                "native-scan needs a delegated service cgroup; start it with self-host-native.service"
-            );
-        }
-        let delegated = Path::new("/sys/fs/cgroup").join(relative.trim_start_matches('/'));
-        let managers = delegated.join("supervisor");
-        fs::create_dir_all(&managers)?;
-        fs::write(
-            managers.join("cgroup.procs"),
-            std::process::id().to_string(),
-        )?;
-        fs::write(delegated.join("cgroup.subtree_control"), "+cpu +memory +pids")
+        #[cfg(target_os = "linux")]
+        {
+            // Move the supervisor into a leaf before enabling domain controllers.
+            let membership = fs::read_to_string("/proc/self/cgroup")?;
+            let relative = membership
+                .lines()
+                .find_map(|line| line.strip_prefix("0::"))
+                .context("cgroup v2 is required; use a unified Linux cgroup hierarchy")?;
+            if relative == "/" {
+                bail!(
+                    "native-scan needs a delegated service cgroup; start it with self-host-native.service"
+                );
+            }
+            let delegated = Path::new("/sys/fs/cgroup").join(relative.trim_start_matches('/'));
+            let managers = delegated.join("supervisor");
+            fs::create_dir_all(&managers)?;
+            fs::write(
+                managers.join("cgroup.procs"),
+                std::process::id().to_string(),
+            )?;
+            fs::write(delegated.join("cgroup.subtree_control"), "+cpu +memory +pids")
             .context("cannot enable cgroup controllers; set Delegate=cpu memory pids on self-host-native.service")?;
-        let applications = delegated.join("applications");
-        fs::create_dir_all(&applications)?;
-        CgroupRoot::at(&applications)?;
-        write(
-            &root.join("cgroup-root"),
-            applications.as_os_str().as_encoded_bytes(),
-            0o600,
-        )?;
+            let applications = delegated.join("applications");
+            fs::create_dir_all(&applications)?;
+            CgroupRoot::at(&applications)?;
+            write(
+                &root.join("cgroup-root"),
+                applications.as_os_str().as_encoded_bytes(),
+                0o600,
+            )?;
+        }
         let error = Command::new(tool("s6-svscan")?)
             .arg(root.join("services"))
             .env_clear()
@@ -447,12 +546,77 @@ mod linux {
 }
 
 impl Supervisor {
+    #[cfg(target_os = "macos")]
+    pub fn connect(root: PathBuf, binary: PathBuf) -> Result<Self> {
+        host::require_root()?;
+        host::protected(&root)?;
+        host::protected(&binary)?;
+        for name in [
+            "s6-svscanctl",
+            "s6-svc",
+            "s6-svwait",
+            "s6-svok",
+            "s6-svstat",
+            "s6-log",
+            "s6-setlock",
+            "s6-ftrigrd",
+        ] {
+            host::tool(name)?;
+        }
+        Ok(Self { root, binary })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn prepare_environment(&self, definition: &ServiceDefinition) -> Result<()> {
+        use std::ffi::OsStr;
+        let service = self.service(&definition.application_id)?;
+        self.stop(&definition.application_id, Duration::from_secs(15))?;
+        let preparing = service.join("data/preparing");
+        if preparing.exists() {
+            std::fs::remove_file(&preparing)?;
+        }
+        let receipt = service.join("data/recipe-sha256");
+        if receipt.exists() {
+            host::protected(&receipt)?;
+            if std::fs::read_to_string(&receipt)? == definition.recipe.fingerprint() {
+                return Ok(());
+            }
+            std::fs::remove_file(&receipt)?;
+        }
+        let error = service.join("data/recipe-error");
+        if error.exists() {
+            std::fs::remove_file(&error)?;
+        }
+        host::write(&service.join("data/preparing"), b"", 0o600)?;
+        // Keep the persistent down file. A reboot must not reapply setup.
+        self.change(&definition.application_id, false, Duration::from_secs(15))?;
+        host::run_tool("s6-svc", &[OsStr::new("-u"), service.as_os_str()])?;
+        let result = host::run_tool(
+            "s6-svwait",
+            &[
+                OsStr::new("-U"),
+                OsStr::new("-t"),
+                OsStr::new("905000"),
+                service.as_os_str(),
+            ],
+        );
+        self.stop(&definition.application_id, Duration::from_secs(15))?;
+        std::fs::remove_file(service.join("data/preparing"))?;
+        result?;
+        if error.exists() {
+            bail!("{}", std::fs::read_to_string(error)?);
+        }
+        if std::fs::read_to_string(receipt)? != definition.recipe.fingerprint() {
+            bail!("native preparation did not complete");
+        }
+        Ok(())
+    }
     /// Reuses an existing supervision tree, including its running processes.
     #[cfg(target_os = "linux")]
     pub fn connect(root: PathBuf, binary: PathBuf, cgroup_root: CgroupRoot) -> Result<Self> {
-        linux::require_root()?;
-        linux::protected(&root)?;
-        linux::protected(&binary)?;
+        host::require_root()?;
+        host::protected(&root)?;
+        host::protected(&binary)?;
         if !cgroup_root.path().join("cgroup.kill").exists() {
             bail!(
                 "delegated cgroup lacks cgroup.kill; native supervision requires a kernel that supports whole-tree teardown"
@@ -467,7 +631,7 @@ impl Supervisor {
             "s6-log",
             "s6-setlock",
         ] {
-            linux::tool(name)?;
+            host::tool(name)?;
         }
         Ok(Self {
             root,
@@ -476,17 +640,20 @@ impl Supervisor {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn connect(_: PathBuf, _: PathBuf, _: CgroupRoot) -> Result<Self> {
-        bail!("native supervision runs on Linux only")
+        bail!("native supervision requires Linux or macOS")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn service(&self, id: &str) -> Result<PathBuf> {
+        super::account_name_for(id)?;
+        #[cfg(target_os = "linux")]
         self.cgroup_root.application(id)?;
         Ok(self.root.join("services").join(id))
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn application_cgroup(&self, id: &str) -> Result<super::ApplicationCgroup> {
         Ok(self.cgroup_root.application(id)?)
     }
@@ -498,11 +665,11 @@ impl Supervisor {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let service = self.service(&definition.application_id)?;
-        linux::protected(&service.join("data"))?;
+        host::protected(&service.join("data"))?;
         let receipt = service.join("data/recipe-sha256");
         let fingerprint = definition.recipe.fingerprint();
         if receipt.exists() {
-            linux::protected(&receipt)?;
+            host::protected(&receipt)?;
             if std::fs::read_to_string(&receipt)? == fingerprint {
                 return Ok(());
             }
@@ -514,9 +681,9 @@ impl Supervisor {
             .application(&definition.application_id)?
             .kill(Duration::from_secs(5))?;
         let logs = self.root.join("logs").join(&definition.application_id);
-        linux::protected(&logs)?;
+        host::protected(&logs)?;
         let log_path = logs.join("recipe.log");
-        linux::write(&log_path, b"", 0o600)?;
+        host::write(&log_path, b"", 0o600)?;
         let mut log = std::fs::OpenOptions::new()
             .append(true)
             .mode(0o600)
@@ -524,20 +691,20 @@ impl Supervisor {
             .open(log_path)?;
         let result = super::mise::apply(&self.cgroup_root, definition, log.try_clone()?);
         if result.is_ok() {
-            linux::write(&receipt, fingerprint.as_bytes(), 0o600)?;
+            host::write(&receipt, fingerprint.as_bytes(), 0o600)?;
         } else {
             log.write_all(b"\nNative environment preparation failed.\n")?;
         }
         result
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(crate) fn prepare_environment(&self, _: &ServiceDefinition) -> Result<()> {
-        bail!("native environments run on Linux only")
+        bail!("native environments require Linux or macOS")
     }
 
     /// Materializes a new, stopped service. Never overwrites a live definition.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn prepare(&self, definition: &ServiceDefinition) -> Result<()> {
         use std::fs;
         let request = definition.request(definition.command.clone(), Purpose::Main)?;
@@ -549,7 +716,7 @@ impl Supervisor {
             bail!("command, startup_timeout_ms and stop_grace_ms must be nonempty/nonzero");
         }
         let services = self.root.join("services");
-        linux::directory(&services, 0o700)?;
+        host::directory(&services, 0o700)?;
         let service = self.service(&definition.application_id)?;
         if service.exists() {
             bail!(
@@ -558,14 +725,15 @@ impl Supervisor {
         }
         // A dot directory is invisible to s6 until the complete tree is renamed.
         let staging = services.join(format!(".{}", definition.application_id));
-        linux::directory(&staging, 0o700)?;
-        linux::directory(&staging.join("data"), 0o700)?;
-        linux::write(&staging.join("data/runner-lock"), b"", 0o600)?;
+        host::directory(&staging, 0o700)?;
+        host::directory(&staging.join("data"), 0o700)?;
+        host::write(&staging.join("data/runner-lock"), b"", 0o600)?;
         let stored = StoredService {
             definition: definition.clone(),
+            #[cfg(target_os = "linux")]
             cgroup_root: self.cgroup_root.path().into(),
         };
-        linux::write(
+        host::write(
             &staging.join("data/definition.json"),
             &serde_json::to_vec(&stored)?,
             0o600,
@@ -574,66 +742,77 @@ impl Supervisor {
             let lock = if action == "native-run" {
                 format!(
                     "{} -d 4 {} ",
-                    quote(&linux::tool("s6-setlock")?),
+                    quote(&host::tool("s6-setlock")?),
                     quote(&service.join("data/runner-lock"))
                 )
             } else {
                 String::new()
             };
+            let suffix = if cfg!(target_os = "macos") && action == "native-finish" {
+                " --process-group \"$4\""
+            } else {
+                ""
+            };
             let script = format!(
-                "#!/bin/sh\nexec 2>&1\nexec {lock}{} {action} --service {}\n",
+                "#!/bin/sh\nexec 2>&1\nexec {lock}{} {action} --service {}{suffix}\n",
                 quote(&self.binary),
                 quote(&service)
             );
-            linux::write(&staging.join(name), script.as_bytes(), 0o700)?;
+            host::write(&staging.join(name), script.as_bytes(), 0o700)?;
         }
         for (name, value) in [
             ("down", ""),
             ("notification-fd", "3\n"),
             ("timeout-finish", "10000\n"),
         ] {
-            linux::write(&staging.join(name), value.as_bytes(), 0o600)?;
+            host::write(&staging.join(name), value.as_bytes(), 0o600)?;
         }
-        linux::write(
+        host::write(
             &staging.join("timeout-kill"),
             format!("{}\n", definition.stop_grace_ms + 6000).as_bytes(),
             0o600,
         )?;
-        linux::directory(&staging.join("log"), 0o700)?;
-        linux::directory(&self.root.join("logs"), 0o700)?;
+        #[cfg(target_os = "macos")]
+        host::write(&staging.join("flag-timeout-killpg"), b"", 0o600)?;
+        host::directory(&staging.join("log"), 0o700)?;
+        host::directory(&self.root.join("logs"), 0o700)?;
         let logs = self.root.join("logs").join(&definition.application_id);
-        linux::directory(&logs, 0o700)?;
+        host::directory(&logs, 0o700)?;
         let logger = format!(
             "#!/bin/sh\numask 077\nexec {} -b n10 s1048576 T {}\n",
-            quote(&linux::tool("s6-log")?),
+            quote(&host::tool("s6-log")?),
             quote(&logs)
         );
-        linux::write(&staging.join("log/run"), logger.as_bytes(), 0o700)?;
+        host::write(&staging.join("log/run"), logger.as_bytes(), 0o700)?;
         fs::rename(staging, service)?;
         fs::File::open(&services)?.sync_all()?;
-        linux::run_tool(
+        host::run_tool(
             "s6-svscanctl",
             &[std::ffi::OsStr::new("-a"), services.as_os_str()],
         )
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn prepare(&self, _: &ServiceDefinition) -> Result<()> {
-        bail!("native supervision runs on Linux only")
+        bail!("native supervision requires Linux or macOS")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn change(&self, id: &str, running: bool, timeout: Duration) -> Result<()> {
         use std::ffi::OsStr;
         let service = self.service(id)?;
-        linux::protected(&service)?;
+        host::protected(&service)?;
         if running {
+            #[cfg(target_os = "macos")]
+            if service.join("data/preparing").exists() {
+                bail!("native setup was interrupted; reapply the Application configuration");
+            }
             let stored: StoredService =
                 serde_json::from_slice(&std::fs::read(service.join("data/definition.json"))?)?;
-            linux::require_environment(&service, &stored.definition)?;
+            host::require_environment(&service, &stored.definition)?;
         }
         let deadline = std::time::Instant::now() + timeout;
-        while linux::run_tool("s6-svok", &[service.as_os_str()]).is_err() {
+        while host::run_tool("s6-svok", &[service.as_os_str()]).is_err() {
             if std::time::Instant::now() >= deadline {
                 bail!("s6 has not discovered Application {id}; check self-host-native.service");
             }
@@ -647,9 +826,9 @@ impl Supervisor {
             }
             std::fs::File::open(&service)?.sync_all()?;
         } else {
-            linux::write(&service.join("down"), b"", 0o600)?;
+            host::write(&service.join("down"), b"", 0o600)?;
         }
-        linux::run_tool(
+        host::run_tool(
             "s6-svc",
             &[
                 OsStr::new(if running { "-u" } else { "-d" }),
@@ -657,7 +836,7 @@ impl Supervisor {
             ],
         )?;
         let milliseconds = timeout.as_millis().to_string();
-        linux::run_tool(
+        host::run_tool(
             "s6-svwait",
             &[
                 OsStr::new(if running { "-U" } else { "-D" }),
@@ -675,17 +854,17 @@ impl Supervisor {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn change(&self, _: &str, _: bool, _: Duration) -> Result<()> {
-        bail!("native supervision runs on Linux only")
+        bail!("native supervision requires Linux or macOS")
     }
 
     /// Reads s6's observation and the persistent intent without changing either.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn status(&self, id: &str) -> Result<ServiceStatus> {
         let service = self.service(id)?;
-        linux::protected(&service)?;
-        let output = std::process::Command::new(linux::tool("s6-svstat")?)
+        host::protected(&service)?;
+        let output = std::process::Command::new(host::tool("s6-svstat")?)
             .args(["-o", "up,ready,pid"])
             .arg(&service)
             .env_clear()
@@ -712,9 +891,9 @@ impl Supervisor {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn status(&self, _: &str) -> Result<ServiceStatus> {
-        bail!("native supervision runs on Linux only")
+        bail!("native supervision requires Linux or macOS")
     }
 
     pub fn start(&self, id: &str, timeout: Duration) -> Result<()> {
@@ -724,6 +903,7 @@ impl Supervisor {
         self.change(id, false, timeout)?;
         // Preparation runs through N1 while s6 is down. A daemon crash can
         // leave that tree behind even though s6 has no runner to stop.
+        #[cfg(target_os = "linux")]
         self.cgroup_root.application(id)?.kill(timeout)?;
         Ok(())
     }
@@ -732,41 +912,42 @@ impl Supervisor {
         self.start(id, timeout)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn exists(&self, id: &str) -> Result<bool> {
         Ok(self.service(id)?.exists())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn exists(&self, _: &str) -> Result<bool> {
-        bail!("native supervision runs on Linux only")
+        bail!("native supervision requires Linux or macOS")
     }
 
     /// Replace only after the existing tree is stopped. The down file keeps
     /// stopped intent through a daemon crash between replacement and start.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn replace(&self, definition: &ServiceDefinition, timeout: Duration) -> Result<()> {
         definition.request(definition.command.clone(), Purpose::Main)?;
         self.stop(&definition.application_id, timeout)?;
         let service = self.service(&definition.application_id)?;
         let stored = StoredService {
             definition: definition.clone(),
+            #[cfg(target_os = "linux")]
             cgroup_root: self.cgroup_root.path().into(),
         };
-        linux::write(
+        host::write(
             &service.join("data/definition.json"),
             &serde_json::to_vec(&stored)?,
             0o600,
         )
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn replace(&self, _: &ServiceDefinition, _: Duration) -> Result<()> {
-        bail!("native supervision runs on Linux only")
+        bail!("native supervision requires Linux or macOS")
     }
 
     /// Remove generated supervision files, leaving Application data and logs.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn remove(&self, id: &str, timeout: Duration) -> Result<()> {
         use std::ffi::OsStr;
         self.stop(id, timeout)?;
@@ -777,15 +958,15 @@ impl Supervisor {
         // Once hidden, svscan cannot start a replacement while the old
         // supervisor and logger exit.
         for directory in [&hidden, &hidden.join("log")] {
-            linux::run_tool("s6-svc", &[OsStr::new("-dx"), directory.as_os_str()])?;
+            host::run_tool("s6-svc", &[OsStr::new("-dx"), directory.as_os_str()])?;
         }
-        linux::run_tool(
+        host::run_tool(
             "s6-svscanctl",
             &[OsStr::new("-a"), self.root.join("services").as_os_str()],
         )?;
         let deadline = std::time::Instant::now() + timeout;
-        while linux::run_tool("s6-svok", &[hidden.as_os_str()]).is_ok()
-            || linux::run_tool("s6-svok", &[hidden.join("log").as_os_str()]).is_ok()
+        while host::run_tool("s6-svok", &[hidden.as_os_str()]).is_ok()
+            || host::run_tool("s6-svok", &[hidden.join("log").as_os_str()]).is_ok()
         {
             if std::time::Instant::now() >= deadline {
                 bail!("s6 did not release removed Application {id}");
@@ -797,30 +978,32 @@ impl Supervisor {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn remove(&self, _: &str, _: Duration) -> Result<()> {
-        bail!("native supervision runs on Linux only")
+        bail!("native supervision requires Linux or macOS")
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
-#[cfg(target_os = "linux")]
-pub use linux::{boot_scan, finish_service, run_service};
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use host::finish_service;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use host::{boot_scan, run_service};
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn run_service(_: &Path) -> Result<()> {
-    bail!("native supervision runs on Linux only")
+    bail!("native supervision requires Linux or macOS")
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn finish_service(_: &Path) -> Result<()> {
-    bail!("native supervision runs on Linux only")
+    bail!("native supervision requires Linux or macOS")
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn boot_scan(_: &Path) -> Result<()> {
-    bail!("native supervision runs on Linux only")
+    bail!("native supervision requires Linux or macOS")
 }
 
 #[cfg(test)]
