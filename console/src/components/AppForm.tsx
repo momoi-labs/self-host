@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Button,
   Checkbox,
@@ -14,9 +15,10 @@ import {
   SelectValue,
 } from "@momoi-labs/kiso-react";
 
-import { api, asReport, failureOf, getJson } from "../lib/api.js";
+import { api, asReport, failureOf } from "../lib/api.js";
+import { customImagesQuery, settingsQuery } from "../lib/queries.js";
 import { isCompose, parseAliases } from "../lib/status.js";
-import type { App, ComposeService, GitInspection, GitSource, Inspection, Publication, Report, Settings } from "../lib/types.js";
+import type { App, ComposeService, CustomImage, GitInspection, GitSource, Inspection, Publication, Report } from "../lib/types.js";
 import { gitFieldsOf, gitSourceOf, type GitFields } from "./GitSourceFields.js";
 import { GitWorkflowFields, type GitSourceMode } from "./GitWorkflowFields.js";
 import type { GitRepository } from "./GitRepositoryPicker.js";
@@ -50,7 +52,10 @@ export type Submission = {
   pull?: boolean;
 };
 
-type CustomImage = { id: string; name: string; image: string; status: string; template_id?: string | null };
+const noImages: CustomImage[] = [];
+
+/** Only an image that finished building can run. */
+const readyImages = (images: CustomImage[]) => images.filter((image) => image.status === "ready");
 
 type Errors = {
   hostname?: string;
@@ -133,9 +138,10 @@ export function AppForm({
   const [devPort, setDevPort] = useState(saved.devPort);
   const [persistData, setPersistData] = useState(saved.persistData);
   const runtimeEdited = useRef(false);
-  const [customImages, setCustomImages] = useState<CustomImage[]>([]);
-  const [customImagesLoading, setCustomImagesLoading] = useState(false);
-  const [customImagesFailure, setCustomImagesFailure] = useState<Report | null>(null);
+  const customImageList = useQuery({ ...customImagesQuery, enabled: source === "custom-image", select: readyImages });
+  const customImages = customImageList.data ?? noImages;
+  const customImagesLoading = customImageList.isLoading;
+  const customImagesFailure = customImageList.error ? asReport(customImageList.error) : null;
   const [compose, setCompose] = useState(saved.compose);
   const [hostname, setHostname] = useState(saved.hostname);
   const [aliases, setAliases] = useState(saved.aliases);
@@ -145,11 +151,9 @@ export function AppForm({
   const [gitDomains, setGitDomains] = useState(false);
   const portEdited = useRef(false);
   // Starts where the Platform setting is; this redeploy can go the other way.
-  const [pull, setPull] = useState(false);
-  useEffect(() => {
-    if (creating) return;
-    void getJson<Settings>("/settings").then((settings) => setPull(settings?.pullNewerImages.effective ?? false));
-  }, [creating]);
+  const settings = useQuery({ ...settingsQuery, enabled: !creating });
+  const [pullChoice, setPull] = useState<boolean | null>(null);
+  const pull = pullChoice ?? settings.data?.pullNewerImages.effective ?? false;
   const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port, unpublished, git };
   const dirty = !creating && !same(fields, saved);
   const changedGitSelection = source === "git" && (git.repository.trim() !== saved.git.repository.trim() || git.gitRef.trim() !== saved.git.gitRef.trim() || git.revision.trim() !== saved.git.revision.trim());
@@ -286,29 +290,6 @@ export function AppForm({
   const services = inspected?.services ?? [];
   const chosen: ComposeService | undefined = services.find((s) => s.name === webService);
   const ports = chosen ? [...new Set(chosen.ports.map((p) => String(p.container)))] : [];
-
-  useEffect(() => {
-    if (source !== "custom-image") return;
-    const controller = new AbortController();
-    setCustomImagesLoading(true);
-    setCustomImagesFailure(null);
-    void (async () => {
-      try {
-        const response = await api("/custom-images", { signal: controller.signal });
-        if (!response.ok) throw await failureOf(response);
-        const images = await response.json() as typeof customImages;
-        if (!controller.signal.aborted) {
-          const ready = images.filter((image) => image.status === "ready");
-          setCustomImages(ready);
-        }
-      } catch (cause) {
-        if (!controller.signal.aborted) setCustomImagesFailure(asReport(cause));
-      } finally {
-        if (!controller.signal.aborted) setCustomImagesLoading(false);
-      }
-    })();
-    return () => controller.abort();
-  }, [source]);
 
   /*
    * What the pasted file declares, as the Platform reads it. Asked for as the

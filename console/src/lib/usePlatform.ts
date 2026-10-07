@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { useToast } from "../components/Toasts.js";
-import { getJson } from "./api.js";
+import { readJson } from "./api.js";
+import { appsQuery, bootstrapStatusQuery } from "./queries.js";
 import type { App } from "./types.js";
 
 export type Platform = {
@@ -13,79 +15,64 @@ export type Platform = {
   reload: () => Promise<App[]>;
 };
 
+const noApps: App[] = [];
+
 /**
  * Everything the console knows about the Host: its Applications and the DNS
  * suffix they are published under.
  */
 export function usePlatform(): Platform {
   const notify = useToast();
-  const [apps, setApps] = useState<App[]>([]);
-  const [dnsSuffix, setDnsSuffix] = useState("…");
-  const [healthy, setHealthy] = useState(false);
-  const [version, setVersion] = useState<string | null>(null);
-  const [ready, setReady] = useState(false);
+  const status = useQuery(bootstrapStatusQuery);
+  const health = useQuery({
+    queryKey: ["health"],
+    queryFn: ({ signal }) => readJson<{ version?: string }>("/health", signal),
+  });
+  /*
+   * A deploy is accepted before Docker starts pulling, so the row arrives as
+   * pending and settles minutes later. Keep asking while anything is in flight.
+   */
+  const apps = useQuery({
+    ...appsQuery,
+    refetchInterval: (query) => (query.state.data?.some((app) => app.status === "pending") ? 2000 : false),
+  });
   const known = useRef<Record<string, string>>({});
 
   /*
    * The dialog is long gone by the time a pull finishes, so the outcome has to
    * find the operator wherever they are.
    */
-  const announceSettled = useCallback(
-    (next: App[]) => {
-      for (const app of next) {
-        if (known.current[app.id] !== "pending" || app.status === "pending") continue;
-        if (app.status === "running") {
-          notify("success", app.managed_postgres ? "Database deployed" : "Application deployed", {
-            error: app.hostname ? `${app.name} is running at ${app.hostname}.` : `${app.name} is running.`,
-            caused_by: [],
-          });
-        } else if (app.status === "stopped") {
-          notify("success", "Changes applied", {
-            error: `${app.name} remains stopped.`,
-            caused_by: [],
-          });
-        } else {
-          notify("danger", `Could not deploy ${app.name}`, app.last_error || "The deploy failed.");
-        }
+  useEffect(() => {
+    const next = apps.data;
+    if (!next) return;
+    for (const app of next) {
+      if (known.current[app.id] !== "pending" || app.status === "pending") continue;
+      if (app.status === "running") {
+        notify("success", app.managed_postgres ? "Database deployed" : "Application deployed", {
+          error: app.hostname ? `${app.name} is running at ${app.hostname}.` : `${app.name} is running.`,
+          caused_by: [],
+        });
+      } else if (app.status === "stopped") {
+        notify("success", "Changes applied", {
+          error: `${app.name} remains stopped.`,
+          caused_by: [],
+        });
+      } else {
+        notify("danger", `Could not deploy ${app.name}`, app.last_error || "The deploy failed.");
       }
-      known.current = Object.fromEntries(next.map((app) => [app.id, app.status]));
-    },
-    [notify],
-  );
+    }
+    known.current = Object.fromEntries(next.map((app) => [app.id, app.status]));
+  }, [apps.data, notify]);
 
-  const reload = useCallback(async () => {
-    const next = (await getJson<App[]>("/apps")) ?? [];
-    announceSettled(next);
-    setApps(next);
-    return next;
-  }, [announceSettled]);
+  const { refetch } = apps;
+  const reload = useCallback(async () => (await refetch()).data ?? noApps, [refetch]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const status = await getJson<{ dns_suffix?: string }>("/bootstrap/status");
-      if (cancelled) return;
-      if (status?.dns_suffix) setDnsSuffix(status.dns_suffix);
-      const health = await getJson<{ version?: string }>("/health");
-      setHealthy(health !== null);
-      setVersion(health?.version ?? null);
-      await reload();
-      if (!cancelled) setReady(true);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [reload]);
-
-  /*
-   * A deploy is accepted before Docker starts pulling, so the row arrives as
-   * pending and settles minutes later. Keep asking while anything is in flight.
-   */
-  useEffect(() => {
-    if (!apps.some((app) => app.status === "pending")) return;
-    const timer = window.setTimeout(() => void reload(), 2000);
-    return () => window.clearTimeout(timer);
-  }, [apps, reload]);
-
-  return { apps, dnsSuffix, healthy, version, ready, reload };
+  return {
+    apps: apps.data ?? noApps,
+    dnsSuffix: status.data?.dns_suffix || "…",
+    healthy: health.isSuccess,
+    version: health.data?.version ?? null,
+    ready: apps.isFetched,
+    reload,
+  };
 }

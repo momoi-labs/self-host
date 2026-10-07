@@ -1,4 +1,5 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
   AlertDescription,
@@ -30,7 +31,8 @@ import {
 
 import { Changes, type Change } from "../../components/Changes.js";
 import { Icon } from "../../components/Icon.js";
-import { api, failureOf, getJson } from "../../lib/api.js";
+import { api, failureOf } from "../../lib/api.js";
+import { settingsQuery } from "../../lib/queries.js";
 import type { Settings } from "../../lib/types.js";
 
 const DEFAULT_RETENTION = "30d";
@@ -62,7 +64,8 @@ function join(amount: string, unit: Unit): string {
  * deletes events. A switch applies as soon as it is flipped.
  */
 export function General() {
-  const [settings, setSettings] = useState<Settings | null | undefined>();
+  const queryClient = useQueryClient();
+  const { data: settings, refetch } = useQuery(settingsQuery);
   const [amount, setAmount] = useState("");
   const [unit, setUnit] = useState<Unit>("d");
   const value = join(amount, unit);
@@ -78,15 +81,14 @@ export function General() {
   const [toggling, setToggling] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
 
-  async function load() {
-    const current = await getJson<Settings>("/settings");
-    setSettings(current);
-    setValue(current?.auditEventsMaxAge.setting ?? "");
-  }
-
+  // The field starts from what is saved, once, so a later read never undoes
+  // an edit in progress.
+  const started = useRef(false);
   useEffect(() => {
-    void load();
-  }, []);
+    if (!settings || started.current) return;
+    started.current = true;
+    setValue(settings.auditEventsMaxAge.setting ?? "");
+  }, [settings]);
 
   const retention = settings?.auditEventsMaxAge;
   const pinned = retention?.source === "command-line";
@@ -114,7 +116,8 @@ export function General() {
         body: JSON.stringify({ auditEventsMaxAge: pending.retention }),
       });
       if (!res.ok) throw new Error((await failureOf(res)).error);
-      await load();
+      const next = await refetch();
+      setValue(next.data?.auditEventsMaxAge.setting ?? "");
       setPending(null);
     } catch (cause) {
       setError((cause as Error).message);
@@ -133,7 +136,7 @@ export function General() {
         body: JSON.stringify({ pullNewerImages: pull }),
       });
       if (!res.ok) throw new Error((await failureOf(res)).error);
-      setSettings((await res.json()) as Settings);
+      queryClient.setQueryData(settingsQuery.queryKey, (await res.json()) as Settings);
     } catch (cause) {
       setToggleError((cause as Error).message);
     } finally {

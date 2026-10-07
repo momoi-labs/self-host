@@ -50,12 +50,12 @@ export function api(path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(path, { ...init, headers: { ...authHeaders(), ...(init.headers || {}) } });
 }
 
-export async function getJson<T>(path: string): Promise<T | null> {
-  try {
-    const res = await api(path);
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+/**
+ * What a query reads. A refusal is thrown as the report it carries, so the
+ * query holds it as its error.
+ */
+export async function readJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await api(path, { signal });
+  if (!res.ok) throw await failureOf(res);
+  return (await res.json()) as T;
 }

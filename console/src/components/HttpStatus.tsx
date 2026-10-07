@@ -1,36 +1,23 @@
 import { StatusBadge } from "@momoi-labs/kiso-react";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api.js";
 import { readinessLabel, readinessTone } from "../lib/status.js";
 import type { HttpReadiness } from "../lib/types.js";
 
 /** Shows Web Target HTTP readiness separately from container lifecycle state. */
 export function HttpStatus({ id, status }: { id: string; status: string }) {
-  const [readiness, setReadiness] = useState<HttpReadiness>("unknown");
-  useEffect(() => {
-    const controller = new AbortController();
-    let running = false;
-    const poll = async () => {
-      if (running || status !== "running") return;
-      running = true;
+  const { data: readiness = "unknown" } = useQuery({
+    queryKey: ["apps", id, "http-status"],
+    queryFn: async ({ signal }): Promise<HttpReadiness> => {
       try {
-        const response = await api(`/apps/id/${encodeURIComponent(id)}/http-status`, {
-          signal: controller.signal,
-        });
-        if (response.ok) setReadiness((await response.json()).readiness as HttpReadiness);
-        else setReadiness("unknown");
+        const response = await api(`/apps/id/${encodeURIComponent(id)}/http-status`, { signal });
+        return response.ok ? ((await response.json()).readiness as HttpReadiness) : "unknown";
       } catch {
-        if (!controller.signal.aborted) setReadiness("unknown");
-      } finally {
-        running = false;
+        return "unknown";
       }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 5000);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [id, status]);
+    },
+    enabled: status === "running",
+    refetchInterval: 5000,
+  });
   return <StatusBadge tone={readinessTone(readiness)}>{readinessLabel(readiness)}</StatusBadge>;
 }

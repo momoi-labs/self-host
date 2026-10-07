@@ -1,4 +1,5 @@
 import { Fragment, Suspense, lazy, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Lifecycle,
   StatusBadge,
@@ -34,10 +35,11 @@ import { GitBuildRun } from "../components/GitBuildRun.js";
 import { GitUpdateDialog } from "../components/GitUpdateDialog.js";
 import { AppLogPane } from "../components/LogPane.js";
 import { useToast } from "../components/Toasts.js";
-import { api, failureOf, getJson } from "../lib/api.js";
+import { api, failureOf } from "../lib/api.js";
+import { settingsQuery } from "../lib/queries.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
 import { waitForTask } from "../lib/tasks.js";
-import type { App, GitSource, Metrics, Report, Settings } from "../lib/types.js";
+import type { App, GitSource, Metrics, Report } from "../lib/types.js";
 import { fetchEvents, useEvents } from "../lib/useEvents.js";
 import { seriesFor } from "../lib/useMetrics.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
@@ -62,6 +64,7 @@ export function AppDetail({
   onRemoved: () => void;
 }) {
   const notify = useToast();
+  const queryClient = useQueryClient();
   const wide = useMediaQuery("(min-width: 1024px)");
   const native = app.runtime?.kind === "native" ? app.runtime : null;
   const [confirming, setConfirming] = useState(false);
@@ -119,7 +122,7 @@ export function AppDetail({
   /** Opens the restart confirmation with the Platform's choice to pull. */
   async function askRestart() {
     if (native) { setRestart({ pull: false }); return; }
-    const settings = await getJson<Settings>("/settings");
+    const settings = await queryClient.fetchQuery(settingsQuery).catch(() => null);
     setRestart({ pull: settings?.pullNewerImages.effective ?? false });
   }
 
