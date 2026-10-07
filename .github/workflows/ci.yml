@@ -75,9 +75,7 @@ jobs:
       - run: cargo test --no-fail-fast
       - run: cargo clippy -- -D warnings
 
-  # The release builds two apple-darwin targets, so a cfg(target_os = "macos")
-  # branch can merge without a compiler ever seeing it (that happened with
-  # #64). A full suite here costs minutes; a check catches exactly that class.
+  # Native supervision is validated on a disposable Apple Silicon runner.
   macos:
     runs-on: macos-latest
     steps:
@@ -91,4 +89,10 @@ jobs:
       - run: npm ci && npm run build
         working-directory: console
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: cargo check --all-targets
+      - run: cargo test --no-fail-fast
+      - run: cargo build
+      - name: Build and exercise macOS native supervision
+        run: |
+          ./scripts/release-s6.sh aarch64-apple-darwin
+          SELF_HOST_NATIVE_TEST=1 bash scripts/test-native-macos.sh \
+            target/debug/self-host target/aarch64-apple-darwin/release/s6

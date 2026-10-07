@@ -237,6 +237,9 @@ async fn connect<S: StateStore>(
             ));
         }
         let native = matches!(consumer.runtime, Runtime::Native(_));
+        if native && !crate::native::capabilities().managed_postgres {
+            return Err(Error::Invalid("managed PostgreSQL connections for native Applications are unavailable on this Host".into()));
+        }
         if let Runtime::Native(definition) = &consumer.runtime {
             let name = crate::native::identity::AccountName::parse(&definition.account)
                 .map_err(|e| Error::Invalid(e.to_string()))?;

@@ -214,6 +214,14 @@ async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, id:
         }
     };
     if matches!(app.runtime, crate::store::Runtime::Native(_)) {
+        if !crate::native::capabilities().terminal {
+            fail(
+                &mut socket,
+                "Native terminals are unavailable on this Host.",
+            )
+            .await;
+            return;
+        }
         if !request.container.is_empty() {
             fail(&mut socket, "A native terminal has no container.").await;
             return;

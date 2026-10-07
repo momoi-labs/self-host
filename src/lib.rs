@@ -111,7 +111,7 @@ pub fn build_app_with_vm_runtime<S: StateStore>(
         vm_runtime,
         zone,
         None,
-        Arc::new(native::lifecycle::S6Runtime::default()),
+        Arc::new(native::lifecycle::HostRuntime::default()),
     )
     .0
 }
@@ -136,7 +136,7 @@ pub async fn boot_app_with_vm_runtime<S: StateStore>(
         vm_runtime,
         zone,
         audit_events_max_age_flag,
-        Arc::new(native::lifecycle::S6Runtime::default()),
+        Arc::new(native::lifecycle::HostRuntime::default()),
     );
     if let Err(error) =
         native::lifecycle::reconcile(&state.store, state.native.as_ref(), state.routes.as_ref())
@@ -195,7 +195,7 @@ fn build_platform<S: StateStore>(
         vm_runtime,
         zone,
         audit_events_max_age_flag,
-        Arc::new(native::lifecycle::S6Runtime::default()),
+        Arc::new(native::lifecycle::HostRuntime::default()),
     )
 }
 
@@ -254,6 +254,10 @@ fn build_platform_with_native<S: StateStore>(
     let api_routes = Router::new()
         .merge(postgres::api::router::<S>())
         .route("/health", get(health))
+        .route(
+            "/native/capabilities",
+            get(async || Json(native::capabilities())),
+        )
         .route("/certificates", get(certificate_status))
         .route(
             "/source/credentials",
@@ -3059,7 +3063,7 @@ mod tests {
             &store,
             &docker,
             &environments::FakeVmRuntime,
-            &native::lifecycle::S6Runtime::default(),
+            &native::lifecycle::HostRuntime::default(),
             &metrics,
         )
         .await;

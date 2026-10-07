@@ -127,9 +127,9 @@ pub(crate) fn command(home: &Path, recipe: &NativeRecipe, argv: Vec<String>) -> 
     command
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn apply(
-    root: &super::CgroupRoot,
+    #[cfg(target_os = "linux")] root: &super::CgroupRoot,
     service: &super::supervision::ServiceDefinition,
     mut log: std::fs::File,
 ) -> anyhow::Result<()> {
@@ -148,19 +148,21 @@ pub(crate) fn apply(
     ];
     command.extend(service.recipe.setup.clone());
     log.write_all(b"Preparing native environment.\n")?;
-    let mut process = super::launch(
-        root,
-        &super::LaunchRequest {
-            application_id: service.application_id.clone(),
-            account,
-            command,
-            working_dir: home.clone(),
-            environment: environment(&home, &service.environment),
-            limits: service.limits.clone(),
-            purpose: super::Purpose::Build,
-        },
-    )
-    .context("native environment preparation was refused by the non-root launcher")?;
+    let request = super::LaunchRequest {
+        application_id: service.application_id.clone(),
+        account,
+        command,
+        working_dir: home.clone(),
+        environment: environment(&home, &service.environment),
+        limits: service.limits.clone(),
+        purpose: super::Purpose::Build,
+    };
+    #[cfg(target_os = "linux")]
+    let launched = super::launch(root, &request);
+    #[cfg(target_os = "macos")]
+    let launched = super::launch(&request);
+    let mut process =
+        launched.context("native environment preparation was refused by the non-root launcher")?;
     let (sender, chunks) = std::sync::mpsc::sync_channel(16);
     let mut readers = Vec::new();
     let pipes: Vec<Box<dyn Read + Send>> = vec![
@@ -207,12 +209,19 @@ pub(crate) fn apply(
         }
     };
     let cleanup = process.stop(Duration::from_secs(1));
+    #[cfg(target_os = "linux")]
     for reader in readers {
         let _ = reader.join();
     }
-    logger
-        .join()
-        .map_err(|_| anyhow::anyhow!("native environment log worker failed"))??;
+    #[cfg(target_os = "macos")]
+    super::macos::drain_readers(readers);
+    // A foreground command's inherited pipes should close on exit. s6's
+    // finish hook cleans any same-group stragglers on macOS.
+    if cfg!(target_os = "linux") || logger.is_finished() {
+        logger
+            .join()
+            .map_err(|_| anyhow::anyhow!("native environment log worker failed"))??;
+    }
     cleanup.context("could not clean the native environment preparation process tree")?;
     let Some(status) = result.context("could not observe native environment preparation")? else {
         bail!("native environment preparation exceeded 15 minutes; inspect Application logs");

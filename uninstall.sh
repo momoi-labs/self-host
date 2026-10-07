@@ -56,6 +56,7 @@ main() {
 	# The daemon goes first. launchd would otherwise restart it between the
 	# steps below, and `serve` brings the Platform Infra back up.
 	remove_daemon "$PLATFORM_LABEL"
+	remove_native
 	reset_platform
 	remove_daemon "$COLIMA_LABEL"
 	delete_vm
@@ -89,6 +90,8 @@ confirm() {
 	echo "  - every LaunchDaemon the installer wrote, so nothing starts at boot"
 	echo "  - the bridged network for machines: socket_vmnet in ${SOCKET_VMNET_PREFIX} and its socket"
 	echo "  - every Platform and Application container, volume and network"
+	echo "  - native Application accounts, supervisor, helper and sudoers grant"
+	echo "Native Application data stays root-protected in /Library/Application Support/self-host/native-data."
 	echo "  - ${HOME}/.config/self-host, including the CA and the API key"
 	echo "  - the CA from the System Keychain, so browsers warn again"
 	echo "  - /etc/resolver/${SUFFIX}"
@@ -126,6 +129,17 @@ remove_daemon() {
 	echo "removing LaunchDaemon ${label} (requires sudo)..."
 	sudo launchctl bootout "system/${label}" >/dev/null 2>&1 || true
 	sudo rm -f "$DAEMON_DIR/${label}.plist"
+}
+
+remove_native() {
+	local helper=/Library/PrivilegedHelperTools/dev.momoi.self-host
+	if [ -f "$helper" ]; then
+		sudo "$helper" native-uninstall
+	fi
+	remove_daemon dev.momoi.self-host.native
+	sudo rm -f /private/etc/sudoers.d/self-host-native "$helper"
+	sudo rm -rf /Library/PrivilegedHelperTools/dev.momoi.self-host.s6 \
+		/Library/PrivilegedHelperTools/dev.momoi.self-host.s6-licenses
 }
 
 # `reset` is the Platform's own: containers, volumes, networks and the

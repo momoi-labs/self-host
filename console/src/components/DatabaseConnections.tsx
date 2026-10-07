@@ -11,6 +11,8 @@ import { api, asReport, failureOf } from "../lib/api.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
 
+import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
+
 export type DatabaseConnection = {
   id: string; consumer_application_id: string; variable: string; database: string;
   role: string; status: string; task_id: string | null; imported_objects: number | null;
@@ -20,6 +22,7 @@ export function DatabaseConnections({ app, apps, connections, loading, busy, fai
   app: App; apps: App[]; connections: DatabaseConnection[]; loading: boolean; busy: boolean; failure: Report | null;
   onOperation: (path: string, method: string, body?: object) => Promise<boolean>;
 }) {
+  const { capabilities } = useNativeCapabilities();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [editor, setEditor] = useState<"connect" | "view" | "disconnect" | null>(null);
@@ -29,7 +32,7 @@ export function DatabaseConnections({ app, apps, connections, loading, busy, fai
   const [url, setUrl] = useState<string | null>(null);
   const [revealing, setRevealing] = useState(false);
   const [revealFailure, setRevealFailure] = useState<Report | null>(null);
-  const choices = apps.filter((candidate) => !candidate.managed_postgres);
+  const choices = apps.filter((candidate) => !candidate.managed_postgres && (candidate.runtime?.kind !== "native" || capabilities?.managed_postgres));
   const appName = (connection: DatabaseConnection) => apps.find((candidate) => candidate.id === connection.consumer_application_id)?.name ?? "Removed application";
   const visible = connections.filter((connection) => `${appName(connection)} ${connection.database} ${connection.variable}`.toLowerCase().includes(query.trim().toLowerCase()) && (status === "all" || connection.status === status));
   function close() { setEditor(null); setSelected(null); setUrl(null); setRevealFailure(null); }

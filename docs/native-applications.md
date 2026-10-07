@@ -1,14 +1,16 @@
 # Native applications
 
 A Native Application is a process tree the Platform runs on the Host itself,
-without a container, under a Linux account that exists only for it. This
+without a container, under an account that exists only for it. This
 page covers account provisioning, privilege dropping, cgroups and s6
 supervision. The console and Operator API create and operate these Applications through
 its existing task queue. Install the protected binary and start
 `self-host-native.service` before accepting native requests.
 
-Linux only. On any other system the same functions return an `Unsupported`
-error and nothing else happens.
+The sections below describe the Linux runtime. The macOS MVP uses the same
+Application model with a restricted helper and foreground process groups.
+See [macOS native setup and validation](macos-native-applications.md) for its
+installation, supported operations and release gates.
 
 ## The Application Account
 

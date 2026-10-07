@@ -21,23 +21,26 @@ if [[ ! -f "$source_binary" || ! -x "$source_binary" ]]; then
   exit 1
 fi
 
-if [[ "$target" == *-linux-gnu ]]; then
-  bundle="$SELF_HOST_PREBUILT_DIR/$target/s6"
-  for tool in s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock s6-ftrigrd; do
-    if [[ ! -f "$bundle/bin/$tool" || ! -x "$bundle/bin/$tool" ]]; then
-      echo "Missing executable s6 artifact: $bundle/bin/$tool" >&2
-      exit 1
-    fi
-  done
-  for license in s6 skalibs musl zig; do
-    [[ -s "$bundle/licenses/$license.txt" ]] || { echo "Missing s6 license: $license" >&2; exit 1; }
-  done
-  grep -qxF "target $target" "$bundle/versions.txt" || { echo "Wrong or missing s6 target metadata" >&2; exit 1; }
+bundle="$SELF_HOST_PREBUILT_DIR/$target/s6"
+for tool in s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock s6-ftrigrd; do
+  if [[ ! -f "$bundle/bin/$tool" || ! -x "$bundle/bin/$tool" ]]; then
+    echo "Missing executable s6 artifact: $bundle/bin/$tool" >&2
+    exit 1
+  fi
+done
+licenses=(s6 skalibs)
+if [[ "$target" == *-linux-gnu ]]; then licenses+=(musl zig); fi
+for license in "${licenses[@]}"; do
+  [[ -s "$bundle/licenses/$license.txt" ]] || { echo "Missing s6 license: $license" >&2; exit 1; }
+done
+grep -qxF "target $target" "$bundle/versions.txt" || { echo "Wrong or missing s6 target metadata" >&2; exit 1; }
+if [[ "$target" == *-apple-darwin ]]; then
+  grep -qxF 'prefix /Library/PrivilegedHelperTools/dev.momoi.self-host.s6' "$bundle/versions.txt" || {
+    echo "Refusing a macOS s6 bundle compiled for an unprotected test prefix" >&2; exit 1;
+  }
 fi
 
 mkdir -p "target/$target/release"
 cp "$source_binary" "target/$target/release/self-host"
-if [[ "$target" == *-linux-gnu ]]; then
-  rm -rf "target/$target/release/s6"
-  cp -R "$bundle" "target/$target/release/s6"
-fi
+rm -rf "target/$target/release/s6"
+cp -R "$bundle" "target/$target/release/s6"

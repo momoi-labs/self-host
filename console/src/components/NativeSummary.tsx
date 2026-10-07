@@ -1,7 +1,10 @@
 import type { App } from "../lib/types.js";
 import { formatBytes } from "../lib/format.js";
 
+import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
+
 export function NativeSummary({ app }: { app: App }) {
+  const { capabilities } = useNativeCapabilities();
   if (app.runtime?.kind !== "native") return null;
   const native = app.runtime;
   return <>
@@ -17,9 +20,11 @@ export function NativeSummary({ app }: { app: App }) {
       </li>)}</ul> : "None"}</dd>
       <dt>Configured setup</dt><dd>{native.recipe?.setup.length ? `${native.recipe.setup.length} ${native.recipe.setup.length === 1 ? "command" : "commands"}` : "None"}</dd>
       <dt>Publication</dt><dd>{app.publication?.kind === "unpublished" ? "No HTTP route" : `Loopback port ${native.port}`}</dd>
+      {capabilities?.resource_limits ? <>
       <dt>CPU limit</dt><dd>{native.limits?.cpu_percent ? `${native.limits.cpu_percent}%` : "Unlimited"}</dd>
       <dt>Memory limit</dt><dd>{native.limits?.memory_bytes ? formatBytes(native.limits.memory_bytes) : "Unlimited"}</dd>
       <dt>Task limit</dt><dd>{native.limits?.max_tasks ?? "Unlimited"}</dd>
+      </> : <><dt>Resource controls</dt><dd>Unavailable on this Host</dd></>}
     </dl>
   </>;
 }

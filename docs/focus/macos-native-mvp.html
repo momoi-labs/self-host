@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>macOS native applications: MVP plan</title>
+  <style>
+    :root { color-scheme: light dark; --bg: light-dark(#f5f3ef,#211f1c); --surface: light-dark(#fffefa,#2c2925); --fg: light-dark(#22201e,#f0ede7); --muted: light-dark(#615c55,#b8b1a6); --line: light-dark(#dcd6cd,#4b453c); --accent: light-dark(#5137a6,#c0abff); }
+    * { box-sizing: border-box; }
+    body { max-width: 58rem; margin: auto; padding: 2.5rem 1.4rem 4rem; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui,sans-serif; }
+    h1,h2,h3 { line-height: 1.25; }
+    h1 { font-size: clamp(1.65rem,4vw,2.3rem); margin: .4rem 0 1rem; }
+    h2 { font-size: 1.2rem; margin: 0 0 .7rem; }
+    h3 { font-size: 1rem; margin: 1.4rem 0 .5rem; }
+    p { margin: .6rem 0; }
+    .meta,.muted { color: var(--muted); }
+    .meta { font-size: .8rem; }
+    .lead { font-size: 1.13rem; max-width: 66ch; }
+    .decision,.next { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: .4rem; padding: 1rem 1.2rem; margin: 1.5rem 0; }
+    .scope { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin: 1.5rem 0; }
+    ul,ol { padding-left: 1.3rem; margin: .6rem 0; }
+    li { margin: .5rem 0; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    code { font: .88em ui-monospace,monospace; overflow-wrap: anywhere; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .8rem; border: 1px solid var(--line); border-radius: .3rem; background: var(--surface); }
+    details { border-top: 1px solid var(--line); padding: 1rem 0; }
+    summary { font-weight: 650; cursor: pointer; min-height: 2rem; }
+    details[open] > summary { margin-bottom: 1rem; }
+    table { border-collapse: collapse; width: 100%; font-size: .92rem; margin: 1rem 0; }
+    th,td { text-align: left; vertical-align: top; padding: .65rem .5rem; border-bottom: 1px solid var(--line); }
+    th:first-child,td:first-child { padding-left: 0; }
+    .steps > li { margin-bottom: 1.2rem; }
+    .steps strong { display: block; }
+    footer { margin-top: 1.8rem; color: var(--muted); font-size: .85rem; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    @media (max-width: 580px) { body { padding: 1.5rem 1rem 3rem; } .scope { grid-template-columns: 1fr; gap: .5rem; } th,td { padding: .5rem .3rem; } }
+    @media print { body { max-width: none; background: white; color: black; } details::details-content { display: block; } }
+  </style>
+</head>
+<body>
+<main>
+  <p class="meta">Assessment and implementation plan | 2026-10-03 | Baseline <code>d1f59d5</code></p>
+  <h1>Native applications on macOS</h1>
+  <p class="lead">Keep one non-administrator account per Application on macOS, following the existing Linux model. Reuse s6 and add a restricted privileged helper so the Platform can keep running as the Operator.</p>
+  <div class="decision">
+    <h2>Selected approach</h2>
+    <p>The installer uses administrator permission once to install the helper, its restricted authorization rule and the native supervisor. Each deploy creates or reuses an Application Account. The Application's command runs as that account, with no administrator or sudo grant.</p>
+    <p>Linux already implements this account model. The macOS work is a port of account and process setup, plus the privilege boundary needed by its existing non-root Platform service.</p>
+    <p>Support foreground, headless commands whose children remain in the service's process group. Commands that daemonize or detach into another group are outside this MVP.</p>
+  </div>
+  <div class="scope">
+    <section aria-labelledby="included">
+      <h2 id="included">Include in the MVP</h2>
+      <ul>
+        <li>A dedicated account, group and data home for each Application.</li>
+        <li>Create, configure, start, stop, restart and delete through the existing console.</li>
+        <li>Application Variables, private tool directories, mise recipes and redacted logs.</li>
+        <li>HTTP on the LAN through the existing proxy and DNS, plus unpublished workers.</li>
+        <li>Crash restart, API restart and persisted running or stopped intent across reboot.</li>
+      </ul>
+    </section>
+    <section aria-labelledby="deferred">
+      <h2 id="deferred">Leave for later</h2>
+      <ul>
+        <li>CPU, memory and task limits, resource metrics and the native terminal.</li>
+        <li>Managed PostgreSQL connections for native macOS consumers.</li>
+        <li>Git source builds, GUI apps and detached process trees.</li>
+      </ul>
+    </section>
+  </div>
+  <div class="next">
+    <h2>Implementation status</h2>
+    <p>The macOS s6 build now passes startup, crash recovery, foreground child cleanup, persistent stop and scanner shutdown. A targeted skalibs select patch fixes the reproduced internal-pipe failure.</p>
+    <p>The runtime port, restricted helper, installer, Host capabilities and release packaging are implemented. Privileged account and lifecycle tests are wired into the disposable Apple Silicon CI fixture. Local execution of that fixture is blocked by interactive sudo authorization.</p>
+    <p class="muted">Release gate: run the privileged fixture and the LAN/reboot acceptance steps in <a href="../macos-native-applications.md">the macOS native guide</a>. Compilation and rootless checks do not establish full Host acceptance.</p>
+  </div>
+
+  <details open>
+    <summary>1. What needs to change</summary>
+    <table>
+      <thead><tr><th scope="col">Area</th><th scope="col">Current blocker</th><th scope="col">Smallest change</th></tr></thead>
+      <tbody>
+        <tr><td>Identity and data</td><td><code>identity.rs</code> uses Linux account tools.</td><td>Implement macOS provisioning and lookup for the same <code>sf-app-&lt;id&gt;</code> identity. Preserve ownership checks and private data homes.</td></tr>
+        <tr><td>Privilege boundary</td><td>Linux native operations expect root. The macOS Platform runs as the Operator.</td><td>Implement a macOS <code>NativeRuntime</code> client that calls one protected helper subcommand through restricted sudo. Keep the API, Docker and VM context under the Operator.</td></tr>
+        <tr><td>Supervision</td><td><code>supervision.rs</code> requires root, a delegated cgroup and root-owned files.</td><td>Keep s6 lifecycle, logs and intent. Add macOS ownership/path checks and process-group cleanup.</td></tr>
+        <tr><td>Launch and setup</td><td><code>launch.rs</code> uses Linux privilege calls and cgroups.</td><td>Drop groups, GID and UID with Darwin APIs before running any setup or main command. Preserve clean environment, timeouts and recipe receipts.</td></tr>
+        <tr><td>Web readiness</td><td><code>lifecycle.rs</code> reads <code>/proc/net/tcp*</code>.</td><td>Check loopback listeners, the Application UID and its service process group with macOS <code>lsof</code>. A successful TCP connection alone cannot identify the Application.</td></tr>
+        <tr><td>Console and API</td><td>The UI offers Linux limits and terminal. Several API checks assume dedicated accounts.</td><td>Report native Host capabilities, display the actual execution account and reject unavailable options before creating a Task.</td></tr>
+        <tr><td>Bootstrap and release</td><td>Only Linux bundles s6. macOS installs no native scan service.</td><td>Add a macOS s6 bundle, protected helper and independent root LaunchDaemon for the scan tree.</td></tr>
+      </tbody>
+    </table>
+    <p>The existing <a href="../../src/native/lifecycle.rs"><code>NativeRuntime</code> interface</a> already connects lifecycle, logs and reconciliation to the API. Keep that boundary and select the macOS helper client at construction, including the metrics collector. Reuse s6 operations and extract only the OS-specific account, launch, path and cleanup behavior. Keep <code>cgroup.rs</code> Linux-specific; do not create a no-op macOS cgroup.</p>
+    <p>Reuse the existing data model, Task queue, routes and DNS. No new Application kind, database migration, general plugin framework or new console screen is planned.</p>
+  </details>
+
+  <details>
+    <summary>2. Execution rules and technical decisions</summary>
+    <h3>Identity and directories</h3>
+    <p>Keep <code>NativeDefinition.account=sf-app-&lt;id&gt;</code>. Use macOS account tools to allocate a unique nonzero UID and private group under a provisioning lock. Mark ownership, make repeated provisioning safe and refuse an existing account the Platform did not create. Disable interactive authentication, use a non-login shell and grant neither administrator membership nor sudo access. Hiding an account alone does not disable login.</p>
+    <p>Use root-controlled supervision storage under <code>/Library/Application Support/self-host/native/</code> and separate Application homes under <code>/Library/Application Support/self-host/native-data/&lt;id&gt;/</code>. Preserve private homes, controlled <code>PATH</code>, Variables and working-directory checks. Keep the Operator's existing Platform state where it is.</p>
+    <p>Before exec, remove inherited group access, set the Application GID and UID permanently and verify the resulting identity. On Darwin, validate saved IDs and group-expansion behavior as part of the port. Fail without launching if any step fails. Do not claim Linux <code>no_new_privs</code> parity; its direct equivalent was not established. <a href="https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setuid.2.html">Apple identity-changing calls</a>.</p>
+    <h3>A small privileged entry point</h3>
+    <p>Add a fixed <code>native-control</code> subcommand in a protected copy of the existing binary, for example <code>/Library/PrivilegedHelperTools/dev.momoi.self-host</code>. The Operator's daemon calls it with <code>/usr/bin/sudo -n</code>. Bootstrap installs a sudoers rule for that exact path and subcommand, scoped to the Operator. No wildcard commands or administrator grant goes to an Application Account. <a href="https://github.com/sudo-project/sudo/blob/main/docs/sudoers.man.in">Sudo command matching</a>.</p>
+    <p>Send bounded typed requests on stdin and return structured results or the existing log stream. Derive account names and paths from validated Application IDs. The helper rejects arbitrary account names, root commands and caller-selected privileged paths. Keep the binary, its ancestors and supervision definitions protected from both Operator and Application writes. Missing authorization fails clearly instead of prompting during a deploy.</p>
+    <p>This reuses sudo authorization and the existing binary. It needs no new resident RPC service. The independent root s6 scan tree performs launch setup; every Application command, including mise and setup, runs only after switching to its dedicated account. Verify the sudoers rule with <code>visudo</code>, update helper and client versions together, and remove the rule during uninstall.</p>
+    <h3>Stop and recovery</h3>
+    <p>s6 already starts each service in a separate session. Reuse <code>timeout-kill</code>, <code>flag-timeout-killpg</code> and the process-group argument passed to <code>finish</code>. The macOS runner must keep ordinary children in that group, forward graceful termination and clean remaining group members before a restart. Validate these options against the pinned s6 version. <a href="https://skarnet.org/software/s6/s6-supervise.html">Supervisor behavior</a> and <a href="https://skarnet.org/software/s6/servicedir.html">service directory controls</a>.</p>
+    <p>Do not signal the Platform's group or an unverified stale process-group ID. Test preparation failure, main-process exit and runner crash as separate cases. Preparation must also have supervised cleanup when the API exits. Detached children are not covered by this contract. Do not add UID-wide process killing as an untested substitute for cgroups.</p>
+    <h3>Tools, readiness and unavailable features</h3>
+    <p>Reuse the per-Application mise recipe. Its installer supports macOS, but each requested dependency and setup command must also support it. <a href="https://mise.jdx.dev/installing-mise.html">Mise installation</a>.</p>
+    <p>Use bounded <code>/usr/sbin/lsof</code> calls inside the privileged native path and machine-readable fields to verify the listener belongs to the Application UID and service group and binds only to loopback. Refuse wildcard listeners, another process's port and inspection errors. Confirm IPv4 and IPv6 cases on the actual Mac. <a href="https://github.com/lsof-org/lsof/blob/master/docs/options.md">Lsof options</a>.</p>
+    <p>Reject every nonempty resource limit on macOS. Return no resource sample and show "Unavailable on this Host", rather than zero usage. Hide or disable native terminal and managed database connections, and reject direct API attempts too. Dedicated accounts preserve <a href="../../src/connectivity.rs"><code>NativeEndpoint</code></a>'s identity model, but the macOS database workflow still needs its own validation and remains outside this MVP.</p>
+    <h3>Boot without login</h3>
+    <p>Install one independent native scan LaunchDaemon as root, with <code>RunAtLoad</code> and <code>KeepAlive</code>, using the protected binary and s6 bundle. Preserve the existing Platform and Colima daemons under the Operator. Applications start under their own accounts before login. Bootstrap configures the privileges once; subsequent native operations use the restricted helper. <a href="https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html">Apple's launchd guide</a>.</p>
+    <p>The wired LAN, disk-unlock and sleep prerequisites in <a href="../macos-host.md">the macOS Host guide</a> still apply.</p>
+  </details>
+
+  <details>
+    <summary>3. Implementation order and completion criteria</summary>
+    <ol class="steps">
+      <li><strong>Validate s6, then port one execution path.</strong> Reproduce the scanner shutdown failure with the pinned sources and test its macOS event backend. Prefer an upstream fix or a bounded build patch if needed. Then add the restricted helper, macOS account provisioning, launch setup and process-group cleanup. Done when a foreground service runs as its dedicated non-administrator account, cannot read another private home, stops with its children and leaves unrelated processes alive, and the scanner exits cleanly.</li>
+      <li><strong>Complete the existing native workflow.</strong> Wire recipes, Variables, logs, readiness and reconciliation. Supervise setup independently of the API's lifetime. Done when preparation failure leaves no supported child processes, configuration preserves stopped intent and an API restart neither duplicates nor stops the Application.</li>
+      <li><strong>Make the console match the Host.</strong> Add one small backend capability response consumed by the current native form and detail view. Show the Application Account, hide unsupported controls and validate API requests. Follow <a href="../../skills/add-page/SKILL.md">the console page skill</a>. Record the macOS helper and process-group contract in a new ADR extending ADR-0031 and in the native guide. The existing domain definition of Application Account stays valid. Done when the console offers only the MVP behavior and Linux keeps its current controls.</li>
+      <li><strong>Validate boot, then prepare the LAN release.</strong> Extend <code>install.sh</code>, <code>uninstall.sh</code>, <code>release-s6.sh</code>, <code>release-cargo.sh</code>, GoReleaser and the artifact jobs. Done when a fresh install and upgrade preserve Application data and intent, and the app answers from another LAN device after reboot without login.</li>
+    </ol>
+    <p>First validation target: the existing Apple Silicon Host. Keep current Intel binary builds; claim Intel native support only after its bundle and runtime have been exercised. Build macOS s6 with the macOS toolchain, not the Linux static-musl recipe. Install the bundle in a protected third-party directory such as <code>/Library/Application Support/self-host/s6</code>, never <code>/usr/libexec</code>. Do not execute an Operator-writable Homebrew binary as root. <a href="https://developer.apple.com/library/archive/documentation/Security/Conceptual/System_Integrity_Protection_Guide/FileSystemProtections/FileSystemProtections.html">Apple filesystem protections</a>.</p>
+    <p>Do not publish a release in this assessment. A later release needs evidence from the packaged install, not only a development build.</p>
+  </details>
+
+  <details>
+    <summary>4. Validation checklist for implementation</summary>
+    <h3>Evidence collected during assessment</h3>
+    <p>A temporary unprivileged fixture on macOS 26.6.2, arm64, compiled s6 and skalibs 2.15.1.0 with clang. Service start, stop and the persistent <code>down</code> file worked. Scanner shutdown failed. The event-backend explanation is a hypothesis, not a tested fix. See the <a href="../research/macos-native-runtime.md">research record</a>.</p>
+    <h3>Automated checks</h3>
+    <ul>
+      <li>Account tests for unique IDs, idempotency, interrupted provisioning, foreign-account refusal, disabled login, no administrator membership, private homes and safe account removal with retained data.</li>
+      <li>Helper tests for unauthorized callers, malformed requests, arbitrary paths, writable binaries, failed identity changes, saved IDs and clean environment. Prove main and setup commands never start as root or the Operator.</li>
+      <li>macOS integration tests for non-root execution, ordinary child cleanup, crash recovery, preparation timeout, unrelated-process survival and stopped intent.</li>
+      <li>Readiness tests for a valid loopback listener, wildcard binding, occupied port, another service group and inspection failure.</li>
+      <li>API tests that reject foreign users and unavailable limits, terminal and database connections without starting work.</li>
+      <li>Run <code>npm ci &amp;&amp; npm test &amp;&amp; npm run build</code> in <code>console/</code>, then <code>cargo fmt --check</code>, <code>cargo test --no-fail-fast</code> and <code>cargo clippy -- -D warnings</code>. Add macOS runtime tests to CI; today's macOS job only compiles.</li>
+      <li>Run the existing privileged Linux native integration suites on their disposable Linux fixture. A normal <code>cargo test</code> skips those ignored tests.</li>
+    </ul>
+    <h3>Manual console test after implementation</h3>
+    <p>Rebuild the console and use the real backend from <code>cargo run -- serve</code>, with a disposable Platform configuration and nonconflicting ports. Confirm the running build and record its actual console URL. Do not run it against the live LAN state. The URL below is a template, not a running test server.</p>
+    <ol>
+      <li>Open <code>https://admin.&lt;dns-suffix&gt;</code>. Click <strong>Deploy application</strong>, then choose <strong>Native process</strong>. Expect unavailable resource limits. After deployment, Summary must show a dedicated <code>sf-app-*</code> account.</li>
+      <li>Name it <code>mac-native-mvp</code>. Add dependency <code>node</code>, version <code>24</code>, and Variable <code>MVP_MESSAGE=mac-native-ok</code>. Use the command below, enable HTTP and set port <code>18765</code>.</li>
+    </ol>
+    <pre><code>node -e 'require("node:http").createServer((q,r)=&gt;r.end(process.env.MVP_MESSAGE)).listen(18765,"127.0.0.1")'</code></pre>
+    <ol start="3">
+      <li>Click <strong>Deploy</strong>. Expect preparation output in <strong>Logs</strong>, then a running Application. Open its displayed Hostname. Expect <code>mac-native-ok</code>.</li>
+      <li>Change <code>MVP_MESSAGE</code> in <strong>Variables</strong> and save. Expect the new response after the operation completes, without repeating tool installation.</li>
+      <li>Click <strong>Stop</strong>, then <strong>Start</strong>, then <strong>Restart</strong>. Expect the route to disappear while stopped and the response to return afterward. Confirm ordinary children exit and another Application stays running.</li>
+      <li>Restart the development API. Expect the same Application instance and restored route. Then deploy an unpublished worker. Expect logs and lifecycle controls with no Hostname.</li>
+      <li>On the packaged LAN Host, leave one Application running and another stopped. Reboot, without logging in. From a second device, expect the first Hostname to answer and the second to stay stopped. Repeat after an upgrade.</li>
+      <li>Delete the test Application. Expect its processes and route to disappear and its account to be revoked after cleanup. Preserve retained data without exposing it to UID reuse, matching the existing deletion policy.</li>
+    </ol>
+    <p class="muted">The self-host checks above are planned tests. The assessment changed no self-host runtime code, installed Host services, accounts or settings, and did not reboot the Host. The temporary research fixture was cleaned up.</p>
+  </details>
+  <footer>
+    <p>Evidence: <a href="../research/macos-native-runtime.md">macOS native runtime research</a>, <a href="../native-applications.md">current native implementation</a>, <a href="../adr/0031-application-accounts-are-execution-identities-and-cgroups-are-resource-controls.md">ADR-0031</a>, and <a href="../adr/0013-macos-bootstrap-with-launchd.md">ADR-0013</a>.</p>
+  </footer>
+</main>
+</body>
+</html>

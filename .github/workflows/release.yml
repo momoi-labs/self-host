@@ -45,7 +45,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             command: zigbuild
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             command: build
           - os: macos-latest
@@ -93,7 +93,6 @@ jobs:
       - run: cargo ${{ matrix.command }} --release --locked --target ${{ matrix.target }}
 
       - name: Build bundled s6
-        if: runner.os == 'Linux'
         run: ./scripts/release-s6.sh ${{ matrix.target }}
 
       # Tar preserves the executable mode when transferring between runners.
@@ -101,8 +100,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          files=(self-host)
-          if [[ "$TARGET" == *-linux-gnu ]]; then files+=(s6); fi
+          files=(self-host s6)
           tar czf "$TARGET.tar.gz" -C "target/$TARGET/release" "${files[@]}"
 
       - uses: actions/upload-artifact@v4

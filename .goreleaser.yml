@@ -23,6 +23,8 @@ builds:
     flags: [--release, --locked]
     env:
       - CARGO_PROFILE_RELEASE_LTO=thin
+    hooks:
+      pre: ./scripts/release-s6.sh {{ .Target }}
     targets:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
@@ -48,7 +50,17 @@ archives:
     ids: [macos]
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ if .IsSnapshot }}snapshot{{ else }}{{ .Tag }}{{ end }}_{{ .Target }}"
-    files: [LICENSE]
+    files:
+      - LICENSE
+      - src: target/{{ .Target }}/release/s6/bin/*
+        dst: s6/bin
+        strip_parent: true
+      - src: target/{{ .Target }}/release/s6/licenses/*
+        dst: s6/licenses
+        strip_parent: true
+      - src: target/{{ .Target }}/release/s6/versions.txt
+        dst: s6
+        strip_parent: true
 
 homebrew_casks:
   - name: self-host

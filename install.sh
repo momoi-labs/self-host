@@ -121,7 +121,7 @@ install_binary() {
 	curl -fsSL "$url" -o "$tmpdir/$archive"
 	tar xzf "$tmpdir/$archive" -C "$tmpdir"
 
-	if [ "$os" = "linux" ] && [ -d "$tmpdir/s6" ]; then
+	if [ -d "$tmpdir/s6" ]; then
 		install_bundled_s6 "$target"
 	fi
 
@@ -149,9 +149,19 @@ install_binary() {
 }
 
 install_bundled_s6() {
-	local target="$1" tool license
+	local target="$1" tool license group=root
+	local notices=(s6 skalibs musl zig)
 	local destination=/usr/libexec/self-host/s6
 	local licenses=/usr/share/licenses/self-host-bin/s6
+	if [[ "$target" = *-apple-darwin ]]; then
+		destination=/Library/PrivilegedHelperTools/dev.momoi.self-host.s6
+		licenses=/Library/PrivilegedHelperTools/dev.momoi.self-host.s6-licenses
+		group=wheel
+		notices=(s6 skalibs)
+		check_native_macos_directory /Library/PrivilegedHelperTools
+		check_native_macos_directory "$destination"
+		check_native_macos_directory "$licenses"
+	fi
 	local tools=(s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock s6-ftrigrd)
 	for tool in "${tools[@]}"; do
 		[ -f "$tmpdir/s6/bin/$tool" ] && [ -x "$tmpdir/s6/bin/$tool" ] || {
@@ -159,19 +169,24 @@ install_bundled_s6() {
 			exit 1
 		}
 	done
-	for license in s6 skalibs musl zig; do
+	for license in "${notices[@]}"; do
 		[ -s "$tmpdir/s6/licenses/$license.txt" ] || { echo "incomplete release: missing $license license" >&2; exit 1; }
 	done
 	grep -qxF "target $target" "$tmpdir/s6/versions.txt" || { echo "release has wrong or missing s6 target metadata" >&2; exit 1; }
+	if [[ "$target" = *-apple-darwin ]]; then
+		grep -qxF "prefix $destination" "$tmpdir/s6/versions.txt" || {
+			echo "refusing macOS s6 tools compiled for an unprotected test prefix" >&2; exit 1;
+		}
+	fi
 	echo "installing bundled s6 (requires sudo)..."
-	sudo install -d -m 755 -o root -g root "$destination" "$licenses"
+	sudo install -d -m 755 -o root -g "$group" "$destination" "$licenses"
 	for tool in "${tools[@]}"; do
-		sudo install -m 755 -o root -g root "$tmpdir/s6/bin/$tool" "$destination/$tool"
+		sudo install -m 755 -o root -g "$group" "$tmpdir/s6/bin/$tool" "$destination/$tool"
 	done
-	for license in s6 skalibs musl zig; do
-		sudo install -m 644 -o root -g root "$tmpdir/s6/licenses/$license.txt" "$licenses/$license.txt"
+	for license in "${notices[@]}"; do
+		sudo install -m 644 -o root -g "$group" "$tmpdir/s6/licenses/$license.txt" "$licenses/$license.txt"
 	done
-	sudo install -m 644 -o root -g root "$tmpdir/s6/versions.txt" "$licenses/versions.txt"
+	sudo install -m 644 -o root -g "$group" "$tmpdir/s6/versions.txt" "$licenses/versions.txt"
 }
 
 # Opt-in boot setup. The release always installs its private s6 tools.
@@ -269,6 +284,7 @@ bootstrap_macos() {
 
 	trust_ca
 
+	install_native_macos "$operator"
 	install_platform_daemon "$operator" "$home"
 
 	install_vmnet "$home"
@@ -814,6 +830,64 @@ vmnet_pid() {
 # The Platform itself, supervised by launchd as the Operator's user so that
 # it finds the same Docker context, config directory and Compose projects
 # the Operator sees. DNS starts before it waits for Docker and PostgreSQL.
+check_native_macos_directory() {
+	local directory="$1" owner mode
+	while [ "$directory" != / ]; do
+		[ ! -L "$directory" ] || { echo "refusing symlink: $directory" >&2; exit 1; }
+		if [ -e "$directory" ]; then
+			owner=$(/usr/bin/stat -f %u "$directory")
+			mode=$(/usr/bin/stat -f %Lp "$directory")
+			[[ "$owner" = 0 && $((8#$mode & 0022)) = 0 ]] || {
+				echo "native directory must already be protected by root: $directory" >&2; exit 1;
+			}
+		fi
+		directory=$(dirname "$directory")
+	done
+}
+
+install_native_macos() {
+	local operator="$1"
+	local helper=/Library/PrivilegedHelperTools/dev.momoi.self-host
+	local root="/Library/Application Support/self-host/native"
+	local label=dev.momoi.self-host.native
+	# Account names are interpolated only into sudoers, never into root commands.
+	[[ "$operator" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ && "$operator" != root ]] || {
+		echo "invalid native Operator account" >&2; exit 1;
+	}
+	[ -d "$tmpdir/s6" ] || { echo "native support requires the complete macOS release archive" >&2; exit 1; }
+	for directory in /Library/PrivilegedHelperTools "/Library/Application Support/self-host" "$root" "/Library/Application Support/self-host/native-data"; do
+		check_native_macos_directory "$directory"
+	done
+	sudo install -d -m 755 -o root -g wheel /Library/PrivilegedHelperTools "/Library/Application Support/self-host"
+	sudo install -d -m 700 -o root -g wheel "$root"
+	sudo install -d -m 711 -o root -g wheel "/Library/Application Support/self-host/native-data"
+	sudo install -m 755 -o root -g wheel "$tmpdir/$BINARY" "$helper.new"
+	sudo mv -f "$helper.new" "$helper"
+	printf '%s ALL=(root) NOPASSWD: NOSETENV: %s native-control\n' "$operator" "$helper" > "$tmpdir/native-sudoers"
+	sudo /usr/sbin/visudo -cf "$tmpdir/native-sudoers"
+	sudo install -d -m 755 -o root -g wheel /private/etc/sudoers.d
+	sudo install -m 440 -o root -g wheel "$tmpdir/native-sudoers" /private/etc/sudoers.d/self-host-native
+	cat > "$tmpdir/native.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${label}</string>
+<key>ProgramArguments</key><array><string>${helper}</string><string>native-scan</string><string>--root</string><string>${root}</string></array>
+<key>UserName</key><string>root</string>
+<key>GroupName</key><string>wheel</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>5</integer>
+<key>ExitTimeOut</key><integer>30</integer>
+<key>StandardOutPath</key><string>${root}/scan.log</string>
+<key>StandardErrorPath</key><string>${root}/scan.log</string>
+</dict></plist>
+EOF
+	/usr/bin/plutil -lint "$tmpdir/native.plist"
+	sudo install -m 644 -o root -g wheel "$tmpdir/native.plist" "$DAEMON_DIR/${label}.plist"
+	reload_daemon "$label"
+}
+
 install_platform_daemon() {
 	local operator="$1" home="$2" path
 	path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"

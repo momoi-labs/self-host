@@ -8,7 +8,11 @@
 //! there is no fallback and never a run as root.
 
 use super::ResourceLimits;
-use super::cgroup::{ApplicationCgroup, CgroupError, CgroupRoot};
+#[cfg(target_os = "linux")]
+use super::cgroup::ApplicationCgroup;
+use super::cgroup::CgroupError;
+#[cfg(not(target_os = "macos"))]
+use super::cgroup::CgroupRoot;
 use super::identity::{AccountName, IdentityError, ResolvedAccount};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -64,6 +68,7 @@ pub struct LaunchRequest {
 pub struct LaunchedProcess {
     pub pid: u32,
     pub child: std::process::Child,
+    #[cfg(target_os = "linux")]
     pub cgroup: ApplicationCgroup,
 }
 
@@ -91,7 +96,12 @@ impl LaunchedProcess {
                 std::thread::sleep(POLL_INTERVAL);
             }
         }
+        #[cfg(target_os = "linux")]
         self.cgroup.kill(grace).map_err(StopError::Cgroup)?;
+        #[cfg(target_os = "macos")]
+        if self.child.try_wait().map_err(StopError::Wait)?.is_none() {
+            self.child.kill().map_err(StopError::Signal)?;
+        }
         self.child.wait().map_err(StopError::Wait)?;
         Ok(())
     }
@@ -133,7 +143,9 @@ impl std::fmt::Display for LaunchError {
                 "the environment may not set '{name}'; the Platform sets it from the Application Account"
             ),
             LaunchError::Spawn(_) => write!(f, "failed to start the command"),
-            LaunchError::Unsupported => write!(f, "native Applications run on Linux only"),
+            LaunchError::Unsupported => {
+                write!(f, "the requested native launch is unsupported on this Host")
+            }
         }
     }
 }
@@ -240,6 +252,78 @@ fn environment_for(account: &ResolvedAccount, request: &LaunchRequest) -> Vec<(S
     environment
 }
 
+/// s6 owns the Darwin session and cleans its foreground process group.
+#[cfg(target_os = "macos")]
+pub fn launch(request: &LaunchRequest) -> Result<LaunchedProcess, LaunchError> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let account = super::identity::resolve(&request.account)?;
+    working_dir_within(&account.home, &request.working_dir)?;
+    validate(request)?;
+    if request.limits != ResourceLimits::NONE {
+        return Err(LaunchError::Unsupported);
+    }
+    let directory = std::ffi::CString::new(request.working_dir.as_os_str().as_bytes())
+        .map_err(|_| LaunchError::Spawn(std::io::Error::from_raw_os_error(libc::EINVAL)))?;
+    let mut command = Command::new(&request.command[0]);
+    command
+        .args(&request.command[1..])
+        .env_clear()
+        .envs(environment_for(&account, request))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: only system calls and stack data are used between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            become_account_macos(account.uid, account.gid)?;
+            if libc::chdir(directory.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn().map_err(LaunchError::Spawn)?;
+    Ok(LaunchedProcess {
+        pid: child.id(),
+        child,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn become_account_macos(uid: u32, gid: u32) -> std::io::Result<()> {
+    // Darwin represents an empty group list as group 0. An explicit primary
+    // group also opts this process out of memberd's supplementary expansion.
+    unsafe {
+        if uid == 0 || gid == 0 || libc::geteuid() != 0 {
+            return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+        }
+        if libc::setgroups(1, &gid) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = std::mem::size_of_val(&info) as i32;
+        let mut groups = [u32::MAX; 2];
+        if libc::proc_pidinfo(
+            libc::getpid(),
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        ) != size
+            || [info.pbi_ruid, info.pbi_uid, info.pbi_svuid] != [uid; 3]
+            || [info.pbi_rgid, info.pbi_gid, info.pbi_svgid] != [gid; 3]
+            || libc::getgroups(2, groups.as_mut_ptr()) != 1
+            || groups[0] != gid
+        {
+            return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+        }
+        libc::umask(0o027);
+    }
+    Ok(())
+}
+
 /// Runs the request's command as its Application Account inside a fresh
 /// cgroup under `root`. Everything is checked first; a refusal spawns
 /// nothing and leaves no cgroup behind.
@@ -324,7 +408,7 @@ pub(crate) fn command_in(
     Ok(command)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn launch(_root: &CgroupRoot, request: &LaunchRequest) -> Result<LaunchedProcess, LaunchError> {
     validate(request)?;
     Err(LaunchError::Unsupported)
