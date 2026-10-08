@@ -7,6 +7,7 @@ import { useEnvironments } from "./lib/useEnvironments.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
 import { Dns } from "./views/Dns.js";
+import { Routes } from "./views/Routes.js";
 import { ManagedPostgres } from "./views/ManagedPostgres.js";
 import { Databases } from "./views/Databases.js";
 import { NewDatabase } from "./views/NewDatabase.js";
@@ -39,6 +40,8 @@ export function App() {
   const crumb =
     view.view === "dns"
       ? "DNS"
+      : view.view === "routes"
+      ? "Routes"
       : view.view === "databases"
       ? "Databases"
       : view.view === "database-new"
@@ -88,6 +91,7 @@ export function App() {
         onClick: () => go({ view: "overview", id: null }),
       }}
       dns={{ href: "/console/#dns", active: view.view === "dns", onClick: () => go({ view: "dns", id: null }) }}
+      routes={{ href: "/console/#routes", active: view.view === "routes", onClick: () => go({ view: "routes", id: null }) }}
       events={{
         href: "/console/#events",
         active: view.view === "events",
@@ -147,6 +151,8 @@ export function App() {
             if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
             go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
           }} />
+        ) : view.view === "routes" ? (
+          <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} />
         ) : view.view === "databases" ? (
           <Databases apps={apps} ready={ready} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
         ) : view.view === "database-new" ? (
@@ -207,6 +213,7 @@ export function App() {
             onNewDatabase={() => go({ view: "database-new", id: null })}
             onNewMachine={() => go({ view: "environment-new", id: null })}
             onOpenDatabases={() => go({ view: "databases", id: null })}
+            onOpenRoutes={() => go({ view: "routes", id: null })}
           />
         )}
       </section>

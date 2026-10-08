@@ -1039,7 +1039,7 @@ mod tests {
         app.route_rules.push(crate::store::RouteRule {
             hostname: "api.example.invalid".into(),
             path_prefix: "/api".into(),
-            target: "127.0.0.1:28001".parse().unwrap(),
+            target: Some("127.0.0.1:28001".parse().unwrap()),
             strip_prefix: true,
         });
         app.network_policy = crate::store::NetworkPolicy::Private {

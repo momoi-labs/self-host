@@ -321,6 +321,10 @@ fn build_platform_with_native<S: StateStore>(
                 .put(update_app::<S>)
                 .delete(remove_app_by_id::<S>),
         )
+        .route(
+            "/apps/id/{id}/routes",
+            axum::routing::put(update_routes::<S>),
+        )
         .route("/apps/id/{id}/deployments", get(deployments::list::<S>))
         .route(
             "/apps/id/{id}/deployments/{deployment}/restore",
@@ -968,6 +972,16 @@ struct UpdateApplicationRequest {
     network_policy: Option<crate::store::NetworkPolicy>,
 }
 
+/// A route-only edit. A field left out keeps what is saved; `[]` clears it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateRoutesRequest {
+    #[serde(default)]
+    aliases: Option<Vec<String>>,
+    #[serde(default)]
+    route_rules: Option<Vec<crate::store::RouteRule>>,
+}
+
 /// One container of an Application, as Docker sees it right now.
 #[derive(Serialize)]
 struct ServiceStateResponse {
@@ -1585,6 +1599,24 @@ async fn update_app<S: StateStore>(
         Ok(pending) => accept_deploy(&state, pending, "configure").await,
         Err(e) => deploy_error_response(e),
     };
+    drop(namespace);
+    response
+}
+
+/// Rewrites where an Application answers, its aliases and path rules, and
+/// nothing else. A Git Application is not rebuilt and an image is not pulled:
+/// the route table is the only thing that changes.
+async fn update_routes<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<UpdateRoutesRequest>,
+) -> Response {
+    let namespace = state.dns_records.lock_namespace().await;
+    let response =
+        match apps::prepare_routes(&state.store, &id, body.aliases, body.route_rules).await {
+            Ok(pending) => accept_deploy(&state, pending, "configure").await,
+            Err(error) => deploy_error_response(error),
+        };
     drop(namespace);
     response
 }
@@ -3818,6 +3850,75 @@ mod tests {
         let mut names: Vec<String> = serde_json::from_slice(&body).unwrap();
         names.sort();
         assert_eq!(names, ["API_KEY", "LOG_LEVEL"]);
+    }
+
+    #[tokio::test]
+    async fn a_route_change_rewrites_the_routes_without_rebuilding_a_git_application() {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let route_store = Arc::new(routes::FakeRoutes::new());
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            route_store.clone(),
+            metrics::Metrics::new(),
+        );
+        let git: source::GitSource =
+            serde_json::from_value(json!({"repository": "https://git.example.invalid/blog.git"}))
+                .unwrap();
+        store
+            .insert_application(&apps::ApplicationRecord {
+                id: "blog".into(),
+                name: "blog".into(),
+                hostname: "blog.home.lan".into(),
+                aliases: vec![],
+                image: "self-host-blog:built".into(),
+                status: apps::STATUS_RUNNING.into(),
+                source: apps::SOURCE_GIT.into(),
+                git: Some(git),
+                git_build: None,
+                last_error: None,
+                compose: None,
+                web_service: None,
+                web_port: None,
+                web_target_port: Some(20001),
+                development: None,
+                runtime: Default::default(),
+                publication: Default::default(),
+                variable_delivery: VariableDelivery::Referenced,
+                route_rules: Vec::new(),
+                network_policy: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let response = put_json(
+            &app,
+            "/apps/id/blog/routes",
+            Some("test-key"),
+            json!({
+                "aliases": ["www.home.lan"],
+                "route_rules": [{"hostname": "blog.home.lan", "path_prefix": "/api", "strip_prefix": true}],
+            }),
+        )
+        .await;
+
+        // Answered at once: no task, no build, no pull.
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(docker.built.lock().unwrap().is_empty());
+        assert!(docker.pulled.lock().unwrap().is_empty());
+        let saved = store.get_application("blog").await.unwrap().unwrap();
+        assert_eq!(saved.status, apps::STATUS_RUNNING);
+        assert_eq!(saved.aliases, ["www.home.lan"]);
+        let published = route_store.get("blog").unwrap();
+        assert!(published.answers_on("www.home.lan"));
+        assert_eq!(published.route_rules, saved.route_rules);
+        assert_eq!(published.route_rules[0].target, None);
+        assert!(audit::read(&store).await.unwrap().iter().any(|event| {
+            event.action == "configure" && event.subject.id == "blog" && event.status == "completed"
+        }));
     }
 
     #[tokio::test]

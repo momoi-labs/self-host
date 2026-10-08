@@ -426,7 +426,7 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
 fn action(method: &str, route: &str, body: &Value) -> Option<(&'static str, &'static str)> {
     Some(match (method, route) {
         ("POST", "/apps") => ("create", "application"),
-        ("PUT", "/apps/id/{id}") => ("configure", "application"),
+        ("PUT", "/apps/id/{id}") | ("PUT", "/apps/id/{id}/routes") => ("configure", "application"),
         ("POST", "/apps/id/{id}/deploy-trigger")
         | ("DELETE", "/apps/id/{id}/deploy-trigger")
         | ("POST", "/apps/id/{id}/deployments/{deployment}/restore") => {

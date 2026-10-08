@@ -11,6 +11,7 @@ import { join } from "shlex";
 import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
+import { kindLabel, routesOf, targetOf, urlOf } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
@@ -27,20 +28,6 @@ export const diagramLook = {
   background: "dots",
   strength: "quiet",
 } as const;
-
-/** A way in, as the diagram draws it: the URL a Consumer opens. */
-type Route = { key: string; label: string; url: string };
-
-/** The Hostname, its aliases, then the paths routed to the Application. */
-function routesOf(app: App): Route[] {
-  if (app.publication?.kind === "unpublished" || !app.hostname) return [];
-  const url = (host: string, path = "/") => `https://${host}${path === "/" ? "" : path}`;
-  return [
-    { key: `hostname:${app.hostname}`, label: "Hostname", url: url(app.hostname) },
-    ...(app.aliases ?? []).map((alias) => ({ key: `alias:${alias}`, label: "Alias", url: url(alias) })),
-    ...(app.route_rules ?? []).map((rule) => ({ key: `path:${rule.hostname}${rule.path_prefix}`, label: "Path", url: url(rule.hostname, rule.path_prefix) })),
-  ];
-}
 
 /** How the diagram draws an Application: the kind kiso has for it, or an icon of its own. */
 export function nodeOf(app: App): { kind: DiagramKind; icon?: LucideIcon; label: string } {
@@ -70,13 +57,6 @@ export function opens(open: () => void) {
       open();
     },
   };
-}
-
-/** Where the Hostname lands, as the edge into the Application says it. */
-function portOf(app: App): string | undefined {
-  if (app.runtime?.kind === "native") return app.runtime.port ? `:${app.runtime.port}` : undefined;
-  const port = app.development?.web_port ?? app.web_port ?? 80;
-  return app.web_service ? `${app.web_service}:${port}` : `:${port}`;
 }
 
 /** What the definition names: the command, the repository or the image. */
@@ -124,7 +104,7 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
         {routes.length ? (
           <DiagramColumn>
             {shown.map((route) => (
-              <DiagramNode key={route.key} id={route.key} kind="route" label={route.label} title={route.url} {...opens(onOpenRoutes)} />
+              <DiagramNode key={route.key} id={route.key} kind="route" label={kindLabel[route.kind]} title={urlOf(route)} {...opens(onOpenRoutes)} />
             ))}
             {routes.length > shown.length ? (
               <DiagramNode id="more" kind="route" label="Routes" title={`+${routes.length - shown.length} more`} {...opens(onOpenRoutes)} />
@@ -148,7 +128,7 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
           </DiagramColumn>
         ) : null}
         {routes.length ? (
-          <DiagramEdge from={[...shown.map((route) => route.key), ...(routes.length > shown.length ? ["more"] : [])]} to="app" label={portOf(app)} />
+          <DiagramEdge from={[...shown.map((route) => route.key), ...(routes.length > shown.length ? ["more"] : [])]} to="app" label={targetOf(app)} />
         ) : null}
         {connected.map(({ database, variable }) => (
           <DiagramEdge key={database.id} from="app" to={database.id} label={variable} />

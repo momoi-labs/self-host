@@ -1697,6 +1697,36 @@ pub async fn prepare_update(
     })
 }
 
+/// Saves new aliases or path rules and nothing else. What runs is untouched,
+/// so nothing is built, pulled or restarted, whatever the Application is
+/// made from: the deploy is settled, and finishing it rewrites the routes.
+pub async fn prepare_routes(
+    store: &impl StateStore,
+    id: &str,
+    aliases: Option<Vec<String>>,
+    route_rules: Option<Vec<crate::store::RouteRule>>,
+) -> Result<PendingDeploy, DeployError> {
+    if !store.is_initialized().await? {
+        return Err(DeployError::NotInitialized);
+    }
+    let mut record = get_application(store, id).await?;
+    if record.publication == Publication::Unpublished {
+        refuse_routing_for_unpublished(None, aliases.as_deref(), None, None)?;
+    }
+    if let Some(aliases) = aliases {
+        record.aliases = aliases;
+    }
+    if let Some(rules) = route_rules {
+        record.route_rules = rules;
+    }
+    validate_routing(store, &record).await?;
+    store.insert_application(&record).await?;
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::Settled,
+    })
+}
+
 /// Writes the `pending` row for a build-from-source deploy. The path rides
 /// along in the work: it is the caller's, not something the record keeps.
 pub async fn prepare_deploy_from_path(
@@ -2945,7 +2975,7 @@ mod tests {
                 route_rules: Some(vec![crate::store::RouteRule {
                     hostname: consumer.hostname.clone(),
                     path_prefix: "/app".into(),
-                    target: "127.0.0.1:28001".parse().unwrap(),
+                    target: Some("127.0.0.1:28001".parse().unwrap()),
                     strip_prefix: false,
                 }]),
                 ..Default::default()

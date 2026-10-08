@@ -51,6 +51,7 @@ export function Shell({
   databases = { href: "/console/#databases", active: false },
   newDatabase = { href: "/console/#new-database", active: false },
   customImages = { href: "/console/#custom-images", active: false },
+  routes = { href: "/console/#routes", active: false },
   dns = { href: "/console/#dns", active: false },
   events = { href: "/console/#events", active: false },
   settings = { href: "/console/#settings", active: false },
@@ -76,6 +77,7 @@ export function Shell({
   databases?: Destination;
   newDatabase?: Destination;
   customImages?: Destination;
+  routes?: Destination;
   events?: Destination;
   dns?: Destination;
   settings?: Destination;
@@ -113,6 +115,7 @@ export function Shell({
           destinations: [
             { ...overview, label: "Overview", leading: <Icon name="chart" /> },
             { ...databases, label: "Databases", leading: <Icon name="database" /> },
+            { ...routes, label: "Routes", leading: <Icon name="route" /> },
             { ...dns, label: "DNS", leading: <Icon name="globe" /> },
             { ...events, label: "Events", leading: <Icon name="history" /> },
             {

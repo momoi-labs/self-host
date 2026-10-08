@@ -26,6 +26,7 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { AppForm, type Submission } from "../components/AppForm.js";
+import { AppRoutes } from "../components/AppRoutes.js";
 import { AppSummary } from "../components/AppSummary.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
@@ -38,6 +39,7 @@ import { AppLogPane } from "../components/LogPane.js";
 import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
 import { settingsQuery } from "../lib/queries.js";
+import { isPublished } from "../lib/routes.js";
 import { hostnames, isCompose, statusTone } from "../lib/status.js";
 import { waitForTask } from "../lib/tasks.js";
 import type { App, GitSource, Metrics, Report } from "../lib/types.js";
@@ -328,6 +330,7 @@ export function AppDetail({
         >
           <TabsList aria-label="Application details">
             <TabsTrigger value="summary">Summary</TabsTrigger>
+            {isPublished(app) ? <TabsTrigger value="routes">Routes</TabsTrigger> : null}
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
             {app.git && (lastBuild || building || app.status === "pending") ? <TabsTrigger value="last-update">Last update</TabsTrigger> : null}
             {app.runtime?.kind !== "native" ? <TabsTrigger value="deployments">Deployments</TabsTrigger> : null}
@@ -336,11 +339,15 @@ export function AppDetail({
           </TabsList>
           <TabsContent value="summary">
             <AppSummary app={app} apps={apps} busy={removing || gitBusy}
-              onOpenRoutes={() => setTab("configuration")}
+              onOpenRoutes={() => setTab("routes")}
               onOpenConfiguration={() => setTab("configuration")}
               onOpenApp={onOpenApp}
               onRebuild={() => void rebuildCurrent()} />
           </TabsContent>
+          {isPublished(app) ? <TabsContent value="routes">
+            <AppRoutes app={app} apps={apps} dnsSuffix={dnsSuffix} busy={removing || gitBusy} reload={reload}
+              onRename={() => setTab("configuration")} />
+          </TabsContent> : null}
           <TabsContent value="configuration">
             <AppForm key={formRevision} app={app} dnsSuffix={dnsSuffix} onSubmit={save} onReload={reload} />
           </TabsContent>

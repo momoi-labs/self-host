@@ -12,6 +12,12 @@ the saved list. An omitted field preserves the current rules on update;
 `[]` removes the explicit rules. Records created before this field existed
 read an empty list.
 
+`PUT /apps/id/{id}/routes` changes only `aliases` and `route_rules`, with
+the same rules for an omitted field and `[]`. It never builds, pulls or
+restarts, whatever the Application is made from, so a Git Application can
+gain a path without a new build. It answers `200` once the proxy serves the
+new routes.
+
 ```json
 {
   "route_rules": [
@@ -28,8 +34,10 @@ read an empty list.
 The Application's Hostname and aliases keep their automatic `/` routes to
 its Web Target. An explicit `/` rule replaces the same Application's
 automatic root route for that Hostname. A rule can also use another
-Application's Hostname when its path key is free. Its target must be an
-IPv4 or IPv6 loopback address with a nonzero port.
+Application's Hostname when its path key is free. A rule without a
+`target` follows its Application's Web Target, so a redeploy that moves the
+Host port keeps it working. A set target must be an IPv4 or IPv6 loopback
+address with a nonzero port.
 
 An unpublished Application cannot have rules. Native Applications use the
 same route contract. The route contract itself

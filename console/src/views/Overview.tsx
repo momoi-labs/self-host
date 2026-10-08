@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import {
   StatusBadge,
@@ -28,6 +28,7 @@ import { definitionOf, describeDefinition } from "../components/DefinitionPicker
 import { Icon } from "../components/Icon.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
+import { routesOf } from "../lib/routes.js";
 import { NOUNS, TITLES, barSteps, phase, position } from "../lib/runSteps.js";
 import { statusTone } from "../lib/status.js";
 import { hostTotals, machineSeriesFor, seriesFor } from "../lib/useMetrics.js";
@@ -56,6 +57,7 @@ export function Overview({
   onNewDatabase,
   onNewMachine,
   onOpenDatabases,
+  onOpenRoutes,
 }: {
   apps: App[];
   environments: Environment[];
@@ -66,6 +68,7 @@ export function Overview({
   onNewDatabase: () => void;
   onNewMachine: () => void;
   onOpenDatabases: () => void;
+  onOpenRoutes: () => void;
 }) {
   // Each panel holds its own term. One box filtering every list said nothing
   // about which list it was thinning.
@@ -125,7 +128,7 @@ export function Overview({
         <div className="stack">
           <Card className="summary-panel">
             <CardContent>
-              <GroupedSummary apps={applications} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} />
+              <GroupedSummary apps={applications} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} onOpenRoutes={onOpenRoutes} />
             </CardContent>
           </Card>
 
@@ -412,14 +415,16 @@ export function Overview({
  * Platform's proxy and DNS handled. The reading is the answer; the panels
  * below are where anything deeper gets inspected.
  */
-function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabases }: {
+function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabases, onOpenRoutes }: {
   apps: App[];
   databases: App[];
   environments: Environment[];
   metrics: Metrics | null;
   onOpenDatabases: () => void;
+  onOpenRoutes: () => void;
 }) {
   const running = apps.filter((app) => app.status === "running").length;
+  const routes = apps.flatMap(routesOf).length;
   const awake = environments.filter((one) => one.state === "running").length;
   const totals = hostTotals(metrics);
   const platform = metrics?.platform ?? [];
@@ -460,20 +465,30 @@ function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabase
         </p>
       </div>
       <Rate label="Proxy" noun="requests" counts={platform.map((sample) => perMinute(sample.proxy_requests))}
-        latest={latest ? perMinute(latest.proxy_requests) : null} windowMinutes={windowMinutes} />
+        latest={latest ? perMinute(latest.proxy_requests) : null} windowMinutes={windowMinutes}>
+        {routes ? <>
+          <span className="sep">·</span>
+          <a href="/console/#routes" onClick={(event) => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            onOpenRoutes();
+          }}><b>{routes}</b> {routes === 1 ? "route" : "routes"}</a>
+        </> : null}
+      </Rate>
       <Rate label="DNS" noun="queries" counts={platform.map((sample) => perMinute(sample.dns_queries))}
         latest={latest ? perMinute(latest.dns_queries) : null} windowMinutes={windowMinutes} />
     </div>
   );
 }
 
-/** One server's rate and its shape, or a sentence when the window saw nothing. */
-function Rate({ label, noun, counts, latest, windowMinutes }: {
+/** One server's rate and its shape, or a sentence when the window saw nothing, then what else the line says. */
+function Rate({ label, noun, counts, latest, windowMinutes, children }: {
   label: string;
   noun: string;
   counts: number[];
   latest: number | null;
   windowMinutes: number;
+  children?: ReactNode;
 }) {
   return (
     <div className="summary-group">
@@ -482,6 +497,7 @@ function Rate({ label, noun, counts, latest, windowMinutes }: {
         {latest === null ? <b>—</b>
           : counts.some(Boolean) ? <><b>{latest}/min</b><Sparkline values={counts} height={14} /></>
             : <span>No {noun} in the last {windowMinutes} {windowMinutes === 1 ? "minute" : "minutes"}</span>}
+        {children}
       </div>
     </div>
   );
