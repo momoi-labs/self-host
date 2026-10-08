@@ -12,7 +12,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
     sync::{Arc, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,7 @@ use crate::{
     AppState, apps, audit,
     collection::{Collection, Keyed},
     compose_app::{PublishedTarget, WebTarget},
+    docker::DockerRuntime,
     error::ErrorReport,
     store::{ApplicationRecord, NetworkPolicy, Publication, Runtime, StateStore, StoreError},
     tasks,
@@ -33,6 +34,57 @@ const PASSWORD: &str = "SF_POSTGRES_PASSWORD";
 pub(crate) static DATABASES: Collection<Database> = Collection::new("managed-postgres");
 pub(crate) static CONNECTIONS: Collection<Connection> = Collection::new("postgres-connection");
 pub(crate) static CONNECTION_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// How long a measurement of the volumes answers for.
+const VOLUME_SIZES_MAX_AGE: Duration = Duration::from_secs(60);
+
+/// How big each Docker volume was when last measured. Measuring walks every
+/// volume, so a database screen polling every few seconds reads the last
+/// answer, and an answer older than a minute is refreshed behind it.
+#[derive(Default)]
+pub(crate) struct VolumeSizes {
+    measured: tokio::sync::Mutex<MeasuredVolumes>,
+}
+
+#[derive(Default)]
+struct MeasuredVolumes {
+    at: Option<Instant>,
+    sizes: HashMap<String, u64>,
+    refreshing: bool,
+}
+
+impl VolumeSizes {
+    /// The bytes `volume` held at the last measurement, or `None` when Docker
+    /// did not say. The first call measures; later ones never wait for Docker.
+    pub(crate) async fn of(
+        self: &Arc<Self>,
+        docker: &Arc<dyn DockerRuntime>,
+        volume: &str,
+    ) -> Option<u64> {
+        let mut measured = self.measured.lock().await;
+        match measured.at {
+            None => {
+                measured.sizes = docker.volume_sizes().await.unwrap_or_default();
+                measured.at = Some(Instant::now());
+            }
+            Some(at) if at.elapsed() > VOLUME_SIZES_MAX_AGE && !measured.refreshing => {
+                measured.refreshing = true;
+                let (cache, docker) = (self.clone(), docker.clone());
+                tokio::spawn(async move {
+                    let sizes = docker.volume_sizes().await.unwrap_or_default();
+                    let mut measured = cache.measured.lock().await;
+                    *measured = MeasuredVolumes {
+                        at: Some(Instant::now()),
+                        sizes,
+                        refreshing: false,
+                    };
+                });
+            }
+            Some(_) => {}
+        }
+        measured.sizes.get(volume).copied()
+    }
+}
 
 type DatabaseLocks = std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 static DATABASE_LOCKS: OnceLock<DatabaseLocks> = OnceLock::new();
@@ -1639,6 +1691,32 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn detail_reports_the_size_docker_measured_for_the_volume() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::Request,
+        };
+        use tower::ServiceExt;
+        let docker = FakeDocker::new();
+        docker
+            .volumes
+            .lock()
+            .unwrap()
+            .insert("fixture_data".into(), 50_331_648);
+        let (router, _) = fixture_with_docker(Arc::new(docker)).await;
+        let request = Request::builder()
+            .uri("/databases/provider")
+            .header("authorization", "Bearer fixture-key")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_eq!(body["volume_bytes"], 50_331_648);
     }
 
     #[tokio::test]

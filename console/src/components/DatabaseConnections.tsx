@@ -6,17 +6,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusBadge,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
-import type { App, Report } from "../lib/types.js";
+import type { App, DatabaseConnection, Report } from "../lib/types.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
 
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
-
-export type DatabaseConnection = {
-  id: string; consumer_application_id: string; variable: string; database: string;
-  role: string; status: string; task_id: string | null; imported_objects: number | null;
-};
 
 export function DatabaseConnections({ app, apps, connections, loading, busy, failure, onOperation }: {
   app: App; apps: App[]; connections: DatabaseConnection[]; loading: boolean; busy: boolean; failure: Report | null;

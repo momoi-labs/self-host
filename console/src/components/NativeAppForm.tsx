@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { Button, Form, FormActions, FormField, KV, KVKey, KVValue, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@momoi-labs/kiso-react";
 import { parseAliases } from "../lib/status.js";
 import { nativeCommand, nativeCommandFields } from "../lib/nativeCommand.js";
@@ -30,10 +30,12 @@ function fieldsOf(app?: App) {
   };
 }
 
-export function NativeAppForm({ app, onSubmit, onCancel, onReload, onChangeDefinition }: {
+export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }: {
   app?: App; dnsSuffix: string;
   onSubmit: (body: Submission, source: string) => Promise<Report | null>;
-  onCancel?: () => void; onChangeDefinition?: () => void;
+  onCancel?: () => void;
+  /** The definition choice "New application" opens with, above the steps. */
+  definition?: ReactNode;
   onReload?: () => Promise<App[]>;
 }) {
   const { capabilities, error: capabilitiesError } = useNativeCapabilities();
@@ -95,7 +97,7 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, onChangeDefin
 
   return <Form id="app-form" onSubmit={save}>
     <div className="form-body">
-      {onChangeDefinition ? <Button size="sm" variant="ghost" type="button" onClick={onChangeDefinition}>Change definition</Button> : null}
+      {definition}
       <Steps>
         <Step title="Application">
           <FormField id="native-name" label="Name" value={fields.name} onChange={(event) => change("name", event.target.value)} required autoFocus={!app} disabled={saving} />

@@ -1,15 +1,16 @@
 import { useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 import {
   StatusBadge,
   Button,
   Card,
+  CardContent,
   EmptyState,
   EmptyStateActions,
   EmptyStateDescription,
   EmptyStateIcon,
   EmptyStateTitle,
   PageHeader,
-  PageHeaderDescription,
   PageHeaderTitle,
   Search,
   Sparkline,
@@ -17,103 +18,84 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFrame,
   TableHead,
   TableHeader,
   TableRow,
 } from "@momoi-labs/kiso-react";
 
+import { definitionOf, describeDefinition } from "../components/DefinitionPicker.js";
 import { Icon } from "../components/Icon.js";
 import { formatBytes } from "../lib/format.js";
+import { databaseQuery } from "../lib/queries.js";
 import { NOUNS, TITLES, barSteps, phase, position } from "../lib/runSteps.js";
 import { statusTone } from "../lib/status.js";
-import { hostNetworkSeries, hostTotals, machineSeriesFor, seriesFor } from "../lib/useMetrics.js";
+import { hostTotals, machineSeriesFor, seriesFor } from "../lib/useMetrics.js";
+import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import type { App, AppSample, Environment, Metrics } from "../lib/types.js";
-
-type Row = {
-  key: string;
-  id: string;
-  name: string;
-  hostname?: string;
-  aliases: number;
-  image: string;
-  status: string;
-  restarts?: number | null;
-  /** Absent until the collector's first tick names this Application. */
-  samples: AppSample[] | null;
-};
 
 const matches = (name: string, query: string) =>
   name.toLowerCase().includes(query.trim().toLowerCase());
 
+/** A status the way a badge says it: "Running", not "running". */
+const statusLabel = (status: string) => status.charAt(0).toUpperCase() + status.slice(1);
+
+/** What an Application's definition names: the image, the repository, the command. */
+function sourceOf(app: App): string {
+  if (app.runtime?.kind === "native") return app.runtime.command.join(" ");
+  return app.git?.repository ?? app.image;
+}
+
 export function Overview({
   apps,
   environments,
-  dnsSuffix,
   metrics,
   onOpenApp,
   onOpenEnvironment,
   onDeploy,
+  onNewDatabase,
   onNewMachine,
   onOpenDatabases,
 }: {
   apps: App[];
   environments: Environment[];
-  dnsSuffix: string;
   metrics: Metrics | null;
   onOpenApp: (id: string) => void;
   onOpenEnvironment: (id: string) => void;
   onDeploy: () => void;
+  onNewDatabase: () => void;
   onNewMachine: () => void;
   onOpenDatabases: () => void;
 }) {
-  // Each section holds its own term. The Overview lists two kinds of workload
-  // and one box filtering both said nothing about which list it was thinning.
-  const [appQuery, setAppQuery] = useState("");
-  const [machineQuery, setMachineQuery] = useState("");
+  // Each panel holds its own term. One box filtering every list said nothing
+  // about which list it was thinning.
+  const [appSearch, setAppSearch] = useState("");
+  const [databaseSearch, setDatabaseSearch] = useState("");
+  const [machineSearch, setMachineSearch] = useState("");
+  const { capabilities } = useNativeCapabilities();
   const applications = apps.filter((app) => !app.managed_postgres);
   const databases = apps.filter((app) => app.managed_postgres);
 
-  const rows: Row[] = applications.map((app) => ({
-    key: app.id,
-    id: app.id,
-    name: app.name,
-    hostname: app.hostname,
-    aliases: (app.aliases ?? []).length,
-    image: app.runtime?.kind === "native" ? `Native: ${app.runtime.command[0]}` : app.image,
-    status: app.status,
-    restarts: app.restarts,
-    samples: seriesFor(metrics, app.id),
-  }));
+  // A database's connections are the only record of who uses it.
+  const details = useQueries({
+    queries: databases.map((database) => ({ ...databaseQuery(database.id), refetchInterval: 15_000 })),
+  });
+  const usedBy = new Map(databases.map((database, index) => [
+    database.id,
+    details[index]?.data?.connections
+      .filter((connection) => connection.status !== "revoked")
+      .map((connection) => apps.find((app) => app.id === connection.consumer_application_id)?.name ?? "Removed application"),
+  ]));
 
-  const visible = rows.filter((row) => matches(row.name, appQuery));
-  const machines = environments.filter((one) =>
-    matches(one.config.name, machineQuery),
-  );
+  const visibleApps = applications.filter((app) => matches(app.name, appSearch));
+  const visibleDatabases = databases.filter((database) => matches(database.name, databaseSearch));
+  const machines = environments.filter((one) => matches(one.config.name, machineSearch));
   const empty = apps.length === 0 && environments.length === 0;
-
-  const open = (row: Row) => onOpenApp(row.id);
 
   return (
     <>
       <PageHeader>
         <PageHeaderTitle>Overview</PageHeaderTitle>
-        <PageHeaderDescription>
-          {apps.length === 0 && environments.length === 0
-            ? `Nothing deployed on ${dnsSuffix} yet.`
-            : [
-                applications.length === 0
-                  ? null
-                  : `${applications.length} ${applications.length === 1 ? "application" : "applications"}`,
-                databases.length === 0
-                  ? null
-                  : `${databases.length} ${databases.length === 1 ? "database" : "databases"}`,
-                environments.length === 0
-                  ? null
-                  : `${environments.length} ${environments.length === 1 ? "virtual machine" : "virtual machines"}`,
-              ]
-                .filter(Boolean)
-                .join(" and ") + ` on ${dnsSuffix}`}
-        </PageHeaderDescription>
       </PageHeader>
 
       {empty ? (
@@ -141,121 +123,199 @@ export function Overview({
         </Card>
       ) : (
         <div className="stack">
-          <GroupedSummary apps={applications} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} />
+          <Card className="summary-panel">
+            <CardContent>
+              <GroupedSummary apps={applications} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} />
+            </CardContent>
+          </Card>
 
-          <div className="section-heading">
-            <h2 className="section-title">Applications</h2>
-            <span className="muted t-label section-count">
-              {visible.length} of {rows.length}
-            </span>
-            <Search
-              aria-label="Search applications"
-              containerClassName="section-search"
-              placeholder="Search applications…"
-              value={appQuery}
-              onChange={(event) => setAppQuery(event.target.value)}
-            />
-            <Button size="sm" variant="ghost" onClick={onDeploy}>
-              <Icon name="plus" />
-              Deploy application
-            </Button>
-          </div>
-          <div className="table-wrap">
+          <TableFrame>
+            <div className="table-toolbar panel-toolbar">
+              <h2 className="section-title">Applications</h2>
+              <Search
+                aria-label="Search applications"
+                containerClassName="section-search"
+                placeholder="Search applications…"
+                value={appSearch}
+                onChange={(event) => setAppSearch(event.target.value)}
+              />
+              <Button size="sm" variant="ghost" className="panel-action" onClick={onDeploy}>
+                <Icon name="plus" />
+                Deploy application
+              </Button>
+            </div>
             <div className="table-scroll">
-              <Table>
+              <Table aria-label="Applications">
                 <TableHeader>
                   <TableRow>
-                    <TableHead scope="col">Name</TableHead>
+                    <TableHead scope="col">Application</TableHead>
                     <TableHead scope="col">Hostname</TableHead>
-                    <TableHead scope="col">Definition</TableHead>
                     <TableHead scope="col">Status</TableHead>
-                    <TableHead scope="col" className="num">
-                      Restarts
-                    </TableHead>
                     <TableHead scope="col">CPU</TableHead>
                     <TableHead scope="col">Memory</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {visible.length === 0 ? (
+                  {visibleApps.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="muted">
-                        {applications.length ? "No applications match your filters." : "No applications yet."}
+                      <TableCell colSpan={5} className="muted">
+                        {applications.length ? "No applications match your search." : "No applications yet."}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    visible.map((row) => (
-                      <TableRow
-                        key={row.key}
-                        tabIndex={0}
-                        role="button"
-                        aria-label={`Open ${row.name}`}
-                        onClick={() => open(row)}
-                        onKeyDown={(event) => {
-                          if (event.key !== "Enter" && event.key !== " ") return;
-                          event.preventDefault();
-                          open(row);
-                        }}
-                      >
-                        <TableCell>{row.name}</TableCell>
-                        <TableCell className="mono">
-                          {row.hostname}
-                          {row.aliases ? (
-                            <span className="t-metadata muted"> +{row.aliases}</span>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className="mono">{row.image}</TableCell>
-                        <TableCell>
-                          <StatusBadge tone={statusTone(row.status)}>{row.status}</StatusBadge>
-                        </TableCell>
-                        <TableCell className="num">
-                          {row.restarts === null || row.restarts === undefined ? (
-                            <span className="muted">—</span>
-                          ) : (
-                            row.restarts
-                          )}
-                        </TableCell>
-                        <Usage
-                          samples={row.samples}
-                          value={(sample) => sample.cpu_percent}
-                          render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
-                        />
-                        <Usage
-                          samples={row.samples}
-                          value={(sample) => sample.memory_bytes}
-                          render={(sample) => formatBytes(sample.memory_bytes)}
-                        />
-                      </TableRow>
-                    ))
+                    visibleApps.map((app) => {
+                      const definition = describeDefinition(definitionOf(app));
+                      const samples = seriesFor(metrics, app.id);
+                      // A native process tree is measured only where the Host has resource controls.
+                      const unmeasured = app.runtime?.kind === "native" && capabilities?.metrics === false;
+                      return (
+                        <TableRow
+                          key={app.id}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`Open ${app.name}`}
+                          onClick={() => onOpenApp(app.id)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            onOpenApp(app.id);
+                          }}
+                        >
+                          <TableCell>
+                            <span className="app-cell">
+                              <Icon name={definition.icon} size="md" />
+                              <span className="stack-xs">
+                                <strong>{app.name}</strong>
+                                <span className="muted t-label">{definition.label} · <span className="mono">{sourceOf(app)}</span></span>
+                              </span>
+                            </span>
+                          </TableCell>
+                          <TableCell className="mono">
+                            {app.hostname || <span className="muted">Unpublished</span>}
+                            {app.aliases?.length ? <span className="t-metadata muted"> +{app.aliases.length}</span> : null}
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={statusTone(app.status)}>{statusLabel(app.status)}</StatusBadge>
+                          </TableCell>
+                          <Usage
+                            samples={samples}
+                            unmeasured={unmeasured}
+                            value={(sample) => sample.cpu_percent}
+                            render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
+                          />
+                          <Usage
+                            samples={samples}
+                            unmeasured={unmeasured}
+                            value={(sample) => sample.memory_bytes}
+                            render={(sample) => formatBytes(sample.memory_bytes)}
+                          />
+                        </TableRow>
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>
             </div>
-          </div>
+          </TableFrame>
 
-          <div className="section-heading">
-            <h2 className="section-title">Virtual machines</h2>
-            <span className="muted t-label section-count">
-              {machines.length} of {environments.length}
-            </span>
-            <Search
-              aria-label="Search virtual machines"
-              containerClassName="section-search"
-              placeholder="Search machines…"
-              value={machineQuery}
-              onChange={(event) => setMachineQuery(event.target.value)}
-            />
-            <Button size="sm" variant="ghost" onClick={onNewMachine}>
-              <Icon name="plus" />
-              Create virtual machine
-            </Button>
-          </div>
-          {environments.length === 0 ? (
-            <p className="muted">No virtual machines yet.</p>
-          ) : (
-            <div className="table-wrap">
+          <TableFrame>
+            <div className="table-toolbar panel-toolbar">
+              <h2 className="section-title">Databases</h2>
+              <Search
+                aria-label="Search databases"
+                containerClassName="section-search"
+                placeholder="Search databases…"
+                value={databaseSearch}
+                disabled={!databases.length}
+                onChange={(event) => setDatabaseSearch(event.target.value)}
+              />
+              <Button size="sm" variant="ghost" className="panel-action" onClick={onNewDatabase}>
+                <Icon name="plus" />
+                New database
+              </Button>
+            </div>
+            {databases.length === 0 ? (
+              <EmptyState variant="first-run" size="md">
+                <EmptyStateTitle>No databases yet</EmptyStateTitle>
+              </EmptyState>
+            ) : (
               <div className="table-scroll">
-                <Table>
+                <Table aria-label="Databases">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead scope="col">Database</TableHead>
+                      <TableHead scope="col">Status</TableHead>
+                      <TableHead scope="col">Used by</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {visibleDatabases.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3} className="muted">No databases match your search.</TableCell>
+                      </TableRow>
+                    ) : (
+                      visibleDatabases.map((database) => {
+                        const consumers = usedBy.get(database.id);
+                        return (
+                          <TableRow
+                            key={database.id}
+                            tabIndex={0}
+                            role="button"
+                            aria-label={`Open ${database.name}`}
+                            onClick={() => onOpenApp(database.id)}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              onOpenApp(database.id);
+                            }}
+                          >
+                            <TableCell>
+                              <span className="stack-xs">
+                                <strong>{database.name}</strong>
+                                <span className="muted t-label">PostgreSQL {database.managed_postgres?.major}</span>
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <StatusBadge tone={statusTone(database.status)}>{statusLabel(database.status)}</StatusBadge>
+                            </TableCell>
+                            <TableCell>
+                              {consumers === undefined ? <span className="muted">—</span>
+                                : consumers.length ? consumers.join(", ")
+                                  : <span className="muted">No Application</span>}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </TableFrame>
+
+          <TableFrame>
+            <div className="table-toolbar panel-toolbar">
+              <h2 className="section-title">Virtual machines</h2>
+              <Search
+                aria-label="Search virtual machines"
+                containerClassName="section-search"
+                placeholder="Search machines…"
+                value={machineSearch}
+                disabled={!environments.length}
+                onChange={(event) => setMachineSearch(event.target.value)}
+              />
+              <Button size="sm" variant="ghost" className="panel-action" onClick={onNewMachine}>
+                <Icon name="plus" />
+                Create virtual machine
+              </Button>
+            </div>
+            {environments.length === 0 ? (
+              <EmptyState variant="first-run" size="md">
+                <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
+              </EmptyState>
+            ) : (
+              <div className="table-scroll">
+                <Table aria-label="Virtual machines">
                   <TableHeader>
                     <TableRow>
                       <TableHead scope="col">Virtual machine</TableHead>
@@ -270,7 +330,7 @@ export function Overview({
                     {machines.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={6} className="muted">
-                          No virtual machines match your filters.
+                          No virtual machines match your search.
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -338,11 +398,8 @@ export function Overview({
                   </TableBody>
                 </Table>
               </div>
-              <p className="table-footer">
-                {machines.length} of {environments.length} virtual machines
-              </p>
-            </div>
-          )}
+            )}
+          </TableFrame>
         </div>
       )}
     </>
@@ -350,11 +407,10 @@ export function Overview({
 }
 
 /**
- * The Overview's summary: four questions on one line, a caps label over
- * each. What is up, what the workloads cost the Host, what crossed the
- * wire, and what the Platform's own servers handled. A line, not cards:
- * the reading is the answer, and the tables below are where anything
- * deeper gets inspected.
+ * The Overview's summary, in one panel: four questions, a caps label over
+ * each. What is up, what the measured workloads cost the Host, and what the
+ * Platform's proxy and DNS handled. The reading is the answer; the panels
+ * below are where anything deeper gets inspected.
  */
 function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabases }: {
   apps: App[];
@@ -366,83 +422,71 @@ function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabase
   const running = apps.filter((app) => app.status === "running").length;
   const awake = environments.filter((one) => one.state === "running").length;
   const totals = hostTotals(metrics);
-  const net = hostNetworkSeries(metrics);
-  const latest = net[net.length - 1];
   const platform = metrics?.platform ?? [];
-  const platformLatest = platform[platform.length - 1];
+  const latest = platform[platform.length - 1];
   // Proxy and DNS count events over the same interval and share one scale
   // (ADR-0020), so both speak per minute.
-  const perMinute = (count: number) =>
-    Math.round((count * 60) / Math.max(1, metrics?.interval_seconds ?? 10));
-  const proxyPerMinute = platform.map((sample) => perMinute(sample.proxy_requests));
-  const dnsPerMinute = platform.map((sample) => perMinute(sample.dns_queries));
+  const interval = Math.max(1, metrics?.interval_seconds ?? 10);
+  const perMinute = (count: number) => Math.round((count * 60) / interval);
+  const windowMinutes = Math.max(1, Math.round((platform.length * interval) / 60));
 
   return (
     <div className="summary-groups">
       <div className="summary-group">
         <p className="t-caps">Workloads</p>
         <p className="summary-line">
-          <b>{awake}</b>/{environments.length} VMs
-          <span className="sep">·</span>
-          <b>{running}</b>/{apps.length} apps
+          <b>{running} of {apps.length}</b> apps running
           {databases.length ? <>
             <span className="sep">·</span>
             <a href="/console/#databases" onClick={(event) => {
               if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
               event.preventDefault();
               onOpenDatabases();
-            }}><b>{databases.filter((database) => database.status === "running").length}</b>/{databases.length} databases</a>
+            }}><b>{databases.filter((database) => database.status === "running").length} of {databases.length}</b> databases</a>
+          </> : null}
+          {environments.length ? <>
+            <span className="sep">·</span>
+            <b>{awake} of {environments.length}</b> VMs
           </> : null}
         </p>
       </div>
       <div className="summary-group">
-        <p className="t-caps">Host</p>
+        <p className="t-caps">Measured use</p>
         <p className="summary-line">
           <span className="k">CPU</span> <b>{totals ? `${totals.cpu.toFixed(1)}%` : "—"}</b>
           <span className="sep">·</span>
-          <span className="k">Mem</span>{" "}
-          <b>{totals ? formatBytes(totals.memory) : "—"}</b>
-          {totals ? ` / ${formatBytes(totals.memoryLimit)}` : ""}
+          <span className="k">Memory</span> <b>{totals ? formatBytes(totals.memory) : "—"}</b>
+          {totals ? ` of ${formatBytes(totals.memoryLimit)}` : ""}
         </p>
       </div>
-      <div className="summary-group">
-        <p className="t-caps">{apps.some((app) => app.runtime?.kind === "native") ? "Container and VM network" : "Network"}</p>
-        <p className="summary-line">
-          <b>
-            <span className="network-down">
-              ↓ {latest ? formatBytes(latest.rx_bytes) : "—"}
-            </span>
-          </b>
-          <Sparkline values={net.map((one) => one.rx_bytes)} height={14} />
-          <b>
-            <span className="network-up">
-              ↑ {latest ? formatBytes(latest.tx_bytes) : "—"}
-            </span>
-          </b>
-          <Sparkline values={net.map((one) => one.tx_bytes)} height={14} />
-        </p>
-      </div>
-      <div className="summary-group">
-        <p className="t-caps">Traffic</p>
-        <p className="summary-line">
-          <span className="k">Proxy</span>{" "}
-          <b>{platformLatest ? `${perMinute(platformLatest.proxy_requests)}/min` : "—"}</b>
-          <Sparkline values={proxyPerMinute} height={14} />
-          <span className="sep">·</span>
-          <span className="k">DNS</span>{" "}
-          <b>{platformLatest ? `${perMinute(platformLatest.dns_queries)}/min` : "—"}</b>
-          <Sparkline values={dnsPerMinute} height={14} />
-        </p>
+      <Rate label="Proxy" noun="requests" counts={platform.map((sample) => perMinute(sample.proxy_requests))}
+        latest={latest ? perMinute(latest.proxy_requests) : null} windowMinutes={windowMinutes} />
+      <Rate label="DNS" noun="queries" counts={platform.map((sample) => perMinute(sample.dns_queries))}
+        latest={latest ? perMinute(latest.dns_queries) : null} windowMinutes={windowMinutes} />
+    </div>
+  );
+}
+
+/** One server's rate and its shape, or a sentence when the window saw nothing. */
+function Rate({ label, noun, counts, latest, windowMinutes }: {
+  label: string;
+  noun: string;
+  counts: number[];
+  latest: number | null;
+  windowMinutes: number;
+}) {
+  return (
+    <div className="summary-group">
+      <p className="t-caps">{label}</p>
+      <div className="summary-line">
+        {latest === null ? <b>—</b>
+          : counts.some(Boolean) ? <><b>{latest}/min</b><Sparkline values={counts} height={14} /></>
+            : <span>No {noun} in the last {windowMinutes} {windowMinutes === 1 ? "minute" : "minutes"}</span>}
       </div>
     </div>
   );
 }
 
-/**
- * One Application's usage in a table cell: the last reading, with the shape
- * of the window under it. A dash until the collector's first tick, which is
- * up to a minute after the Application starts.
- */
 /**
  * A running or failed operation in a table cell: the badge says the phase
  * the run is in ("Starting", "Provisioning") or what went wrong ("Bootstrap
@@ -476,24 +520,37 @@ function Activity({ operation }: { operation: NonNullable<Environment["operation
   );
 }
 
+/**
+ * A workload's usage in a table cell: the last reading with the window's
+ * shape beside it. A dash until the collector's first tick, which is up to a
+ * minute after the workload starts, and "Not measured" for a native process
+ * on a Host that cannot measure one.
+ */
 function Usage({
   samples,
+  unmeasured,
   value,
   render,
 }: {
   samples: AppSample[] | null;
+  unmeasured?: boolean;
   value: (sample: AppSample) => number;
   render: (sample: AppSample) => string;
 }) {
-  if (!samples) {
+  if (unmeasured) {
     return (
-      <TableCell className="muted">—</TableCell>
+      <TableCell className="muted" title="This Host has no resource controls for native processes">Not measured</TableCell>
     );
   }
+  if (!samples) {
+    return <TableCell className="muted">—</TableCell>;
+  }
   return (
-    <TableCell className="usage">
-      <span className="usage-value">{render(samples[samples.length - 1])}</span>
-      <Sparkline values={samples.map(value)} height={18} />
+    <TableCell>
+      <span className="usage-inline">
+        <span className="usage-value">{render(samples[samples.length - 1])}</span>
+        <Sparkline values={samples.map(value)} height={16} />
+      </span>
     </TableCell>
   );
 }

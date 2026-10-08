@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 
 import { api, failureOf, readJson } from "./api.js";
-import type { App, BootstrapStatus, CustomImage, Settings } from "./types.js";
+import type { App, BootstrapStatus, CustomImage, DatabaseDetail, Settings } from "./types.js";
 
 /*
  * The reads more than one screen shares. A screen that polls one of these
@@ -22,6 +22,12 @@ export const bootstrapStatusQuery = queryOptions({
 export const settingsQuery = queryOptions({
   queryKey: ["settings"],
   queryFn: ({ signal }) => readJson<Settings>("/settings", signal),
+});
+
+/** One managed database and its connections. */
+export const databaseQuery = (id: string) => queryOptions({
+  queryKey: ["databases", id],
+  queryFn: ({ signal }) => readJson<DatabaseDetail>(`/databases/${id}`, signal),
 });
 
 export const customImagesQuery = queryOptions({

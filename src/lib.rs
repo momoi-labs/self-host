@@ -71,6 +71,7 @@ struct AppState<S: StateStore> {
     metrics: metrics::Metrics,
     audit: Arc<audit::Journal>,
     tasks: Arc<tasks::Scheduler>,
+    volume_sizes: Arc<postgres::VolumeSizes>,
     /// `--audit-events-max-age`, when the daemon was started with it. Pins the
     /// retention over the Operator's setting (ADR-0027).
     audit_events_max_age_flag: Option<std::time::Duration>,
@@ -223,6 +224,7 @@ fn build_platform_with_native<S: StateStore>(
         dns_records: Arc::new(dns_records::Records::new(zone)),
         metrics,
         tasks: Arc::new(tasks::Scheduler::default()),
+        volume_sizes: Default::default(),
     };
 
     let authorization_routes = Router::new()
@@ -342,10 +344,7 @@ fn build_platform_with_native<S: StateStore>(
         .route("/apps/id/{id}/env/{key}", delete(unset_env_by_id::<S>))
         .route("/apps/{name}/logs", get(stream_logs::<S>))
         .route("/apps/id/{id}/logs", get(stream_logs_by_id::<S>))
-        .route(
-            "/apps/id/{id}/variable-names",
-            get(native_variable_names::<S>),
-        )
+        .route("/apps/id/{id}/variable-names", get(variable_names::<S>))
         .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
         .route("/apps/id/{id}/http-status", get(http_status::<S>))
         .route("/metrics", get(get_metrics::<S>))
@@ -2090,22 +2089,14 @@ async fn set_env_record<S: StateStore>(
     )
 }
 
-/// Configuration forms read names only. The explicit env endpoint remains
-/// the Operator's deliberate value reveal for API/CLI use.
-async fn native_variable_names<S: StateStore>(
+/// Forms and the Summary read names only, for every Runtime. The explicit
+/// env endpoint remains the Operator's deliberate value reveal.
+async fn variable_names<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    match apps::get_application(&state.store, &id).await {
-        Ok(app) if matches!(app.runtime, Runtime::Native(_)) => (),
-        Ok(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorReport::plain("Application Runtime is not native.")),
-            )
-                .into_response();
-        }
-        Err(error) => return deploy_error_response(error),
+    if let Err(error) = apps::get_application(&state.store, &id).await {
+        return deploy_error_response(error);
     }
     match state.store.get_all_env(&id).await {
         Ok(env) => Json(env.into_iter().map(|(key, _)| key).collect::<Vec<_>>()).into_response(),
@@ -3787,6 +3778,46 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[tokio::test]
+    async fn variable_names_list_a_container_application_without_its_values() {
+        let (app, store, _) = setup_app("secret-key").await;
+        store
+            .insert_application(&apps::ApplicationRecord {
+                id: "web".into(),
+                name: "web".into(),
+                hostname: String::new(),
+                aliases: vec![],
+                image: "nginx:alpine".into(),
+                status: apps::STATUS_RUNNING.into(),
+                source: "image".into(),
+                git: None,
+                git_build: None,
+                last_error: None,
+                compose: None,
+                web_service: None,
+                web_port: None,
+                web_target_port: None,
+                development: None,
+                runtime: Default::default(),
+                publication: Default::default(),
+                variable_delivery: VariableDelivery::Referenced,
+                route_rules: Vec::new(),
+                network_policy: Default::default(),
+            })
+            .await
+            .unwrap();
+        store.set_env("web", "API_KEY", "sk-secret").await.unwrap();
+        store.set_env("web", "LOG_LEVEL", "info").await.unwrap();
+
+        let response = send(&app, "/apps/id/web/variable-names", Some("secret-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("sk-secret"));
+        let mut names: Vec<String> = serde_json::from_slice(&body).unwrap();
+        names.sort();
+        assert_eq!(names, ["API_KEY", "LOG_LEVEL"]);
     }
 
     #[tokio::test]

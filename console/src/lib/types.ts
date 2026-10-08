@@ -47,6 +47,15 @@ export type Runtime = { kind: "container" } | ({ kind: "native" } & NativeDefini
  * Application has an empty hostname, no aliases and no route. */
 export type Publication = { kind: "web" } | { kind: "unpublished" };
 
+/** A route under a path of a hostname, to a loopback target. With
+ * `strip_prefix`, the target sees the path without the prefix. */
+export type RouteRule = {
+  hostname: string;
+  path_prefix: string;
+  target: string;
+  strip_prefix?: boolean;
+};
+
 /** How an Application's Variables reach a Compose project. */
 export type VariableDelivery = "broadcast" | "referenced";
 
@@ -92,6 +101,7 @@ export type App = {
   git?: GitSource;
   git_build?: GitBuild;
   aliases?: string[];
+  route_rules?: RouteRule[];
   restarts?: number | null;
   last_error?: Report | string | null;
   compose?: string;
@@ -106,6 +116,23 @@ export type App = {
 };
 
 export type HttpReadiness = "responding" | "error" | "unreachable" | "unknown";
+
+/** An Application connected to a managed database, with its own role and database. */
+export type DatabaseConnection = {
+  id: string; consumer_application_id: string; variable: string; database: string;
+  role: string; status: string; task_id: string | null; imported_objects: number | null;
+};
+
+/** A managed database as `GET /databases/{id}` reads it. Its connections are
+ * the only record of which Applications use it. */
+export type DatabaseDetail = {
+  major: number;
+  volume: string;
+  /** What the volume held when Docker last measured it; null when Docker did not say. */
+  volume_bytes?: number | null;
+  readiness: string;
+  connections: DatabaseConnection[];
+};
 
 /** A workload `/health` names because it should be up and is not. */
 export type FailingWorkload = { id: string; name: string; kind: "application" | "database" };

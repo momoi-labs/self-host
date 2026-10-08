@@ -8,6 +8,7 @@ import {
   Card,
   CardContent,
   FormField,
+  PasswordInput,
   Spinner,
   TerminalIcon,
   ThemeSelector,
@@ -43,7 +44,6 @@ function KeyHelp() {
 function Login() {
   const [theme, setTheme] = useTheme();
   const [key, setKey] = useState("");
-  const [visible, setVisible] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<LoginFailure | null>(null);
   const field = useRef<HTMLInputElement>(null);
@@ -99,21 +99,20 @@ function Login() {
             <CardContent>
               <form className="stack" onSubmit={unlock} noValidate aria-busy={pending}>
                 <FormField
-                  ref={field} label="API key" id="key" name="api_key" className="auth-key"
-                  type={visible ? "text" : "password"} placeholder="Paste your API key"
-                  autoComplete="current-password" autoCapitalize="none" autoCorrect="off"
-                  spellCheck={false} required autoFocus readOnly={pending} value={key}
+                  label="API key" id="key"
                   hint="Paste the key for this Host. You can reveal it to check the value."
                   error={error?.kind === "key" ? error.message : undefined}
-                  suffix={
-                    <Button type="button" size="sm" variant="ghost" aria-controls="key"
-                      aria-label={visible ? "Hide API key" : "Show API key"} aria-pressed={visible}
-                      onClick={() => setVisible((current) => !current)}>
-                      {visible ? "Hide" : "Show"}
-                    </Button>
-                  }
-                  onChange={(event) => { setKey(event.target.value); setError(null); }}
-                />
+                >
+                  <PasswordInput
+                    ref={field} id="key" name="api_key" placeholder="Paste your API key"
+                    required autoFocus readOnly={pending} value={key}
+                    labels={{
+                      showName: "Show API key", hideName: "Hide API key",
+                      shown: "Your API key is visible", hidden: "Your API key is hidden",
+                    }}
+                    onChange={(event) => { setKey(event.target.value); setError(null); }}
+                  />
+                </FormField>
                 {error?.kind === "host" ? (
                   <Alert variant="error">
                     <Icon name="alert" size="md" />

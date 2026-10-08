@@ -8,8 +8,9 @@ Do not apply the authenticated list, detail or create layout to this screen.
 ## Composition
 
 - Keep one API key field and one primary "Unlock console" action. Compose
-  Kiso's BrandMark, Card, CardContent, FormField, Button, Alert, Spinner and
-  ThemeSelector. Keep authentication outside the application shell.
+  Kiso's BrandMark, Card, CardContent, FormField, PasswordInput, Button,
+  Alert, Spinner and ThemeSelector. Keep authentication outside the
+  application shell.
 - At widths above 760px, the full-height help panel occupies half the page.
   Below that breakpoint, hide the panel and show the brand and server origin
   above the form. Keep key retrieval help in an expandable disclosure.
@@ -23,12 +24,13 @@ Do not apply the authenticated list, detail or create layout to this screen.
 
 ## Credential behavior
 
-- Mask the key by default. Use normal control typography while masked and
-  the standard-size monospaced serif font only while revealed.
-- The Show/Hide control is a button with `type="button"`, an accessible name,
-  `aria-controls` and an announced state. Toggling preserves the value.
-- Keep paste available. Set `autocomplete="current-password"` and disable
-  capitalization, correction and spellcheck, including while revealed.
+- Use Kiso's PasswordInput inside the FormField, with labels that name the
+  API key. It masks the key by default and reveals it in the monospace face
+  at the same size and width. Its Show/Hide button has an accessible name,
+  `aria-controls` and an announced state, and toggling preserves the value.
+- Keep paste available. PasswordInput already sets
+  `autocomplete="current-password"` and turns off capitalization,
+  correction and spellcheck, including while revealed.
 - Reject empty or malformed keys before sending a request. Keep the value on
   failure. Distinguish key rejection from service and connection failures,
   and give the Operator a useful next action without exposing exceptions.

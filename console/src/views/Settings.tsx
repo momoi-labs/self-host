@@ -3,13 +3,14 @@ import {
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
+  PaneGrid,
 } from "@momoi-labs/kiso-react";
 
 import { GitConnectionsSettings } from "../components/GitConnections.js";
-import { Masonry } from "../components/Masonry.js";
+import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { ApiKeys } from "./settings/ApiKeys.js";
 import { DnsSetup, YourHost } from "./settings/DnsSetup.js";
-import { General } from "./settings/General.js";
+import { ApplicationDefaults, AuditHistory } from "./settings/General.js";
 
 export type SettingsSection = "general" | "api-keys" | "dns-setup" | "git-connections";
 
@@ -19,15 +20,26 @@ export function isSettingsSection(value: string): value is SettingsSection {
   return (settingsSections as readonly string[]).includes(value);
 }
 
+/** The pane a section's link scrolls to. */
+const paneFor: Record<SettingsSection, string> = {
+  general: "audit-history",
+  "api-keys": "api-keys",
+  "dns-setup": "dns-setup",
+  "git-connections": "git-connections",
+};
+
 /**
- * Everything the Operator configures about the Platform itself, one card per
- * group, packed to fill the screen. The URL fragment names a section, so a
- * link scrolls to its card.
+ * Everything the Operator configures about the Platform itself, one pane per
+ * group, packed so a short pane does not wait for the tallest one beside it.
+ * The Operator can move and resize the panes, and this browser keeps the
+ * arrangement. The URL fragment names a section, so a link scrolls to its
+ * pane.
  */
 export function Settings({ section }: { section: SettingsSection }) {
+  const [layout, saveLayout] = useStoredLayout("settings");
   useEffect(() => {
     if (section === "general") return;
-    const card = document.getElementById(`settings-${section}`);
+    const card = document.querySelector<HTMLElement>(`[data-pane-id="${paneFor[section]}"]`);
     const grid = card?.parentElement;
     if (!card || !grid) return;
     // The cards load their data after this runs and the page grows under the
@@ -52,13 +64,14 @@ export function Settings({ section }: { section: SettingsSection }) {
         <PageHeaderTitle>Settings</PageHeaderTitle>
         <PageHeaderDescription>How the Platform runs, who can reach it, and how devices find it.</PageHeaderDescription>
       </PageHeader>
-      <Masonry>
-        <General />
-        <YourHost />
-        <ApiKeys />
-        <GitConnectionsSettings />
-        <DnsSetup />
-      </Masonry>
+      <PaneGrid aria-label="Settings" flow="masonry" defaultLayout={layout} onLayoutChange={saveLayout}>
+        <AuditHistory id="audit-history" size={6} />
+        <ApplicationDefaults id="applications" size={6} />
+        <YourHost id="your-host" size={6} />
+        <ApiKeys id="api-keys" size={12} />
+        <GitConnectionsSettings id="git-connections" size={12} />
+        <DnsSetup id="dns-setup" size={12} />
+      </PaneGrid>
     </div>
   );
 }

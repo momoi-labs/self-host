@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from "react";
 import {
-  Alert, AlertDescription, Button, Card, CardContent, CardDescription, CardHeader,
+  Alert, AlertDescription, Button,
   Dialog, DialogBody, DialogContent,
   DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField,
+  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField, GridPane,
   Search,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   StatusBadge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -163,7 +163,7 @@ export function GitConnectionSelector({ value, onChange, disabled }: {
   </>;
 }
 
-export function GitConnectionsSettings() {
+export function GitConnectionsSettings({ id, size }: { id: string; size?: number }) {
   const { connections, loading, error, refresh } = useGitConnections();
   const [query, setQuery] = useState("");
   const [dialog, setDialog] = useState<"new" | GitConnection | null>(null);
@@ -187,50 +187,40 @@ export function GitConnectionsSettings() {
     }
   }
 
-  return <Card id="settings-git-connections" data-size="wide" aria-labelledby="git-connections-heading">
-    <CardHeader>
-      <div className="between row-wrap">
-        <div>
-          <h2 className="t-h3" id="git-connections-heading">Git connections</h2>
-          <CardDescription>Saved access for importing and updating applications.</CardDescription>
-        </div>
-        <div className="row-wrap">
-          <Button size="sm" onClick={() => setSetup(true)}>Provider setup</Button>
-          <Button size="sm" variant="primary" onClick={() => setDialog("new")}>Connect Git</Button>
-        </div>
-      </div>
-    </CardHeader>
-    <CardContent>
-      {error ? <Alert variant="error"><AlertDescription>{error}</AlertDescription><Button size="sm" onClick={() => void refresh()}>Retry</Button></Alert> : null}
-      <div className="list-filters">
-        <Search aria-label="Search Git connections" placeholder="Search Git connections..." value={query} onChange={(event) => setQuery(event.target.value)} />
-        {query ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
-      </div>
-      <div className="table-wrap">
-        <div className="table-scroll"><Table>
-          <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
-          <TableBody>
-            {visible.map((connection) => <TableRow key={connection.id}>
-              <TableCell>{connection.name}</TableCell><TableCell>{connectionMethod(connection)}</TableCell>
-              <TableCell><StatusBadge tone={connection.status === "expired" ? "danger" : "success"}>{connection.status === "expired" ? "Reconnect required" : "Connected"}</StatusBadge></TableCell>
-              <TableCell className="col-tight"><Button size="sm" variant="ghost" onClick={() => setDialog(connection)}>Reconnect</Button><Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={() => { setActionError(null); setDisconnecting(connection); }}>Disconnect</Button></TableCell>
-            </TableRow>)}
-            {!visible.length ? <TableRow><TableCell colSpan={4}>
-              {loading ? "Loading connections..." : error ? "Could not load connections." : connections.length ? "No connections match your filters." : <EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories. Public repositories can also use a URL.</EmptyStateDescription></EmptyState>}
-            </TableCell></TableRow> : null}
-          </TableBody>
-        </Table></div>
-        <p className="table-footer"><span>{visible.length} of {connections.length} connections</span></p>
-      </div>
-      {dialog ? <GitConnectionDialog open connection={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onSaved={() => {}} /> : null}
-      {setup ? <GitProviderSetup open onClose={() => setSetup(false)} /> : null}
-      <Dialog open={Boolean(disconnecting)} onOpenChange={(open) => { if (!open && !busy) setDisconnecting(null); }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Disconnect {disconnecting?.name}?</DialogTitle><DialogDescription>Running applications stay in place. Their next private Git build needs another connection. Saved credentials will be removed from this Host.</DialogDescription></DialogHeader>
-          {actionError ? <DialogBody><Alert variant="error"><AlertDescription>{actionError}</AlertDescription></Alert></DialogBody> : null}
-          <DialogFooter><Button size="sm" disabled={busy} onClick={() => setDisconnecting(null)}>Cancel</Button><Button size="sm" variant="destructive" disabled={busy} onClick={() => void disconnect()}>{busy ? "Disconnecting..." : "Disconnect"}</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </CardContent>
-  </Card>;
+  return <GridPane id={id} size={size} title="Git connections" actions={<>
+    <Button size="sm" onClick={() => setSetup(true)}>Provider setup</Button>
+    <Button size="sm" variant="primary" onClick={() => setDialog("new")}>Connect Git</Button>
+  </>}>
+    <p className="muted t-label">Saved access for importing and updating applications.</p>
+    {error ? <Alert variant="error"><AlertDescription>{error}</AlertDescription><Button size="sm" onClick={() => void refresh()}>Retry</Button></Alert> : null}
+    <div className="list-filters">
+      <Search aria-label="Search Git connections" placeholder="Search Git connections..." value={query} onChange={(event) => setQuery(event.target.value)} />
+      {query ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
+    </div>
+    <div className="table-wrap">
+      <div className="table-scroll"><Table>
+        <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
+        <TableBody>
+          {visible.map((connection) => <TableRow key={connection.id}>
+            <TableCell>{connection.name}</TableCell><TableCell>{connectionMethod(connection)}</TableCell>
+            <TableCell><StatusBadge tone={connection.status === "expired" ? "danger" : "success"}>{connection.status === "expired" ? "Reconnect required" : "Connected"}</StatusBadge></TableCell>
+            <TableCell className="col-tight"><Button size="sm" variant="ghost" onClick={() => setDialog(connection)}>Reconnect</Button><Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={() => { setActionError(null); setDisconnecting(connection); }}>Disconnect</Button></TableCell>
+          </TableRow>)}
+          {!visible.length ? <TableRow><TableCell colSpan={4}>
+            {loading ? "Loading connections..." : error ? "Could not load connections." : connections.length ? "No connections match your filters." : <EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories. Public repositories can also use a URL.</EmptyStateDescription></EmptyState>}
+          </TableCell></TableRow> : null}
+        </TableBody>
+      </Table></div>
+      <p className="table-footer"><span>{visible.length} of {connections.length} connections</span></p>
+    </div>
+    {dialog ? <GitConnectionDialog open connection={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onSaved={() => {}} /> : null}
+    {setup ? <GitProviderSetup open onClose={() => setSetup(false)} /> : null}
+    <Dialog open={Boolean(disconnecting)} onOpenChange={(open) => { if (!open && !busy) setDisconnecting(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Disconnect {disconnecting?.name}?</DialogTitle><DialogDescription>Running applications stay in place. Their next private Git build needs another connection. Saved credentials will be removed from this Host.</DialogDescription></DialogHeader>
+        {actionError ? <DialogBody><Alert variant="error"><AlertDescription>{actionError}</AlertDescription></Alert></DialogBody> : null}
+        <DialogFooter><Button size="sm" disabled={busy} onClick={() => setDisconnecting(null)}>Cancel</Button><Button size="sm" variant="destructive" disabled={busy} onClick={() => void disconnect()}>{busy ? "Disconnecting..." : "Disconnect"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </GridPane>;
 }

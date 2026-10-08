@@ -36,6 +36,7 @@ export type Destination = {
  */
 export function Shell({
   crumb,
+  parent,
   dnsSuffix,
   apps,
   environments,
@@ -58,6 +59,8 @@ export function Shell({
   children,
 }: {
   crumb: string;
+  /** The list the current screen belongs to, linked between Console and it. */
+  parent?: Destination & { label: string };
   dnsSuffix: string;
   apps: App[];
   environments: Environment[];
@@ -162,6 +165,23 @@ export function Shell({
                 <BreadcrumbLink href="/console/">Console</BreadcrumbLink>
               </BreadcrumbItem>
               <BreadcrumbSeparator />
+              {parent ? (
+                <>
+                  <BreadcrumbItem>
+                    <BreadcrumbLink
+                      href={parent.href}
+                      onClick={(event) => {
+                        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                        event.preventDefault();
+                        navigate(parent);
+                      }}
+                    >
+                      {parent.label}
+                    </BreadcrumbLink>
+                  </BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                </>
+              ) : null}
               <BreadcrumbItem>
                 <BreadcrumbPage>{crumb}</BreadcrumbPage>
               </BreadcrumbItem>

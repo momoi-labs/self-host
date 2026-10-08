@@ -64,9 +64,16 @@ export function App() {
                   ? "Settings"
                   : "Overview";
 
+  // A database is reached from its list, so the breadcrumb leads back there.
+  const parent =
+    view.view === "database-new" || app?.managed_postgres
+      ? { label: "Databases", href: "/console/#databases", active: false, onClick: () => go({ view: "databases", id: null }) }
+      : undefined;
+
   return (
     <Shell
       crumb={crumb}
+      parent={parent}
       dnsSuffix={dnsSuffix}
       apps={apps}
       environments={environments}
@@ -176,26 +183,28 @@ export function App() {
             }
           />
         ) : app?.managed_postgres ? (
-          <ManagedPostgres key={app.id} app={app} apps={apps} metrics={metrics} reload={reload} onRemoved={() => go({ view: "databases", id: null })} />
+          <ManagedPostgres key={app.id} app={app} apps={apps} metrics={metrics} reload={reload} onRemoved={() => go({ view: "databases", id: null })} onOpenApp={(id) => go({ view: "app", id })} />
         ) : app ? (
           <AppDetail
             key={app.id}
             app={app}
+            apps={apps}
             formRevision={signature(app)}
             dnsSuffix={dnsSuffix}
             metrics={metrics}
             reload={reload}
             onRemoved={() => go({ view: "overview", id: null })}
+            onOpenApp={(id) => go({ view: "app", id })}
           />
         ) : (
           <Overview
             apps={apps}
             environments={environments}
-            dnsSuffix={dnsSuffix}
             metrics={metrics}
             onOpenApp={(id) => go({ view: "app", id })}
             onOpenEnvironment={(id) => go({ view: "environments", id })}
             onDeploy={() => go({ view: "new", id: null })}
+            onNewDatabase={() => go({ view: "database-new", id: null })}
             onNewMachine={() => go({ view: "environment-new", id: null })}
             onOpenDatabases={() => go({ view: "databases", id: null })}
           />

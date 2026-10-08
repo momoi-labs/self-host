@@ -12,13 +12,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
   Form,
   FormActions,
   FormField,
+  GridPane,
   Input,
   Label,
   Select,
@@ -54,17 +51,18 @@ function join(amount: string, unit: Unit): string {
   return amount.trim() ? `${amount.trim()}${unit}` : "";
 }
 
+/** Where a settings pane sits on the grid: its id, and its width out of twelve. */
+export type PaneProps = { id: string; size?: number };
+
 /**
- * The Platform's own settings, one card per group. Precedence is
- * PostgreSQL's: the daemon flag outranks what is saved here, and what is
- * saved here outranks the default.
+ * How long the Events page keeps what happened. Precedence is PostgreSQL's:
+ * the daemon flag outranks what is saved here, and what is saved here
+ * outranks the default.
  *
- * The audit history is a form: Save opens a confirmation that lists every
- * setting about to move, from what to what, because a shorter retention
- * deletes events. A switch applies as soon as it is flipped.
+ * It is a form: Save opens a confirmation that lists every setting about to
+ * move, from what to what, because a shorter retention deletes events.
  */
-export function General() {
-  const queryClient = useQueryClient();
+export function AuditHistory({ id, size }: PaneProps) {
   const { data: settings, refetch } = useQuery(settingsQuery);
   const [amount, setAmount] = useState("");
   const [unit, setUnit] = useState<Unit>("d");
@@ -78,8 +76,6 @@ export function General() {
   const [saving, setSaving] = useState(false);
   /** The write waiting for confirmation, or null. */
   const [pending, setPending] = useState<{ retention: string | null; changes: Change[] } | null>(null);
-  const [toggling, setToggling] = useState(false);
-  const [toggleError, setToggleError] = useState<string | null>(null);
 
   // The field starts from what is saved, once, so a later read never undoes
   // an edit in progress.
@@ -127,23 +123,6 @@ export function General() {
     }
   }
 
-  async function togglePull(pull: boolean) {
-    setToggling(true);
-    setToggleError(null);
-    try {
-      const res = await api("/settings", {
-        method: "PUT",
-        body: JSON.stringify({ pullNewerImages: pull }),
-      });
-      if (!res.ok) throw new Error((await failureOf(res)).error);
-      queryClient.setQueryData(settingsQuery.queryKey, (await res.json()) as Settings);
-    } catch (cause) {
-      setToggleError((cause as Error).message);
-    } finally {
-      setToggling(false);
-    }
-  }
-
   const message = pinned ? (
     <>
       <strong>Set by the daemon flag.</strong> Remove <code>--audit-events-max-age</code> from the
@@ -159,100 +138,65 @@ export function General() {
   );
 
   return (
-    <>
-      <Card id="settings-general" aria-labelledby="audit-history-heading">
-        <CardHeader>
-          <h2 className="t-h3" id="audit-history-heading">Audit history</h2>
-          <CardDescription>How long the Events page keeps what happened.</CardDescription>
-        </CardHeader>
-        <Form id="general-settings" onSubmit={(event) => propose(value.trim() || null, event)}>
-          <div className="form-body">
-            <FormField
-              id="audit-events-max-age"
-              label="Keep audit events for"
-              hint="At least one day. Events older than this are deleted on the next change to the history, so a shorter value deletes them as soon as it is saved."
-            >
-              <div className="settings-duration">
-                <Input
-                  id="audit-events-max-age"
-                  type="number"
-                  min={1}
-                  inputMode="numeric"
-                  placeholder={pinned ? split(retention?.effective ?? "").amount : "30"}
-                  value={pinned ? split(retention?.effective ?? "").amount : amount}
-                  disabled={pinned || settings == null}
-                  onChange={(event) => setAmount(event.target.value)}
-                />
-                <Select
-                  value={pinned ? split(retention?.effective ?? "").unit : unit}
-                  disabled={pinned || settings == null}
-                  onValueChange={(next) => setUnit(next as Unit)}
-                >
-                  <SelectTrigger aria-label="Unit"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {units.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                {/* Each setting finds its own way back; the footer only saves
-                    the form as a whole. */}
-                {saved && !pinned ? (
-                  <Button size="sm" variant="ghost" type="button" disabled={saving} onClick={() => propose(null)}>
-                    Reset to default ({DEFAULT_RETENTION})
-                  </Button>
-                ) : null}
-              </div>
-            </FormField>
-
-            {error ? (
-              <Alert variant="error">
-                <Icon name="alert" size="md" />
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            ) : null}
-          </div>
-
-          <FormActions tone={dirty && !pinned ? "warning" : "neutral"} message={message}>
-            {dirty && !pinned ? (
-              <Button size="sm" type="button" onClick={() => setValue(saved)}>
-                Discard
-              </Button>
-            ) : null}
-            <Button size="sm" variant="primary" type="submit" disabled={pinned || saving || !dirty}>
-              Save
-            </Button>
-          </FormActions>
-        </Form>
-      </Card>
-
-      <Card aria-labelledby="applications-heading">
-        <CardHeader>
-          <h2 className="t-h3" id="applications-heading">Applications</h2>
-          <CardDescription>What a restart or a redeploy does unless you choose otherwise.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="settings-row">
-            <div>
-              <Label htmlFor="pull-newer-images">Pull newer images</Label>
-              <p className="muted t-label">
-                Restart and Save and redeploy pull each image from its registry first. Both start
-                with this choice, and you can change it each time.
-              </p>
+    <GridPane id={id} size={size} title="Audit history">
+      <Form id="general-settings" onSubmit={(event) => propose(value.trim() || null, event)}>
+        <div className="form-body">
+          <p className="muted t-label">How long the Events page keeps what happened.</p>
+          <FormField
+            id="audit-events-max-age"
+            label="Keep audit events for"
+            hint="At least one day. Events older than this are deleted on the next change to the history, so a shorter value deletes them as soon as it is saved."
+          >
+            <div className="settings-duration">
+              <Input
+                id="audit-events-max-age"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                placeholder={pinned ? split(retention?.effective ?? "").amount : "30"}
+                value={pinned ? split(retention?.effective ?? "").amount : amount}
+                disabled={pinned || settings == null}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+              <Select
+                value={pinned ? split(retention?.effective ?? "").unit : unit}
+                disabled={pinned || settings == null}
+                onValueChange={(next) => setUnit(next as Unit)}
+              >
+                <SelectTrigger aria-label="Unit"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {units.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {/* Each setting finds its own way back; the footer only saves
+                  the form as a whole. */}
+              {saved && !pinned ? (
+                <Button size="sm" variant="ghost" type="button" disabled={saving} onClick={() => propose(null)}>
+                  Reset to default ({DEFAULT_RETENTION})
+                </Button>
+              ) : null}
             </div>
-            <Switch
-              id="pull-newer-images"
-              checked={settings?.pullNewerImages.effective ?? false}
-              disabled={settings == null || toggling}
-              onCheckedChange={(checked) => void togglePull(checked)}
-            />
-          </div>
-          {toggleError ? (
+          </FormField>
+
+          {error ? (
             <Alert variant="error">
               <Icon name="alert" size="md" />
-              <AlertDescription>{toggleError}</AlertDescription>
+              <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
-        </CardContent>
-      </Card>
+        </div>
+
+        <FormActions tone={dirty && !pinned ? "warning" : "neutral"} message={message}>
+          {dirty && !pinned ? (
+            <Button size="sm" type="button" onClick={() => setValue(saved)}>
+              Discard
+            </Button>
+          ) : null}
+          <Button size="sm" variant="primary" type="submit" disabled={pinned || saving || !dirty}>
+            Save
+          </Button>
+        </FormActions>
+      </Form>
 
       <AlertDialog open={pending !== null} onOpenChange={(open) => { if (!open) setPending(null); }}>
         <AlertDialogContent>
@@ -273,6 +217,58 @@ export function General() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </GridPane>
+  );
+}
+
+/** What a restart or a redeploy does unless the Operator chooses otherwise. A switch applies as soon as it is flipped. */
+export function ApplicationDefaults({ id, size }: PaneProps) {
+  const queryClient = useQueryClient();
+  const { data: settings } = useQuery(settingsQuery);
+  const [toggling, setToggling] = useState(false);
+  const [toggleError, setToggleError] = useState<string | null>(null);
+
+  async function togglePull(pull: boolean) {
+    setToggling(true);
+    setToggleError(null);
+    try {
+      const res = await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ pullNewerImages: pull }),
+      });
+      if (!res.ok) throw new Error((await failureOf(res)).error);
+      queryClient.setQueryData(settingsQuery.queryKey, (await res.json()) as Settings);
+    } catch (cause) {
+      setToggleError((cause as Error).message);
+    } finally {
+      setToggling(false);
+    }
+  }
+
+  return (
+    <GridPane id={id} size={size} title="Applications">
+      <p className="muted t-label">What a restart or a redeploy does unless you choose otherwise.</p>
+      <div className="settings-row">
+        <div>
+          <Label htmlFor="pull-newer-images">Pull newer images</Label>
+          <p className="muted t-label">
+            Restart and Save and redeploy pull each image from its registry first. Both start
+            with this choice, and you can change it each time.
+          </p>
+        </div>
+        <Switch
+          id="pull-newer-images"
+          checked={settings?.pullNewerImages.effective ?? false}
+          disabled={settings == null || toggling}
+          onCheckedChange={(checked) => void togglePull(checked)}
+        />
+      </div>
+      {toggleError ? (
+        <Alert variant="error">
+          <Icon name="alert" size="md" />
+          <AlertDescription>{toggleError}</AlertDescription>
+        </Alert>
+      ) : null}
+    </GridPane>
   );
 }
