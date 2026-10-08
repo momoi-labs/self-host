@@ -909,6 +909,9 @@ pub async fn reconcile(
     Ok(())
 }
 
+/// The one service a native Application has, as its service states name it.
+pub const SERVICE: &str = "main";
+
 pub async fn service_states(
     runtime: &dyn NativeRuntime,
     record: &ApplicationRecord,
@@ -917,7 +920,7 @@ pub async fn service_states(
         Ok(status) => status,
         Err(error) => {
             return vec![apps::ServiceState {
-                service: "main".into(),
+                service: SERVICE.into(),
                 container: String::new(),
                 state: "unknown".into(),
                 exit_code: None,
@@ -927,7 +930,7 @@ pub async fn service_states(
         }
     };
     vec![apps::ServiceState {
-        service: "main".into(),
+        service: SERVICE.into(),
         container: String::new(),
         state: if status.running { "running" } else { "exited" }.into(),
         exit_code: None,
