@@ -47,12 +47,13 @@ export type Runtime = { kind: "container" } | ({ kind: "native" } & NativeDefini
  * Application has an empty hostname, no aliases and no route. */
 export type Publication = { kind: "web" } | { kind: "unpublished" };
 
-/** A route under a path of a hostname, to a loopback target. With
- * `strip_prefix`, the target sees the path without the prefix. */
+/** A route under a path of a hostname, to a loopback target or, without one,
+ * to the Application's Web Target. With `strip_prefix`, the target sees the
+ * path without the prefix. */
 export type RouteRule = {
   hostname: string;
   path_prefix: string;
-  target: string;
+  target?: string;
   strip_prefix?: boolean;
 };
 

@@ -150,7 +150,7 @@ impl RouteTable {
                 key,
                 OwnedRoute {
                     owner: id.to_string(),
-                    target: Some(rule.target),
+                    target: rule.target.or(target),
                     strip_prefix: rule.strip_prefix,
                 },
             );
@@ -769,7 +769,7 @@ mod tests {
         RouteRule {
             hostname: "blog.example.invalid".into(),
             path_prefix: prefix.into(),
-            target: addr(port),
+            target: Some(addr(port)),
             strip_prefix: true,
         }
     }
@@ -803,6 +803,28 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn a_rule_without_a_target_follows_its_owners_web_target() {
+        let table = RouteTable::new();
+        let follows = RouteRule {
+            target: None,
+            ..rule("/app", 2)
+        };
+        table
+            .publish_rules(
+                "a",
+                &["blog.example.invalid".into()],
+                Some(addr(1)),
+                &[follows],
+            )
+            .unwrap();
+        let route = table.route_for("blog.example.invalid", "/app/x").unwrap();
+        assert_eq!(
+            (route.path_prefix.as_str(), route.target),
+            ("/app", Some(addr(1)))
+        );
     }
 
     #[test]
@@ -1424,7 +1446,7 @@ mod integration {
         RouteRule {
             hostname: host.into(),
             path_prefix: prefix.into(),
-            target,
+            target: Some(target),
             strip_prefix: strip,
         }
     }

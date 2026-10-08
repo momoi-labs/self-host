@@ -129,7 +129,10 @@ pub(crate) fn validate_rule(rule: &RouteRule) -> Result<(), RouteError> {
             "hostname must contain valid DNS labels".into(),
         ));
     }
-    if !rule.target.ip().is_loopback() || rule.target.port() == 0 {
+    if rule
+        .target
+        .is_some_and(|target| !target.ip().is_loopback() || target.port() == 0)
+    {
         return Err(RouteError::Invalid(
             "target must be a loopback address with a nonzero port".into(),
         ));
@@ -449,7 +452,7 @@ mod tests {
         RouteRule {
             hostname: hostname.into(),
             path_prefix: prefix.into(),
-            target: SocketAddr::from(([127, 0, 0, 1], port)),
+            target: Some(SocketAddr::from(([127, 0, 0, 1], port))),
             strip_prefix: true,
         }
     }
@@ -484,7 +487,7 @@ mod tests {
         }
         for target in ["192.0.2.1:8080", "0.0.0.0:8080", "127.0.0.1:0", "[::]:8080"] {
             record.route_rules = vec![RouteRule {
-                target: target.parse().unwrap(),
+                target: Some(target.parse().unwrap()),
                 ..good.clone()
             }];
             assert!(
@@ -509,7 +512,7 @@ mod tests {
         }
         for target in ["127.0.0.1:8080", "[::1]:8080"] {
             record.route_rules = vec![RouteRule {
-                target: target.parse().unwrap(),
+                target: Some(target.parse().unwrap()),
                 ..good.clone()
             }];
             validate_rules(&record, &[], "admin.example.invalid").unwrap();

@@ -134,7 +134,8 @@ Errors keep the `{error, caused_by}` shape of ADR-0010.
 ## Path rules and private connections
 
 `route_rules` contains `{hostname, path_prefix, target, strip_prefix}` objects.
-Targets are loopback socket addresses. Segment matching chooses the longest
+Targets are loopback socket addresses; a rule without one follows its
+Application's Web Target. Segment matching chooses the longest
 prefix; `/app` does not match `/apple`. Automatic Hostname and alias routes
 keep prefix `/`. An explicit root replaces its owner's automatic root.
 Different Applications may own disjoint paths on the same Hostname. Removing
@@ -143,7 +144,9 @@ one keeps the other's rules and derived DNS answer.
 An omitted list preserves rules on update; `[]` removes explicit rules.
 Invalid rules return `400`; duplicate keys return `409`. The management
 Hostname and certificate challenge subtree are reserved. A route-only update
-with `pull: false` takes effect without Docker work. See [route rules](routing.md)
+with `pull: false` takes effect without Docker work, and
+`PUT /apps/id/{id}/routes` does the same for every kind of Application,
+Git included. See [route rules](routing.md)
 for prefix behavior, WebSockets and the W2 challenge-handler boundary.
 
 `network_policy` preserves `shared` on old records. New Applications use

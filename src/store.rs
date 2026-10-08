@@ -110,7 +110,10 @@ pub enum Publication {
 pub struct RouteRule {
     pub hostname: String,
     pub path_prefix: String,
-    pub target: std::net::SocketAddr,
+    /// Where the rule sends requests. Unset, it follows the owner's Web
+    /// Target, so a redeploy that moves the Host port keeps the rule working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<std::net::SocketAddr>,
     #[serde(default)]
     pub strip_prefix: bool,
 }

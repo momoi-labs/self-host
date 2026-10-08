@@ -201,6 +201,12 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .dns-instructions > section + section { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
 .dns-instructions p { max-width: 65ch; }
 
+/* A route reads as one address: the hostname, then its path in a quieter tone. */
+.route-path { color: var(--color-muted-foreground); }
+.route-app { display: inline-flex; align-items: center; gap: var(--spacing-xs); }
+/* What the route dialog is about to save, from the address to where it lands. */
+.route-preview { margin: 0; padding: var(--spacing-sm) var(--spacing-md); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+
 /* "New application" opens on what the Application is made from. Each choice
    in kiso's DetailSelect explains its run, one framed pictogram per step. */
 .definition-picker { max-width: 760px; }
