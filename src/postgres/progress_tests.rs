@@ -239,6 +239,50 @@ async fn failures_end_at_the_actual_stage_without_recording_docker_credentials()
 }
 
 #[tokio::test]
+async fn a_failed_image_stage_names_its_cause_without_docker_output() {
+    for (docker, expected) in [
+        (
+            FakeDocker {
+                unreachable: Some(
+                    "Docker daemon is not running. Start Docker and try again.".into(),
+                ),
+                ..FakeDocker::failing_pull("rendered password admin-fixture-private")
+            },
+            "Docker daemon is not running. Start Docker and try again.",
+        ),
+        (
+            FakeDocker::failing_pull("rendered password admin-fixture-private"),
+            "Docker could not pull postgres:17-bookworm. Run 'docker pull postgres:17-bookworm' on the Host to see why, then retry",
+        ),
+    ] {
+        let docker = Arc::new(test_runtime::PausedRemoval {
+            inner: docker,
+            postgres_ready: true,
+            ..Default::default()
+        });
+        let state = fixture(docker).await;
+        let event = operation(
+            &state,
+            Operation::Provision {
+                id: "provider".into(),
+                recreate: false,
+            },
+        )
+        .await;
+        let stage = event.progress.as_ref().unwrap().stages.last().unwrap();
+        assert_eq!(stage.error.as_ref().unwrap().error, expected);
+        let app = state
+            .store
+            .get_application("provider")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(app.last_error.unwrap().error, expected);
+        private_output(&event);
+    }
+}
+
+#[tokio::test]
 async fn connect_and_revoke_record_parent_stages_and_separate_consumer_work() {
     let docker = Arc::new(test_runtime::PausedRemoval {
         postgres_ready: true,
