@@ -1120,17 +1120,20 @@ async fn http_readiness(
     app: &apps::ApplicationRecord,
     services: &[apps::ServiceState],
 ) -> HttpReadiness {
-    let target_service = app
-        .web_service
-        .clone()
-        .or_else(|| {
-            app.compose
-                .as_deref()
-                .and_then(|compose| compose_app::ComposeDefinition::parse(compose).ok())
-                .and_then(|definition| definition.web_target(None, None).ok())
-                .map(|target| target.service)
-        })
-        .unwrap_or_else(|| "app".into());
+    let target_service = if matches!(app.runtime, Runtime::Native(_)) {
+        native::lifecycle::SERVICE.into()
+    } else {
+        app.web_service
+            .clone()
+            .or_else(|| {
+                app.compose
+                    .as_deref()
+                    .and_then(|compose| compose_app::ComposeDefinition::parse(compose).ok())
+                    .and_then(|definition| definition.web_target(None, None).ok())
+                    .map(|target| target.service)
+            })
+            .unwrap_or_else(|| "app".into())
+    };
     if app.status != apps::STATUS_RUNNING
         || app.web_target_port.is_none()
         || services
@@ -1229,6 +1232,31 @@ mod http_readiness_tests {
         sidecar.state = "exited".into();
         assert_eq!(
             http_readiness(&record, &[web, sidecar]).await,
+            HttpReadiness::Responding
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_web_target_is_probed_through_its_main_service() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let mut record = app(port);
+        record.source = apps::SOURCE_NATIVE.into();
+        record.runtime = Runtime::Native(
+            serde_json::from_value(serde_json::json!({"command": ["serve"], "port": port}))
+                .unwrap(),
+        );
+        let mut main = service();
+        main.service = native::lifecycle::SERVICE.into();
+        assert_eq!(
+            http_readiness(&record, &[main]).await,
             HttpReadiness::Responding
         );
     }
