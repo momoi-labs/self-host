@@ -132,11 +132,16 @@ pub enum Error {
     Missing,
     Store(StoreError),
     Runtime(String),
+    /// Docker could not do what a step needed, said in the Platform's words.
+    /// Unlike `Runtime`, it carries no Docker output, so a stage records it.
+    Unavailable(String),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(s) | Self::Conflict(s) | Self::Runtime(s) => f.write_str(s),
+            Self::Invalid(s) | Self::Conflict(s) | Self::Runtime(s) | Self::Unavailable(s) => {
+                f.write_str(s)
+            }
             Self::Missing => f.write_str("Managed database or connection not found"),
             Self::Store(e) => e.fmt(f),
         }
@@ -348,20 +353,24 @@ async fn ensure_image<S: StateStore>(state: &AppState<S>, image: &str) -> Result
         "Preparing PostgreSQL image",
         "PostgreSQL image is available on the Host.",
         async {
-            let present = state
-                .docker
-                .image_id(image)
-                .await
-                .map_err(|e| Error::Runtime(e.to_string()))?
-                .is_some();
-            if !present {
-                state
-                    .docker
-                    .pull_image(image)
-                    .await
-                    .map_err(|e| Error::Runtime(e.to_string()))?;
+            let prepared = async {
+                if state.docker.image_id(image).await?.is_none() {
+                    state.docker.pull_image(image).await?;
+                }
+                Ok::<_, crate::docker::DockerError>(())
             }
-            Ok(())
+            .await;
+            if prepared.is_ok() {
+                return Ok(());
+            }
+            // Docker's answer is never recorded (see `progress`), so the
+            // failure names its cause in the Platform's words instead.
+            Err(Error::Unavailable(match state.docker.ping().await {
+                Err(crate::docker::DockerError::Unavailable(reason)) => reason,
+                _ => format!(
+                    "Docker could not pull {image}. Run 'docker pull {image}' on the Host to see why, then retry"
+                ),
+            }))
         },
     )
     .await
