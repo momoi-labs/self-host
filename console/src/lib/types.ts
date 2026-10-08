@@ -107,6 +107,16 @@ export type App = {
 
 export type HttpReadiness = "responding" | "error" | "unreachable" | "unknown";
 
+/** A workload `/health` names because it should be up and is not. */
+export type FailingWorkload = { id: string; name: string; kind: "application" | "database" };
+
+/** What `/health` says: the daemon answers, and whether every workload is up. */
+export type Health = {
+  status: "ok" | "degraded";
+  version?: string;
+  failing?: FailingWorkload[];
+};
+
 export type DevelopmentApplication = {
   image_id: string;
   tag: string;

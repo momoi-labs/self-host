@@ -20,7 +20,7 @@ import {
 import { logout } from "../lib/api.js";
 import { statusTone } from "../lib/status.js";
 import { useTheme } from "../lib/theme.js";
-import type { App, Environment } from "../lib/types.js";
+import type { App, Environment, FailingWorkload } from "../lib/types.js";
 import { CreateResource } from "./CreateResource.js";
 import { Icon } from "./Icon.js";
 
@@ -40,6 +40,9 @@ export function Shell({
   apps,
   environments,
   healthy,
+  degraded = false,
+  failing = [],
+  onOpenFailing,
   version,
   overview,
   deploy,
@@ -59,6 +62,10 @@ export function Shell({
   apps: App[];
   environments: Environment[];
   healthy: boolean;
+  /** The daemon answers but a workload is down; the line names it and opens it. */
+  degraded?: boolean;
+  failing?: FailingWorkload[];
+  onOpenFailing?: (id: string) => void;
   version: string | null;
   overview: Destination;
   deploy: Destination;
@@ -162,21 +169,40 @@ export function Shell({
           </Breadcrumb>
           <span className="grow" />
           <span className="row t-label">
-            <span
-              className="health-link"
-              title="The daemon answering on this Host"
-            >
-              <Dot variant={healthy ? "success" : "neutral"} />
-              <span className="muted">
-                {healthy ? "Healthy" : "Checking health…"}
+            {degraded ? (
+              <button
+                type="button"
+                className="health-link"
+                title={failing.length ? `The daemon answers, but ${failedLabel(failing).toLowerCase()}. Open it.` : "The daemon answers, but some workloads are down."}
+                disabled={!failing.length || !onOpenFailing}
+                onClick={() => { if (failing[0]) onOpenFailing?.(failing[0].id); }}
+              >
+                <Dot variant="warning" pulse />
+                <span>{failedLabel(failing)}</span>
+                {version ? (
+                  <>
+                    <span className="muted" aria-hidden="true">·</span>
+                    <span className="muted mono">v{version}</span>
+                  </>
+                ) : null}
+              </button>
+            ) : (
+              <span
+                className="health-link"
+                title="The daemon answering on this Host"
+              >
+                <Dot variant={healthy ? "success" : "neutral"} />
+                <span className="muted">
+                  {healthy ? "Healthy" : "Checking health…"}
+                </span>
+                {version ? (
+                  <>
+                    <span className="muted" aria-hidden="true">·</span>
+                    <span className="muted mono">v{version}</span>
+                  </>
+                ) : null}
               </span>
-              {version ? (
-                <>
-                  <span className="muted" aria-hidden="true">·</span>
-                  <span className="muted mono">v{version}</span>
-                </>
-              ) : null}
-            </span>
+            )}
           </span>
         </>
       }
@@ -184,6 +210,17 @@ export function Shell({
       {children}
     </ApplicationShell>
   );
+}
+
+/** "1 database failed", "2 applications and 1 database failed". */
+function failedLabel(failing: FailingWorkload[]): string {
+  const applications = failing.filter((workload) => workload.kind === "application").length;
+  const databases = failing.filter((workload) => workload.kind === "database").length;
+  const parts = [
+    applications ? `${applications} ${applications === 1 ? "application" : "applications"}` : null,
+    databases ? `${databases} ${databases === 1 ? "database" : "databases"}` : null,
+  ].filter(Boolean);
+  return parts.length ? `${parts.join(" and ")} failed` : "Degraded";
 }
 
 /** Resource groups disappear entirely until they have something to navigate to. */

@@ -47,7 +47,10 @@
 .setup-command { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* The health indicator doubles as the way to show platform services. */
-.health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); padding: 0; font: inherit; color: inherit; }
+.health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); padding: 0; border: 0; background: none; font: inherit; color: inherit; }
+/* Degraded, the line is the way to what failed. */
+button.health-link:not(:disabled) { cursor: pointer; }
+button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: underline; text-underline-offset: 3px; }
 
 /* The cause chain under a failure (ADR-0010). Numbered, because the order is
    the point: each line is one layer further from the Platform and closer to

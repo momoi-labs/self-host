@@ -19,7 +19,7 @@ import { Environments } from "./views/Environments.js";
 import { Settings } from "./views/Settings.js";
 
 export function App() {
-  const { apps, dnsSuffix, healthy, version, ready, reload } = usePlatform();
+  const { apps, dnsSuffix, healthy, degraded, failing, version, ready, reload } = usePlatform();
   const { environments } = useEnvironments();
   const metrics = useMetrics();
   const [view, go] = useView();
@@ -71,6 +71,9 @@ export function App() {
       apps={apps}
       environments={environments}
       healthy={healthy}
+      degraded={degraded}
+      failing={failing}
+      onOpenFailing={(id) => go({ view: "app", id })}
       version={version}
       overview={{
         href: "/console/",
