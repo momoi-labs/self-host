@@ -82,7 +82,7 @@ function Login() {
               Unlock
             </Button>
             <p className="t-metadata muted">
-              Run <code>self-host serve</code> to get your API key.
+              Run <code>self-host init --show-key</code> on the Host to print your API key.
             </p>
           </CardContent>
         </form>
@@ -92,8 +92,13 @@ function Login() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <Login />
-  </StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+
+// Throwaway variants on this login entry. Vite removes this branch from builds.
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("variant")) {
+  void import("./login-prototype.js").then(({ LoginPrototype }) => {
+    root.render(<StrictMode><LoginPrototype /></StrictMode>);
+  });
+} else {
+  root.render(<StrictMode><Login /></StrictMode>);
+}

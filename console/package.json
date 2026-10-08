@@ -5,6 +5,7 @@
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "dev": "vite",
+    "prototype:login": "vite --host 127.0.0.1 --port 5178 --strictPort",
     "build": "tsc --noEmit && vite build && npm run keep",
     "typecheck": "tsc --noEmit",
     "keep": "node -e \"require('node:fs').writeFileSync('dist/.gitkeep','')\""
