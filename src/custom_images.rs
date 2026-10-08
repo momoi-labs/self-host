@@ -1,6 +1,9 @@
 //! Custom image recipes and their latest build, kept in Platform State.
 
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use axum::{
     Json,
@@ -89,6 +92,28 @@ pub struct Dependency {
     pub version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_builds: Vec<String>,
+    /// Any other mise tool option, such as `extras` on a pypi tool. One value
+    /// is written as a string, several as an array.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, Vec<String>>,
+}
+
+/// A mise tool option name as a bare TOML key. `version` is the table's own
+/// key and `allow_builds` has its own field.
+fn valid_option(name: &str, values: &[String]) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
+        && name != "version"
+        && name != "allow_builds"
+        && !values.is_empty()
+        && values.len() <= 64
+        && !values.iter().any(|value| {
+            value.trim().is_empty() || value.len() > 1024 || value.chars().any(char::is_control)
+        })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -215,6 +240,17 @@ impl Recipe {
             if !valid_tool(&dep.tool) || !seen.insert(&dep.tool) {
                 return Err(format!("Invalid or repeated mise key: {}", dep.tool));
             }
+            if dep.options.len() > 16
+                || dep
+                    .options
+                    .iter()
+                    .any(|(name, values)| !valid_option(name, values))
+            {
+                return Err(format!(
+                    "Use at most 16 options on {}, each a lowercase name with 1 to 64 values.",
+                    dep.tool
+                ));
+            }
             if dep.version.is_empty()
                 || dep.version.len() > 64
                 || !dep.version.starts_with(|c: char| c.is_ascii_alphanumeric())
@@ -235,16 +271,32 @@ impl Recipe {
     pub fn mise_toml(&self) -> String {
         let mut config = String::from("[tools]\n");
         for dep in &self.dependencies {
+            let mut options = Vec::new();
+            if !dep.allow_builds.is_empty() {
+                options.push(format!(
+                    "allow_builds = {}",
+                    serde_json::to_string(&dep.allow_builds).unwrap()
+                ));
+            }
+            for (name, values) in &dep.options {
+                options.push(format!(
+                    "{name} = {}",
+                    match values.as_slice() {
+                        [value] => serde_json::to_string(value).unwrap(),
+                        _ => serde_json::to_string(values).unwrap(),
+                    }
+                ));
+            }
             config.push_str(&format!(
                 "{} = {}\n",
                 serde_json::to_string(&dep.tool).unwrap(),
-                if dep.allow_builds.is_empty() {
+                if options.is_empty() {
                     serde_json::to_string(&dep.version).unwrap()
                 } else {
                     format!(
-                        "{{ version = {}, allow_builds = {} }}",
+                        "{{ version = {}, {} }}",
                         serde_json::to_string(&dep.version).unwrap(),
-                        serde_json::to_string(&dep.allow_builds).unwrap()
+                        options.join(", ")
                     )
                 }
             ));
@@ -943,6 +995,7 @@ mod tests {
                 tool: "node".into(),
                 version: "24".into(),
                 allow_builds: vec![],
+                options: Default::default(),
             }],
         };
         let id = crate::apps::generate_app_id();
@@ -967,6 +1020,7 @@ mod tests {
                 tool: "npm:@openai/codex".into(),
                 version: "latest".into(),
                 allow_builds: vec![],
+                options: Default::default(),
             }],
         };
         assert!(recipe.validate().is_ok());
@@ -995,6 +1049,39 @@ mod tests {
         assert_eq!(restored.mise_toml(), recipe.mise_toml());
         recipe.dependencies[0].tool = "node".into();
         assert!(recipe.validate().is_err());
+    }
+
+    #[test]
+    fn tool_options_reach_mise_as_a_string_or_an_array() {
+        let mut recipe: Recipe = serde_json::from_str(
+            r#"{"name":"laya","dependencies":[
+                {"tool":"pypi:laya-apple","version":"1.6.3","options":{"extras":["serve","ane"],"uvx":["false"]}},
+                {"tool":"npm:t3","version":"latest","allow_builds":["node-pty"],"options":{"os":["macos"]}}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(recipe.validate().is_ok());
+        assert_eq!(
+            recipe.mise_toml(),
+            "[tools]\n\
+             \"pypi:laya-apple\" = { version = \"1.6.3\", extras = [\"serve\",\"ane\"], uvx = \"false\" }\n\
+             \"npm:t3\" = { version = \"latest\", allow_builds = [\"node-pty\"], os = \"macos\" }\n"
+        );
+        for (name, values) in [
+            ("version", vec!["1"]),
+            ("allow_builds", vec!["node-pty"]),
+            ("Extras", vec!["serve"]),
+            ("extras x", vec!["serve"]),
+            ("extras", vec![]),
+            ("extras", vec![" "]),
+            ("postinstall", vec!["echo\nhi"]),
+        ] {
+            recipe.dependencies[0].options = BTreeMap::from([(
+                name.to_string(),
+                values.into_iter().map(String::from).collect(),
+            )]);
+            assert!(recipe.validate().is_err(), "{name} was accepted");
+        }
     }
 
     #[test]
@@ -1030,6 +1117,7 @@ mod tests {
                 tool: "node".into(),
                 version: "24".into(),
                 allow_builds: vec![],
+                options: Default::default(),
             }],
         };
         assert!(recipe.validate().is_ok());
@@ -1227,6 +1315,7 @@ mod tests {
                     tool: "node".into(),
                     version: "24".into(),
                     allow_builds: vec![],
+                    options: Default::default(),
                 }],
             },
             image: "sf-img-test:latest".into(),

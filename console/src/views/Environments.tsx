@@ -1147,6 +1147,9 @@ function Summary({
                         {tool.allow_builds?.length ? (
                           <span className="muted"> allow_builds={tool.allow_builds.join(",")}</span>
                         ) : null}
+                        {Object.entries(tool.options ?? {}).map(([name, values]) => (
+                          <span key={name} className="muted"> {name}={values.join(",")}</span>
+                        ))}
                       </TableCell>
                       <TableCell className="mono">{tool.installed ?? "—"}</TableCell>
                       <TableCell>

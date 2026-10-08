@@ -1086,6 +1086,7 @@ mod tests {
                     tool: "node".into(),
                     version: "24".into(),
                     allow_builds: vec![],
+                    options: Default::default(),
                 }],
                 setup: vec![],
                 build_checks: vec![],

@@ -150,6 +150,7 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
                 tool: "node".into(),
                 version: "24".into(),
                 allow_builds: vec![],
+                options: Default::default(),
             }],
             setup: vec!["node --version > node-version".into()],
         };

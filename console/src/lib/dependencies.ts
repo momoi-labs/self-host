@@ -1,11 +1,16 @@
+import type { ImageDependency } from "./customImageTemplates.js";
+
 /** What mise resolves a tool by: a short name, or `backend:name`. */
 const KEY = /^[a-zA-Z0-9][a-zA-Z0-9._:/@-]{0,159}$/;
 
 /** What mise accepts as a version, including `latest` and a bare major. */
 const VERSION = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 
-/** The only option a dependency carries here. mise reads it on npm-backed
- * tools, where it names the packages whose install scripts may run. */
+/** A mise tool option name, written as a bare TOML key. */
+const OPTION = /^[a-z][a-z0-9_-]{0,63}$/;
+
+/** The option with its own field. mise reads it on npm-backed tools, where it
+ * names the packages whose install scripts may run. */
 export const ALLOW_BUILDS = "allow_builds";
 
 export function isKey(key: string): boolean {
@@ -14,6 +19,12 @@ export function isKey(key: string): boolean {
 
 export function isVersion(version: string): boolean {
   return VERSION.test(version);
+}
+
+/** Whether a name can be any other mise tool option. `version` is the
+ * table's own key. */
+export function isOptionName(name: string): boolean {
+  return OPTION.test(name) && name !== "version" && name !== ALLOW_BUILDS;
 }
 
 /** Whether mise would read `allow_builds` on this tool at all. Offering the
@@ -77,4 +88,35 @@ export function readOption(text: string): { name: string; values: string[] } | n
   if (!name) return null;
   const body = text.slice(equals + 1).trim().replace(/^\[/, "").replace(/\]$/, "");
   return { name, values: body.split(",").map((value) => value.trim()).filter(Boolean) };
+}
+
+/**
+ * The dependency with one option written from a chip's text, or null when mise
+ * would not read it there. Editing an option under another name moves it.
+ */
+export function setOption(
+  dep: ImageDependency,
+  text: string,
+  previous?: string,
+): ImageDependency | null {
+  const option = readOption(text);
+  if (!option) return null;
+  if (option.name === ALLOW_BUILDS ? !takesAllowBuilds(dep.tool) : !isOptionName(option.name)) {
+    return null;
+  }
+  let allowBuilds = previous === ALLOW_BUILDS ? undefined : dep.allow_builds;
+  const options = { ...dep.options };
+  if (previous && previous !== ALLOW_BUILDS) delete options[previous];
+  if (option.name === ALLOW_BUILDS) {
+    allowBuilds = option.values.length ? option.values : undefined;
+  } else if (option.values.length) {
+    options[option.name] = option.values;
+  } else {
+    delete options[option.name];
+  }
+  return {
+    ...dep,
+    allow_builds: allowBuilds,
+    options: Object.keys(options).length ? options : undefined,
+  };
 }

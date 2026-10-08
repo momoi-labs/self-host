@@ -1,4 +1,10 @@
-export type ImageDependency = { tool: string; version: string; allow_builds?: string[] };
+export type ImageDependency = {
+  tool: string;
+  version: string;
+  allow_builds?: string[];
+  /** Other mise tool options, such as `extras` on a pypi tool. */
+  options?: Record<string, string[]>;
+};
 
 export type CustomImageTemplate = {
   id: string;

@@ -17,6 +17,7 @@ export function NativeSummary({ app }: { app: App }) {
       <dt>Configured dependencies</dt><dd>{native.recipe?.dependencies.length ? <ul>{native.recipe.dependencies.map((dependency) => <li key={dependency.tool}>
         <code>{dependency.tool}@{dependency.version}</code>
         {dependency.allow_builds?.length ? <> <code>allow_builds={dependency.allow_builds.join(", ")}</code></> : null}
+        {Object.entries(dependency.options ?? {}).map(([name, values]) => <span key={name}> <code>{name}={values.join(", ")}</code></span>)}
       </li>)}</ul> : "None"}</dd>
       <dt>Configured setup</dt><dd>{native.recipe?.setup.length ? `${native.recipe.setup.length} ${native.recipe.setup.length === 1 ? "command" : "commands"}` : "None"}</dd>
       <dt>Publication</dt><dd>{app.publication?.kind === "unpublished" ? "No HTTP route" : `Loopback port ${native.port}`}</dd>

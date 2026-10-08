@@ -114,6 +114,7 @@ fn config(name: &str) -> VmConfig {
                 tool: "node".into(),
                 version: "22".into(),
                 allow_builds: vec![],
+                options: Default::default(),
             }],
             setup: vec![],
             build_checks: vec![],

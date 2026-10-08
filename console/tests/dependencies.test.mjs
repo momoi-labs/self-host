@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  isKey, isVersion, readOption, splitKey, suggest, takesAllowBuilds,
+  isKey, isOptionName, isVersion, readOption, setOption, splitKey, suggest, takesAllowBuilds,
 } from "../src/lib/dependencies.ts";
 
 const catalog = [
@@ -56,6 +56,27 @@ test("reads an option back as the chip prints it", () => {
 test("offers allow_builds only where mise reads it", () => {
   assert.equal(takesAllowBuilds("npm:t3"), true);
   assert.equal(takesAllowBuilds("node"), false);
+});
+
+test("writes any mise option a chip names, and moves one renamed", () => {
+  const pypi = { tool: "pypi:laya-apple", version: "1.6.3" };
+  const extras = setOption(pypi, "extras=serve, ane");
+  assert.deepEqual(extras, { ...pypi, allow_builds: undefined, options: { extras: ["serve", "ane"] } });
+  assert.deepEqual(setOption(extras, "with=[pip]", "extras").options, { with: ["pip"] });
+  assert.equal(setOption(extras, "extras=", "extras").options, undefined);
+  assert.equal(setOption(pypi, "Extras=serve"), null);
+  assert.equal(setOption(pypi, "version=2"), null);
+  assert.equal(setOption(pypi, "allow_builds=node-pty"), null);
+});
+
+test("keeps allow_builds in its own field on npm tools", () => {
+  const npm = { tool: "npm:t3", version: "latest", allow_builds: ["node-pty"] };
+  assert.deepEqual(setOption(npm, "os=macos", "allow_builds"), {
+    ...npm, allow_builds: undefined, options: { os: ["macos"] },
+  });
+  assert.deepEqual(setOption(npm, "allow_builds=").allow_builds, undefined);
+  assert.equal(isOptionName("default-features"), true);
+  assert.equal(isOptionName("allow_builds"), false);
 });
 
 test("accepts a key the console would send to mise", () => {

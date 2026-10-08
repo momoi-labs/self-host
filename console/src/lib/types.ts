@@ -122,7 +122,7 @@ export type CustomImage = {
   id: string;
   name: string;
   template_id?: string | null;
-  dependencies: { tool: string; version: string; allow_builds?: string[] }[];
+  dependencies: ImageDependency[];
   setup?: string[];
   build_checks?: string[];
   dockerfile?: string | null;
