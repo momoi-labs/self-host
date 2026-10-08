@@ -1,6 +1,6 @@
 ---
 name: add-page
-description: Build a new console screen on the standard layout, or check an existing one against it. Use when adding a page, view, list or detail screen to console/src, or when reviewing whether a screen follows the console's layout rules.
+description: Build or review a console screen using its established layout. Use when adding or changing a page, view, list, detail, create or login screen in console/src, or checking a screen against the console's layout rules.
 ---
 
 # Add a console page
@@ -20,8 +20,11 @@ allowed to break.
 - **Detail** — one record, its configuration, and whatever it prints.
 - **Create** — one record that does not exist yet, reached from "Create
   resource": a form on a page of its own.
+- **Login**: unauthenticated entry to the operator console. Read
+  [login.md](login.md) and use its checklist instead of the list, detail and
+  create rules below.
 
-Anything else (the Overview, DNS setup, login) is neither, and these rules do
+Anything else (the Overview, DNS setup) is neither, and these rules do
 not apply. Say so rather than forcing it.
 
 ## A list screen
