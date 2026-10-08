@@ -30,7 +30,10 @@ An explicit account must match that dedicated name. Native execution requires
 Linux with the installed N1/N2 supervisor.
 
 Native `recipe` contains `dependencies` and `setup`. Dependencies use the same
-`tool`, `version` and optional npm `allow_builds` fields as custom images.
+`tool`, `version`, optional npm `allow_builds` and optional `options` fields as
+custom images. `options` maps a mise tool option name to its values, such as
+`{"extras": ["serve", "ane"]}` on a `pypi:` tool. mise receives one value as a
+string and several as an array.
 Setup is a list of shell commands executed as the Application Account before
 startup. An old record without a recipe reads as an empty one. See
 [native Application environments](native-applications.md#application-environment)

@@ -36,8 +36,8 @@ Application at root or at the Platform's own files.
 ## Application environment
 
 The native form reuses the custom image dependency editor. Select mise tools
-and versions, including npm `allow_builds` when needed, then add optional setup
-commands. Installation and setup run under the dedicated Application Account
+and versions, add mise tool options such as `extras=serve,ane` on a pypi tool
+or `allow_builds` on an npm tool, then add optional setup commands. Installation and setup run under the dedicated Application Account
 and its cgroup limits before the main command starts. The console opens Logs
 for preparation output. A failed installation fails the Task and prevents
 startup.

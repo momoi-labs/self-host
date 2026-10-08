@@ -1,14 +1,10 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   Lifecycle,
   StatusBadge,
-  Badge, Button, Card, Form, FormActions, FormField, Label,
-  Chip, ChipInput, ChipInputBox, ChipInputEmpty, ChipInputField, ChipInputList, ChipInputOption,
-  ChipName, ChipOption, ChipOptionAdd, ChipRemove, ChipScope, ChipValue,
+  Badge, Button, Card, Form, FormActions, FormField,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   Tabs, TabsContent, TabsList, TabsTrigger,
-  ValidationMessage,
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "./Failure.js";
@@ -20,158 +16,8 @@ import type { CustomImage, Report } from "../lib/types.js";
 import { buildLabel, buildTone } from "../lib/status.js";
 import { customImageTemplate, customImageTemplates, type ImageDependency } from "../lib/customImageTemplates.js";
 import { recipeBody } from "../lib/customImageRecipe.js";
-import {
-  ALLOW_BUILDS, isKey, isVersion, readOption, splitKey, suggest, takesAllowBuilds,
-} from "../lib/dependencies.js";
-import { toolCatalogQuery, type MiseTool } from "../lib/queries.js";
-
-type Dependency = ImageDependency;
-
-const noTools: MiseTool[] = [];
-
-function Dependencies({ value, onChange, disabled }: {
-  value: Dependency[];
-  onChange: (value: Dependency[]) => void;
-  disabled: boolean;
-}) {
-  const catalog = useQuery(toolCatalogQuery);
-  const tools = catalog.data ?? noTools;
-  const loading = catalog.isLoading;
-  const searchFailed = catalog.isError;
-  const [query, setQuery] = useState("");
-  const [focused, setFocused] = useState(false);
-  const typed = query.trim();
-  const matches = suggest(tools, query, value.map((dep) => dep.tool));
-  // The catalog is a thousand tools; marking the typed entry must not rebuild
-  // that set on every keystroke.
-  const known = useMemo(
-    () => new Set(tools.flatMap((tool) => [tool.name, ...tool.backends])),
-    [tools],
-  );
-  const unversioned = value.filter((dep) => !isVersion(dep.version));
-
-  // A new dependency starts at latest because that is what most recipes want,
-  // and the version is one press away in the chip itself.
-  function add(tool: string) {
-    setQuery("");
-    if (value.some((dep) => dep.tool === tool)) return;
-    onChange([...value, { tool, version: "latest" }]);
-  }
-
-  function update(tool: string, change: Partial<Dependency>) {
-    onChange(value.map((dep) => dep.tool === tool ? { ...dep, ...change } : dep));
-  }
-
-  // allow_builds is the only option mise reads here, so an entry naming
-  // anything else is left alone rather than written into the recipe.
-  function setOption(tool: string, text: string) {
-    const option = readOption(text);
-    if (!option || option.name !== ALLOW_BUILDS) return;
-    update(tool, { allow_builds: option.values.length ? option.values : undefined });
-  }
-
-  return (
-    <div className="field">
-      <Label htmlFor="dependency-search">Dependencies</Label>
-      <ChipInput>
-        <ChipInputBox
-          disabled={disabled}
-          onFocus={() => setFocused(true)}
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
-          }}
-        >
-          {value.map((dep) => {
-            const { scope, name } = splitKey(dep.tool);
-            return (
-              <Chip key={dep.tool} invalid={!isVersion(dep.version)}>
-                {scope ? <ChipScope>{scope}</ChipScope> : null}
-                <ChipName>{name}</ChipName>
-                <ChipValue
-                  value={dep.version}
-                  editable={!disabled}
-                  editLabel={`Edit ${dep.tool} version, currently ${dep.version}`}
-                  confirmLabel={`Confirm ${dep.tool} version`}
-                  onCommit={(version) => update(dep.tool, { version })}
-                />
-                {dep.allow_builds?.length ? (
-                  <ChipOption
-                    name={ALLOW_BUILDS}
-                    value={dep.allow_builds}
-                    label={dep.tool}
-                    editable={!disabled}
-                    onCommit={(text) => setOption(dep.tool, text)}
-                  />
-                ) : takesAllowBuilds(dep.tool) && !disabled ? (
-                  <ChipOptionAdd label={dep.tool} onCommit={(text) => setOption(dep.tool, text)} />
-                ) : null}
-                <ChipRemove
-                  aria-label={`Remove ${dep.tool}`}
-                  disabled={disabled}
-                  onClick={() => onChange(value.filter((item) => item.tool !== dep.tool))}
-                />
-              </Chip>
-            );
-          })}
-          <ChipInputField
-            id="dependency-search"
-            aria-describedby="dependency-help"
-            placeholder="node, claude, npm:t3..."
-            disabled={disabled}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onRemoveLast={() => onChange(value.slice(0, -1))}
-            onKeyDown={(event) => {
-              // ChipInput has already taken the key when a suggestion was
-              // highlighted, and taking it twice would add the tool twice.
-              if (event.defaultPrevented) return;
-              if (event.key === "Enter") {
-                // This field collects values; the recipe is saved by its own
-                // button. Enter here never reaches the form.
-                event.preventDefault();
-                if (isKey(typed)) add(typed);
-              }
-            }}
-          />
-        </ChipInputBox>
-        {focused && typed ? (
-          <ChipInputList aria-label="Tool suggestions">
-            {matches.map((tool) => (
-              <ChipInputOption key={tool} onSelect={() => add(tool)}>
-                <span className="mono">{tool}</span>
-                {known.has(tool) ? null : <span className="muted">as typed</span>}
-              </ChipInputOption>
-            ))}
-            {matches.length ? null : (
-              <ChipInputEmpty>
-                {loading
-                  ? "Searching mise..."
-                  : searchFailed
-                    ? "Catalog unavailable. Type a mise key, such as just or npm:t3."
-                    : "No match. Try a backend key, such as npm:t3."}
-              </ChipInputEmpty>
-            )}
-          </ChipInputList>
-        ) : null}
-      </ChipInput>
-      <small className="field-hint" id="dependency-help">
-        The packages mise installs into the image, one chip per tool with the version to install.
-        They end up on the <code>PATH</code> inside the container, so they are what it can run.
-        Anything mise has no package for goes in Custom commands below.
-        <br />
-        Type a mise key or search for one. Enter and Tab take a suggestion, Backspace removes the
-        last chip. Press a version to change it. npm tools take{" "}
-        <code>allow_builds=name, name</code> on their <code>+</code>.
-      </small>
-      {unversioned.length ? (
-        <ValidationMessage>
-          A version is letters, digits, dots and dashes:{" "}
-          {unversioned.map((dep) => dep.tool).join(", ")}.
-        </ValidationMessage>
-      ) : null}
-    </div>
-  );
-}
+import { Dependencies } from "./Dependencies.js";
+import { isVersion } from "../lib/dependencies.js";
 
 /**
  * The recipe for one image, in either mode. A saved image is a detail screen
@@ -198,7 +44,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
 }) {
   const [name, setName] = useState("");
   const [templateId, setTemplateId] = useState("");
-  const [dependencies, setDependencies] = useState<Dependency[]>([]);
+  const [dependencies, setDependencies] = useState<ImageDependency[]>([]);
   const [setup, setSetup] = useState("");
   const [buildChecks, setBuildChecks] = useState("");
   // A string is the file the Operator took over; null leaves it to the Host.
@@ -376,7 +222,13 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
                   />
                 </Step>
                 <Step title="mise packages and dependencies">
-                  <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled} />
+                  <Dependencies key={editorKey} value={dependencies} onChange={setDependencies} disabled={editingDisabled}
+                    hint={<>The packages mise installs into the image, one chip per tool with the version to install.
+                    They end up on the <code>PATH</code> inside the container, so they are what it can run.
+                    Anything mise has no package for goes in Custom commands below.
+                    <br />
+                    Type a mise key or search for one. Enter and Tab take a suggestion, Backspace removes the
+                    last chip. Press a version to change it.</>} />
                 </Step>
                 <Step title="Custom commands">
                   <FormField id="custom-image-setup" label="Custom commands"

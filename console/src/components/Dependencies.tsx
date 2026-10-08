@@ -23,10 +23,9 @@ import {
   ALLOW_BUILDS,
   isKey,
   isVersion,
-  readOption,
+  setOption,
   splitKey,
   suggest,
-  takesAllowBuilds,
 } from "../lib/dependencies.js";
 import { toolCatalogQuery, type MiseTool } from "../lib/queries.js";
 
@@ -74,12 +73,9 @@ export function Dependencies({
       value.map((dep) => (dep.tool === tool ? { ...dep, ...change } : dep)),
     );
   }
-  function setOption(tool: string, text: string) {
-    const option = readOption(text);
-    if (option?.name === ALLOW_BUILDS)
-      update(tool, {
-        allow_builds: option.values.length ? option.values : undefined,
-      });
+  function commitOption(dep: ImageDependency, text: string, previous?: string) {
+    const next = setOption(dep, text, previous);
+    if (next) onChange(value.map((item) => (item.tool === dep.tool ? next : item)));
   }
 
   return (
@@ -120,12 +116,23 @@ export function Dependencies({
                     value={dep.allow_builds}
                     label={dep.tool}
                     editable={!disabled}
-                    onCommit={(text) => setOption(dep.tool, text)}
+                    onCommit={(text) => commitOption(dep, text, ALLOW_BUILDS)}
                   />
-                ) : takesAllowBuilds(dep.tool) && !disabled ? (
+                ) : null}
+                {Object.entries(dep.options ?? {}).map(([name, values]) => (
+                  <ChipOption
+                    key={name}
+                    name={name}
+                    value={values.length === 1 ? values[0] : values}
+                    label={dep.tool}
+                    editable={!disabled}
+                    onCommit={(text) => commitOption(dep, text, name)}
+                  />
+                ))}
+                {!disabled ? (
                   <ChipOptionAdd
                     label={dep.tool}
-                    onCommit={(text) => setOption(dep.tool, text)}
+                    onCommit={(text) => commitOption(dep, text)}
                   />
                 ) : null}
                 <ChipRemove
@@ -179,8 +186,10 @@ export function Dependencies({
       </ChipInput>
       <small className="field-hint" id={`${id}-help`}>
         {hint ?? <>Type a mise key or search for one. Enter and Tab take a suggestion,
-        Backspace removes the last chip. Press a version to change it. npm tools
-        take <code>allow_builds=name, name</code> on their <code>+</code>.</>}
+        Backspace removes the last chip. Press a version to change it.</>}{" "}
+        Press <code>+</code> on a chip to add a mise option as{" "}
+        <code>name=value</code>, such as <code>extras=serve,ane</code> on a pypi
+        tool. A list takes its items comma separated.
       </small>
       {unversioned.length ? (
         <ValidationMessage>
