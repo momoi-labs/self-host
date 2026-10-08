@@ -89,6 +89,24 @@ fn python() -> String {
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
 
+fn real_name(path: &str) -> String {
+    let output = std::process::Command::new("/usr/bin/dscl")
+        .args([".", "-read", path, "RealName"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .strip_prefix("RealName:")
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
 fn port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -225,10 +243,29 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
     assert_eq!(response(a_port).await["secret"], "changed-secret");
     reconnected.restart(&a).await.unwrap();
     reconnected.remove(&a).await.unwrap();
-    assert!(
-        self_host::native::resolve(&self_host::native::account_name_for(a_id).unwrap()).is_err()
+    // The account is retired, not deleted: macOS needs Full Disk Access to
+    // delete a record and the daemon has none (#168). A retry is a no-op.
+    let a_account = self_host::native::account_name_for(a_id).unwrap();
+    assert_eq!(
+        self_host::native::resolve(&a_account)
+            .unwrap()
+            .uid
+            .to_string(),
+        original["uid"].to_string()
     );
-    // No process, including launchd's per-user agents, keeps the freed uid.
+    assert_eq!(
+        real_name(&format!("/Users/{a_account}")),
+        format!("self-host retired Application {a_id}")
+    );
+    assert_eq!(
+        real_name(&format!("/Groups/{a_account}")),
+        format!("self-host retired Application {a_id}")
+    );
+    reconnected.remove(&a).await.unwrap();
+    // A retired account is never adopted: the same id cannot come back and
+    // reach the retained data.
+    assert!(reconnected.deploy(&a, vec![], true).await.is_err());
+    // No process, including launchd's per-user agents, keeps the retired uid.
     let uid = original["uid"].to_string();
     let mut leftover = true;
     for _ in 0..50 {
@@ -243,7 +280,7 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(!leftover, "processes outlived Application Account {uid}");
-    // Reusing the freed uid cannot open the removed Application's retained home.
+    // The retired uid is never reused, and the retained home stays private.
     reconnected.remove(&b).await.unwrap();
     // A fresh port: the removed listener may still hold the old one briefly.
     let c_port = port();
@@ -254,9 +291,10 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
         operator_file.to_str().unwrap(),
     );
     reconnected.deploy(&c, vec![], true).await.unwrap();
-    let reused = response(c_port).await;
-    assert_eq!(reused["uid"], original["uid"]);
-    assert_eq!(reused["peer"], false);
+    let next = response(c_port).await;
+    assert_ne!(next["uid"], original["uid"]);
+    assert_ne!(next["uid"], other["uid"]);
+    assert_eq!(next["peer"], false);
     reconnected.remove(&c).await.unwrap();
     std::fs::remove_file(operator_file).unwrap();
 }

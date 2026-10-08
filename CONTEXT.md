@@ -86,7 +86,7 @@ An Application whose Runtime is a process tree on the Host, run under its own Ap
 _Avoid_: bare-metal app, host process (as the product term), s6 service (the supervisor is a detail)
 
 **Application Account**:
-The dedicated Host account a Native Application runs as: an execution identity the Platform owns, never root and never the Operator's own login.
+The dedicated Host account a Native Application runs as: an execution identity the Platform owns, never root and never the Operator's own login. On macOS, deleting the Application retires the account: the record stays, marked retired, so nothing runs as it and its number is never reused (ADR-0032).
 _Avoid_: service user, system user, login (an Application Account is not for people)
 
 **Publication**:

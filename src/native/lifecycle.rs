@@ -400,6 +400,10 @@ impl NativeRuntime for S6Runtime {
                 match super::identity::verify_owned(&request) {
                     Ok(_) => (),
                     Err(super::ProvisionError::Identity(super::IdentityError::Unknown(_))) => (),
+                    // A retried deletion finds the account already retired.
+                    #[cfg(target_os = "macos")]
+                    Err(super::ProvisionError::NotOurs(_))
+                        if super::identity::retired(&request) => {}
                     Err(error) => return Err(error.into()),
                 }
                 // Retained data must not become readable if userdel's uid is reused.
