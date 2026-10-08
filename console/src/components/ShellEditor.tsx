@@ -52,7 +52,7 @@ export function ShellEditor({ id, value, onChange, disabled, required, maxLength
   };
 
   return (
-    <div className="shell-editor" ref={editor}>
+    <div className="shell-editor field-control" ref={editor}>
       <div className="shell-editor-gutter" ref={gutter} aria-hidden="true">
         {Array.from({ length: lineCount }, (_, index) => <span key={index}>{index + 1}</span>)}
       </div>
