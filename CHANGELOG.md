@@ -1,5 +1,27 @@
 # self-host
 
+## 0.7.0
+
+### Minor Changes
+
+- 28b8771: Manage routes from the console. A Routes page lists every hostname and path the proxy answers, and each Application has a Routes tab. Adding, changing or removing a route applies at once through `PUT /apps/id/{id}/routes`, without a rebuild, pull or restart. A path rule without a `target` follows its Application's Web Target.
+- 09c52ff: Rebuild the console on Kiso React 0.14. Applications and databases open on a Summary that draws what reaches them and what they use, with panes the Operator can rearrange, variable names with values on request, and the database volume size. The Overview, Settings, login and the new application picker use Kiso's components, and every page keeps one spacing between blocks.
+- 6f234b2: Name failing Applications and databases in the console header. `/health` answers `degraded` with the failing workloads, still with HTTP 200, and the header opens the first one.
+- bccbab9: Make operator login easier to use with a responsive help panel, revealable API key, pending feedback and separate key, Host and connection errors. Add `self-host init --show-key` to print the existing initial key without repeating bootstrap.
+
+### Patch Changes
+
+- a4a9d20: Say why a managed database failed when Docker could not prepare its PostgreSQL image, instead of leaving the failed stage without a reason.
+- 18e2257: Use Kiso's default visual style for console headings and spacing.
+- ab7433d: Deleting a native Application on macOS now completes. macOS only deletes an
+  account when the responsible process has Full Disk Access, which the Platform
+  daemon cannot hold durably, so the Platform retires the account instead: the
+  service is removed, nothing can run as the account, its number is never
+  reused, and the retained data stays protected. `uninstall.sh` still deletes
+  live and retired accounts from a terminal that macOS can ask (#168).
+- 18e2257: Keep native command text visible with pixel corners and apply the selected border style to the whole editor, including its line numbers.
+- a897b57: Report HTTP readiness for native Applications. The probe looked for a container service name, so a native Application always read "HTTP unknown".
+
 ## 0.6.0
 
 ### Minor Changes
