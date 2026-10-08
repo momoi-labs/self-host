@@ -5,6 +5,17 @@
    Momoi product would also want belongs upstream in the blueprint, not here. */
 @import "@momoi-labs/kiso-react/styles.css";
 
+/* One spacing between blocks on every page: the header, the filters, a
+   table and each pane sit as far apart as the Overview's panels. Kiso's
+   editorial header also adds its own block padding on top of the page's
+   padding and gap, which the console drops until momoi-labs/blueprint#183
+   fixes the header upstream. */
+:root[data-visual-style="editorial"] {
+  --page-header-padding: 0px;
+  --presentation-section-gap: var(--spacing-lg);
+  --presentation-grid-gap: var(--spacing-lg);
+}
+
 /* Operator access. Kiso supplies the controls and canvas asset; the Host owns
    the help and this layout. Login is outside ADR-0024's screen shapes. */
 .auth-shell { display: grid; min-height: 100svh; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); position: relative; isolation: isolate; background-color: var(--color-background); }
@@ -20,8 +31,6 @@
 .auth-server-url { overflow-wrap: anywhere; }
 .auth-eyebrow { font-size: var(--type-size-label); letter-spacing: .08em; text-transform: uppercase; }
 .auth-display { font-size: clamp(32px, 4vw, 54px); line-height: 1.12; font-weight: 600; letter-spacing: -.035em; }
-.auth-key[type="text"] { font-family: "Courier New", Courier, monospace; }
-.auth-panel .field-suffix .btn { min-width: 52px; }
 .auth-key-help { line-height: 1.6; }
 .auth-key-help code { overflow-wrap: anywhere; }
 .auth-mobile-brand, .auth-mobile-help { display: none; }
@@ -83,19 +92,17 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .network-down { color: var(--color-success); }
 .network-up { color: var(--color-danger); }
 
-/* The Overview's summary: four questions on one line, a caps label over
-   each. What is up, what the workloads cost the Host, what crossed the
-   wire, and what the Platform's own servers handled. A line, not cards:
-   the reading is the answer, and the tables below are where anything
-   deeper gets inspected. */
-.summary-groups {
-  display: flex; flex-wrap: wrap; align-items: stretch;
-  gap: var(--spacing-md) var(--spacing-xl);
-}
-.summary-group { display: grid; gap: var(--spacing-2xs); align-content: start; }
-.summary-group + .summary-group {
-  padding-inline-start: var(--spacing-xl);
-  border-inline-start: 1px solid var(--color-border);
+/* The Overview's summary: four questions in one panel, a caps label over
+   each. What is up, what the measured workloads cost the Host, and what the
+   Platform's proxy and DNS handled. Four columns while the panel is wide, two
+   below that, a rule between neighbours on the same row. */
+.summary-panel { container-type: inline-size; }
+.summary-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--spacing-lg) 0; }
+.summary-group { display: grid; gap: var(--spacing-2xs); align-content: start; padding-inline: var(--spacing-lg); border-inline-start: 1px solid var(--color-border); }
+.summary-group:nth-child(odd) { padding-inline-start: 0; border-inline-start: 0; }
+@container (min-width: 52rem) {
+  .summary-groups { grid-template-columns: repeat(4, auto); }
+  .summary-group:nth-child(3) { padding-inline-start: var(--spacing-lg); border-inline-start: 1px solid var(--color-border); }
 }
 .summary-group .t-caps {
   margin: 0; font-size: var(--type-size-metadata);
@@ -113,16 +120,14 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 }
 .summary-line .sparkline { width: 56px; }
 .section-title { font-size: var(--type-size-title); font-weight: 600; margin: 0; }
-/* Title, how much of the list is showing, the search that thins it, and the
-   way to add one more. The search takes the middle, so the action stays at the
-   end of the row where it has always been. */
-.section-heading { display: flex; align-items: center; gap: var(--spacing-md); margin-block-end: var(--spacing-md); }
-.section-count { flex: none; }
-.section-heading > .section-search { margin-inline-start: auto; width: min(100%, 280px); }
-@media (max-width: 720px) {
-  .section-heading { flex-wrap: wrap; }
-  .section-heading > .section-search { margin-inline-start: 0; order: 1; width: 100%; }
-}
+/* A panel's heading row inside its frame: the title, the search that thins
+   the list, and the way to add one more. The search grows to its width where
+   there is room and gives way in a narrow panel, so the row wraps only when
+   it must. */
+.panel-toolbar { flex-wrap: wrap; gap: var(--spacing-sm) var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); }
+.panel-toolbar .section-search { margin-inline-start: auto; flex: 1 1 10rem; max-width: 280px; }
+/* The add button is one width on every panel, so the searches end in the same place. */
+.panel-toolbar .panel-action { width: 12rem; justify-content: center; }
 /* Inspect values in the charts without a permanent summary or detail table. */
 .traffic .chart-values, .traffic > .framed-chart > [data-slot="chart-legend"] { display: none; }
 .traffic-errors { color: var(--color-danger); font-size: var(--type-size-label); }
@@ -132,7 +137,7 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .glance {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: var(--spacing-2xs) var(--spacing-md);
-  margin-block-start: var(--spacing-sm);
+  margin-block-start: calc(var(--presentation-section-gap) - var(--page-header-gap));
   font-size: var(--type-size-label);
 }
 /* The glance is a line of text, so its lines take a fixed slot in it rather
@@ -146,10 +151,24 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .container-metrics { margin-block-start: var(--spacing-xl); }
 .container-metrics .t-caps { margin-block-end: var(--spacing-sm); }
 
-/* A usage cell on the Overview: the reading, and the window's shape under
-   it. The line is decoration for the number, so it never sets the row's
-   height on its own. */
-.usage { line-height: 1.2; }
+/* A search on a pane's head sits beside its action at a fixed width; the
+   title gives way before it does. */
+.grid-pane-actions .pane-search { width: 12rem; }
+
+/* The Variables columns keep their width when the values are shown: a value
+   that does not fit ends in an ellipsis and reads in full on hover. */
+.variables-table { table-layout: fixed; }
+.variable-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Several values for one key, one per line: kiso's stack-xs lays them out, this drops the bullets. */
+.value-list { margin: 0; padding: 0; list-style: none; }
+.summary-footnote { display: flex; align-items: center; gap: var(--spacing-xs); margin: 0; }
+
+/* An Overview row names its definition before its value, and usage sits
+   beside its reading instead of under it. */
+.app-cell { display: inline-flex; align-items: center; gap: var(--spacing-sm); }
+.app-cell > .icon { flex: none; color: var(--color-muted-foreground); }
+.usage-inline { display: inline-flex; align-items: center; gap: var(--spacing-sm); }
+.usage-inline .sparkline { width: 48px; }
 /* A trend cell holds nothing but the line, so the column has no text to size
    it and the line would collapse with it. */
 .trend { min-width: 5rem; }
@@ -182,12 +201,19 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .dns-instructions > section + section { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
 .dns-instructions p { max-width: 65ch; }
 
-/* The deploy dialog switches between an image and a Compose file. A Compose
-   editor needs room and a monospace face; a fieldset of two radios needs to
-   read as one field. */
-.source-choice { border: 0; padding: 0; margin: 0; }
-.source-choice legend { padding: 0; margin-block-end: var(--spacing-xs); font-size: var(--type-size-label); font-weight: var(--type-weight-medium); }
-.source-choice label { gap: var(--spacing-sm); margin-inline-end: var(--spacing-lg); cursor: pointer; }
+/* "New application" opens on what the Application is made from. Each choice
+   in kiso's DetailSelect explains its run, one framed pictogram per step. */
+.definition-picker { max-width: 760px; }
+/* The kind's pictogram, large and framed, filling the column beside its run. */
+.definition-illustration { display: grid; place-items: center; width: 100%; aspect-ratio: 1; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); color: var(--color-foreground); }
+.definition-illustration .icon { width: 45%; height: 45%; }
+/* The run, one step per line: a framed pictogram and the step, a rule joining
+   the pictograms so the three read as one flow. */
+.definition-steps { --step-mark: calc(var(--size-icon-sm) + 2 * var(--spacing-2xs) + 2px); display: grid; gap: var(--spacing-sm); margin: var(--spacing-md) 0 0; padding: 0; list-style: none; font-size: var(--type-size-label); }
+.definition-steps li { position: relative; display: flex; align-items: center; gap: var(--spacing-sm); }
+.definition-steps li + li::before { content: ""; position: absolute; inset-inline-start: calc(var(--step-mark) / 2 - 0.5px); bottom: 100%; height: var(--spacing-sm); border-inline-start: 1px solid var(--color-border-strong); }
+.definition-steps .icon { box-sizing: content-box; padding: var(--spacing-2xs); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-card); color: var(--color-foreground); }
+/* A Compose editor needs room and a monospace face. */
 .compose-editor { min-height: 220px; font-family: var(--type-family-mono); white-space: pre; overflow: auto; tab-size: 2; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-md); }
 
@@ -269,7 +295,14 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 
 /* A Compose Application puts a container picker above its log; everything
    else is the log alone. A column takes either without being told which. */
-.detail-log-pane { display: flex; flex-direction: column; min-height: 0; }
+/* The pane sits in a grid track; without a floor of zero its widest line
+   would size it and the panel would clip what the log should scroll. */
+.detail-log-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* A log in a tab or a run reaches its card's edges as one plain surface.
+   kiso drops its border and ticks there; the theme's pixel corners would
+   still step its fill and outline. */
+:is(.detail-tabs .logview, .logview-flush) { background: var(--color-neutral-950); box-shadow: none; }
+:is(.detail-tabs .logview, .logview-flush)::before { content: none; }
 .detail-log-pane > :not(:last-child) { flex: none; padding: var(--spacing-lg); }
 .detail-log-pane > :last-child { flex: 1; min-height: 0; }
 
@@ -374,17 +407,12 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .changes-diff-added { color: var(--color-success, #067647); }
 .events-changes { margin: 0 0 var(--spacing-xl); }
 
-/* Cards packed into as many columns as fit, each spanning the 8px rows its
-   height takes (see Masonry). A wide card takes two columns once the grid
-   has room for two, and with three the wide cards go first so the narrow
-   ones fill the column left over, as the Kiso gallery sorts them. */
-.card-masonry { container-type: inline-size; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); grid-auto-rows: 8px; grid-auto-flow: row dense; align-items: start; column-gap: var(--spacing-xl); row-gap: 0; }
-.card-masonry > * { grid-row: span var(--masonry-rows, 1); min-width: 0; }
-#settings-git-connections { scroll-margin-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); }
-@container (min-width: 45.5rem) { .card-masonry > [data-size="wide"] { grid-column: span 2; } }
-@container (min-width: 69rem) { .card-masonry > [data-size="wide"] { order: -1; } }
+/* A pane a link scrolls to stops below the sticky header, not under it. */
+.grid-pane { scroll-margin-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); }
 /* A form that is a card's body ends in the card's rounded corners. */
 .card > .form { border-radius: inherit; }
+/* A pane holding a form gives its padding to the form, so the save bar spans the pane as it spans a card. */
+.grid-pane-body:has(> .form) { padding: 0; }
 /* A checkbox that qualifies the save sits on the buttons' line. */
 .form-actions-buttons > .check { align-self: center; }
 

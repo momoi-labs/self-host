@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, Card, Checkbox, Form, FormActions, FormField, Label, Lifecycle, PageHeader, PageHeaderTitle, StatusBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@momoi-labs/kiso-react";
 
-import { api, asReport, failureOf, readJson } from "../lib/api.js";
+import { api, asReport, failureOf } from "../lib/api.js";
+import { databaseQuery } from "../lib/queries.js";
 import type { App, Metrics, Report } from "../lib/types.js";
 import { Glance } from "../components/Glance.js";
 import { seriesFor } from "../lib/useMetrics.js";
@@ -15,19 +16,15 @@ import { Failure } from "../components/Failure.js";
 import { AppLogPane } from "../components/LogPane.js";
 import { Pane, Split, Splitter, LogView, LogViewLine, StepList } from "@momoi-labs/kiso-react";
 
-import { DatabaseConnections, type DatabaseConnection } from "../components/DatabaseConnections.js";
-type Database = { major: number; volume: string; readiness: string; connections: DatabaseConnection[] };
+import { DatabaseConnections } from "../components/DatabaseConnections.js";
+import { DatabaseSummary } from "../components/DatabaseSummary.js";
 
-export function ManagedPostgres({ app, apps, metrics, reload, onRemoved }: { app: App; apps: App[]; metrics: Metrics | null; reload: () => Promise<App[]>; onRemoved: () => void }) {
+export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenApp }: { app: App; apps: App[]; metrics: Metrics | null; reload: () => Promise<App[]>; onRemoved: () => void; onOpenApp: (id: string) => void }) {
   const wide = useMediaQuery("(min-width: 1024px)");
-  const databaseQuery = useQuery({
-    queryKey: ["databases", app.id],
-    queryFn: ({ signal }) => readJson<Database>(`/databases/${app.id}`, signal),
-    refetchInterval: 3000,
-  });
-  const database = databaseQuery.data ?? null;
-  const loadFailure = databaseQuery.error ? asReport(databaseQuery.error) : null;
-  const { refetch: load } = databaseQuery;
+  const detail = useQuery({ ...databaseQuery(app.id), refetchInterval: 3000 });
+  const database = detail.data ?? null;
+  const loadFailure = detail.error ? asReport(detail.error) : null;
+  const { refetch: load } = detail;
   const [failure, setFailure] = useState<Report | null>(null);
   const [tab, setTab] = useState(app.status === "pending" ? "last-operation" : "summary");
   const [busy, setBusy] = useState(false);
@@ -84,7 +81,7 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved }: { app
     {app.last_error ? <Failure failure={app.last_error} /> : null}
     <Card className="detail-tabs"><Tabs value={tab} onValueChange={setTab}>
       <TabsList aria-label="Database details"><TabsTrigger value="summary">Summary</TabsTrigger><TabsTrigger value="connections">Connections</TabsTrigger><TabsTrigger value="import">Import</TabsTrigger><TabsTrigger value="last-operation">Last operation</TabsTrigger><TabsTrigger value="logs">Logs</TabsTrigger></TabsList>
-      <TabsContent value="summary"><dl className="summary-facts"><dt>Version</dt><dd>PostgreSQL {database?.major ?? app.managed_postgres?.major}</dd><dt>Storage</dt><dd><code>{database?.volume ?? "Loading"}</code></dd><dt>Access</dt><dd>Private connections only</dd><dt>Consumers</dt><dd>{active.length}</dd></dl></TabsContent>
+      <TabsContent value="summary"><DatabaseSummary app={app} apps={apps} database={database} onOpenApp={onOpenApp} onOpenConnections={() => setTab("connections")} /></TabsContent>
       <TabsContent value="connections">
         <DatabaseConnections app={app} apps={apps} connections={active} loading={database === null} busy={busy || taskBusy} failure={failure} onOperation={operation} />
       </TabsContent>

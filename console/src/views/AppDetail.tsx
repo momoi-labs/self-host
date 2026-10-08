@@ -1,4 +1,4 @@
-import { Fragment, Suspense, lazy, useRef, useState } from "react";
+import { Suspense, lazy, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Lifecycle,
@@ -26,10 +26,10 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { AppForm, type Submission } from "../components/AppForm.js";
+import { AppSummary } from "../components/AppSummary.js";
 import { Failure } from "../components/Failure.js";
 import { Glance } from "../components/Glance.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
-import { NativeSummary } from "../components/NativeSummary.js";
 import { DeploymentHistory, DeploymentReadiness } from "../components/DeploymentHistory.js";
 import { HttpStatus } from "../components/HttpStatus.js";
 import { GitBuildRun } from "../components/GitBuildRun.js";
@@ -51,18 +51,22 @@ const Terminal = lazy(() => import("../components/Terminal.js").then((module) =>
 
 export function AppDetail({
   app,
+  apps,
   formRevision,
   dnsSuffix,
   metrics,
   reload,
   onRemoved,
+  onOpenApp,
 }: {
   app: App;
+  apps: App[];
   formRevision: string;
   dnsSuffix: string;
   metrics: Metrics | null;
   reload: () => Promise<App[]>;
   onRemoved: () => void;
+  onOpenApp: (id: string) => void;
 }) {
   const { capabilities } = useNativeCapabilities();
   const notify = useToast();
@@ -75,7 +79,7 @@ export function AppDetail({
   const [removing, setRemoving] = useState(false);
   const removalInFlight = useRef(false);
   const samples = seriesFor(metrics, app.id);
-  const [tab, setTab] = useState(app.status === "pending" && native ? "logs" : app.git && app.status === "pending" ? "last-update" : native || app.git_build ? "summary" : "configuration");
+  const [tab, setTab] = useState(app.status === "pending" && native ? "logs" : app.git && app.status === "pending" ? "last-update" : "summary");
   const [openedTerminal, setOpenedTerminal] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [building, setBuilding] = useState(false);
@@ -323,27 +327,20 @@ export function AppDetail({
           }}
         >
           <TabsList aria-label="Application details">
-            {native || app.git_build ? <TabsTrigger value="summary">Summary</TabsTrigger> : null}
+            <TabsTrigger value="summary">Summary</TabsTrigger>
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
             {app.git && (lastBuild || building || app.status === "pending") ? <TabsTrigger value="last-update">Last update</TabsTrigger> : null}
             {app.runtime?.kind !== "native" ? <TabsTrigger value="deployments">Deployments</TabsTrigger> : null}
             <TabsTrigger value="logs">Logs</TabsTrigger>
             {!native || capabilities?.terminal ? <TabsTrigger value="terminal">Terminal</TabsTrigger> : null}
           </TabsList>
-          {native ? <TabsContent value="summary"><NativeSummary app={app} /></TabsContent> : null}
-          {app.git_build ? <TabsContent value="summary">
-            <dl className="summary-facts">
-              {app.git ? <><dt>Repository</dt><dd>{app.git.repository}</dd><dt>Branch or tag</dt><dd><code>{app.git.git_ref}</code></dd></> : null}
-              <dt>Deployed commit</dt>
-              <dd><code>{app.git_build.revision}</code></dd>
-              <dt>Build result</dt>
-              <dd><StatusBadge tone={app.git_build.status === "completed" ? "success" : "neutral"}>{app.git_build.status}</StatusBadge></dd>
-              {Object.entries(app.git_build.images).map(([service, image]) => <Fragment key={service}>
-                <dt>{service} image</dt><dd><code>{image}</code></dd>
-              </Fragment>)}
-            </dl>
-            <Button size="sm" disabled={removing || gitBusy} onClick={() => void rebuildCurrent()}>Rebuild current version</Button>
-          </TabsContent> : null}
+          <TabsContent value="summary">
+            <AppSummary app={app} apps={apps} busy={removing || gitBusy}
+              onOpenRoutes={() => setTab("configuration")}
+              onOpenConfiguration={() => setTab("configuration")}
+              onOpenApp={onOpenApp}
+              onRebuild={() => void rebuildCurrent()} />
+          </TabsContent>
           <TabsContent value="configuration">
             <AppForm key={formRevision} app={app} dnsSuffix={dnsSuffix} onSubmit={save} onReload={reload} />
           </TabsContent>

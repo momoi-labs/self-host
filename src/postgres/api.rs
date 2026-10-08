@@ -172,7 +172,8 @@ async fn detail<S: StateStore>(
         let (definition, app) = database(&state.store, &id).await?;
         let connections: Vec<_> = CONNECTIONS.list(&state.store).await?.into_iter().filter(|c| c.database_application_id == id).map(ConnectionView::from).collect();
         let readiness = state.docker.container_state(&container(&id)).await.ok().flatten().and_then(|s| s.health).unwrap_or_else(|| "unknown".into());
-        Ok(Json(serde_json::json!({"application_id": id, "major": definition.major, "volume": definition.volume, "readiness": readiness, "status": app.status, "connections": connections})))
+        let volume_bytes = state.volume_sizes.of(&state.docker, &definition.volume).await;
+        Ok(Json(serde_json::json!({"application_id": id, "major": definition.major, "volume": definition.volume, "volume_bytes": volume_bytes, "readiness": readiness, "status": app.status, "connections": connections})))
     }.await;
     match result {
         Ok(value) => crate::no_store(value.into_response()),

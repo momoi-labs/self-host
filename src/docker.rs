@@ -257,6 +257,11 @@ pub trait DockerRuntime: Send + Sync {
     /// Application by label. Containers the Platform does not own are not
     /// the Platform's to report.
     async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError>;
+    /// The bytes each local volume holds, by name. Measuring walks every
+    /// volume, so a caller keeps the answer for a while.
+    async fn volume_sizes(&self) -> Result<std::collections::HashMap<String, u64>, DockerError> {
+        Ok(Default::default())
+    }
     async fn open_terminal(
         &self,
         container: &str,
@@ -574,6 +579,19 @@ impl DockerRuntime for CliDocker {
         user: Option<&str>,
     ) -> Result<crate::terminal::Session, DockerError> {
         crate::terminal::open(container, size, user).await
+    }
+
+    async fn volume_sizes(&self) -> Result<std::collections::HashMap<String, u64>, DockerError> {
+        let step = "failed to measure volumes";
+        let output = tokio::process::Command::new("docker")
+            .args(["system", "df", "-v", "--format", "{{json .Volumes}}"])
+            .output()
+            .await
+            .map_err(|error| DockerError::spawn(step, error))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(step, &output));
+        }
+        Ok(parse_volume_sizes(&String::from_utf8_lossy(&output.stdout)))
     }
 
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
@@ -1607,6 +1625,8 @@ pub struct FakeDocker {
     pub recreated: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub network_syncs: std::sync::Arc<std::sync::Mutex<Vec<RecordedNetworkSync>>>,
     pub health: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// The bytes each volume holds, by name.
+    pub volumes: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
 }
 
 impl FakeDocker {
@@ -1629,6 +1649,7 @@ impl FakeDocker {
             recreated: Default::default(),
             network_syncs: Default::default(),
             health: Default::default(),
+            volumes: Default::default(),
         }
     }
 
@@ -1715,6 +1736,11 @@ impl DockerRuntime for FakeDocker {
             .unwrap()
             .push((container.into(), size, user.map(str::to_owned)));
         Ok(crate::terminal::Session::fake())
+    }
+
+    async fn volume_sizes(&self) -> Result<std::collections::HashMap<String, u64>, DockerError> {
+        self.ping().await?;
+        Ok(self.volumes.lock().unwrap().clone())
     }
 
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
@@ -2072,6 +2098,17 @@ where
         (**self).open_terminal(container, size, user).await
     }
 
+    async fn volume_sizes(&self) -> Result<std::collections::HashMap<String, u64>, DockerError> {
+        (**self).volume_sizes().await
+    }
+
+    async fn postgres(
+        &self,
+        request: &crate::postgres::runtime::Request,
+    ) -> Result<String, DockerError> {
+        (**self).postgres(request).await
+    }
+
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
         (**self).container_images().await
     }
@@ -2212,10 +2249,57 @@ where
     }
 }
 
+/// Reads `docker system df -v --format '{{json .Volumes}}'`. A volume whose
+/// size Docker did not report, such as `N/A`, is left out.
+fn parse_volume_sizes(json: &str) -> std::collections::HashMap<String, u64> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Volume {
+        name: String,
+        size: String,
+    }
+    serde_json::from_str::<Vec<Volume>>(json.trim())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|volume| Some((volume.name, decimal_size(&volume.size)?)))
+        .collect()
+}
+
+/// `125.6MB` as bytes. Docker prints sizes in powers of 1000.
+fn decimal_size(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let unit_at = text.find(|c: char| c.is_ascii_alphabetic())?;
+    let (number, unit) = text.split_at(unit_at);
+    let number: f64 = number.trim().parse().ok()?;
+    let scale = match unit {
+        "B" => 1e0,
+        "kB" | "KB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        "PB" => 1e15,
+        _ => return None,
+    };
+    Some((number * scale).round() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::ErrorReport;
+
+    #[test]
+    fn volume_sizes_read_dockers_decimal_units_and_skip_what_it_did_not_measure() {
+        let sizes = parse_volume_sizes(
+            r#"[{"Name":"sf-app-a_data","Size":"125.6MB","Links":"1"},{"Name":"empty","Size":"0B"},{"Name":"small","Size":"4.096kB"},{"Name":"unknown","Size":"N/A"}]
+"#,
+        );
+        assert_eq!(sizes.get("sf-app-a_data"), Some(&125_600_000));
+        assert_eq!(sizes.get("empty"), Some(&0));
+        assert_eq!(sizes.get("small"), Some(&4_096));
+        assert!(!sizes.contains_key("unknown"));
+        assert!(parse_volume_sizes("not json").is_empty());
+    }
 
     /// Builds the error a refused `docker pull` produces, from real stderr.
     fn refused_pull(stderr: &str) -> DockerError {

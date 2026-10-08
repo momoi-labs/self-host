@@ -17,14 +17,16 @@ import {
 
 import { api, asReport, failureOf } from "../lib/api.js";
 import { customImagesQuery, settingsQuery } from "../lib/queries.js";
-import { isCompose, parseAliases } from "../lib/status.js";
+import { parseAliases } from "../lib/status.js";
 import type { App, ComposeService, CustomImage, GitInspection, GitSource, Inspection, Publication, Report } from "../lib/types.js";
 import { gitFieldsOf, gitSourceOf, type GitFields } from "./GitSourceFields.js";
 import { GitWorkflowFields, type GitSourceMode } from "./GitWorkflowFields.js";
 import type { GitRepository } from "./GitRepositoryPicker.js";
 import { NativeAppForm } from "./NativeAppForm.js";
+import { DefinitionPicker, definitionOf, type Definition } from "./DefinitionPicker.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
+import { Icon } from "./Icon.js";
 import { customImageTemplate } from "../lib/customImageTemplates.js";
 
 export type Submission = {
@@ -118,7 +120,7 @@ export function AppForm({
 }) {
   const creating = !app;
   const saved = fieldsOf(app);
-  const [source, setSource] = useState(creating ? "image" : app?.runtime?.kind === "native" ? "native" : app?.git ? "git" : app?.development ? "custom-image" : isCompose(app) ? "compose" : "image");
+  const [source, setSource] = useState<string>(creating || !app ? "image" : definitionOf(app));
   const [git, setGit] = useState(saved.git);
   const [gitMode, setGitMode] = useState<GitSourceMode>("repositories");
   const [gitSetup, setGitSetup] = useState(false);
@@ -595,11 +597,25 @@ export function AppForm({
 
   </>;
 
-  if (source === "native") return <NativeAppForm app={app} dnsSuffix={dnsSuffix} onSubmit={onSubmit} onCancel={onCancel} onReload={onReload} onChangeDefinition={creating ? () => setSource("image") : undefined} />;
+  // Creating starts with what the Application is made from, in the same place
+  // for every definition, the native one included.
+  const picker = creating ? (
+    <DefinitionPicker
+      value={source as Definition}
+      onChange={(next) => {
+        if (next !== "git") { ++gitRequest.current; setCheckingGit(false); }
+        setSource(next);
+      }}
+    />
+  ) : null;
+
+  if (source === "native") return <NativeAppForm app={app} dnsSuffix={dnsSuffix} onSubmit={onSubmit} onCancel={onCancel} onReload={onReload} definition={picker} />;
 
   return (
     <Form id="app-form" onSubmit={submit}>
       <div className="form-body">
+      {picker}
+
       {source !== "git" ? <p className="t-caps">Configuration</p> : null}
 
       {source !== "git" ? <FormField
@@ -612,32 +628,6 @@ export function AppForm({
         autoFocus={creating}
       /> : null}
 
-      {creating ? (
-        <fieldset className="field source-choice">
-          <legend>Definition</legend>
-          {[
-            ["image", "Container image"],
-            ["custom-image", "Custom image"],
-            ["compose", "Compose file"],
-            ["git", "Git repository"],
-            ["native", "Native process"],
-          ].map(([value, label]) => (
-            <label className="row" key={value}>
-              <input
-                type="radio"
-                name="f-source"
-                value={value}
-                checked={source === value}
-                onChange={() => {
-                  if (value !== "git") { ++gitRequest.current; setCheckingGit(false); }
-                  setSource(value);
-                }}
-              />{" "}
-              {label}
-            </label>
-          ))}
-        </fieldset>
-      ) : null}
 
       {source === "git" ? <GitWorkflowFields
         fields={git} onChange={changeGit} creating={creating}
@@ -681,6 +671,12 @@ export function AppForm({
               {customImages.map((image) => <option key={image.image} value={image.image}>{image.name}</option>)}
             </select>
           </FormField>
+          {!customImagesLoading && !customImagesFailure && !customImages.length && !customImageTag ? (
+            <div className="row-wrap">
+              <span className="muted t-label">No custom image is ready yet.</span>
+              <Button size="sm" asChild><a href="/console/#new-custom-image"><Icon name="plus" />Create custom image</a></Button>
+            </div>
+          ) : null}
           {customImageTag ? <code className="custom-image-tag">{customImageTag}</code> : null}
           {customImageId && customImages.some((image) => image.id === customImageId && image.image !== customImageTag) ? (
             <p className="muted t-label">A newer successful build is available. Select it and save to redeploy.</p>
@@ -705,9 +701,6 @@ export function AppForm({
             </p>
           </div>
           {customImagesFailure ? <Failure failure={customImagesFailure} /> : null}
-          {!customImagesLoading && !customImagesFailure && !customImages.length && !customImageTag ? (
-            <p className="muted t-label">No custom images are ready. <a href="/console/#custom-images">Save and build an image first.</a></p>
-          ) : null}
         </>
       ) : imageField}
 
