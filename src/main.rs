@@ -58,6 +58,9 @@ enum Command {
         /// Set the initial API key instead of generating one
         #[arg(long, value_parser = parse_init_api_key)]
         api_key: Option<String>,
+        /// Print the existing initial API key without bootstrapping
+        #[arg(long, conflicts_with_all = ["dns", "host_ip", "api_key"])]
+        show_key: bool,
     },
     /// Configure persistent Host DNS on Linux with systemd-resolved
     SetupDns,
@@ -263,8 +266,16 @@ async fn main() {
             dns,
             host_ip,
             api_key,
+            show_key,
         }) => {
-            if let Err(e) = run_init_command(&dns, host_ip.as_deref(), api_key.as_deref()).await {
+            let result = if show_key {
+                read_initial_api_key(file_store::state_dir())
+                    .await
+                    .map(|key| println!("{key}"))
+            } else {
+                run_init_command(&dns, host_ip.as_deref(), api_key.as_deref()).await
+            };
+            if let Err(e) = result {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
@@ -380,6 +391,16 @@ fn check_existing_api_key(existing: &str, requested: Option<&str>) -> anyhow::Re
         "Platform is already initialized with a different API key; init cannot change it"
     );
     Ok(())
+}
+
+async fn read_initial_api_key(state_dir: std::path::PathBuf) -> anyhow::Result<String> {
+    FileStateStore::read_only(state_dir)?
+        .get_api_key()
+        .await?
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("No initial API key found. Run 'self-host init' on this Host first.")
+        })
 }
 
 async fn run_init_command(
@@ -1571,6 +1592,65 @@ mod tests {
             };
             assert_eq!(api_key.as_deref(), key);
         }
+    }
+
+    #[test]
+    fn init_can_show_the_key_without_initialization_options() {
+        let Some(Command::Init { show_key, .. }) =
+            Cli::try_parse_from(["self-host", "init", "--show-key"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected init");
+        };
+        assert!(show_key);
+
+        for (flag, value) in [
+            ("--dns", "prototype.lan"),
+            ("--host-ip", "192.168.1.10"),
+            ("--api-key", "local"),
+        ] {
+            let error = Cli::try_parse_from(["self-host", "init", "--show-key", flag, value])
+                .err()
+                .expect("show-key must not silently ignore initialization options");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[tokio::test]
+    async fn show_key_reads_authoritative_state_while_the_writer_is_open() {
+        let path = std::env::temp_dir().join(format!(
+            "self-host-show-key-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let writer = FileStateStore::open(&path).unwrap();
+        writer
+            .store_state("api_key", "test-initial-key")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_initial_api_key(path.clone()).await.unwrap(),
+            "test-initial-key"
+        );
+        assert_eq!(
+            writer.get_api_key().await.unwrap().as_deref(),
+            Some("test-initial-key")
+        );
+        drop(writer);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn show_key_does_not_initialize_a_missing_platform() {
+        let path = std::env::temp_dir().join(format!(
+            "self-host-show-key-missing-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let error = read_initial_api_key(path.clone()).await.unwrap_err();
+        assert!(error.to_string().contains("Run 'self-host init'"));
+        assert!(!path.exists());
     }
 
     /// A Host with something else on port 53 can still serve the API and the

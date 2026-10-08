@@ -94,6 +94,16 @@ Without `--api-key`, `init` generates a random key. The key is saved for the
 console and CLI. Running `init` again accepts the same key or no key; it rejects
 a different key without replacing the saved one.
 
+To print the existing initial key on the Host:
+
+```bash
+self-host init --show-key
+```
+
+This prints only the key. It reads Platform State without repeating bootstrap
+or contacting the daemon, and works while the daemon is running or stopped.
+It cannot be combined with initialization options.
+
 DNS starts with `serve`, before Docker is available. It answers
 port 53 over UDP and TCP — on Linux at the saved Host IP, on macOS at every
 interface, because that is the only privileged bind the Operator gets there
