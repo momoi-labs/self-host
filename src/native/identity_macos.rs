@@ -1,4 +1,9 @@
 //! Local, non-login accounts. The helper serializes directory mutations.
+//!
+//! Deleting a directory record needs Full Disk Access for the responsible
+//! process, which the Platform daemon never has (#168). `revoke` therefore
+//! retires an account in place; only `purge`, run by `uninstall.sh` from a
+//! terminal macOS can prompt, deletes records.
 
 use super::*;
 use anyhow::{Context, Result, bail};
@@ -28,14 +33,14 @@ fn dscl(arguments: &[&str]) -> Result<String> {
 }
 
 /// Deleting a directory record needs Full Disk Access for the responsible
-/// process. The Platform daemon has none, so macOS denies it (#168).
+/// process. From a LaunchDaemon macOS denies it at once; from a terminal it
+/// asks the terminal app.
 fn delete_record(path: &str) -> Result<()> {
     dscl(&["-delete", path]).map(|_| ()).map_err(|error| {
         if error.to_string().contains("eDSPermissionError") {
             anyhow::anyhow!(
-                "macOS denied removing {path} because the Platform lacks Full Disk Access. \
-                 The Application is stopped and its data is protected; the account remains. \
-                 See https://github.com/momoi-labs/self-host/issues/168"
+                "macOS denied removing {path}: the process needs Full Disk Access. \
+                 Run uninstall.sh from a terminal and allow the access when macOS asks."
             )
         } else {
             error
@@ -224,50 +229,78 @@ fn prepare_home(request: &ProvisionRequest, identity: ResolvedAccount) -> Result
     Ok(identity)
 }
 
+/// Whether the account was retired by `revoke` for this Application.
+pub fn retired(request: &ProvisionRequest) -> bool {
+    attribute(&format!("/Users/{}", request.account), "RealName")
+        .ok()
+        .as_deref()
+        == Some(retired_comment_for(request.application_id).as_str())
+}
+
+/// Retire an owned account: nothing runs as it, its numbers are never reused,
+/// and it no longer counts as a live Application Account. A retry is a no-op.
 pub fn revoke(request: &ProvisionRequest) -> Result<(), ProvisionError> {
     (|| -> Result<()> {
         let _lock = lock()?;
         let account = match verify_owned(request) {
-            Ok(account) => Some(account),
-            Err(ProvisionError::Identity(IdentityError::Unknown(_))) => None,
+            Ok(account) => account,
+            Err(ProvisionError::Identity(IdentityError::Unknown(_))) => return Ok(()),
+            Err(ProvisionError::NotOurs(_)) if retired(request) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        if let Some(account) = account {
-            // launchd starts per-user agents (lsd, cfprefsd, trustd) for the
-            // account. They outlive the record, and an account that reuses the
-            // UID would inherit them. The domain may not exist, so ignore errors.
-            let _ = std::process::Command::new("/bin/launchctl")
-                .args(["bootout", &format!("user/{}", account.uid)])
-                .env_clear()
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            delete_record(&format!("/Users/{}", request.account))?;
-        }
-        // A retry after deleting the user must still remove its owned group.
-        if dscl(&["-list", "/Groups"])?
-            .lines()
-            .any(|name| name == request.account.as_str())
-        {
-            let group = format!("/Groups/{}", request.account);
-            if attribute(&group, "RealName")? != comment_for(request.application_id) {
-                bail!("refusing to delete a group without the Application ownership marker");
+        // launchd starts per-user agents (lsd, cfprefsd, trustd) for the
+        // account. Nothing may keep running as a retired identity. The domain
+        // may not exist, so ignore errors.
+        let _ = std::process::Command::new("/bin/launchctl")
+            .args(["bootout", &format!("user/{}", account.uid)])
+            .env_clear()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        // Setting an attribute is the same call provisioning makes from the
+        // daemon, so it needs no Full Disk Access. User first: a retry after a
+        // failed group write sees a retired user and returns early.
+        let marker = retired_comment_for(request.application_id);
+        dscl(&[
+            "-create",
+            &format!("/Users/{}", request.account),
+            "RealName",
+            &marker,
+        ])?;
+        dscl(&[
+            "-create",
+            &format!("/Groups/{}", request.account),
+            "RealName",
+            &marker,
+        ])?;
+        flush_directory_cache();
+        Ok(())
+    })()
+    .map_err(error)
+}
+
+/// Delete every live or retired Application Account record. Only
+/// `uninstall.sh` calls this, from a terminal that macOS can prompt for Full
+/// Disk Access.
+pub fn purge() -> Result<(), ProvisionError> {
+    (|| -> Result<()> {
+        let _lock = lock()?;
+        // Users before groups: a user record points at its group.
+        for kind in ["/Users", "/Groups"] {
+            for name in dscl(&["-list", kind])?.lines() {
+                let Some(id) = name.strip_prefix(ACCOUNT_PREFIX) else {
+                    continue;
+                };
+                let path = format!("{kind}/{name}");
+                let marker = attribute(&path, "RealName").ok();
+                if marker.as_deref() != Some(comment_for(id).as_str())
+                    && marker.as_deref() != Some(retired_comment_for(id).as_str())
+                {
+                    continue;
+                }
+                delete_record(&path)?;
             }
-            let gid: u32 = attribute(&group, "PrimaryGroupID")?.parse()?;
-            if gid < 5000
-                || dscl(&["-list", "/Users", "PrimaryGroupID"])?
-                    .lines()
-                    .any(|line| {
-                        line.split_whitespace()
-                            .last()
-                            .and_then(|value| value.parse::<u32>().ok())
-                            == Some(gid)
-                    })
-            {
-                bail!("refusing to delete an Application group still used by another account");
-            }
-            delete_record(&group)?;
         }
         flush_directory_cache();
         Ok(())

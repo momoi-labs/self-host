@@ -19,3 +19,16 @@ Account separation is not a filesystem sandbox.
 
 Status: accepted. Privileged macOS acceptance and reboot validation remain
 release gates.
+
+## Amendment: deletion retires the account
+
+macOS deletes a directory record only when the responsible process has Full
+Disk Access. The Platform daemon has none, cannot be prompted, and a grant to
+an unsigned helper would not survive an upgrade
+([#168](https://github.com/momoi-labs/self-host/issues/168)). Deleting a
+Native Application therefore retires its Application Account instead: the
+service is removed, the per-user launchd domain is booted out, retained data
+is secured as root, and the user and group records carry a retired marker.
+The records stay, so their UID and GID are never handed out again and the
+same Application id cannot adopt the retained data. Only `uninstall.sh`
+deletes records, from a terminal that macOS can ask for Full Disk Access.

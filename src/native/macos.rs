@@ -370,14 +370,21 @@ async fn write_reply(reply: &Reply) -> Result<()> {
 }
 
 /// Called by uninstall.sh as root before removing the scan LaunchDaemon.
+/// Retires every recorded Application, then deletes all live and retired
+/// accounts, which needs the terminal's Full Disk Access.
 pub async fn uninstall() -> Result<()> {
     host::require_root()?;
     host::protected(Path::new(HELPER))?;
     let records = Path::new(ROOT).join("records");
-    if !records.exists() {
-        return Ok(());
+    if records.exists() {
+        host::protected(&records)?;
+        remove_records(&records).await?;
     }
-    host::protected(&records)?;
+    super::identity::purge()?;
+    Ok(())
+}
+
+async fn remove_records(records: &Path) -> Result<()> {
     for entry in std::fs::read_dir(records)? {
         let path = entry?.path();
         // Atomic writes can leave an unfinished temporary after power loss.

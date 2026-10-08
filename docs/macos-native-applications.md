@@ -29,18 +29,19 @@ environment. Application accounts have no administrator or sudo grant.
 
 The installer rejects symlinked or writable runtime directories. It does not
 adopt an existing account without the expected marker, home, group and login
-policy. Application deletion stops the service and secures retained data as
-root with mode `0700`. A new Application needs a new id rather than adopting
-retained data. `uninstall.sh` removes accounts, the supervisor, helper and
-grant, while retaining protected native data and logs.
+policy. Application deletion stops the service, secures retained data as root
+with mode `0700` and retires the account: its records stay with a retired
+marker, so the UID is never reused and nothing can run as it. A new
+Application needs a new id rather than adopting retained data. `uninstall.sh`
+removes accounts, the supervisor, helper and grant, while retaining protected
+native data and logs.
 
-Deletion cannot yet remove the account. macOS only deletes a user when the
-responsible process has Full Disk Access, and the Platform daemon has none, so
-the task fails with a message pointing to
-[#168](https://github.com/momoi-labs/self-host/issues/168). The service is
-already stopped and its data protected. From a terminal, macOS asks the
-terminal app for that access instead, which is how `uninstall.sh` and the
-fixture below remove accounts.
+Deletion retires rather than deletes because macOS only deletes a user when
+the responsible process has Full Disk Access, which the Platform daemon
+cannot be granted durably
+([#168](https://github.com/momoi-labs/self-host/issues/168)). From a
+terminal, macOS asks the terminal app for that access instead, which is how
+`uninstall.sh` and the fixture below delete live and retired accounts.
 
 ## Supported behavior
 
@@ -85,8 +86,8 @@ an Intel build alone does not establish runtime acceptance.
 
 The fixture checks distinct non-root identities, supplementary groups, failed
 root recovery, private files, mise setup, Variables, log redaction, crash
-recovery, child cleanup, stop/start/restart, account removal and retained data
-after UID reuse.
+recovery, child cleanup, stop/start/restart, account retirement, that a
+retired id is refused and its number never reused, and retained data.
 
 ## Validate the console and LAN release
 
@@ -103,9 +104,11 @@ after UID reuse.
 5. Leave one Application running and another stopped. Restart the Platform,
    then reboot the Mac without logging in. Expect both intents to survive and
    the running Application's Hostname to answer from another LAN device.
-6. Delete the fixtures. Expect the task to stop the service and then fail on
-   the account with the #168 message, and the retained data to be owned by
-   root with mode `0700`.
+6. Delete the fixtures. Expect each task to complete without any prompt,
+   `dscl . -read /Users/sf-app-<id> RealName` to answer
+   `self-host retired Application <id>`, `pgrep -U <uid>` to find nothing,
+   and the retained data to be owned by root with mode `0700`. A new native
+   Application gets a different account number.
 
 Record the macOS version, architecture and results before release. Do not
 publish based only on compilation or the unprivileged s6 smoke test.

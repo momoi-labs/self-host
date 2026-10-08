@@ -10,12 +10,18 @@ use std::path::{Path, PathBuf};
 #[path = "identity_macos.rs"]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::{provision, revoke};
+pub use macos::{provision, purge, retired, revoke};
 
 /// The marker `provision` writes into the account's comment field, followed
 /// by the Application id. An existing account without it is not ours.
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 const COMMENT_MARKER: &str = "self-host Application ";
+
+/// The marker `revoke` leaves on a macOS account it retired, followed by the
+/// Application id. The record stays, so its numbers are never handed out
+/// again, and nothing adopts it as a live account.
+#[cfg(target_os = "macos")]
+const RETIRED_MARKER: &str = "self-host retired Application ";
 
 /// The prefix every Application Account name carries, the same one the
 /// container Runtime uses for project and container names.
@@ -73,6 +79,12 @@ pub fn account_name_for(application_id: &str) -> Result<AccountName, IdentityErr
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn comment_for(application_id: &str) -> String {
     format!("{COMMENT_MARKER}{application_id}")
+}
+
+/// The comment a retired macOS account carries.
+#[cfg(target_os = "macos")]
+fn retired_comment_for(application_id: &str) -> String {
+    format!("{RETIRED_MARKER}{application_id}")
 }
 
 /// Whether an existing account's comment says the Platform created it for
