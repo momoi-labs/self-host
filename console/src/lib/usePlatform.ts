@@ -4,18 +4,22 @@ import { useQuery } from "@tanstack/react-query";
 import { useToast } from "../components/Toasts.js";
 import { readJson } from "./api.js";
 import { appsQuery, bootstrapStatusQuery } from "./queries.js";
-import type { App } from "./types.js";
+import type { App, FailingWorkload, Health } from "./types.js";
 
 export type Platform = {
   apps: App[];
   dnsSuffix: string;
   healthy: boolean;
+  /** Workloads that should be up and are not; empty while the Host is healthy. */
+  failing: FailingWorkload[];
+  degraded: boolean;
   version: string | null;
   ready: boolean;
   reload: () => Promise<App[]>;
 };
 
 const noApps: App[] = [];
+const noFailing: FailingWorkload[] = [];
 
 /**
  * Everything the console knows about the Host: its Applications and the DNS
@@ -24,9 +28,12 @@ const noApps: App[] = [];
 export function usePlatform(): Platform {
   const notify = useToast();
   const status = useQuery(bootstrapStatusQuery);
+  // Asked again on a timer: a workload can fail long after the page loaded,
+  // and the header is where the Operator sees it first.
   const health = useQuery({
     queryKey: ["health"],
-    queryFn: ({ signal }) => readJson<{ version?: string }>("/health", signal),
+    queryFn: ({ signal }) => readJson<Health>("/health", signal),
+    refetchInterval: 15_000,
   });
   /*
    * A deploy is accepted before Docker starts pulling, so the row arrives as
@@ -71,6 +78,8 @@ export function usePlatform(): Platform {
     apps: apps.data ?? noApps,
     dnsSuffix: status.data?.dns_suffix || "…",
     healthy: health.isSuccess,
+    failing: health.data?.failing ?? noFailing,
+    degraded: health.data?.status === "degraded",
     version: health.data?.version ?? null,
     ready: apps.isFetched,
     reload,

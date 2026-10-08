@@ -253,7 +253,7 @@ fn build_platform_with_native<S: StateStore>(
 
     let api_routes = Router::new()
         .merge(postgres::api::router::<S>())
-        .route("/health", get(health))
+        .route("/health", get(health::<S>))
         .route(
             "/native/capabilities",
             get(async || Json(native::capabilities())),
@@ -406,16 +406,57 @@ async fn public_ca_certificate(State(path): State<std::path::PathBuf>) -> Respon
     }
 }
 
+/// The daemon answers, and whether every workload that should be up is. A
+/// failed Application or database degrades the Host without making the
+/// daemon unreachable, so the answer stays 200: login and the console read
+/// any other status as a rejected key.
 #[derive(Serialize)]
 struct HealthResponse {
-    status: String,
+    status: &'static str,
     version: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failing: Vec<FailingWorkload>,
 }
 
-async fn health() -> Json<HealthResponse> {
+/// A workload that should be up and is not, named so the console can open it.
+#[derive(Serialize)]
+struct FailingWorkload {
+    id: String,
+    name: String,
+    kind: &'static str,
+}
+
+async fn health<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Json<HealthResponse> {
+    // The live status the Application list shows, so the header and the
+    // tables never disagree about what is down.
+    let (degraded, failing) = match apps::list_applications(&state.store).await {
+        Ok(records) => {
+            let mut failing = Vec::new();
+            for record in records {
+                let app = observed(&state, record).await;
+                if app.status == apps::STATUS_FAILED {
+                    failing.push(FailingWorkload {
+                        kind: if app.managed_postgres.is_some() {
+                            "database"
+                        } else {
+                            "application"
+                        },
+                        id: app.id,
+                        name: app.name,
+                    });
+                }
+            }
+            (!failing.is_empty(), failing)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "health could not read the Applications");
+            (true, Vec::new())
+        }
+    };
     Json(HealthResponse {
-        status: "ok".into(),
+        status: if degraded { "degraded" } else { "ok" },
         version: env!("CARGO_PKG_VERSION"),
+        failing,
     })
 }
 
@@ -3677,6 +3718,74 @@ mod tests {
         assert_eq!(
             parsed,
             json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")})
+        );
+    }
+
+    #[tokio::test]
+    async fn health_is_degraded_and_names_each_failed_workload() {
+        let (app, store, _) = setup_app("secret-key").await;
+        for (id, name, status) in [
+            ("web", "web", apps::STATUS_FAILED),
+            ("db", "teste", apps::STATUS_FAILED),
+            ("idle", "idle", apps::STATUS_STOPPED),
+        ] {
+            store
+                .insert_application(&apps::ApplicationRecord {
+                    id: id.into(),
+                    name: name.into(),
+                    hostname: String::new(),
+                    aliases: vec![],
+                    image: "nginx:alpine".into(),
+                    status: status.into(),
+                    source: "image".into(),
+                    git: None,
+                    git_build: None,
+                    last_error: None,
+                    compose: None,
+                    web_service: None,
+                    web_port: None,
+                    web_target_port: None,
+                    development: None,
+                    runtime: Default::default(),
+                    publication: Default::default(),
+                    variable_delivery: VariableDelivery::Referenced,
+                    route_rules: Vec::new(),
+                    network_policy: Default::default(),
+                })
+                .await
+                .unwrap();
+        }
+        postgres::DATABASES
+            .upsert(
+                &store,
+                &postgres::Database {
+                    application_id: "db".into(),
+                    major: 18,
+                    volume: "teste_data".into(),
+                    native_port: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let response = send(&app, "/health", Some("secret-key")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let mut parsed: Value = serde_json::from_slice(&body).unwrap();
+        parsed["failing"]
+            .as_array_mut()
+            .unwrap()
+            .sort_by_key(|workload| workload["id"].as_str().unwrap().to_owned());
+        assert_eq!(
+            parsed,
+            json!({
+                "status": "degraded",
+                "version": env!("CARGO_PKG_VERSION"),
+                "failing": [
+                    {"id": "db", "name": "teste", "kind": "database"},
+                    {"id": "web", "name": "web", "kind": "application"}
+                ]
+            })
         );
     }
 
