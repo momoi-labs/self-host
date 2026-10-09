@@ -107,8 +107,11 @@ It cannot be combined with initialization options.
 DNS starts with `serve`, before Docker is available. It answers
 port 53 over UDP and TCP — on Linux at the saved Host IP, on macOS at every
 interface, because that is the only privileged bind the Operator gets there
-([ADR-0017](docs/adr/0017-host-native-dns.md)). Names under the DNS Suffix
-resolve locally; other names go to Cloudflare (`1.1.1.1`, `1.0.0.1`). The
+([ADR-0017](docs/adr/0017-host-native-dns.md)). IPv6 is answered on every
+interface on both, and a Host with IPv6 gets AAAA records next to its A
+records ([ADR-0033](docs/adr/0033-the-platform-serves-both-address-families.md)).
+Names under the DNS Suffix resolve locally; other names go to Cloudflare
+(`1.1.1.1`, `1.0.0.1`, `2606:4700:4700::1111`, `2606:4700:4700::1001`). The
 configuration is in `~/.config/self-host/dns.json`; restart `serve` after
 changing it. Keep the Host IP fixed.
 
