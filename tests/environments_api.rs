@@ -458,7 +458,8 @@ async fn a_machine_from_before_names_is_given_its_own_on_load() {
 async fn creation_is_idempotent_and_rejects_reused_request_ids_with_new_config() {
     let (app, _store) = app(FakeRuntime::new()).await;
     let first = json!({"request_id":"request-1", "config":config("alpha")});
-    let (status, record) = request(&app, Method::POST, "/virtual-machines", Some(first.clone())).await;
+    let (status, record) =
+        request(&app, Method::POST, "/virtual-machines", Some(first.clone())).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let (again, same) = request(&app, Method::POST, "/virtual-machines", Some(first)).await;
     assert_eq!(again, StatusCode::ACCEPTED);
@@ -492,7 +493,8 @@ async fn retrying_delete_requires_confirmation_again() {
     )
     .await;
     for _ in 0..20 {
-        let (_, current) = request(&app, Method::GET, &format!("/virtual-machines/{id}"), None).await;
+        let (_, current) =
+            request(&app, Method::GET, &format!("/virtual-machines/{id}"), None).await;
         if current["operation"]["status"] == "failed" {
             break;
         }
@@ -580,7 +582,8 @@ async fn restart_marks_running_operation_interrupted_without_resuming_it() {
         .await
         .unwrap();
     let (app, _) = app_with_store(store.clone(), FakeRuntime::new()).await;
-    let (status, current) = request(&app, Method::GET, "/virtual-machines/env-recovered", None).await;
+    let (status, current) =
+        request(&app, Method::GET, "/virtual-machines/env-recovered", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(current["operation"]["status"], "interrupted");
     assert!(
@@ -838,7 +841,13 @@ async fn a_machine_that_does_not_exist_has_no_logs() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    let (status, _) = request(&app, Method::GET, "/virtual-machines/env-nothing/events", None).await;
+    let (status, _) = request(
+        &app,
+        Method::GET,
+        "/virtual-machines/env-nothing/events",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
