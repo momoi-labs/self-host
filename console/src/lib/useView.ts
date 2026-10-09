@@ -75,6 +75,9 @@ function hashFor(view: View): string | undefined {
   if (view.view === "databases") return "#databases";
   if (view.view === "database-new") return "#new-database";
   if (view.view === "settings") return view.id === "general" ? "#settings" : `#settings/${view.id}`;
+  if (view.view === "app") return `#app-${view.id}`;
+  if (view.view === "environments") return `#virtual-machine-${view.id}`;
+  if (view.view === "environment-new") return "#new-virtual-machine";
   return undefined;
 }
 
