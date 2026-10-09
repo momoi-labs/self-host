@@ -17,6 +17,9 @@ import {
   FormField,
   GridPane,
   Input,
+  KV,
+  KVKey,
+  KVValue,
   Label,
   Select,
   SelectContent,
@@ -221,20 +224,20 @@ export function AuditHistory({ id, size }: PaneProps) {
   );
 }
 
-/** What a restart or a redeploy does unless the Operator chooses otherwise. A switch applies as soon as it is flipped. */
+/** Defaults every Application follows unless it, or the request, chooses otherwise. A switch applies as soon as it is flipped. */
 export function ApplicationDefaults({ id, size }: PaneProps) {
   const queryClient = useQueryClient();
   const { data: settings } = useQuery(settingsQuery);
   const [toggling, setToggling] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
 
-  async function togglePull(pull: boolean) {
+  async function toggle(change: { pullNewerImages: boolean } | { rewriteHost: boolean }) {
     setToggling(true);
     setToggleError(null);
     try {
       const res = await api("/settings", {
         method: "PUT",
-        body: JSON.stringify({ pullNewerImages: pull }),
+        body: JSON.stringify(change),
       });
       if (!res.ok) throw new Error((await failureOf(res)).error);
       queryClient.setQueryData(settingsQuery.queryKey, (await res.json()) as Settings);
@@ -247,22 +250,32 @@ export function ApplicationDefaults({ id, size }: PaneProps) {
 
   return (
     <GridPane id={id} size={size} title="Applications">
-      <p className="muted t-label">What a restart or a redeploy does unless you choose otherwise.</p>
-      <div className="settings-row">
-        <div>
+      <KV>
+        <KVKey className="kv-setting">
           <Label htmlFor="pull-newer-images">Pull newer images</Label>
-          <p className="muted t-label">
-            Restart and Save and redeploy pull each image from its registry first. Both start
-            with this choice, and you can change it each time.
-          </p>
-        </div>
-        <Switch
-          id="pull-newer-images"
-          checked={settings?.pullNewerImages.effective ?? false}
-          disabled={settings == null || toggling}
-          onCheckedChange={(checked) => void togglePull(checked)}
-        />
-      </div>
+          <p className="muted t-label">Restart and Save and redeploy pull each image from its registry first.</p>
+        </KVKey>
+        <KVValue className="kv-switch">
+          <Switch
+            id="pull-newer-images"
+            checked={settings?.pullNewerImages.effective ?? false}
+            disabled={settings == null || toggling}
+            onCheckedChange={(checked) => void toggle({ pullNewerImages: checked })}
+          />
+        </KVValue>
+        <KVKey className="kv-setting">
+          <Label htmlFor="rewrite-host">Send the target address as Host</Label>
+          <p className="muted t-label">For apps that refuse any Host but their loopback address.</p>
+        </KVKey>
+        <KVValue className="kv-switch">
+          <Switch
+            id="rewrite-host"
+            checked={settings?.rewriteHost.effective ?? false}
+            disabled={settings == null || toggling}
+            onCheckedChange={(checked) => void toggle({ rewriteHost: checked })}
+          />
+        </KVValue>
+      </KV>
       {toggleError ? (
         <Alert variant="error">
           <Icon name="alert" size="md" />

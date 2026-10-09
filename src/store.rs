@@ -190,6 +190,11 @@ pub struct ApplicationRecord {
     pub variable_delivery: VariableDelivery,
     #[serde(default)]
     pub route_rules: Vec<RouteRule>,
+    /// Whether every route sends the Web Target's loopback address as
+    /// `Host`, for an Application that refuses any other name. Unset, the
+    /// Operator's setting decides.
+    #[serde(default)]
+    pub rewrite_host: Option<bool>,
     #[serde(default)]
     pub network_policy: NetworkPolicy,
 }
@@ -659,6 +664,7 @@ mod tests {
             publication: Publication::Unpublished,
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            rewrite_host: None,
             network_policy: Default::default(),
         }
     }

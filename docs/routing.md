@@ -12,7 +12,8 @@ the saved list. An omitted field preserves the current rules on update;
 `[]` removes the explicit rules. Records created before this field existed
 read an empty list.
 
-`PUT /apps/id/{id}/routes` changes only `aliases` and `route_rules`, with
+`PUT /apps/id/{id}/routes` changes only `aliases`, `route_rules` and
+`rewrite_host` (see [Host header](#host-header)), with
 the same rules for an omitted field and `[]`. It never builds, pulls or
 restarts, whatever the Application is made from, so a Git Application can
 gain a path without a new build. It answers `200` once the proxy serves the
@@ -42,6 +43,21 @@ address with a nonzero port.
 An unpublished Application cannot have rules. Native Applications use the
 same route contract. The route contract itself
 uses socket addresses, so the proxy does not depend on how a target runs.
+
+## Host header
+
+The proxy forwards the `Host` the client sent, so an Application sees its
+Hostname. Some servers refuse any `Host` that is not a loopback name, as a
+guard against DNS rebinding. For those, the proxy can send the target's
+address, such as `127.0.0.1:8642`, as `Host` on every route of the
+Application, including its Hostname and aliases. `X-Forwarded-Host` still
+carries the Hostname.
+
+The Operator sets the default with `rewriteHost` on `PUT /settings`. It is off
+until turned on, and applies to the next request. An Application overrides it
+with `rewrite_host` on `PUT /apps/id/{id}/routes`: `true` or `false` pins its
+choice, and `null` follows the setting again. An omitted field keeps the
+current choice, and a redeploy keeps it too.
 
 ## Matching and validation
 

@@ -18,6 +18,9 @@ use crate::store::{ApplicationRecord, Publication, RouteRule};
 pub trait RouteStore: Send + Sync + 'static {
     fn publish(&self, app: &ApplicationRecord);
     fn withdraw(&self, id: &str);
+    /// The Operator's setting for an Application that does not choose
+    /// whether its routes send the target's address as `Host`.
+    fn set_rewrite_host_default(&self, _on: bool) {}
 }
 
 /// Every Hostname the Application answers on: its Hostname first, then any
@@ -258,16 +261,23 @@ impl RouteStore for ProxyRoutes {
             .into_iter()
             .map(str::to_string)
             .collect();
-        if let Err(error) =
-            self.table
-                .publish_rules(&app.id, &hostnames, target(app), &app.route_rules)
-        {
+        if let Err(error) = self.table.publish_rules(
+            &app.id,
+            &hostnames,
+            target(app),
+            &app.route_rules,
+            app.rewrite_host,
+        ) {
             tracing::error!(application_id = %app.id, %error, "could not publish Application routes");
         }
     }
 
     fn withdraw(&self, id: &str) {
         self.table.withdraw(id);
+    }
+
+    fn set_rewrite_host_default(&self, on: bool) {
+        self.table.set_rewrite_host_default(on);
     }
 }
 
@@ -354,6 +364,7 @@ mod tests {
             publication: Publication::Web,
             variable_delivery: crate::store::VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            rewrite_host: None,
             network_policy: Default::default(),
         }
     }

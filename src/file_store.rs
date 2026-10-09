@@ -90,6 +90,8 @@ struct ApplicationBody {
     variable_delivery: VariableDelivery,
     #[serde(default)]
     route_rules: Vec<crate::store::RouteRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rewrite_host: Option<bool>,
     #[serde(default)]
     network_policy: crate::store::NetworkPolicy,
     #[serde(default)]
@@ -297,6 +299,7 @@ impl FileStateStore {
             publication: body.publication,
             variable_delivery: body.variable_delivery,
             route_rules: body.route_rules,
+            rewrite_host: body.rewrite_host,
             network_policy: body.network_policy,
         })
     }
@@ -339,6 +342,7 @@ fn body_from(app: &ApplicationRecord, compose_file: Option<String>) -> Applicati
         publication: app.publication,
         variable_delivery: app.variable_delivery,
         route_rules: app.route_rules.clone(),
+        rewrite_host: app.rewrite_host,
         network_policy: app.network_policy.clone(),
         env: BTreeMap::new(),
     }
@@ -975,6 +979,7 @@ mod tests {
             publication: Publication::Web,
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            rewrite_host: None,
             network_policy: Default::default(),
         }
     }

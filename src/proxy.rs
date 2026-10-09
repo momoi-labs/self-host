@@ -69,6 +69,8 @@ pub struct RouteTable {
 #[derive(Default)]
 struct Tables {
     rules: HashMap<(String, String), OwnedRoute>,
+    /// The Operator's setting, for an Application that does not choose.
+    rewrite_host_default: bool,
 }
 
 #[derive(Clone)]
@@ -76,6 +78,7 @@ struct OwnedRoute {
     owner: String,
     target: Option<SocketAddr>,
     strip_prefix: bool,
+    rewrite_host: Option<bool>,
 }
 
 /// The longest matching route, copied while holding the table's read lock.
@@ -84,6 +87,9 @@ pub struct RouteMatch {
     pub path_prefix: String,
     pub target: Option<SocketAddr>,
     pub strip_prefix: bool,
+    /// The Application gets its target's address as `Host`, not the
+    /// Hostname the client asked for.
+    pub rewrite_host: bool,
 }
 
 impl RouteTable {
@@ -108,7 +114,14 @@ impl RouteTable {
                 path_prefix: prefix.clone(),
                 target: route.target,
                 strip_prefix: route.strip_prefix,
+                rewrite_host: route.rewrite_host.unwrap_or(tables.rewrite_host_default),
             })
+    }
+
+    /// Whether an Application that does not choose gets its target's
+    /// address as `Host`. Applies to the next request.
+    pub fn set_rewrite_host_default(&self, on: bool) {
+        self.inner.write().unwrap().rewrite_host_default = on;
     }
 
     /// Replaces one owner's routes in one write. A conflict leaves all prior
@@ -119,6 +132,7 @@ impl RouteTable {
         hostnames: &[String],
         target: Option<SocketAddr>,
         rules: &[RouteRule],
+        rewrite_host: Option<bool>,
     ) -> Result<(), RouteError> {
         if target.is_some_and(|target| !target.ip().is_loopback() || target.port() == 0) {
             return Err(RouteError::Invalid(
@@ -133,6 +147,7 @@ impl RouteTable {
                     owner: id.to_string(),
                     target,
                     strip_prefix: false,
+                    rewrite_host,
                 },
             );
         }
@@ -152,6 +167,7 @@ impl RouteTable {
                     owner: id.to_string(),
                     target: rule.target.or(target),
                     strip_prefix: rule.strip_prefix,
+                    rewrite_host,
                 },
             );
         }
@@ -174,7 +190,7 @@ impl RouteTable {
 
 impl Publisher for RouteTable {
     fn publish(&self, id: &str, hostnames: &[String], target: Option<SocketAddr>) {
-        if let Err(error) = self.publish_rules(id, hostnames, target, &[]) {
+        if let Err(error) = self.publish_rules(id, hostnames, target, &[], None) {
             tracing::error!(application_id = %id, %error, "could not publish Application routes");
         }
     }
@@ -562,6 +578,13 @@ async fn proxy_to(
     {
         parts.headers.insert(header::HOST, value);
     }
+    // An Application that answers only its own loopback name gets the
+    // target's address instead. `X-Forwarded-Host` still names the Hostname.
+    if route.rewrite_host
+        && let Ok(value) = HeaderValue::from_str(&target.to_string())
+    {
+        parts.headers.insert(header::HOST, value);
+    }
 
     let original_path = parts.uri.path();
     let path = if route.strip_prefix && route.path_prefix != "/" {
@@ -775,6 +798,40 @@ mod tests {
     }
 
     #[test]
+    fn an_application_choice_on_the_host_header_overrides_the_default() {
+        let table = RouteTable::new();
+        let publish = |id: &str, choice| {
+            table
+                .publish_rules(
+                    id,
+                    &[format!("{id}.example.invalid")],
+                    Some(addr(1)),
+                    &[],
+                    choice,
+                )
+                .unwrap();
+        };
+        publish("follows", None);
+        publish("on", Some(true));
+        publish("off", Some(false));
+        let rewrites = |id: &str| {
+            table
+                .route_for(&format!("{id}.example.invalid"), "/")
+                .unwrap()
+                .rewrite_host
+        };
+        assert_eq!(
+            [rewrites("follows"), rewrites("on"), rewrites("off")],
+            [false, true, false]
+        );
+        table.set_rewrite_host_default(true);
+        assert_eq!(
+            [rewrites("follows"), rewrites("on"), rewrites("off")],
+            [true, true, false]
+        );
+    }
+
+    #[test]
     fn longest_segment_match_wins_and_an_explicit_root_replaces_its_fallback() {
         let table = RouteTable::new();
         table
@@ -783,6 +840,7 @@ mod tests {
                 &["blog.example.invalid".into()],
                 Some(addr(1)),
                 &[rule("/app", 2), rule("/app/api", 3), rule("/", 4)],
+                None,
             )
             .unwrap();
         for (path, port) in [
@@ -818,6 +876,7 @@ mod tests {
                 &["blog.example.invalid".into()],
                 Some(addr(1)),
                 &[follows],
+                None,
             )
             .unwrap();
         let route = table.route_for("blog.example.invalid", "/app/x").unwrap();
@@ -832,10 +891,16 @@ mod tests {
         let table = RouteTable::new();
         table.publish("root", &["blog.example.invalid".into()], Some(addr(1)));
         table
-            .publish_rules("paths", &[], None, &[rule("/app", 2), rule("/api", 3)])
+            .publish_rules(
+                "paths",
+                &[],
+                None,
+                &[rule("/app", 2), rule("/api", 3)],
+                None,
+            )
             .unwrap();
         table
-            .publish_rules("paths", &[], None, &[rule("/app", 4)])
+            .publish_rules("paths", &[], None, &[rule("/app", 4)], None)
             .unwrap();
         assert_eq!(
             table
@@ -851,7 +916,7 @@ mod tests {
                 .target,
             Some(addr(1))
         );
-        let conflict = table.publish_rules("paths", &[], None, &[rule("/", 5)]);
+        let conflict = table.publish_rules("paths", &[], None, &[rule("/", 5)], None);
         assert!(matches!(conflict, Err(RouteError::Conflict(_))));
         assert_eq!(
             table
@@ -1228,6 +1293,37 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn a_rewritten_host_names_the_target_and_keeps_the_hostname_forwarded() {
+        let backend = spawn_backend().await;
+        let table = RouteTable::new();
+        table
+            .publish_rules(
+                "abc",
+                &["blog.home.lan".into()],
+                Some(backend),
+                &[],
+                Some(true),
+            )
+            .unwrap();
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
+
+        let (status, _, body) = request(
+            https_addr,
+            client_config(cert),
+            "blog.home.lan",
+            "/reflect",
+            &[],
+            vec![],
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains(&format!("host={backend}\n")), "{body}");
+        assert!(body.contains("x-forwarded-host=blog.home.lan"), "{body}");
+    }
+
+    #[tokio::test]
     async fn a_client_that_asks_for_http2_gets_it_and_the_application_still_sees_http1() {
         let backend = spawn_backend().await;
         let table = RouteTable::new();
@@ -1506,7 +1602,13 @@ mod integration {
         let deepest = spawn_fixture(Router::new().fallback(|| async { "nested target" })).await;
         let table = RouteTable::new();
         table
-            .publish_rules("root", &["blog.example.invalid".into()], Some(root), &[])
+            .publish_rules(
+                "root",
+                &["blog.example.invalid".into()],
+                Some(root),
+                &[],
+                None,
+            )
             .unwrap();
         table
             .publish_rules(
@@ -1518,6 +1620,7 @@ mod integration {
                     path_rule("blog.example.invalid", "/app/api", deepest, true),
                     path_rule("blog.example.invalid", "/preserve", target, false),
                 ],
+                None,
             )
             .unwrap();
         let (addr, _, cert, _) = spawn_proxy(Router::new(), table.clone()).await;
@@ -1572,6 +1675,7 @@ mod integration {
                 &[],
                 None,
                 &[path_rule("blog.example.invalid", "/app", deepest, true)],
+                None,
             )
             .unwrap();
         let (_, _, body) = request(
@@ -1626,6 +1730,7 @@ mod integration {
                 &[],
                 None,
                 &[path_rule("blog.example.invalid", "/app", target, true)],
+                None,
             )
             .unwrap();
         let (addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
@@ -1689,6 +1794,7 @@ mod integration {
                 &[],
                 None,
                 &[path_rule("blog.example.invalid", "/app", target, true)],
+                None,
             )
             .unwrap();
         let (addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
@@ -1774,6 +1880,7 @@ mod integration {
                 &[],
                 None,
                 &[path_rule("blog.example.invalid", "/app", target, true)],
+                None,
             )
             .unwrap();
         let (addr, _, cert, _) = spawn_proxy(Router::new(), table).await;

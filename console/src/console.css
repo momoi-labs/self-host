@@ -411,6 +411,9 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .grid-pane-body:has(> .form) { padding: 0; }
 /* A checkbox that qualifies the save sits on the buttons' line. */
 .form-actions-buttons > .check { align-self: center; }
+/* A switch in a KV list sits at the row's end, level with its label. */
+.kv-switch { justify-self: end; }
+.kv-setting label { font-weight: 600; }
 
 /* A duration is a number and a unit side by side, with the way back to the
    default beside them rather than at the far edge of the card. */

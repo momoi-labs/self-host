@@ -972,7 +972,8 @@ struct UpdateApplicationRequest {
     network_policy: Option<crate::store::NetworkPolicy>,
 }
 
-/// A route-only edit. A field left out keeps what is saved; `[]` clears it.
+/// A route-only edit. A field left out keeps what is saved; `[]` clears it,
+/// and a `null` `rewrite_host` hands the choice back to the setting.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UpdateRoutesRequest {
@@ -980,6 +981,8 @@ struct UpdateRoutesRequest {
     aliases: Option<Vec<String>>,
     #[serde(default)]
     route_rules: Option<Vec<crate::store::RouteRule>>,
+    #[serde(default, deserialize_with = "settings::present")]
+    rewrite_host: Option<Option<bool>>,
 }
 
 /// One container of an Application, as Docker sees it right now.
@@ -1045,6 +1048,7 @@ struct ApplicationResponse {
     publication: Publication,
     variable_delivery: VariableDelivery,
     route_rules: Vec<crate::store::RouteRule>,
+    rewrite_host: Option<bool>,
     network_policy: crate::store::NetworkPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     managed_postgres: Option<postgres::Database>,
@@ -1101,6 +1105,7 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             publication: app.publication,
             variable_delivery: app.variable_delivery,
             route_rules: app.route_rules,
+            rewrite_host: app.rewrite_host,
             network_policy: app.network_policy,
             managed_postgres: None,
             services: Vec::new(),
@@ -1249,6 +1254,7 @@ mod http_readiness_tests {
             publication: Default::default(),
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            rewrite_host: None,
             network_policy: Default::default(),
         }
     }
@@ -1612,11 +1618,18 @@ async fn update_routes<S: StateStore>(
     Json(body): Json<UpdateRoutesRequest>,
 ) -> Response {
     let namespace = state.dns_records.lock_namespace().await;
-    let response =
-        match apps::prepare_routes(&state.store, &id, body.aliases, body.route_rules).await {
-            Ok(pending) => accept_deploy(&state, pending, "configure").await,
-            Err(error) => deploy_error_response(error),
-        };
+    let response = match apps::prepare_routes(
+        &state.store,
+        &id,
+        body.aliases,
+        body.route_rules,
+        body.rewrite_host,
+    )
+    .await
+    {
+        Ok(pending) => accept_deploy(&state, pending, "configure").await,
+        Err(error) => deploy_error_response(error),
+    };
     drop(namespace);
     response
 }
@@ -3584,6 +3597,7 @@ mod tests {
             publication: Default::default(),
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            rewrite_host: None,
             network_policy: Default::default(),
         };
         store.insert_application(&record).await.unwrap();
@@ -3773,6 +3787,7 @@ mod tests {
                     publication: Default::default(),
                     variable_delivery: VariableDelivery::Referenced,
                     route_rules: Vec::new(),
+                    rewrite_host: None,
                     network_policy: Default::default(),
                 })
                 .await
@@ -3836,6 +3851,7 @@ mod tests {
                 publication: Default::default(),
                 variable_delivery: VariableDelivery::Referenced,
                 route_rules: Vec::new(),
+                rewrite_host: None,
                 network_policy: Default::default(),
             })
             .await
@@ -3889,6 +3905,7 @@ mod tests {
                 publication: Default::default(),
                 variable_delivery: VariableDelivery::Referenced,
                 route_rules: Vec::new(),
+                rewrite_host: None,
                 network_policy: Default::default(),
             })
             .await
@@ -3901,6 +3918,7 @@ mod tests {
             json!({
                 "aliases": ["www.home.lan"],
                 "route_rules": [{"hostname": "blog.home.lan", "path_prefix": "/api", "strip_prefix": true}],
+                "rewrite_host": true,
             }),
         )
         .await;
@@ -3912,6 +3930,7 @@ mod tests {
         let saved = store.get_application("blog").await.unwrap().unwrap();
         assert_eq!(saved.status, apps::STATUS_RUNNING);
         assert_eq!(saved.aliases, ["www.home.lan"]);
+        assert_eq!(saved.rewrite_host, Some(true));
         let published = route_store.get("blog").unwrap();
         assert!(published.answers_on("www.home.lan"));
         assert_eq!(published.route_rules, saved.route_rules);
@@ -4437,6 +4456,7 @@ mod tests {
                 "publication": {"kind": "web"},
                 "variable_delivery": "referenced",
                 "route_rules": [],
+                "rewrite_host": null,
                 "network_policy": {"kind":"private","consumers":[]},
                 "services": [{
                     "service": "app",

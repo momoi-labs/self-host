@@ -1343,6 +1343,7 @@ async fn run_api_server(
     // Where every Application answers, as the proxy in this process reads it
     // (ADR-0019).
     let table = self_host::proxy::RouteTable::new();
+    table.set_rewrite_host_default(self_host::settings::rewrite_host(&store).await);
     let routes: Arc<dyn self_host::routes::RouteStore> =
         Arc::new(self_host::routes::ProxyRoutes::new(table.clone()));
 
