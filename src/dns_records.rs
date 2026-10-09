@@ -8,7 +8,7 @@
 //! so a restart never serves a Record that was not saved.
 
 use std::collections::BTreeMap;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -187,8 +187,8 @@ fn parse_description(input: Option<String>) -> Result<Option<String>, String> {
 )]
 #[async_trait]
 pub trait Zone: Send + Sync + 'static {
-    /// The addresses currently published at the wildcard.
-    async fn addresses(&self) -> Vec<Ipv4Addr>;
+    /// The addresses currently published at the wildcard, IPv4 and IPv6.
+    async fn addresses(&self) -> Vec<IpAddr>;
     /// Answers `<name>.<suffix>` with `address` from now on, ahead of the
     /// wildcard, replacing any `A` Record already there.
     async fn publish(&self, name: &str, address: Ipv4Addr);
@@ -221,8 +221,8 @@ impl FakeZone {
 
 #[async_trait]
 impl Zone for FakeZone {
-    async fn addresses(&self) -> Vec<Ipv4Addr> {
-        self.answer("*").into_iter().collect()
+    async fn addresses(&self) -> Vec<IpAddr> {
+        self.answer("*").into_iter().map(IpAddr::V4).collect()
     }
 
     async fn publish(&self, name: &str, address: Ipv4Addr) {
@@ -246,7 +246,7 @@ pub struct UnservedZone;
 
 #[async_trait]
 impl Zone for UnservedZone {
-    async fn addresses(&self) -> Vec<Ipv4Addr> {
+    async fn addresses(&self) -> Vec<IpAddr> {
         Vec::new()
     }
     async fn publish(&self, _name: &str, _address: Ipv4Addr) {}
@@ -631,7 +631,18 @@ impl Records {
                 virtual_machine_id: None,
             })
             .collect();
-        let addresses = self.zone.addresses().await;
+        // Records are A only; the wildcard's AAAA answers are served but not
+        // listed here until a Record can carry an IPv6 value.
+        let addresses: Vec<Ipv4Addr> = self
+            .zone
+            .addresses()
+            .await
+            .into_iter()
+            .filter_map(|address| match address {
+                IpAddr::V4(address) => Some(address),
+                IpAddr::V6(_) => None,
+            })
+            .collect();
         for value in &addresses {
             records.push(InventoryRecord {
                 record: Record {
@@ -1232,6 +1243,29 @@ mod tests {
         }
     }
 
+    /// An IPv6-only Host has no IPv4 address for an A Record, so `admin` is
+    /// left to the wildcard, which answers it with the Host's AAAA.
+    #[tokio::test]
+    async fn init_on_an_ipv6_only_host_leaves_admin_to_the_wildcard() {
+        let store = FakeStateStore::new();
+        let result = crate::bootstrap::BootstrapResult {
+            dns_suffix: "home.lan".into(),
+            api_key: KEY.into(),
+            api_listen_addr: "0.0.0.0:3721".into(),
+            host_ip: "2001:db8::10".into(),
+            host_addresses: vec!["2001:db8::10".parse().unwrap()],
+            execution_unavailable: None,
+        };
+        crate::bootstrap::persist_bootstrap_state(&store, &result)
+            .await
+            .unwrap();
+        assert!(load(&store).await.unwrap().is_empty());
+        assert_eq!(
+            store.get_state("host_ip").await.unwrap().as_deref(),
+            Some("2001:db8::10")
+        );
+    }
+
     #[tokio::test]
     async fn init_creates_an_editable_admin_that_keeps_its_address_and_can_be_deleted() {
         let store = FakeStateStore::new();
@@ -1336,7 +1370,15 @@ mod tests {
         let (status, body) = call(&app, "GET", "/bootstrap/status", Value::Null).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["dns_suffix"], "home.lan");
-        assert_eq!(body["forwarders"], json!(["1.1.1.1", "1.0.0.1"]));
+        assert_eq!(
+            body["forwarders"],
+            json!([
+                "1.1.1.1",
+                "1.0.0.1",
+                "2606:4700:4700::1111",
+                "2606:4700:4700::1001"
+            ])
+        );
     }
 
     #[tokio::test]

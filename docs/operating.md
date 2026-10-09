@@ -23,7 +23,9 @@ DNS Suffix plus the address policy — which addresses to `include` and which to
 interfaces every 30 seconds and publishes every LAN address that is actually
 up, so a restore onto a Host with a different address needs no edit at all.
 `--host-ip` on `init` pins a candidate into `include`; it is still served only
-while an interface has it.
+while an interface has it. Both lists take IPv4 and IPv6 addresses. IPv6
+privacy addresses, which rotate daily, are never published
+([ADR-0033](adr/0033-the-platform-serves-both-address-families.md)).
 
 `platform.db` is one SQLite file the daemon opens in-process (ADR-0027). The
 Records the Operator adds to the Zone through `POST /dns/records` are rows in

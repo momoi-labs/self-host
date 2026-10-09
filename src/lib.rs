@@ -35,6 +35,7 @@ pub mod error;
 pub mod file_store;
 pub mod host_addresses;
 pub mod host_dns;
+pub mod listeners;
 pub mod metrics;
 pub mod native;
 pub mod paths;
@@ -824,7 +825,7 @@ struct BootstrapStatusResponse {
     /// The addresses currently published by the served Zone's wildcard.
     host_addresses: Vec<String>,
     dns_suffix: Option<String>,
-    forwarders: Vec<std::net::Ipv4Addr>,
+    forwarders: Vec<std::net::IpAddr>,
 }
 
 async fn bootstrap_status<S: StateStore>(
