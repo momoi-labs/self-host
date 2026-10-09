@@ -74,6 +74,7 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         publication: Publication::Web,
         variable_delivery: self_host::store::VariableDelivery::Referenced,
         route_rules: vec![],
+        rewrite_host: None,
         network_policy: Default::default(),
     }
 }
