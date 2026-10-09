@@ -103,6 +103,8 @@ export type App = {
   git_build?: GitBuild;
   aliases?: string[];
   route_rules?: RouteRule[];
+  /** Whether every route sends the Web Target's loopback address as `Host`. Null follows the setting. */
+  rewrite_host?: boolean | null;
   restarts?: number | null;
   last_error?: Report | string | null;
   compose?: string;
@@ -319,6 +321,12 @@ export type Settings = {
   };
   /** Whether a restart pulls newer images when the Operator does not say. */
   pullNewerImages: {
+    effective: boolean;
+    source: "operator" | "default";
+    setting: boolean | null;
+  };
+  /** Whether an Application that does not choose gets its target's address as `Host`. */
+  rewriteHost: {
     effective: boolean;
     source: "operator" | "default";
     setting: boolean | null;

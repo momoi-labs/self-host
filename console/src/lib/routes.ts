@@ -92,6 +92,15 @@ export function replaceRoute(app: App, previous: Route | null, next: RouteDraft 
   return { aliases, route_rules: rules };
 }
 
+/** Whether the Application sends its Web Target's address as `Host`; null follows the setting. Nothing is rebuilt or restarted. */
+export async function saveRewriteHost(app: App, rewriteHost: boolean | null): Promise<Report | null> {
+  const response = await api(`/apps/id/${encodeURIComponent(app.id)}/routes`, {
+    method: "PUT",
+    body: JSON.stringify({ rewrite_host: rewriteHost }),
+  });
+  return response.ok ? null : failureOf(response);
+}
+
 /** Saves an Application's aliases and rules. Nothing is rebuilt or restarted; the failure comes back as a report. */
 export async function saveRoutes(app: App, routes: { aliases: string[]; route_rules: RouteRule[] }): Promise<Report | null> {
   const response = await api(`/apps/id/${encodeURIComponent(app.id)}/routes`, {

@@ -27,6 +27,8 @@ pub const AUDIT_EVENTS_MAX_AGE_KEY: &str = "audit_events_max_age";
 pub const AUDIT_EVENTS_MAX_AGE_SUBJECT: &str = "audit-events-max-age";
 pub const PULL_NEWER_IMAGES_KEY: &str = "pull_newer_images";
 pub const PULL_NEWER_IMAGES_SUBJECT: &str = "pull-newer-images";
+pub const REWRITE_HOST_KEY: &str = "rewrite_host";
+pub const REWRITE_HOST_SUBJECT: &str = "rewrite-host";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -62,6 +64,9 @@ pub struct Settings {
     /// Whether a restart or a redeploy pulls newer images when the request does
     /// not say.
     pub pull_newer_images: Toggle,
+    /// Whether an Application that does not choose gets its target's
+    /// address as `Host` instead of its Hostname.
+    pub rewrite_host: Toggle,
 }
 
 /// Only the settings present change. `null` removes one, and the default
@@ -74,10 +79,12 @@ pub struct Update {
     pub audit_events_max_age: Option<Option<String>>,
     #[serde(default, deserialize_with = "present")]
     pub pull_newer_images: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "present")]
+    pub rewrite_host: Option<Option<bool>>,
 }
 
 /// Tells a field set to `null` apart from a field left out.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -91,16 +98,17 @@ pub(crate) fn subject(payload: &serde_json::Value) -> (&'static str, &'static st
     subject_for(
         payload.get("auditEventsMaxAge").is_some(),
         payload.get("pullNewerImages").is_some(),
+        payload.get("rewriteHost").is_some(),
     )
 }
 
 /// The setting a change touched, or the audit history when it touched more
 /// than one.
-fn subject_for(retention: bool, pull: bool) -> (&'static str, &'static str) {
-    if pull && !retention {
-        (PULL_NEWER_IMAGES_SUBJECT, "Image pulls")
-    } else {
-        (AUDIT_EVENTS_MAX_AGE_SUBJECT, "Audit history")
+fn subject_for(retention: bool, pull: bool, rewrite: bool) -> (&'static str, &'static str) {
+    match (retention, pull, rewrite) {
+        (false, true, false) => (PULL_NEWER_IMAGES_SUBJECT, "Image pulls"),
+        (false, false, true) => (REWRITE_HOST_SUBJECT, "Host header"),
+        _ => (AUDIT_EVENTS_MAX_AGE_SUBJECT, "Audit history"),
     }
 }
 
@@ -111,17 +119,35 @@ pub(crate) async fn pull_newer_images<S: StateStore>(state: &AppState<S>) -> boo
 }
 
 async fn pull_setting<S: StateStore>(state: &AppState<S>) -> Option<bool> {
-    match state
-        .store
-        .get_state(PULL_NEWER_IMAGES_KEY)
+    toggle_setting(&state.store, PULL_NEWER_IMAGES_KEY).await
+}
+
+/// Whether an Application that does not choose gets its target's address as
+/// `Host`. The proxy holds it in memory, so the daemon reads it once at
+/// start and every change after that.
+pub async fn rewrite_host(store: &impl StateStore) -> bool {
+    toggle_setting(store, REWRITE_HOST_KEY)
         .await
-        .ok()
-        .flatten()
-        .as_deref()
-    {
+        .unwrap_or(false)
+}
+
+async fn toggle_setting(store: &impl StateStore, key: &str) -> Option<bool> {
+    match store.get_state(key).await.ok().flatten().as_deref() {
         Some("true") => Some(true),
         Some("false") => Some(false),
         _ => None,
+    }
+}
+
+fn toggle(setting: Option<bool>) -> Toggle {
+    Toggle {
+        effective: setting.unwrap_or(false),
+        source: if setting.is_some() {
+            Source::Operator
+        } else {
+            Source::Default
+        },
+        setting,
     }
 }
 
@@ -166,15 +192,8 @@ async fn current<S: StateStore>(state: &AppState<S>) -> Settings {
             source,
             setting,
         },
-        pull_newer_images: Toggle {
-            effective: pull.unwrap_or(false),
-            source: if pull.is_some() {
-                Source::Operator
-            } else {
-                Source::Default
-            },
-            setting: pull,
-        },
+        pull_newer_images: toggle(pull),
+        rewrite_host: toggle(toggle_setting(&state.store, REWRITE_HOST_KEY).await),
     }
 }
 
@@ -221,6 +240,17 @@ pub(crate) async fn update<S: StateStore>(
             .await
             .map_err(|e| e.to_string()),
     });
+    let result = result.and(match update.rewrite_host {
+        None => Ok(()),
+        Some(value) => state
+            .store
+            .store_state(
+                REWRITE_HOST_KEY,
+                value.map(|on| on.to_string()).as_deref().unwrap_or(""),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+    });
     if let Err(error) = result {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -232,6 +262,9 @@ pub(crate) async fn update<S: StateStore>(
     // for this very change is what triggers it. The event carries what
     // changed; the middleware that closes it keeps a description it finds.
     let after = current(&state).await;
+    state
+        .routes
+        .set_rewrite_host_default(after.rewrite_host.effective);
     let mut changes = Vec::new();
     if update.audit_events_max_age.is_some() {
         changes.push(crate::audit::Change {
@@ -247,9 +280,17 @@ pub(crate) async fn update<S: StateStore>(
             to: describe_toggle(&after.pull_newer_images),
         });
     }
+    if update.rewrite_host.is_some() {
+        changes.push(crate::audit::Change {
+            setting: REWRITE_HOST_KEY.into(),
+            from: describe_toggle(&before.rewrite_host),
+            to: describe_toggle(&after.rewrite_host),
+        });
+    }
     let (id, name) = subject_for(
         update.audit_events_max_age.is_some(),
         update.pull_newer_images.is_some(),
+        update.rewrite_host.is_some(),
     );
     let mut event = crate::audit::event(
         "configure",
@@ -495,6 +536,27 @@ mod tests {
             body["pullNewerImages"],
             json!({"effective": false, "source": "default", "setting": null})
         );
+    }
+
+    #[tokio::test]
+    async fn rewriting_the_host_is_off_until_the_operator_turns_it_on() {
+        let (app, store) = setup(None).await;
+        let (_, body) = call(&app, "GET", Value::Null).await;
+        assert_eq!(
+            body["rewriteHost"],
+            json!({"effective": false, "source": "default", "setting": null})
+        );
+
+        let (status, body) = call(&app, "PUT", json!({"rewriteHost": true})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["rewriteHost"],
+            json!({"effective": true, "source": "operator", "setting": true})
+        );
+        assert!(rewrite_host(&store).await);
+
+        call(&app, "PUT", json!({"rewriteHost": null})).await;
+        assert!(!rewrite_host(&store).await);
     }
 
     #[test]

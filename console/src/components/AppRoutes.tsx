@@ -1,7 +1,12 @@
 import { useState } from "react";
-import { Button, EmptyState, EmptyStateTitle, Search } from "@momoi-labs/kiso-react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  Button, Card, CardContent, CardHeader, CardTitle, EmptyState, EmptyStateTitle, KV, KVKey, KVValue, Label, Search, Switch,
+} from "@momoi-labs/kiso-react";
 
-import { routesOf, type RouteKind } from "../lib/routes.js";
+import { asReport } from "../lib/api.js";
+import { settingsQuery } from "../lib/queries.js";
+import { routesOf, saveRewriteHost, type RouteKind } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { Icon } from "./Icon.js";
 import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
@@ -23,8 +28,25 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
   const notify = useToast();
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<RouteEditor | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const settings = useQuery(settingsQuery).data;
+  const rewriteHost = app.rewrite_host ?? settings?.rewriteHost.effective ?? false;
   const routes = routesOf(app)
     .sort((a, b) => order[a.kind] - order[b.kind] || a.hostname.localeCompare(b.hostname) || a.path.localeCompare(b.path));
+  /** True or false sets this Application's choice; null follows the setting again. */
+  async function chooseRewriteHost(next: boolean | null) {
+    setToggling(true);
+    try {
+      const refused = await saveRewriteHost(app, next);
+      if (refused) notify("danger", "Could not save the Host setting", refused);
+      else await reload();
+    } catch (cause) {
+      notify("danger", "Could not save the Host setting", asReport(cause));
+    } finally {
+      setToggling(false);
+    }
+  }
+
   const visible = routes.filter((route) => `${route.hostname}${route.path}`.includes(query.trim().toLowerCase()));
 
   return (
@@ -41,6 +63,21 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
         onEdit={(route) => setEditor({ app, route })}
         onRename={onRename}
         empty={<EmptyState variant="first-run"><EmptyStateTitle>No routes</EmptyStateTitle></EmptyState>} />
+      <Card>
+        <CardHeader><CardTitle>Proxy</CardTitle></CardHeader>
+        <CardContent>
+          <KV>
+            <KVKey className="kv-setting">
+              <Label htmlFor="route-rewrite-host">Send the target address as Host</Label>
+              <p className="muted t-label">For an app that refuses any Host but its loopback address.</p>
+            </KVKey>
+            <KVValue className="kv-switch">
+              <Switch id="route-rewrite-host" checked={rewriteHost} disabled={busy || toggling || !settings}
+                onCheckedChange={(checked) => void chooseRewriteHost(checked === settings?.rewriteHost.effective ? null : checked)} />
+            </KVValue>
+          </KV>
+        </CardContent>
+      </Card>
       <RouteDialog editor={editor} apps={apps} dnsSuffix={dnsSuffix} onClose={() => setEditor(null)}
         onSaved={(message) => {
           setEditor(null);
