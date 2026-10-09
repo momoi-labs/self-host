@@ -225,12 +225,13 @@ struct Context {
 
 /// Both listeners, bound but not yet serving. Bind before serving so a port
 /// conflict on either one fails startup instead of half-starting — the same
-/// split `dns::bind`/`dns::start` uses.
+/// split `dns::bind`/`dns::start` uses. Each port may also have an IPv6
+/// listener next to the first one.
 pub struct Bound {
     pub https_addr: SocketAddr,
     pub http_addr: SocketAddr,
-    https_listener: TcpListener,
-    http_listener: TcpListener,
+    https_listeners: Vec<TcpListener>,
+    http_listeners: Vec<TcpListener>,
     acceptor: TlsAcceptor,
     ctx: Arc<Context>,
     http_setup_router: Router,
@@ -256,6 +257,27 @@ pub async fn bind(
     let http_listener = TcpListener::bind(SocketAddr::new(config.bind_ip, config.http_port))
         .await
         .context("bind HTTP listener")?;
+    let https_addr = https_listener.local_addr()?;
+    let http_addr = http_listener.local_addr()?;
+    let mut https_listeners = vec![https_listener];
+    let mut http_listeners = vec![http_listener];
+    // The IPv4 unspecified address brings the IPv6 one along on the same
+    // ports (#82), IPv6-only so neither claims the other's. It is best
+    // effort: a Host whose IPv6 ports are taken still serves IPv4.
+    if config.bind_ip == IpAddr::from([0, 0, 0, 0]) {
+        let ipv6 = |port| SocketAddr::new(IpAddr::from([0u16; 8]), port);
+        match crate::listeners::tcp(ipv6(https_addr.port()))
+            .and_then(|https| Ok((https, crate::listeners::tcp(ipv6(http_addr.port()))?)))
+        {
+            Ok((https, http)) => {
+                https_listeners.push(https);
+                http_listeners.push(http);
+            }
+            Err(error) => {
+                tracing::warn!("the proxy is not listening on IPv6: {error}");
+            }
+        }
+    }
 
     let http_setup_router = crate::console::http_setup_router(
         config.admin_hostname.clone(),
@@ -263,10 +285,10 @@ pub async fn bind(
     );
 
     Ok(Bound {
-        https_addr: https_listener.local_addr()?,
-        http_addr: http_listener.local_addr()?,
-        https_listener,
-        http_listener,
+        https_addr,
+        http_addr,
+        https_listeners,
+        http_listeners,
         acceptor,
         http_setup_router,
         ctx: Arc::new(Context {
@@ -307,13 +329,34 @@ impl Bound {
 
     /// Serves both listeners forever.
     pub async fn run(self) -> anyhow::Result<()> {
-        tracing::info!(https = %self.https_addr, http = %self.http_addr, "proxy listening");
-        tokio::spawn(serve_http(
-            self.http_listener,
-            self.http_setup_router,
-            self.ctx.challenge_router.clone(),
-        ));
-        serve_https(self.https_listener, self.acceptor, self.ctx).await
+        let addresses = |listeners: &[TcpListener]| {
+            listeners
+                .iter()
+                .filter_map(|listener| listener.local_addr().ok())
+                .collect::<Vec<_>>()
+        };
+        tracing::info!(
+            https = ?addresses(&self.https_listeners),
+            http = ?addresses(&self.http_listeners),
+            "proxy listening"
+        );
+        for listener in self.http_listeners {
+            tokio::spawn(serve_http(
+                listener,
+                self.http_setup_router.clone(),
+                self.ctx.challenge_router.clone(),
+            ));
+        }
+        let mut https = self.https_listeners.into_iter();
+        let first = https.next().expect("bind opens an HTTPS listener");
+        for listener in https {
+            tokio::spawn(serve_https(
+                listener,
+                self.acceptor.clone(),
+                self.ctx.clone(),
+            ));
+        }
+        serve_https(first, self.acceptor, self.ctx).await
     }
 }
 
@@ -453,7 +496,14 @@ fn host_of(req: &Request<Incoming>) -> Option<String> {
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .or_else(|| req.uri().host());
-    raw.map(|host| host.split(':').next().unwrap_or(host).to_ascii_lowercase())
+    raw.map(|host| {
+        // An IPv6 literal keeps its brackets; only a trailing port goes.
+        let name = match host.parse::<hyper::http::uri::Authority>() {
+            Ok(authority) => authority.host().to_owned(),
+            Err(_) => host.split(':').next().unwrap_or(host).to_owned(),
+        };
+        name.to_ascii_lowercase()
+    })
 }
 
 async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> Response<ProxyBody> {
@@ -1118,6 +1168,20 @@ mod integration {
         rustls::pki_types::CertificateDer<'static>,
         crate::metrics::Metrics,
     ) {
+        spawn_proxy_at("127.0.0.1", admin_router, table, challenge_router).await
+    }
+
+    async fn spawn_proxy_at(
+        bind_ip: &str,
+        admin_router: Router,
+        table: RouteTable,
+        challenge_router: Router,
+    ) -> (
+        SocketAddr,
+        SocketAddr,
+        rustls::pki_types::CertificateDer<'static>,
+        crate::metrics::Metrics,
+    ) {
         let dir = std::env::temp_dir().join(format!(
             "self-host-proxy-test-{}-{}",
             std::process::id(),
@@ -1132,7 +1196,7 @@ mod integration {
             ProxyConfig {
                 cert_path: dir.join("cert.pem"),
                 key_path: dir.join("key.pem"),
-                bind_ip: "127.0.0.1".parse().unwrap(),
+                bind_ip: bind_ip.parse().unwrap(),
                 https_port: 0,
                 http_port: 0,
                 admin_hostname: "admin.home.lan".into(),
@@ -1147,6 +1211,59 @@ mod integration {
         let (https_addr, http_addr) = (bound.https_addr, bound.http_addr);
         tokio::spawn(bound.run());
         (https_addr, http_addr, cert_der, metrics)
+    }
+
+    /// On the unspecified address the proxy takes IPv6 too, on the same
+    /// ports, so a Consumer reaches the console and an Application over IPv6
+    /// (#82).
+    #[tokio::test]
+    async fn consumers_reach_the_console_and_an_application_over_ipv6() {
+        let backend = spawn_backend().await;
+        let table = RouteTable::new();
+        table.publish("abc", &["blog.home.lan".into()], Some(backend));
+        let admin = Router::new().route("/", axum::routing::get(|| async { "admin console" }));
+        let (https_addr, http_addr, cert, _) =
+            spawn_proxy_at("0.0.0.0", admin, table, Router::new()).await;
+        let ipv6 = |port| SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+
+        let (status, _, body) = request(
+            ipv6(https_addr.port()),
+            client_config(cert.clone()),
+            "admin.home.lan",
+            "/",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"admin console");
+
+        let (status, _, body) = request(
+            ipv6(https_addr.port()),
+            client_config(cert),
+            "blog.home.lan",
+            "/reflect",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let reflected = String::from_utf8(body).unwrap();
+        assert!(reflected.contains("x-forwarded-for=::1\n"), "{reflected}");
+
+        // HTTP sends the client to HTTPS, an IPv6 literal kept whole.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .unwrap();
+        let response = client
+            .get(format!("http://{}/apps", ipv6(http_addr.port())))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(response.headers()[header::LOCATION], "https://[::1]/apps");
     }
 
     #[tokio::test]
