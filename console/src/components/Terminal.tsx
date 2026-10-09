@@ -68,7 +68,7 @@ export function Terminal({ id, machine = false, native = false, account }: { id:
     terminal.open(host.current);
     fit.fit();
     const path = machine
-      ? `/environments/${encodeURIComponent(id)}/terminal`
+      ? `/virtual-machines/${encodeURIComponent(id)}/terminal`
       : `/apps/id/${encodeURIComponent(id)}/terminal`;
     const url = new URL(path, window.location.href);
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";

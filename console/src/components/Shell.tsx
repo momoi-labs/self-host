@@ -47,7 +47,7 @@ export function Shell({
   version,
   overview,
   deploy,
-  newMachine = { href: "/console/#new-environment", active: false },
+  newMachine = { href: "/console/#new-virtual-machine", active: false },
   databases = { href: "/console/#databases", active: false },
   newDatabase = { href: "/console/#new-database", active: false },
   customImages = { href: "/console/#custom-images", active: false },

@@ -295,23 +295,23 @@ fn build_platform_with_native<S: StateStore>(
         )
         .route("/custom-images/{id}", delete(custom_images::remove::<S>))
         .route(
-            "/environments",
+            "/virtual-machines",
             get(environments::list::<S>).post(environments::create::<S>),
         )
         .route(
-            "/environments/{id}",
+            "/virtual-machines/{id}",
             get(environments::get::<S>).put(environments::update::<S>),
         )
         .route(
-            "/environments/{id}/actions",
+            "/virtual-machines/{id}/actions",
             post(environments::action::<S>),
         )
         .route(
-            "/environments/{id}/events",
+            "/virtual-machines/{id}/events",
             get(environments::events_log::<S>),
         )
         .route(
-            "/environments/{id}/logs/{source}",
+            "/virtual-machines/{id}/logs/{source}",
             get(environments::machine_log::<S>),
         )
         .route("/apps/{name}", delete(remove_app::<S>))
@@ -379,7 +379,7 @@ fn build_platform_with_native<S: StateStore>(
         .route("/deploy/{id}", post(deployments::triggers::deliver::<S>))
         .route("/apps/id/{id}/terminal", get(terminal::upgrade::<S>))
         .route(
-            "/environments/{id}/terminal",
+            "/virtual-machines/{id}/terminal",
             get(terminal::upgrade_environment::<S>),
         )
         .with_state(state.clone());

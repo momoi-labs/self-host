@@ -31,7 +31,7 @@ function render(apps, environments, selected = "") {
     overview: { href: "/console/", active: !selected },
     deploy: { href: "/console/#new", active: false },
     application: app => ({ href: `/console/#app-${app.id}`, active: selected === app.id }),
-    virtualMachine: vm => ({ href: `/console/#environment-${vm.id}`, active: selected === vm.id }),
+    virtualMachine: vm => ({ href: `/console/#virtual-machine-${vm.id}`, active: selected === vm.id }),
     children: null,
   }));
 }
@@ -53,7 +53,7 @@ test("VM-only inventory hides Applications and links to the VM", () => {
   const html = render([], [vm], vm.id);
   assert.doesNotMatch(html, /Applications/);
   assert.match(html, /Virtual machines/);
-  assert.match(html, /href="\/console\/#environment-workspace"/);
+  assert.match(html, /href="\/console\/#virtual-machine-workspace"/);
   assert.match(html, /aria-current="page"[^>]*>.*Workspace/);
   assert.match(html, /data-variant="neutral"/);
 });
@@ -71,5 +71,5 @@ test("both types stay separate, with status dots and shortcuts first", () => {
   assert.ok(html.indexOf("Applications") < html.indexOf("Virtual machines"));
   assert.match(html, /data-variant="danger"/);
   assert.match(html, /href="\/console\/#dns"/);
-  assert.match(html, /href="\/console\/#environment-workspace"/);
+  assert.match(html, /href="\/console\/#virtual-machine-workspace"/);
 });

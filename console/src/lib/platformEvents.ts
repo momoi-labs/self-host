@@ -42,7 +42,7 @@ export function eventSubjectHref(subject: PlatformEvent["subject"]): string | nu
   if (subject.kind === "api-key") return "/console/#settings/api-keys";
   if (subject.kind === "settings") return "/console/#settings";
   if (subject.kind === "custom-image") return `/console/#custom-image-${encodeURIComponent(subject.id)}`;
-  const prefix = subject.kind === "virtual-machine" ? "environment" : "app";
+  const prefix = subject.kind === "virtual-machine" ? "virtual-machine" : "app";
   return `/console/#${prefix}-${encodeURIComponent(subject.id)}`;
 }
 

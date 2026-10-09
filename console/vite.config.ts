@@ -34,7 +34,7 @@ export default defineConfig({
       [
         "/health",
         "/events",
-        "/environments",
+        "/virtual-machines",
         "/apps",
         "/system",
         "/bootstrap",

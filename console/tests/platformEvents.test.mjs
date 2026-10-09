@@ -4,7 +4,7 @@ import { eventActionLabel, eventSubjectHref, filterEvents, eventUpdatedAt, pageI
 
 test("resource links target existing console pages by stable ID", () => {
   assert.equal(eventSubjectHref({ kind: "application", id: "app-123", name: "renamed" }), "/console/#app-app-123");
-  assert.equal(eventSubjectHref({ kind: "virtual-machine", id: "env-123", name: "vm" }), "/console/#environment-env-123");
+  assert.equal(eventSubjectHref({ kind: "virtual-machine", id: "env-123", name: "vm" }), "/console/#virtual-machine-env-123");
   assert.equal(eventSubjectHref({ kind: "custom-image", id: "image-123", name: "image" }), "/console/#custom-image-image-123");
   assert.equal(eventSubjectHref({ kind: "application", id: "old-id", name: "removed", available: false }), null);
   assert.equal(eventSubjectHref({ kind: "application", id: "", name: "failed creation" }), null);

@@ -38,9 +38,9 @@ function fromHash(): View | null {
   if (hash === "#new-custom-image") return { view: "custom-image", id: null };
   if (hash.startsWith("#custom-image-"))
     return { view: "custom-image", id: hash.slice(14) };
-  if (hash === "#new-environment") return { view: "environment-new", id: null };
-  if (hash.startsWith("#environment-"))
-    return { view: "environments", id: hash.slice(13) };
+  if (hash === "#new-virtual-machine") return { view: "environment-new", id: null };
+  if (hash.startsWith("#virtual-machine-"))
+    return { view: "environments", id: hash.slice(17) };
   if (hash.startsWith("#app-")) return { view: "app", id: hash.slice(5) };
   return null;
 }
