@@ -350,7 +350,7 @@ export function Environments({
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const response = await api("/environments");
+        const response = await api("/virtual-machines");
         if (!response.ok) throw await failureOf(response);
         const next = ((await response.json()) as Environment[]).map(
           normalizeEnvironment,
@@ -384,7 +384,7 @@ export function Environments({
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const running = current?.operation?.status === "running";
-    const path = `/environments/${selected}/logs/boot`;
+    const path = `/virtual-machines/${selected}/logs/boot`;
     const poll = async () => {
       try {
         const response = await api(path);
@@ -427,7 +427,7 @@ export function Environments({
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const running = current?.operation?.status === "running";
-    const path = `/environments/${encodeURIComponent(selected)}/events`;
+    const path = `/virtual-machines/${encodeURIComponent(selected)}/events`;
     const poll = async () => {
       try {
         const response = await api(path);
@@ -490,7 +490,7 @@ export function Environments({
     const poll = async () => {
       try {
         const response = await api(
-          `/environments/${encodeURIComponent(selected)}`,
+          `/virtual-machines/${encodeURIComponent(selected)}`,
         );
         if (!response.ok) throw await failureOf(response);
         const next = normalizeEnvironment(
@@ -617,7 +617,7 @@ export function Environments({
           900,
         );
       } else {
-        const response = await api("/environments", {
+        const response = await api("/virtual-machines", {
           method: "POST",
           body: JSON.stringify({ request_id: requestId.current, config }),
         });
@@ -644,7 +644,7 @@ export function Environments({
     try {
       if (!demo) {
         const response = await api(
-          `/environments/${encodeURIComponent(current.id)}`,
+          `/virtual-machines/${encodeURIComponent(current.id)}`,
           { method: "PUT", body: JSON.stringify(config) },
         );
         if (!response.ok) throw await failureOf(response);
@@ -722,7 +722,7 @@ export function Environments({
         );
       } else {
         const response = await api(
-          `/environments/${encodeURIComponent(environment.id)}/actions`,
+          `/virtual-machines/${encodeURIComponent(environment.id)}/actions`,
           {
             method: "POST",
             body: JSON.stringify({

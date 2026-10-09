@@ -1112,7 +1112,7 @@ mod tests {
         let (status, machine) = call(
             &app,
             "POST",
-            "/environments",
+            "/virtual-machines",
             json!({"request_id": "m-1", "config": {
                 "name": "foo", "cpus": 2, "memory_gib": 4, "disk_gib": 20,
                 "ssh_public_key": "", "command": "", "web_port": 0,

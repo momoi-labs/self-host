@@ -22,7 +22,7 @@ export function useEnvironments(): {
    */
   const { data = noEnvironments, refetch } = useQuery({
     queryKey: ["environments"],
-    queryFn: ({ signal }) => readJson<Environment[]>("/environments", signal),
+    queryFn: ({ signal }) => readJson<Environment[]>("/virtual-machines", signal),
     refetchInterval: (query) =>
       query.state.data?.some((one) => one.operation?.status === "running") ? 2000 : 5000,
   });
