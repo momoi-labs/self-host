@@ -191,13 +191,13 @@ async fn inspection_persists_the_current_lan_lease_and_clears_an_absent_one() {
     let (_, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({
             "request_id":"lan-1", "config":config("lan-machine")
         })),
     )
     .await;
-    let uri = format!("/environments/{}", created["id"].as_str().unwrap());
+    let uri = format!("/virtual-machines/{}", created["id"].as_str().unwrap());
     tokio::time::sleep(Duration::from_millis(20)).await;
     for address in [Some("192.168.1.41"), Some("192.168.1.42"), None] {
         *network.lock().await = (Some("02:11:22:33:44:55".into()), address.map(str::to_owned));
@@ -228,13 +228,13 @@ async fn a_machine_is_named_under_the_suffix_and_reached_by_that_name() {
     let (status, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"named-1", "config":config("foo")})),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{created}");
     assert_eq!(created["hostname"], "foo.home.lan");
-    let uri = format!("/environments/{}", created["id"].as_str().unwrap());
+    let uri = format!("/virtual-machines/{}", created["id"].as_str().unwrap());
     tokio::time::sleep(Duration::from_millis(20)).await;
     let (_, current) = request(&app, Method::GET, &uri, None).await;
     assert_eq!(current["hostname"], "foo.home.lan");
@@ -253,12 +253,12 @@ async fn a_machine_record_follows_the_lease_and_goes_with_the_machine() {
     let (_, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"lease-1", "config":config("foo")})),
     )
     .await;
     let id = created["id"].as_str().unwrap().to_owned();
-    let uri = format!("/environments/{id}");
+    let uri = format!("/virtual-machines/{id}");
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     for lease in [
@@ -367,7 +367,7 @@ async fn a_machine_cannot_take_a_name_that_is_answered_already() {
         let (status, error) = request(
             &app,
             Method::POST,
-            "/environments",
+            "/virtual-machines",
             Some(json!({"request_id": format!("take-{name}"), "config": config(name)})),
         )
         .await;
@@ -379,14 +379,14 @@ async fn a_machine_cannot_take_a_name_that_is_answered_already() {
         let (status, error) = request(
             &app,
             Method::POST,
-            "/environments",
+            "/virtual-machines",
             Some(json!({"request_id": format!("take-{name}"), "config": config(name)})),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {error}");
         assert!(error["error"].as_str().unwrap().contains(reason), "{error}");
     }
-    let (_, machines) = request(&app, Method::GET, "/environments", None).await;
+    let (_, machines) = request(&app, Method::GET, "/virtual-machines", None).await;
     assert_eq!(machines, json!([]));
 }
 
@@ -429,7 +429,7 @@ async fn a_machine_from_before_names_is_given_its_own_on_load() {
         .await
         .unwrap();
     let (app, _) = app_with_store(store.clone(), FakeRuntime::new()).await;
-    let (status, current) = request(&app, Method::GET, "/environments/env-old", None).await;
+    let (status, current) = request(&app, Method::GET, "/virtual-machines/env-old", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(current["hostname"], "old-box.home.lan");
     assert!(
@@ -440,7 +440,7 @@ async fn a_machine_from_before_names_is_given_its_own_on_load() {
             .join("")
             .contains("old-box.home.lan")
     );
-    let (_, unnamed) = request(&app, Method::GET, "/environments/env-nas", None).await;
+    let (_, unnamed) = request(&app, Method::GET, "/virtual-machines/env-nas", None).await;
     assert_eq!(unnamed["hostname"], "");
     assert_eq!(unnamed["web_url"], "http://127.0.0.1:54321");
     let (_, inventory) = request(&app, Method::GET, "/dns/records", None).await;
@@ -458,13 +458,14 @@ async fn a_machine_from_before_names_is_given_its_own_on_load() {
 async fn creation_is_idempotent_and_rejects_reused_request_ids_with_new_config() {
     let (app, _store) = app(FakeRuntime::new()).await;
     let first = json!({"request_id":"request-1", "config":config("alpha")});
-    let (status, record) = request(&app, Method::POST, "/environments", Some(first.clone())).await;
+    let (status, record) =
+        request(&app, Method::POST, "/virtual-machines", Some(first.clone())).await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let (again, same) = request(&app, Method::POST, "/environments", Some(first)).await;
+    let (again, same) = request(&app, Method::POST, "/virtual-machines", Some(first)).await;
     assert_eq!(again, StatusCode::ACCEPTED);
     assert_eq!(record["id"], same["id"]);
     let changed = json!({"request_id":"request-1", "config":config("different")});
-    let (conflict, _) = request(&app, Method::POST, "/environments", Some(changed)).await;
+    let (conflict, _) = request(&app, Method::POST, "/virtual-machines", Some(changed)).await;
     assert_eq!(conflict, StatusCode::CONFLICT);
 }
 
@@ -478,7 +479,7 @@ async fn retrying_delete_requires_confirmation_again() {
     let (_, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"delete-1", "config":config("alpha")})),
     )
     .await;
@@ -487,12 +488,13 @@ async fn retrying_delete_requires_confirmation_again() {
     let (_, _) = request(
         &app,
         Method::POST,
-        &format!("/environments/{id}/actions"),
+        &format!("/virtual-machines/{id}/actions"),
         Some(json!({"action":"delete", "confirm_name":"alpha"})),
     )
     .await;
     for _ in 0..20 {
-        let (_, current) = request(&app, Method::GET, &format!("/environments/{id}"), None).await;
+        let (_, current) =
+            request(&app, Method::GET, &format!("/virtual-machines/{id}"), None).await;
         if current["operation"]["status"] == "failed" {
             break;
         }
@@ -501,7 +503,7 @@ async fn retrying_delete_requires_confirmation_again() {
     let (bad_confirmation, _) = request(
         &app,
         Method::POST,
-        &format!("/environments/{id}/actions"),
+        &format!("/virtual-machines/{id}/actions"),
         Some(json!({"action":"retry"})),
     )
     .await;
@@ -516,7 +518,7 @@ async fn an_unknown_runner_never_starts_create() {
     let (_, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"unknown-1", "config":config("alpha")})),
     )
     .await;
@@ -526,7 +528,7 @@ async fn an_unknown_runner_never_starts_create() {
     let (status, current) = request(
         &app,
         Method::GET,
-        &format!("/environments/{}", created["id"].as_str().unwrap()),
+        &format!("/virtual-machines/{}", created["id"].as_str().unwrap()),
         None,
     )
     .await;
@@ -541,7 +543,7 @@ async fn saving_a_draft_keeps_the_last_applied_configuration() {
     let (_, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"draft-1", "config":config("alpha")})),
     )
     .await;
@@ -552,7 +554,7 @@ async fn saving_a_draft_keeps_the_last_applied_configuration() {
     let (status, saved) = request(
         &app,
         Method::PUT,
-        &format!("/environments/{id}"),
+        &format!("/virtual-machines/{id}"),
         Some(serde_json::to_value(draft).unwrap()),
     )
     .await;
@@ -580,7 +582,8 @@ async fn restart_marks_running_operation_interrupted_without_resuming_it() {
         .await
         .unwrap();
     let (app, _) = app_with_store(store.clone(), FakeRuntime::new()).await;
-    let (status, current) = request(&app, Method::GET, "/environments/env-recovered", None).await;
+    let (status, current) =
+        request(&app, Method::GET, "/virtual-machines/env-recovered", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(current["operation"]["status"], "interrupted");
     assert!(
@@ -739,7 +742,7 @@ async fn completion_save_failure_is_persisted_as_failed_and_keeps_record() {
     let (_, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"save-failure", "config":config("alpha")})),
     )
     .await;
@@ -758,7 +761,7 @@ async fn completion_save_failure_is_persisted_as_failed_and_keeps_record() {
         let (_, next) = request(
             &app,
             Method::GET,
-            &format!("/environments/{}", created["id"].as_str().unwrap()),
+            &format!("/virtual-machines/{}", created["id"].as_str().unwrap()),
             None,
         )
         .await;
@@ -786,7 +789,7 @@ async fn only_the_machines_own_logs_can_be_asked_for() {
     let (status, body) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"one", "config":config("alpha")})),
     )
     .await;
@@ -797,7 +800,7 @@ async fn only_the_machines_own_logs_can_be_asked_for() {
         let (status, _) = request(
             &app,
             Method::GET,
-            &format!("/environments/{id}/logs/{source}"),
+            &format!("/virtual-machines/{id}/logs/{source}"),
             None,
         )
         .await;
@@ -807,7 +810,7 @@ async fn only_the_machines_own_logs_can_be_asked_for() {
     let (status, _) = request(
         &app,
         Method::GET,
-        &format!("/environments/{id}/logs/../../etc/passwd"),
+        &format!("/virtual-machines/{id}/logs/../../etc/passwd"),
         None,
     )
     .await;
@@ -816,7 +819,7 @@ async fn only_the_machines_own_logs_can_be_asked_for() {
     let (status, _) = request(
         &app,
         Method::GET,
-        &format!("/environments/{id}/logs/secrets"),
+        &format!("/virtual-machines/{id}/logs/secrets"),
         None,
     )
     .await;
@@ -832,13 +835,19 @@ async fn a_machine_that_does_not_exist_has_no_logs() {
     let (status, _) = request(
         &app,
         Method::GET,
-        "/environments/env-nothing/logs/boot",
+        "/virtual-machines/env-nothing/logs/boot",
         None,
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    let (status, _) = request(&app, Method::GET, "/environments/env-nothing/events", None).await;
+    let (status, _) = request(
+        &app,
+        Method::GET,
+        "/virtual-machines/env-nothing/events",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -861,7 +870,7 @@ async fn a_machine_can_be_created_with_nothing_but_a_name_and_a_size() {
     let (status, body) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id": "bare", "config": bare})),
     )
     .await;
@@ -884,7 +893,7 @@ async fn a_service_without_a_port_is_refused() {
     let (status, _) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id": "no-port", "config": broken})),
     )
     .await;
@@ -898,7 +907,7 @@ async fn audit_keeps_one_event_for_a_failed_vm_operation() {
     let (status, machine) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"audit-vm", "config":config("audited-vm")})),
     )
     .await;
@@ -938,7 +947,7 @@ async fn audit_updates_the_same_event_from_pending_to_running_to_completed() {
     let (status, created) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"audit-transition", "config":config("transition-vm")})),
     )
     .await;
@@ -995,7 +1004,7 @@ async fn actions_on_one_machine_queue_while_other_machines_run() {
     let (status, alpha) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"queue-alpha", "config":config("alpha")})),
     )
     .await;
@@ -1013,7 +1022,7 @@ async fn actions_on_one_machine_queue_while_other_machines_run() {
     let (status, queued) = request(
         &app,
         Method::POST,
-        &format!("/environments/{alpha_id}/actions"),
+        &format!("/virtual-machines/{alpha_id}/actions"),
         Some(json!({"action":"stop"})),
     )
     .await;
@@ -1026,7 +1035,7 @@ async fn actions_on_one_machine_queue_while_other_machines_run() {
     let (status, beta) = request(
         &app,
         Method::POST,
-        "/environments",
+        "/virtual-machines",
         Some(json!({"request_id":"queue-beta", "config":config("beta")})),
     )
     .await;
@@ -1074,7 +1083,7 @@ async fn actions_on_one_machine_queue_while_other_machines_run() {
     let (_, alpha) = request(
         &app,
         Method::GET,
-        &format!("/environments/{alpha_id}"),
+        &format!("/virtual-machines/{alpha_id}"),
         None,
     )
     .await;

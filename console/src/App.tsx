@@ -113,12 +113,12 @@ export function App() {
         onClick: () => go({ view: "database-new", id: null }),
       }}
       newMachine={{
-        href: "/console/#new-environment",
+        href: "/console/#new-virtual-machine",
         active: view.view === "environment-new",
         onClick: () => go({ view: "environment-new", id: null }),
       }}
       virtualMachine={(machine) => ({
-        href: `/console/#environment-${machine.id}`,
+        href: `/console/#virtual-machine-${machine.id}`,
         active: view.view === "environments" && view.id === machine.id,
         onClick: () => go({ view: "environments", id: machine.id }),
       })}

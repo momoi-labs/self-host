@@ -442,9 +442,9 @@ fn action(method: &str, route: &str, body: &Value) -> Option<(&'static str, &'st
         ("DELETE", "/apps/{name}/env/{key}") | ("DELETE", "/apps/id/{id}/env/{key}") => {
             ("configure", "application")
         }
-        ("POST", "/environments") => ("create", "virtual-machine"),
-        ("PUT", "/environments/{id}") => ("configure", "virtual-machine"),
-        ("POST", "/environments/{id}/actions") => (
+        ("POST", "/virtual-machines") => ("create", "virtual-machine"),
+        ("PUT", "/virtual-machines/{id}") => ("configure", "virtual-machine"),
+        ("POST", "/virtual-machines/{id}/actions") => (
             machine_action(body.get("action").and_then(Value::as_str).unwrap_or("")),
             "virtual-machine",
         ),
@@ -898,8 +898,8 @@ mod tests {
             ("PUT", "/apps/id/{id}", "configure"),
             ("POST", "/apps/{name}/env", "configure"),
             ("DELETE", "/apps/{name}/env/{key}", "configure"),
-            ("POST", "/environments", "create"),
-            ("PUT", "/environments/{id}", "configure"),
+            ("POST", "/virtual-machines", "create"),
+            ("PUT", "/virtual-machines/{id}", "configure"),
             ("POST", "/custom-images", "create"),
             ("DELETE", "/custom-images/{id}", "delete"),
             ("POST", "/api-keys", "create"),
@@ -914,7 +914,7 @@ mod tests {
             assert_eq!(
                 action(
                     "POST",
-                    "/environments/{id}/actions",
+                    "/virtual-machines/{id}/actions",
                     &json!({"action":verb})
                 )
                 .unwrap()

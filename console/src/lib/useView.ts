@@ -38,9 +38,9 @@ function fromHash(): View | null {
   if (hash === "#new-custom-image") return { view: "custom-image", id: null };
   if (hash.startsWith("#custom-image-"))
     return { view: "custom-image", id: hash.slice(14) };
-  if (hash === "#new-environment") return { view: "environment-new", id: null };
-  if (hash.startsWith("#environment-"))
-    return { view: "environments", id: hash.slice(13) };
+  if (hash === "#new-virtual-machine") return { view: "environment-new", id: null };
+  if (hash.startsWith("#virtual-machine-"))
+    return { view: "environments", id: hash.slice(17) };
   if (hash.startsWith("#app-")) return { view: "app", id: hash.slice(5) };
   return null;
 }
@@ -75,6 +75,9 @@ function hashFor(view: View): string | undefined {
   if (view.view === "databases") return "#databases";
   if (view.view === "database-new") return "#new-database";
   if (view.view === "settings") return view.id === "general" ? "#settings" : `#settings/${view.id}`;
+  if (view.view === "app") return `#app-${view.id}`;
+  if (view.view === "environments") return `#virtual-machine-${view.id}`;
+  if (view.view === "environment-new") return "#new-virtual-machine";
   return undefined;
 }
 

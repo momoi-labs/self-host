@@ -51,7 +51,7 @@ test("a machine record links to its machine by ID and cannot be edited as an Ope
     { name: "dev", type: "A", value: "192.168.1.41", ttl: 60, owner: "virtual-machine", virtual_machine_id: "vm-1" },
   ], [], [{ id: "vm-1", config: { name: "Workspace" } }]);
   assert.equal(row.origin, "Workspace");
-  assert.equal(row.originHref, "/console/#environment-vm-1");
+  assert.equal(row.originHref, "/console/#virtual-machine-vm-1");
   assert.equal(row.owner, "virtual-machine");
   assert.equal(row.editable, false);
 });

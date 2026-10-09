@@ -52,7 +52,7 @@ export function recordRows(
         originHref: record.owner === "application" && record.application_id
           ? `/console/#app-${record.application_id}`
           : record.owner === "virtual-machine" && record.virtual_machine_id
-            ? `/console/#environment-${record.virtual_machine_id}`
+            ? `/console/#virtual-machine-${record.virtual_machine_id}`
             : null,
         editable: record.owner === "operator" || admin,
         renamable: record.owner === "operator",
