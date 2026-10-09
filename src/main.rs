@@ -1432,7 +1432,8 @@ async fn run_api_server(
 /// grant port 53 to DNS: `CAP_NET_BIND_SERVICE` on Linux, and on macOS the
 /// unspecified address, which a non-root process may bind below 1024 where a
 /// named one it may not. Binding the unspecified address on both keeps one
-/// listener instead of one per Host.
+/// listener instead of one per Host, and the proxy opens the IPv6 one next to
+/// it (#82).
 async fn serve_proxy(
     dns_suffix: String,
     admin_router: axum::Router,
