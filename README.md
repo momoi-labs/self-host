@@ -168,6 +168,7 @@ On Linux, or with the script installer and `SELF_HOST_BINARY_ONLY=1`:
 self-host init
 self-host serve # keep running; use another terminal for the next command
 self-host setup-dns # Linux with systemd-resolved; the macOS installer does this
+self-host trust-ca # trust the Platform CA; the macOS installer does this
 ```
 
 Then open `https://admin.<your-dns-suffix>`, which is `https://admin.home.lan`
@@ -238,9 +239,9 @@ sudo rm "/etc/resolver/<your-dns-suffix>"             # macOS
 ## Platform state
 
 Your configuration lives in `~/.config/self-host/state/`. The daemon keeps it in
-one SQLite file, `platform.db`, and keeps each Compose definition as a file
-beside it. There is no database server to run. The console, the API and your
-saved settings work when Docker is missing or stopped.
+one SQLite file, `platform.db`. Each Compose definition stays as a file under
+`applications/<id>/`. There is no database server to run. The console, the API
+and your saved settings work when Docker is missing or stopped.
 
 Docker runs the container Applications. The Platform's own proxy serves HTTP
 and HTTPS on ports 80 and 443.
@@ -258,11 +259,12 @@ Trust the CA on the Host:
 self-host trust-ca
 ```
 
-On another machine, configure its DNS first. Then install the public CA directly
-from the Host:
+On another machine, configure its DNS first. Then install the binary only, and
+the public CA directly from the Host. Without `SELF_HOST_BINARY_ONLY=1`, the
+macOS installer would set that machine up as a Host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | SELF_HOST_BINARY_ONLY=1 bash
 self-host trust-ca --from admin.home.lan --fingerprint <sha256-from-host>
 ```
 
