@@ -84,8 +84,10 @@ pub async fn run_bootstrap(
     // Detection picks, per family, the interface the default route leaves
     // through, which is the LAN one. It anchors the subnet the policy
     // publishes. Host-local consumers use a published address of the first
-    // family, IPv4 when the Host has it, or the pinned one. A pinned address
-    // takes the place of its family's source.
+    // family, IPv4 when the Host has it. A pinned address takes the place of
+    // its family's source and is that address when it is published; a pinned
+    // privacy address is not, so a stable one of its family is saved
+    // instead. A pin that is not up yet is saved as it was before IPv6.
     let mut sources = crate::host_addresses::default_sources();
     if let Some(address) = pinned {
         sources.retain(|source| source.is_ipv4() != address.is_ipv4());
@@ -94,14 +96,13 @@ pub async fn run_bootstrap(
     let interfaces = crate::host_addresses::interfaces()
         .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?;
     let host_addresses = crate::host_addresses::select(&policy, &sources, &interfaces);
-    let primary = match pinned {
-        Some(address) => address,
-        None => crate::host_addresses::primary(&sources, &host_addresses).ok_or_else(|| {
+    let primary = crate::host_addresses::primary(&sources, &host_addresses)
+        .or(pinned)
+        .ok_or_else(|| {
             BootstrapError::HostIpDetection(
                 "the Host has no LAN address; connect it to the LAN".into(),
             )
-        })?,
-    };
+        })?;
 
     let dns_config = crate::dns::Config::new(dns_suffix, policy.include)
         .map_err(|e| BootstrapError::ConfigWrite(e.to_string()))?;
