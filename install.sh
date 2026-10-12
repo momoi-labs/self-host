@@ -748,9 +748,15 @@ host_ip() {
 	echo "127.0.0.1"
 }
 
-# The interface the default route leaves through is the LAN one.
+# The interface the default route leaves through is the LAN one. A Mac on an
+# IPv6-only network has no IPv4 default route, so the IPv6 one names it.
 lan_interface() {
-	route -n get default 2>/dev/null | awk '/interface:/{print $2}'
+	local iface
+	iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+	if [ -z "$iface" ]; then
+		iface="$(route -n get -inet6 default 2>/dev/null | awk '/interface:/{print $2}')"
+	fi
+	echo "$iface"
 }
 
 # The Platform serves the console and every Application over HTTPS, signed by

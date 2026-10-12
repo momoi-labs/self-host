@@ -318,6 +318,9 @@ pub struct ProxyConfig {
     pub bind_ip: IpAddr,
     pub https_port: u16,
     pub http_port: u16,
+    /// Fail to bind when the IPv6 listeners next to `0.0.0.0` cannot open,
+    /// for a Host whose Consumers reach it over IPv6 alone.
+    pub ipv6_required: bool,
     /// `admin.<suffix>` — dispatched to `admin_router` with no proxy hop.
     pub admin_hostname: String,
 }
@@ -371,7 +374,8 @@ pub async fn bind(
     let mut http_listeners = vec![http_listener];
     // The IPv4 unspecified address brings the IPv6 one along on the same
     // ports (#82), IPv6-only so neither claims the other's. It is best
-    // effort: a Host whose IPv6 ports are taken still serves IPv4.
+    // effort unless IPv6 is all the Host has: a dual-stack Host whose IPv6
+    // ports are taken still serves IPv4.
     if config.bind_ip == IpAddr::from([0, 0, 0, 0]) {
         let ipv6 = |port| SocketAddr::new(IpAddr::from([0u16; 8]), port);
         match crate::listeners::tcp(ipv6(https_addr.port()))
@@ -380,6 +384,9 @@ pub async fn bind(
             Ok((https, http)) => {
                 https_listeners.push(https);
                 http_listeners.push(http);
+            }
+            Err(error) if config.ipv6_required => {
+                return Err(error).context("bind IPv6 proxy listeners");
             }
             Err(error) => {
                 tracing::warn!("the proxy is not listening on IPv6: {error}");
@@ -1334,6 +1341,7 @@ mod integration {
                 bind_ip: bind_ip.parse().unwrap(),
                 https_port: 0,
                 http_port: 0,
+                ipv6_required: false,
                 admin_hostname: "admin.home.lan".into(),
             },
             admin_router,
@@ -1399,6 +1407,47 @@ mod integration {
             .unwrap();
         assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
         assert_eq!(response.headers()[header::LOCATION], "https://[::1]/apps");
+    }
+
+    /// A taken IPv6 port costs a dual-stack Host its IPv6 listeners and
+    /// nothing else, and stops an IPv6-only Host from starting unreachable.
+    #[tokio::test]
+    async fn a_taken_ipv6_port_fails_only_a_host_that_needs_ipv6() {
+        let taken = crate::listeners::tcp("[::]:0".parse().unwrap()).unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let dir = std::env::temp_dir().join(format!(
+            "self-host-proxy-test-{}-{}",
+            std::process::id(),
+            PORT_HINT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        generate_test_cert(&dir);
+        let config = |ipv6_required| ProxyConfig {
+            cert_path: dir.join("cert.pem"),
+            key_path: dir.join("key.pem"),
+            bind_ip: "0.0.0.0".parse().unwrap(),
+            https_port: port,
+            http_port: 0,
+            ipv6_required,
+            admin_hostname: "admin.home.lan".into(),
+        };
+        let metrics = crate::metrics::Metrics::new();
+
+        assert!(
+            bind(
+                config(true),
+                Router::new(),
+                RouteTable::new(),
+                metrics.clone()
+            )
+            .await
+            .is_err()
+        );
+        let bound = bind(config(false), Router::new(), RouteTable::new(), metrics)
+            .await
+            .unwrap();
+        assert_eq!(bound.https_listeners.len(), 1);
+        assert_eq!(bound.http_listeners.len(), 1);
     }
 
     #[tokio::test]

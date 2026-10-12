@@ -372,6 +372,7 @@ impl Fixture {
                 bind_ip: "127.0.0.1".parse().unwrap(),
                 https_port: 0,
                 http_port: 0,
+                ipv6_required: false,
                 admin_hostname: "admin.home.lan".into(),
             },
             Router::new().route("/", get(|| async { "management" })),

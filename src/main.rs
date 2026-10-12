@@ -410,11 +410,11 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
         // The DNS configuration the daemon serves from, not the store: the
         // daemon holds the store as its writer while it runs, and this is the
         // one place the Host's own resolver has to agree with. The resolver
-        // takes one address, so it takes the one the default route leaves
-        // through.
+        // takes one address, so it takes a published one of the family the
+        // default route leaves through.
         let config = self_host::dns::Config::load()?;
+        let host_ip = self_host::host_addresses::scan_primary(&config.host_addresses)?.to_string();
         let suffix = config.dns_suffix;
-        let host_ip = self_host::host_addresses::default_source()?.to_string();
         println!("Configuring Host DNS for *.{suffix}...");
         self_host::host_dns::install(&suffix, &host_ip)?;
 
@@ -1669,12 +1669,17 @@ async fn serve_proxy(
         &self_host::tls::key_path(),
     )
     .context("load persisted certificates")?;
+    // A Host with an IPv6 default route and no IPv4 one is reached over IPv6
+    // alone, so the proxy must not start without its IPv6 listeners there.
+    let sources = self_host::host_addresses::default_sources();
     let config = self_host::proxy::ProxyConfig {
         cert_path: self_host::tls::cert_path(),
         key_path: self_host::tls::key_path(),
         bind_ip: std::net::IpAddr::from([0, 0, 0, 0]),
         https_port: env_port("SELF_HOST_PROXY_HTTPS_PORT", 443),
         http_port: env_port("SELF_HOST_PROXY_HTTP_PORT", 80),
+        ipv6_required: sources.iter().any(std::net::IpAddr::is_ipv6)
+            && !sources.iter().any(std::net::IpAddr::is_ipv4),
         admin_hostname: format!("admin.{dns_suffix}"),
     };
     let ports = format!("{} and {}", config.https_port, config.http_port);

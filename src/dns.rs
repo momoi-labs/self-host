@@ -1251,11 +1251,21 @@ mod tests {
         );
         assert_eq!(a_answers(address, "admin.home.lan.").await.1, vec![HOST_V4]);
 
+        // admin follows the Host when its IPv6 address changes.
+        let moved: Ipv6Addr = "2001:db8::11".parse().unwrap();
+        zone.zone
+            .publish_addresses(&zone.fqdn("*").unwrap(), &[HOST_V4.into(), moved.into()])
+            .await;
+        assert_eq!(
+            aaaa_answers(address, "admin.home.lan.", false).await.1,
+            vec![moved]
+        );
+
         // Without its Record the name is the wildcard's again, AAAA included.
         zone.withdraw("nas", Type::A).await;
         assert_eq!(
             aaaa_answers(address, "nas.home.lan.", false).await.1,
-            vec![HOST_V6]
+            vec![moved]
         );
         server.shutdown_gracefully().await.unwrap();
     }
