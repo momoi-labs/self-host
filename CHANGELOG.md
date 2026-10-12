@@ -1,5 +1,16 @@
 # self-host
 
+## 0.8.0
+
+### Minor Changes
+
+- 77f8cd5: The proxy can send an Application's Web Target address as `Host` instead of the Hostname a client asked for. Turn it on for every Application under Settings > General, or set `rewriteHost` on `PUT /settings`. Each Application can override it on its Routes tab, or with `rewrite_host` on `PUT /apps/id/{id}/routes`. A change applies at once, without a rebuild or restart, and `X-Forwarded-Host` still names the Hostname. Use it for an app that refuses any `Host` but a loopback one, such as `laya-apple serve`.
+- 0c67949: The Operator API serves Virtual machines under `/virtual-machines` instead of `/environments`, and the console links to them as `#virtual-machine-<id>` and `#new-virtual-machine`. The old paths are gone, with no alias. Existing machines keep their records, MAC addresses and Lima instances.
+
+### Patch Changes
+
+- 0c67949: The address bar follows the console. Opening an Application, a Virtual machine, Events or a custom image writes its fragment, so the URL can be shared or bookmarked, and a screen without one clears the previous fragment. A link to a removed Application no longer traps Back.
+
 ## 0.7.0
 
 ### Minor Changes
