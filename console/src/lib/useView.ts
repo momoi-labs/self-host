@@ -78,6 +78,11 @@ function hashFor(view: View): string | undefined {
   if (view.view === "app") return `#app-${view.id}`;
   if (view.view === "environments") return `#virtual-machine-${view.id}`;
   if (view.view === "environment-new") return "#new-virtual-machine";
+  if (view.view === "events") return "#events";
+  if (view.view === "new") return "#new";
+  if (view.view === "custom-images") return "#custom-images";
+  if (view.view === "custom-image")
+    return view.id === null ? "#new-custom-image" : `#custom-image-${view.id}`;
   return undefined;
 }
 
@@ -86,7 +91,7 @@ function hashFor(view: View): string | undefined {
  * leaving the console. A view the record no longer supports — an Application
  * that was removed in another tab — falls back to the Overview.
  */
-export function useView(): [View, (next: View) => void] {
+export function useView(): [View, (next: View, options?: { replace?: boolean }) => void] {
   const [current, setCurrent] = useState<View>(fromHistory);
 
   useEffect(() => {
@@ -101,13 +106,14 @@ export function useView(): [View, (next: View) => void] {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const go = useCallback((next: View) => {
+  // `replace` swaps the current entry instead of adding one, for a view that
+  // must not be returned to, such as an Application that no longer exists.
+  const go = useCallback((next: View, options?: { replace?: boolean }) => {
     const state = history.state as View | null;
-    if (!state) history.replaceState(next, "");
-    else if (state.view !== next.view || state.id !== next.id) {
-      const url = hashFor(next) ?? (hashFor(state) ? location.pathname + location.search : undefined);
-      history.pushState(next, "", url);
-    }
+    // A view without a fragment drops whatever fragment the URL still carries.
+    const url = hashFor(next) ?? (location.hash ? location.pathname + location.search : undefined);
+    if (!state || options?.replace) history.replaceState(next, "", url);
+    else if (state.view !== next.view || state.id !== next.id) history.pushState(next, "", url);
     setCurrent(next);
   }, []);
 
