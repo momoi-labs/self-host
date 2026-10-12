@@ -72,12 +72,26 @@ pub fn default_sources() -> Vec<IpAddr> {
 }
 
 /// The one address Host-local consumers, such as the resolver setup, use:
-/// the IPv4 default source, or the IPv6 one on a Host without IPv4.
-pub fn default_source() -> anyhow::Result<IpAddr> {
-    default_sources()
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("the Host has no default route; connect it to the LAN"))
+/// a published address of the first default route's family, IPv4 when the
+/// Host has it. Not the default source itself: on IPv6 that is usually a
+/// privacy address, which rotates and is never published.
+pub fn primary(default_sources: &[IpAddr], published: &[IpAddr]) -> Option<IpAddr> {
+    let source = default_sources.first()?;
+    if published.contains(source) {
+        return Some(*source);
+    }
+    published
+        .iter()
+        .copied()
+        .find(|address| address.is_ipv4() == source.is_ipv4())
+}
+
+/// [`primary`] for the Host as its interfaces are right now.
+pub fn scan_primary(policy: &AddressPolicy) -> anyhow::Result<IpAddr> {
+    let sources = default_sources();
+    let published = select(policy, &sources, &interfaces()?);
+    primary(&sources, &published)
+        .ok_or_else(|| anyhow::anyhow!("the Host has no LAN address; connect it to the LAN"))
 }
 
 /// The addresses DNS publishes under the policy.
@@ -88,7 +102,8 @@ pub fn default_source() -> anyhow::Result<IpAddr> {
 /// tunnels and container bridges without naming any of them. Each family is
 /// anchored on its own default source. `exclude` removes, `include` adds
 /// addresses the rule would miss, and only addresses that are actually up
-/// are ever returned.
+/// are ever returned. A temporary address is never returned, included or
+/// not.
 pub fn select(
     policy: &AddressPolicy,
     default_sources: &[IpAddr],
@@ -118,7 +133,9 @@ pub fn select(
     }
     for included in &policy.include {
         if !policy.exclude.contains(included)
-            && interfaces.iter().any(|i| &i.address == included)
+            && interfaces
+                .iter()
+                .any(|i| &i.address == included && !i.temporary)
             && !addresses.contains(included)
         {
             addresses.push(*included);
@@ -226,7 +243,9 @@ fn is_usable_unicast_v6(address: Ipv6Addr) -> bool {
 /// Whether the kernel marks an IPv6 address as one not to publish: a privacy
 /// address, one past its preferred lifetime, or one still being checked for
 /// duplicates. `getifaddrs` does not carry these flags, so each Host asks
-/// the kernel its own way.
+/// the kernel its own way. An address whose flags cannot be read counts as
+/// temporary: publishing a privacy address by mistake is worse than
+/// publishing no IPv6 at all.
 mod ipv6_flags {
     use std::ffi::CStr;
     use std::net::Ipv6Addr;
@@ -253,7 +272,7 @@ mod ipv6_flags {
             self.0
                 .iter()
                 .find(|(name, found, _)| *name == interface && *found == address)
-                .is_some_and(|(_, _, flags)| flags & UNPUBLISHABLE != 0)
+                .is_none_or(|(_, _, flags)| flags & UNPUBLISHABLE != 0)
         }
     }
 
@@ -321,7 +340,7 @@ mod ipv6_flags {
             const _: () = assert!(std::mem::size_of::<In6Ifreq>() == 288);
 
             let Some(socket) = &self.0 else {
-                return false;
+                return true;
             };
             // SAFETY: zeroed is a valid value for this plain C struct.
             let mut request: In6Ifreq = unsafe { std::mem::zeroed() };
@@ -342,7 +361,7 @@ mod ipv6_flags {
             // the kernel writes only inside it.
             let status = unsafe { libc::ioctl(socket.as_raw_fd(), SIOCGIFAFLAG_IN6, &mut request) };
             // SAFETY: on success the kernel wrote the flags member.
-            status == 0 && unsafe { request.ifru.flags6 } & UNPUBLISHABLE != 0
+            status != 0 || unsafe { request.ifru.flags6 } & UNPUBLISHABLE != 0
         }
     }
 
@@ -531,6 +550,36 @@ mod tests {
                 "fd7a:115c:a1e0::da32:840b",
             ])
         );
+    }
+
+    #[test]
+    fn include_never_publishes_a_temporary_address() {
+        let policy = AddressPolicy {
+            include: ips(&["2001:db8:84d3::a25a"]),
+            exclude: vec![],
+        };
+        let addresses = select(&policy, &ips(&["2001:db8:84d3::a25a"]), &dual_stack());
+        assert_eq!(
+            addresses,
+            ips(&["2001:db8:84d3::f344", "2001:db8:84d3::f70d"])
+        );
+    }
+
+    /// Host-local consumers get a stable address of the first family, never
+    /// the privacy address the IPv6 default route leaves through.
+    #[test]
+    fn the_primary_address_is_published_and_of_the_first_family() {
+        let published = ips(&["192.168.1.100", "2001:db8:84d3::f70d"]);
+        assert_eq!(
+            primary(&ips(&["192.168.1.100", "2001:db8:84d3::a25a"]), &published),
+            Some(ip("192.168.1.100"))
+        );
+        assert_eq!(
+            primary(&ips(&["2001:db8:84d3::a25a"]), &published[1..]),
+            Some(ip("2001:db8:84d3::f70d"))
+        );
+        assert_eq!(primary(&[], &published), None);
+        assert_eq!(primary(&ips(&["2001:db8:84d3::a25a"]), &[]), None);
     }
 
     #[test]
