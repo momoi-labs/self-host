@@ -34,7 +34,7 @@ export function App() {
   // tab — falls back to the Overview rather than rendering nothing.
   useEffect(() => {
     if (!ready) return;
-    if (view.view === "app" && !app) go({ view: "overview", id: null });
+    if (view.view === "app" && !app) go({ view: "overview", id: null }, { replace: true });
   }, [ready, view, app, go]);
 
   const crumb =
