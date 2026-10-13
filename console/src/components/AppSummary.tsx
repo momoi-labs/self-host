@@ -195,15 +195,17 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
     <div className="stack">
       <Diagram className="app-diagram" label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
         {routes.length ? (
+          // One node, so the line leaves from the middle of it: the Hostname leads and is always
+          // shown, and aliases, paths and redirects fold under it.
           <DiagramColumn>
             <DiagramNode id="domains" title="" className="group-node">
-              <GroupCard title="Domains" count={routes.length + (app.redirects?.length ?? 0)} sections={domainSections}
-                facts={<Fact icon={kindIcon.hostname} label="Hostname" value={app.hostname} />} />
+              <span className="group-lead diagram-node-title"><Icon name={kindIcon.hostname} />{app.hostname}</span>
+              {domainSections.some((section) => section.lines.length) ? <GroupCard title="Other routes" sections={domainSections} /> : null}
             </DiagramNode>
           </DiagramColumn>
         ) : null}
         {/* The container that receives requests is the node the arrow reaches; the rest hang under it as one card. */}
-        <DiagramColumn className="container-stack">
+        <DiagramColumn className="card-stack">
           <DiagramNode id="receiver" className="facts-node" kind={node.kind} icon={node.icon} label={app.name} title={main.name} accent
             status={statusOf(app.status === "failed" || !main.state || main.state === "running" ? app.status : "stopped")}>
             <span className="group-section is-flat">
@@ -226,7 +228,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             </span>
           </DiagramNode>
           {rest.length ? (
-            <DiagramNode id="containers" title="" className="group-node container-rest">
+            <DiagramNode id="containers" title="" className="group-node card-rest">
               <GroupCard title={native ? "Other processes" : "Other containers"} sections={[{
                 key: "containers", title: "Containers", icon: "box", flat: true,
                 lines: rest.map((container) => ({
