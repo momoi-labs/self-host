@@ -52,20 +52,19 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
   const [appId, setAppId] = useState(editor.app?.id ?? published[0]?.id ?? "");
   const app = published.find((one) => one.id === appId);
   const zone = `.${dnsSuffix}`;
-  // A hostname outside the Zone, set through the API, is edited whole.
-  const foreign = editing !== undefined && !editing.hostname.endsWith(zone);
-  const [label, setLabel] = useState(editing ? (foreign ? editing.hostname : editing.hostname.slice(0, -zone.length)) : "");
+  // The whole hostname, inside the Zone or any other domain the Operator points here.
+  const [label, setLabel] = useState(editing?.hostname ?? "");
   const [path, setPath] = useState(editing?.path ?? "/");
   // Removing the prefix is the default, as Coolify does; a changed route keeps its choice.
   const [strip, setStrip] = useState(editing ? editing.stripPrefix : true);
   const [failure, setFailure] = useState<unknown>(null);
 
   const name = label.trim().toLowerCase();
-  const hostname = foreign ? name : `${name}${zone}`;
+  const hostname = name;
   const prefix = path.trim() || "/";
   const routes = published.flatMap(routesOf);
   const clash = routes.find((route) => route.key !== editing?.key && route.hostname === hostname && route.path === prefix);
-  const labels = [...new Set(routes.map((route) => route.hostname).filter((one) => one.endsWith(zone)).map((one) => one.slice(0, -zone.length)))];
+  const labels = [...new Set(routes.map((route) => route.hostname))];
   const labelError = !name
     ? null
     : !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(name)
@@ -116,8 +115,7 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
             id="route-hostname"
             label="Hostname"
             className="mono"
-            placeholder="name"
-            suffix={foreign ? undefined : zone}
+            placeholder={`name${zone}`}
             value={label}
             autoFocus
             autoComplete="off"
