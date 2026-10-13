@@ -17,3 +17,15 @@ export function formatWindow(seconds: number): string {
   if (seconds < 90 * 60) return `${Math.round(seconds / 60)} min`;
   return `${(seconds / 3600).toFixed(1)}h`;
 }
+
+/** How long ago an instant was, in the coarsest unit that still says something: "9 minutes ago". */
+export function formatAgo(iso: string, now: number = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+  const steps: [number, string][] = [[60, "second"], [60, "minute"], [24, "hour"], [30, "day"], [12, "month"]];
+  let value = seconds;
+  for (const [size, unit] of steps) {
+    if (value < size) return value <= 1 && unit === "second" ? "just now" : `${value} ${unit}${value === 1 ? "" : "s"} ago`;
+    value = Math.floor(value / size);
+  }
+  return `${value} year${value === 1 ? "" : "s"} ago`;
+}
