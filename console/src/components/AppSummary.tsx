@@ -168,7 +168,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
 
   return (
     <div className="stack">
-      <Diagram label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
+      <Diagram className="app-diagram" label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
         {routes.length ? (
           <DiagramColumn>
             <DiagramNode id="domains" title="" className="group-node">
