@@ -1,7 +1,7 @@
 import { Fragment, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
-  Button, Diagram, DiagramColumn, DiagramEdge, DiagramNode, GridPane, KV, KVKey, KVValue, PaneGrid, Search, StatusBadge,
+  Badge, Button, Diagram, DiagramColumn, DiagramEdge, DiagramNode, GridPane, KV, KVKey, KVValue, PaneGrid, Search, StatusBadge,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
   type DiagramKind, type DiagramStatus,
 } from "@momoi-labs/kiso-react";
@@ -78,7 +78,7 @@ type Container = { name: string; image?: string; command?: string; state?: strin
  * port. Before anything runs, the definition alone names them.
  */
 function containersOf(app: App, inspected: Inspection | undefined): Container[] {
-  if (app.runtime?.kind === "native") return [{ name: app.name, command: join(app.runtime.command), state: app.status, port: targetOf(app) }];
+  if (app.runtime?.kind === "native") return [{ name: "process", command: join(app.runtime.command), state: app.status, port: targetOf(app) }];
   const defined = new Map((inspected?.services ?? []).map((service) => [service.name, service]));
   const names = app.services?.length ? app.services.map((service) => service.service) : [...defined.keys()];
   if (names.length === 0) names.push(app.web_service ?? app.name);
@@ -217,11 +217,15 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
                 <Fact icon="file-code" label="Built from" value={app.git.compose_path || app.git.dockerfile} />
                 <Fact icon="commit" label="Commit" value={app.git_build?.revision ? <>
                   {app.git_build.revision.slice(0, 12)}{" "}
-                  <StatusBadge tone={freshness === "Up to date" ? "success" : "neutral"}>{freshness}</StatusBadge>
+                  {/* A ref that moved on is something to act on, not a state of the container, so it warns. */}
+                  {freshness === "Update available"
+                    ? <Badge variant="warning">{freshness}</Badge>
+                    : <StatusBadge tone={freshness === "Up to date" ? "success" : "neutral"}>{freshness}</StatusBadge>}
                 </> : undefined} empty="Not built yet" />
               </> : main.image ? <Fact icon="box" label="Image" value={main.image} /> : null}
               {main.port ? <Fact icon="plug" label="Port" value={main.port} /> : null}
               <Fact icon="terminal" label="Command" value={main.command} empty={main.image ? "Image default" : "None"} />
+              {native ? <Fact icon="user" label="Account" value={native.account} /> : null}
             </span>
           </DiagramNode>
           {rest.length ? (
