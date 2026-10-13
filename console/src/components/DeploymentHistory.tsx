@@ -21,7 +21,12 @@ type Deployment = {
   images: Record<string, string>; revision?: string | null;
   error?: Report | null; recoverable: boolean;
 };
-type Trigger = { enabled: boolean; branch?: string; token?: string };
+type Trigger = { enabled: boolean; branch?: string; image?: string; token?: string };
+
+/** An Application redeployed from a registry reference alone, so CI can deliver a new tag of it. */
+function isImageApp(app: App): boolean {
+  return app.source === "image" && !app.git && !app.compose && !app.development;
+}
 
 const noDeployments: Deployment[] = [];
 
@@ -94,7 +99,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
   }
 
   return <div className="stack">
-    {app.git ? <DeployTrigger app={app} /> : null}
+    {app.git || isImageApp(app) ? <DeployTrigger app={app} /> : null}
     {error ? <Failure failure={error} /> : null}
     {loadError && entries.length ? <Failure failure={loadError} actionLabel="Retry" onAction={retry} /> : null}
     <div className="list-filters">
@@ -187,9 +192,9 @@ function DeployTrigger({ app }: { app: App }) {
   async function change(enable: boolean) {
     setBusy(true); setChangeError(null); setToken(null);
     try {
-      const response = await api(path, { method: enable ? "POST" : "DELETE", ...(enable ? { body: JSON.stringify({ branch: app.git?.git_ref }) } : {}) });
+      const response = await api(path, { method: enable ? "POST" : "DELETE", ...(enable ? { body: JSON.stringify(app.git ? { branch: app.git.git_ref } : {}) } : {}) });
       if (!response.ok) { setChangeError(await failureOf(response)); return; }
-      if (enable) { const created = await response.json() as Trigger; setTrigger({ enabled: true, branch: created.branch }); setToken(created.token ?? null); }
+      if (enable) { const created = await response.json() as Trigger; setTrigger({ enabled: true, branch: created.branch, image: created.image }); setToken(created.token ?? null); }
       else { setTrigger({ enabled: false }); setOpen(false); }
     } catch (cause) { setChangeError({ error: "Could not change deploy trigger", caused_by: [(cause as Error).message] }); }
     finally { setBusy(false); }
@@ -198,7 +203,7 @@ function DeployTrigger({ app }: { app: App }) {
     <div className="between">
       <div className="row-wrap">
         <StatusBadge tone={trigger?.enabled ? "success" : "neutral"}>{trigger === null ? "Loading trigger" : trigger.enabled ? "Automatic deployment" : "Manual review"}</StatusBadge>
-        {trigger?.enabled ? <span className="muted">{trigger.branch}</span> : null}
+        {trigger?.enabled ? <span className="muted">{trigger.branch ?? trigger.image}</span> : null}
       </div>
       <Button size="sm" disabled={!trigger || busy} onClick={() => setOpen(true)}>{trigger?.enabled ? "Manage trigger" : "Enable trigger"}</Button>
     </div>
@@ -207,8 +212,13 @@ function DeployTrigger({ app }: { app: App }) {
       <DialogContent><DialogHeader><DialogTitle>Deploy trigger</DialogTitle>
         <DialogDescription>This credential deploys this application without manual review.</DialogDescription>
       </DialogHeader><DialogBody>
-        <KV><KVKey>Branch</KVKey><KVValue>{app.git?.git_ref}</KVValue><KVKey>Endpoint</KVKey><KVValue>{window.location.origin}/deploy/{app.id}</KVValue></KV>
-        <p className="muted">Send a unique <code>delivery_id</code> and this branch with each request.</p>
+        <KV>
+          {app.git ? <><KVKey>Branch</KVKey><KVValue>{app.git.git_ref}</KVValue></> : <><KVKey>Image</KVKey><KVValue className="mono">{app.image}</KVValue></>}
+          <KVKey>Endpoint</KVKey><KVValue>{window.location.origin}/deploy/{app.id}</KVValue>
+        </KV>
+        <p className="muted">{app.git
+          ? <>Send a unique <code>delivery_id</code> and this branch with each request.</>
+          : <>Send a unique <code>delivery_id</code> with each request. Add <code>image</code> when CI pushed a new tag of this repository; without it, the configured reference is pulled again.</>}</p>
         {token ? <FormField label="Bearer token" id="deploy-trigger-token" value={token} readOnly autoComplete="off" hint="Shown once. Save it before closing. Previous tokens are revoked." /> : null}
         {error ? <Failure failure={error} /> : null}
       </DialogBody><DialogFooter>

@@ -1,4 +1,5 @@
-//! Opt-in credentials that can deploy one Application's configured Git branch.
+//! Opt-in credentials that can deploy one Application's configured Git branch,
+//! or redeploy an image Application from its registry repository.
 //! Tokens are returned once, stored as hashes, and never placed in Task payloads.
 
 use crate::{
@@ -25,7 +26,12 @@ struct Trigger {
     generation: String,
     token_hash: String,
     source_hash: String,
+    /// The Git branch a delivery names, or empty for an image trigger.
     branch: String,
+    /// The registry repository an image trigger binds to, without a tag or
+    /// digest: CI may deliver any tag of it. Absent for a Git trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<String>,
     created_at: String,
 }
 impl Keyed for Trigger {
@@ -46,19 +52,26 @@ impl Keyed for Delivery {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Enable {
-    branch: String,
+    /// Required for a Git Application, refused for an image one.
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Request {
     delivery_id: String,
-    branch: String,
+    #[serde(default)]
+    branch: Option<String>,
     #[serde(default)]
     revision: Option<String>,
+    /// For an image trigger: the reference to deploy, in the trigger's
+    /// repository. Absent, the configured reference is pulled again.
+    #[serde(default)]
+    image: Option<String>,
 }
 
 fn hash(value: &str) -> String {
@@ -66,6 +79,26 @@ fn hash(value: &str) -> String {
 }
 fn branch(value: &str) -> &str {
     value.strip_prefix("refs/heads/").unwrap_or(value)
+}
+/// An image reference without its tag or digest: `ghcr.io/org/app:v4` and
+/// `ghcr.io/org/app@sha256:...` are both `ghcr.io/org/app`. A colon before
+/// the last slash is a registry port, not a tag.
+pub(crate) fn repository(reference: &str) -> &str {
+    let reference = reference.split('@').next().unwrap_or(reference);
+    let name_starts = reference.rfind('/').map_or(0, |slash| slash + 1);
+    match reference[name_starts..].find(':') {
+        Some(colon) => &reference[..name_starts + colon],
+        None => reference,
+    }
+}
+/// Whether the Application redeploys from a registry reference alone: an
+/// image Application, in a container, with nothing else defining it.
+fn is_image_application(app: &crate::store::ApplicationRecord) -> bool {
+    app.source == apps::SOURCE_IMAGE
+        && app.runtime == Runtime::Container
+        && app.git.is_none()
+        && app.compose.is_none()
+        && app.development.is_none()
 }
 fn invalid(message: &str) -> Response {
     (
@@ -86,9 +119,21 @@ pub(crate) async fn status<S: StateStore>(
         return crate::deploy_error_response(error);
     }
     match TRIGGERS.get(&state.store, &id).await {
-        Ok(Some(trigger)) => Json(serde_json::json!({"enabled":true,"branch":trigger.branch,"created_at":trigger.created_at})).into_response(),
+        Ok(Some(trigger)) => Json(describe(&trigger)).into_response(),
         Ok(None) => Json(serde_json::json!({"enabled":false})).into_response(),
         Err(error) => internal(&error),
+    }
+}
+
+/// What a trigger binds to, never its token.
+fn describe(trigger: &Trigger) -> serde_json::Value {
+    match &trigger.image {
+        Some(image) => {
+            serde_json::json!({"enabled":true,"image":image,"created_at":trigger.created_at})
+        }
+        None => {
+            serde_json::json!({"enabled":true,"branch":trigger.branch,"created_at":trigger.created_at})
+        }
     }
 }
 
@@ -101,21 +146,41 @@ pub(crate) async fn enable<S: StateStore>(
         Ok(app) => app,
         Err(error) => return crate::deploy_error_response(error),
     };
-    let Some(source) = app
+    let (source_hash, branch, image) = if let Some(source) = app
         .git
         .as_ref()
         .filter(|_| app.runtime == Runtime::Container)
-    else {
-        return invalid("deploy triggers require a Git container Application");
-    };
-    if request.branch.is_empty()
-        || request.branch == "HEAD"
-        || request.branch.starts_with("refs/tags/")
-        || branch(&request.branch) != branch(&source.git_ref)
-        || source.revision.is_some()
     {
-        return invalid("choose the configured Git branch without an explicit commit pin");
-    }
+        let Some(requested) = request
+            .branch
+            .as_deref()
+            .filter(|branch| !branch.is_empty())
+        else {
+            return invalid("choose the configured Git branch without an explicit commit pin");
+        };
+        if requested == "HEAD"
+            || requested.starts_with("refs/tags/")
+            || branch(requested) != branch(&source.git_ref)
+            || source.revision.is_some()
+        {
+            return invalid("choose the configured Git branch without an explicit commit pin");
+        }
+        (
+            hash(&serde_json::to_string(source).expect("source serializes")),
+            branch(requested).to_string(),
+            None,
+        )
+    } else if is_image_application(&app) {
+        if request.branch.is_some() {
+            return invalid(
+                "an image Application's trigger follows its registry repository, not a branch",
+            );
+        }
+        let repository = repository(&app.image).to_string();
+        (hash(&repository), String::new(), Some(repository))
+    } else {
+        return invalid("deploy triggers require a Git or image container Application");
+    };
     let token = format!(
         "deploy_{:032x}{:032x}",
         rand::random::<u128>(),
@@ -125,16 +190,17 @@ pub(crate) async fn enable<S: StateStore>(
         application_id: id,
         generation: format!("{:032x}", rand::random::<u128>()),
         token_hash: hash(&token),
-        source_hash: hash(&serde_json::to_string(source).expect("source serializes")),
-        branch: branch(&request.branch).into(),
+        source_hash,
+        branch,
+        image,
         created_at: audit::timestamp(),
     };
     match TRIGGERS.upsert(&state.store, &trigger).await {
-        Ok(()) => (
-            [(header::CACHE_CONTROL, "no-store")],
-            Json(serde_json::json!({"enabled":true,"branch":trigger.branch,"token":token})),
-        )
-            .into_response(),
+        Ok(()) => {
+            let mut body = describe(&trigger);
+            body["token"] = token.into();
+            ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+        }
         Err(error) => internal(&error),
     }
 }
@@ -178,8 +244,14 @@ pub(crate) async fn deliver<S: StateStore>(
             "delivery_id must contain 1 to 128 ASCII letters, digits, dots, colons, underscores or hyphens",
         );
     }
+    if trigger.image.is_some() {
+        return deliver_image(&state, id, trigger, request).await;
+    }
+    if request.image.is_some() {
+        return invalid("a Git trigger deploys a branch, not an image");
+    }
     // Authenticate even ignored events. Nothing is queued for another branch.
-    if branch(&request.branch) != trigger.branch {
+    if request.branch.as_deref().map(branch) != Some(trigger.branch.as_str()) {
         return Json(serde_json::json!({"ignored":true,"reason":"branch does not match"}))
             .into_response();
     }
@@ -216,12 +288,63 @@ pub(crate) async fn deliver<S: StateStore>(
         source: Box::new(source),
         revision: request.revision,
     };
+    accept(&state, id, app.name, work, delivery).await
+}
+
+/// An image trigger pulls the configured reference again, or the delivered
+/// one when CI names a new tag of the same repository.
+async fn deliver_image<S: StateStore>(
+    state: &AppState<S>,
+    id: String,
+    trigger: Trigger,
+    request: Request,
+) -> Response {
+    if request.branch.is_some() || request.revision.is_some() {
+        return invalid("an image trigger deploys a registry reference, not a branch");
+    }
+    let app = match apps::get_application(&state.store, &id).await {
+        Ok(app) => app,
+        Err(error) => return crate::deploy_error_response(error),
+    };
+    if !is_image_application(&app) || hash(repository(&app.image)) != trigger.source_hash {
+        return invalid("the configured image changed; enable a new trigger");
+    }
+    if let Some(image) = &request.image
+        && (image.is_empty()
+            || image.len() > 512
+            || image.chars().any(char::is_whitespace)
+            || repository(image) != trigger.image.as_deref().unwrap_or_default())
+    {
+        return invalid("image must be a tag or digest of the trigger's repository");
+    }
+    let delivery = Delivery {
+        id: hash(&format!(
+            "{}:{}:{}",
+            id, trigger.generation, request.delivery_id
+        )),
+        fingerprint: hash(&serde_json::to_string(&request).expect("trigger request serializes")),
+        task_id: String::new(),
+    };
+    let work = tasks::Work::TriggerImageApplication {
+        id: id.clone(),
+        image: request.image,
+    };
+    accept(state, id, app.name, work, delivery).await
+}
+
+async fn accept<S: StateStore>(
+    state: &AppState<S>,
+    id: String,
+    name: String,
+    work: tasks::Work,
+    delivery: Delivery,
+) -> Response {
     let outcome = audit::ACTOR
         .scope(
             Some("Application deploy trigger".into()),
             tasks::enqueue_once(
-                &state,
-                audit::Subject::new("application", &id, &app.name),
+                state,
+                audit::Subject::new("application", &id, &name),
                 work,
                 delivery,
             ),
@@ -287,6 +410,39 @@ pub(crate) async fn execute(
     // reviewed-update compare-and-swap still applies to the manual endpoint.
     pending.source_revision = Some(inspected.revision);
     apps::finish_git_deploy(store, docker, routes, pending)
+        .await
+        .map(|(_, changes)| changes)
+}
+
+/// Redeploys an image Application, pulling what the registry has now. The
+/// trigger's repository was checked on delivery; the Application may have
+/// been reconfigured since, so it is checked again here.
+pub(crate) async fn execute_image(
+    store: &impl StateStore,
+    docker: &(impl crate::docker::DockerRuntime + ?Sized),
+    routes: &(impl crate::routes::RouteStore + ?Sized),
+    id: &str,
+    image: Option<String>,
+) -> Result<Vec<audit::Change>, apps::DeployError> {
+    let current = apps::get_application(store, id).await?;
+    let trigger = TRIGGERS.get(store, id).await?;
+    if !is_image_application(&current)
+        || trigger
+            .as_ref()
+            .and_then(|trigger| trigger.image.as_deref())
+            != Some(repository(&current.image))
+    {
+        return Err(apps::DeployError::Readiness(
+            "the configured image changed before this delivery ran".into(),
+        ));
+    }
+    let update = apps::ApplicationUpdate {
+        image: Some(image.unwrap_or_else(|| current.image.clone())),
+        pull: true,
+        ..apps::ApplicationUpdate::default()
+    };
+    let pending = apps::prepare_update(store, id, update).await?;
+    apps::finish_deploy_reporting(store, docker, routes, pending)
         .await
         .map(|(_, changes)| changes)
 }

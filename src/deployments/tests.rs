@@ -80,7 +80,16 @@ async fn finished(store: &impl StateStore, id: &str) -> audit::Event {
     panic!("task never completed");
 }
 async fn image(api: &Router, store: &impl StateStore) -> String {
-    let (status, app) = call(api, "POST", "/apps", json!({"name":"fixture-worker", "image":"fixture:current", "publication":{"kind":"unpublished"}})).await;
+    image_named(api, store, "fixture-worker").await
+}
+async fn image_named(api: &Router, store: &impl StateStore, name: &str) -> String {
+    let (status, app) = call(
+        api,
+        "POST",
+        "/apps",
+        json!({"name":name, "image":"fixture:current", "publication":{"kind":"unpublished"}}),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(
         finished(store, app["task_id"].as_str().unwrap())
@@ -348,7 +357,7 @@ async fn concurrent_api_deployments_wait_for_the_previous_health_gate() {
 }
 
 async fn git_record(api: &Router, state: &AppState<FakeStateStore>) -> String {
-    let id = image(api, &state.store).await;
+    let id = image_named(api, &state.store, "fixture-git").await;
     let mut record = state.store.get_application(&id).await.unwrap().unwrap();
     record.source = "git".into();
     record.git = Some(
@@ -691,4 +700,138 @@ async fn missing_recovery_image_refuses_before_changing_the_current_application(
     );
     assert_eq!(docker.pulled.lock().unwrap().len(), pulls);
     assert_eq!(docker.deployed_apps(), vec![apps::container_name_for(&id)]);
+}
+
+#[tokio::test]
+async fn image_triggers_redeploy_the_registry_repository_without_a_branch() {
+    let (api, state, docker) = setup().await;
+    let id = image(&api, &state.store).await;
+    let path = format!("/apps/id/{id}/deploy-trigger");
+    let deliver = format!("/deploy/{id}");
+    assert_eq!(
+        call(&api, "POST", &path, json!({"branch":"main"})).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let enabled = call(&api, "POST", &path, json!({})).await;
+    assert_eq!(enabled.0, StatusCode::OK);
+    assert_eq!(enabled.1["image"], "fixture");
+    let token = enabled.1["token"].as_str().unwrap().to_string();
+    let status = call(&api, "GET", &path, Value::Null).await.1;
+    assert_eq!(status["enabled"], true);
+    assert_eq!(status["image"], "fixture");
+    assert!(status.get("branch").is_none());
+    assert!(status.get("token").is_none());
+
+    // A Git trigger needs its branch; an image one takes none.
+    let git = git_record(&api, &state).await;
+    assert_eq!(
+        call(
+            &api,
+            "POST",
+            &format!("/apps/id/{git}/deploy-trigger"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    let pulls = docker.pulled.lock().unwrap().len();
+    let accepted = request(
+        &api,
+        "POST",
+        &deliver,
+        Some(&token),
+        json!({"delivery_id":"ci-1"}),
+    )
+    .await;
+    assert_eq!(accepted.0, StatusCode::ACCEPTED);
+    assert_eq!(
+        finished(&state.store, accepted.1["task_id"].as_str().unwrap())
+            .await
+            .status,
+        "completed"
+    );
+    assert_eq!(
+        docker.pulled.lock().unwrap()[pulls..],
+        ["fixture:current".to_string()]
+    );
+
+    let moved = request(
+        &api,
+        "POST",
+        &deliver,
+        Some(&token),
+        json!({"delivery_id":"ci-2", "image":"fixture:next"}),
+    )
+    .await;
+    assert_eq!(moved.0, StatusCode::ACCEPTED);
+    assert_eq!(
+        finished(&state.store, moved.1["task_id"].as_str().unwrap())
+            .await
+            .status,
+        "completed"
+    );
+    let app = state.store.get_application(&id).await.unwrap().unwrap();
+    assert_eq!(app.image, "fixture:next");
+    assert!(
+        docker
+            .pulled
+            .lock()
+            .unwrap()
+            .contains(&"fixture:next".to_string())
+    );
+
+    for body in [
+        json!({"delivery_id":"ci-3", "image":"other:1"}),
+        json!({"delivery_id":"ci-4", "image":"fixture:bad tag"}),
+        json!({"delivery_id":"ci-5", "branch":"main"}),
+        json!({"delivery_id":"ci-6", "revision":"abc"}),
+    ] {
+        assert_eq!(
+            request(&api, "POST", &deliver, Some(&token), body.clone())
+                .await
+                .0,
+            StatusCode::BAD_REQUEST,
+            "{body}"
+        );
+    }
+
+    // The Operator moving the Application to another repository ends the
+    // trigger's authority over it.
+    let mut changed = state.store.get_application(&id).await.unwrap().unwrap();
+    changed.image = "elsewhere/fixture:1".into();
+    state.store.insert_application(&changed).await.unwrap();
+    assert_eq!(
+        request(
+            &api,
+            "POST",
+            &deliver,
+            Some(&token),
+            json!({"delivery_id":"ci-7"})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[test]
+fn an_image_repository_is_its_reference_without_tag_or_digest() {
+    for (reference, expected) in [
+        ("nginx", "nginx"),
+        ("nginx:1.27", "nginx"),
+        (
+            "ghcr.io/momoi-labs/pgconfig:v4",
+            "ghcr.io/momoi-labs/pgconfig",
+        ),
+        (
+            "ghcr.io/momoi-labs/pgconfig@sha256:abc",
+            "ghcr.io/momoi-labs/pgconfig",
+        ),
+        ("localhost:5000/app:1", "localhost:5000/app"),
+        ("localhost:5000/app", "localhost:5000/app"),
+    ] {
+        assert_eq!(triggers::repository(reference), expected, "{reference}");
+    }
 }
