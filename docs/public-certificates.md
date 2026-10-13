@@ -1,40 +1,52 @@
 # Public certificates
 
-The Platform issues one HTTP-01 certificate per configured Hostname, including
-aliases. It stores the ACME account and private keys in Platform State. An
-Application never receives them. Public issuance is disabled until the
-Operator creates `state/certificates/public.json`.
+The Platform issues one HTTP-01 certificate for every Hostname outside the
+DNS Suffix: an Application's Hostname, its aliases and the Hostnames of its
+route rules. Names under the Suffix keep the Platform's own CA. The ACME
+account and the private keys live in Platform State; an Application never
+receives them. Issuance is off until the Operator saves an account.
 
-## Configure an isolated Host
+## Configure the account
 
-Use a disposable Host and Hostnames you control. Their public DNS must point
-to that Host, and the CA must reach its HTTP listener on port 80. Synthetic
-`.invalid` names work only with the local test CA.
+In Settings, the Public certificates card asks for the certificate authority
+and a contact email. Saving accepts the CA's terms of service. Use Let's
+Encrypt staging first on a Host you can throw away; staging certificates are
+not trusted by ordinary browsers. The Hostnames' public DNS must point at the
+Host, and the CA must reach its HTTP listener on port 80.
 
-1. Stop the disposable Platform daemon.
-2. Create `certificates` under its Platform State directory with mode `0700`.
-3. Write `public.json` below with mode `0600`. Creating this file authorizes
-   account registration and accepts the configured CA's terms of service.
-4. Start the daemon. It binds the HTTP challenge listener before requesting
-   certificates. It checks for issuance and renewal once a minute.
+The API behind the card:
+
+| Request | Result |
+| --- | --- |
+| `GET /certificates/acme` | `{"directory_url", "email"}`, or `null` while issuance is off. |
+| `PUT /certificates/acme` with that body | Saves the account. The directory must be `https://`. |
+| `DELETE /certificates/acme` | Turns issuance off. Certificates and the account stay on disk. |
+| `GET /certificates` | One status per managed Hostname (below). |
+
+The daemon reads the account and the Applications' Hostnames again once a
+minute, so a saved account, a new Hostname or a removed one needs no restart.
+A Hostname that leaves every Application stops being served; its certificate
+stays on disk and serves again if the name comes back. Saving a different CA
+starts a new account; the certificates the old CA issued keep serving until
+the new one renews them.
+
+The card writes `state/certificates/public.json`. The file can also be written
+by hand, with mode `0600`, which is how a private ACME test CA is configured:
 
 ```json
 {
   "directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory",
   "contact": ["mailto:operator@example.invalid"],
-  "hostnames": ["blog.example.invalid", "alias.other.invalid"]
+  "hostnames": ["alias.other.invalid"],
+  "ca_cert_path": "/path/to/test-ca.pem"
 }
 ```
 
-Replace the synthetic names and contact on the disposable Host. Use staging
-first. Staging certificates are not trusted by ordinary browsers. A private
-ACME test CA can set `ca_cert_path` to its PEM trust anchor. The Platform
-verifies the ACME service's HTTPS certificate; it never disables that check.
-
-Changes to `public.json` take effect when the daemon restarts. Hostnames must
-be explicit DNS names. Wildcards, IP addresses, duplicates and paths are
-refused. Changing the CA directory while retaining its account file fails
-closed. Keep separate state for separate CAs.
+`hostnames` lists names issued besides the Applications' own, and may be
+empty or absent. `ca_cert_path` is a PEM trust anchor for a private CA; the
+Platform verifies the ACME service's HTTPS certificate either way. Saving
+from the card keeps both. Hostnames must be explicit DNS names. Wildcards, IP
+addresses, duplicates and paths are refused.
 
 ## State and renewal
 
@@ -66,7 +78,7 @@ including `hostname`, `state`, `not_before`, `expires_at`, `renew_at`,
 `pending`, `valid`, `renewal_failed` and `expired`. Keys, PEM chains, account
 credentials and challenge responses are absent. Logs report the failing
 Hostname; the API records a bounded error without copying CA response bodies.
-Public certificate controls in the console remain W3.
+The Settings card shows the same list, refreshed every fifteen seconds.
 
 ## TLS selection and challenges
 

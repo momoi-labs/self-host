@@ -462,7 +462,9 @@ fn action(method: &str, route: &str, body: &Value) -> Option<(&'static str, &'st
         ("POST", "/dns/records") => ("create", "dns-record"),
         ("PUT", "/dns/records/{name}/{type}") => ("configure", "dns-record"),
         ("DELETE", "/dns/records/{name}/{type}") => ("delete", "dns-record"),
-        ("PUT", "/settings") => ("configure", "settings"),
+        ("PUT", "/settings") | ("PUT", "/certificates/acme") | ("DELETE", "/certificates/acme") => {
+            ("configure", "settings")
+        }
         _ => return None,
     })
 }
@@ -554,7 +556,11 @@ async fn subject<S: StateStore>(
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| field(body, pointer));
     } else if kind == "settings" {
-        let (setting, label) = crate::settings::subject(body);
+        let (setting, label) = if route.starts_with("/certificates") {
+            ("public-certificates", "Public certificates")
+        } else {
+            crate::settings::subject(body)
+        };
         id = setting.into();
         name = label.into();
     } else if kind == "api-key" {

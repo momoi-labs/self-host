@@ -11,10 +11,11 @@ import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { ApiKeys } from "./settings/ApiKeys.js";
 import { DnsSetup, YourHost } from "./settings/DnsSetup.js";
 import { ApplicationDefaults, AuditHistory } from "./settings/General.js";
+import { PublicCertificates } from "./settings/PublicCertificates.js";
 
-export type SettingsSection = "general" | "api-keys" | "dns-setup" | "git-connections";
+export type SettingsSection = "general" | "api-keys" | "dns-setup" | "git-connections" | "public-certificates";
 
-export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup", "git-connections"];
+export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup", "git-connections", "public-certificates"];
 
 export function isSettingsSection(value: string): value is SettingsSection {
   return (settingsSections as readonly string[]).includes(value);
@@ -26,6 +27,7 @@ const paneFor: Record<SettingsSection, string> = {
   "api-keys": "api-keys",
   "dns-setup": "dns-setup",
   "git-connections": "git-connections",
+  "public-certificates": "public-certificates",
 };
 
 /**
@@ -66,11 +68,12 @@ export function Settings({ section }: { section: SettingsSection }) {
       </PageHeader>
       <PaneGrid aria-label="Settings" flow="masonry" defaultLayout={layout} onLayoutChange={saveLayout}>
         <AuditHistory id="audit-history" size={6} />
+        <ApiKeys id="api-keys" size={6} />
         <ApplicationDefaults id="applications" size={6} />
         <YourHost id="your-host" size={6} />
-        <ApiKeys id="api-keys" size={12} />
         <GitConnectionsSettings id="git-connections" size={12} />
-        <DnsSetup id="dns-setup" size={12} />
+        <PublicCertificates id="public-certificates" size={6} />
+        <DnsSetup id="dns-setup" size={6} />
       </PaneGrid>
     </div>
   );

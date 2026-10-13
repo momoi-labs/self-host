@@ -1,4 +1,10 @@
-//! Persistent, explicitly configured HTTP-01 certificates. Applications never receive keys.
+//! Persistent HTTP-01 certificates for every public Hostname. Applications never receive keys.
+//!
+//! The Operator configures the ACME account once, in `public.json`, through
+//! the Settings screen or by hand. Which names get a certificate follows the
+//! Applications: every Hostname outside the DNS Suffix is public, plus any
+//! name the file lists. The daemon reads both again every minute, so a new
+//! Hostname or a changed account needs no restart.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -27,12 +33,14 @@ type Challenges = Arc<RwLock<HashMap<(String, String), String>>>;
 const RETRY_SECONDS: i64 = 3600;
 const MAX_RENEWAL_SECONDS: i64 = 30 * 24 * 3600;
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CertificateConfig {
     pub directory_url: String,
     #[serde(default)]
     pub contact: Vec<String>,
+    /// Names issued besides the Applications' public Hostnames.
+    #[serde(default)]
     pub hostnames: Vec<String>,
     /// Trust a private ACME service explicitly. Normal public CAs use system roots.
     #[serde(default)]
@@ -154,14 +162,14 @@ impl CertificateEntry {
 
 pub struct CertificateResolver {
     local: CertificateEntry,
-    managed: BTreeSet<String>,
+    managed: RwLock<BTreeSet<String>>,
     public: RwLock<HashMap<String, CertificateEntry>>,
 }
 
 impl std::fmt::Debug for CertificateResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CertificateResolver")
-            .field("managed", &self.managed)
+            .field("managed", &*self.managed.read().unwrap())
             .finish_non_exhaustive()
     }
 }
@@ -172,7 +180,7 @@ impl CertificateResolver {
             return self.local.valid_at(now).then(|| self.local.key.clone());
         };
         let name = name.to_ascii_lowercase();
-        if self.managed.contains(&name) {
+        if self.managed.read().unwrap().contains(&name) {
             return self
                 .public
                 .read()
@@ -198,7 +206,8 @@ pub struct CertificateManager {
 
 struct ManagerInner {
     dir: PathBuf,
-    config: Option<CertificateConfig>,
+    /// What `public.json` said when it was last read. `None` disables issuance.
+    config: RwLock<Option<CertificateConfig>>,
     resolver: Arc<CertificateResolver>,
     challenges: Challenges,
     statuses: RwLock<BTreeMap<String, CertificateStatus>>,
@@ -218,8 +227,11 @@ impl CertificateManager {
         if dir.exists() {
             secure_dir(dir)?;
         }
-        let config = read_optional::<CertificateConfig>(&dir.join("public.json"))?;
-        let config = config.map(validate_config).transpose()?;
+        let config = read_config(dir)?;
+        // The names the file lists are known now; the Applications' public
+        // Hostnames arrive with the first reconcile. A status the previous run
+        // persisted for a name since removed is dropped then, not here, so a
+        // restart never loses the record of an Application's certificate.
         let managed: BTreeSet<String> = config
             .as_ref()
             .map(|config| config.hostnames.iter().cloned().collect())
@@ -230,30 +242,14 @@ impl CertificateManager {
         } else {
             BTreeMap::new()
         };
-        statuses.retain(|hostname, _| managed.contains(hostname));
+        let managed: BTreeSet<String> = managed
+            .into_iter()
+            .chain(statuses.keys().cloned())
+            .collect();
         let mut public = HashMap::new();
         for hostname in &managed {
-            let status = statuses
-                .entry(hostname.clone())
-                .or_insert_with(|| CertificateStatus::pending(hostname.clone()));
-            status.hostname = hostname.clone();
-            match read_optional::<CertificateBundle>(&bundle_path(dir, hostname)) {
-                Ok(Some(bundle)) => match validated_bundle(hostname, &bundle) {
-                    Ok(entry) => {
-                        apply_entry_status(status, &entry);
-                        public.insert(hostname.clone(), entry);
-                    }
-                    Err(_) => {
-                        *status = CertificateStatus::pending(hostname.clone());
-                        status.last_error = Some("persisted certificate is invalid".into());
-                    }
-                },
-                Ok(None) => {
-                    status.not_before = None;
-                    status.expires_at = None;
-                    status.renew_at = None;
-                }
-                Err(error) => return Err(error),
+            if let Some(entry) = load_entry(dir, hostname, &mut statuses)? {
+                public.insert(hostname.clone(), entry);
             }
         }
         if config.is_some() {
@@ -262,10 +258,10 @@ impl CertificateManager {
         Ok(Self {
             inner: Arc::new(ManagerInner {
                 dir: dir.into(),
-                config,
+                config: RwLock::new(config),
                 resolver: Arc::new(CertificateResolver {
                     local,
-                    managed,
+                    managed: RwLock::new(managed),
                     public: RwLock::new(public),
                 }),
                 challenges: Arc::new(RwLock::new(HashMap::new())),
@@ -312,13 +308,43 @@ impl CertificateManager {
 
     /// Call after the challenge listeners are serving. Per-name errors are persisted
     /// and retried in an hour; one failed alias does not prevent another order.
+    /// Issues the names `public.json` lists, and nothing for the Applications:
+    /// `reconcile_for` is what the daemon runs.
     pub async fn reconcile(&self) -> anyhow::Result<()> {
-        self.reconcile_at(now()).await
+        self.reconcile_for_at(BTreeSet::new(), now()).await
     }
 
+    /// `reconcile` for the file's names and the Applications' public
+    /// Hostnames together. Reads `public.json` again first, so a changed
+    /// account applies without a restart; a name no longer wanted stops being
+    /// served, and its certificate stays on disk for when it comes back.
+    pub async fn reconcile_for(&self, hostnames: BTreeSet<String>) -> anyhow::Result<()> {
+        self.reconcile_for_at(hostnames, now()).await
+    }
+
+    #[cfg(test)]
     async fn reconcile_at(&self, now: i64) -> anyhow::Result<()> {
+        self.reconcile_for_at(BTreeSet::new(), now).await
+    }
+
+    async fn reconcile_for_at(&self, hostnames: BTreeSet<String>, now: i64) -> anyhow::Result<()> {
         let _guard = self.inner.reconcile.lock().await;
-        let Some(config) = &self.inner.config else {
+        let config = read_config(&self.inner.dir)?;
+        let desired: BTreeSet<String> = match &config {
+            Some(config) => config
+                .hostnames
+                .iter()
+                .cloned()
+                .chain(hostnames.into_iter().filter(|name| valid_hostname(name)))
+                .collect(),
+            None => BTreeSet::new(),
+        };
+        self.sync(desired, config.is_some())?;
+        let changed = *self.inner.config.read().unwrap() != config;
+        if changed {
+            *self.inner.config.write().unwrap() = config.clone();
+        }
+        let Some(config) = config else {
             return Ok(());
         };
         let due: Vec<String> = self
@@ -338,7 +364,7 @@ impl CertificateManager {
         }
         secure_dir(&self.inner.dir)?;
         let account =
-            match tokio::time::timeout(Duration::from_secs(30), self.account(config)).await {
+            match tokio::time::timeout(Duration::from_secs(30), self.account(&config)).await {
                 Ok(result) => result,
                 Err(_) => Err(anyhow::anyhow!("ACME account request timed out")),
             };
@@ -401,6 +427,32 @@ impl CertificateManager {
             if status_failed(&statuses, &hostname) {
                 tracing::warn!(%hostname, "public certificate operation failed; inspect /certificates");
             }
+        }
+        Ok(())
+    }
+
+    /// Makes the managed set `desired`: a new name starts pending, or serves
+    /// the certificate a previous run left on disk; a dropped name stops being
+    /// served. The statuses file follows when anything moved.
+    fn sync(&self, desired: BTreeSet<String>, persist: bool) -> anyhow::Result<()> {
+        let current = self.inner.resolver.managed.read().unwrap().clone();
+        if current == desired {
+            return Ok(());
+        }
+        let mut statuses = self.inner.statuses.write().unwrap();
+        let mut public = self.inner.resolver.public.write().unwrap();
+        for hostname in current.difference(&desired) {
+            statuses.remove(hostname);
+            public.remove(hostname);
+        }
+        for hostname in desired.difference(&current) {
+            if let Some(entry) = load_entry(&self.inner.dir, hostname, &mut statuses)? {
+                public.insert(hostname.clone(), entry);
+            }
+        }
+        *self.inner.resolver.managed.write().unwrap() = desired;
+        if persist {
+            atomic_json(&self.inner.dir.join("status.json"), &*statuses)?;
         }
         Ok(())
     }
@@ -489,29 +541,148 @@ impl CertificateManager {
 }
 
 /// Metadata-only view for the existing authenticated Operator API.
-/// Pass the authoritative `state/certificates` directory.
+/// Pass the authoritative `state/certificates` directory. The names are the
+/// ones the daemon manages, as it last wrote them: the file's and the
+/// Applications' public Hostnames.
 pub fn read_status(dir: &Path) -> anyhow::Result<Vec<CertificateStatus>> {
     reject_symlink(dir)?;
-    let Some(config) = read_optional::<CertificateConfig>(&dir.join("public.json"))? else {
+    if read_config(dir)?.is_none() {
         return Ok(Vec::new());
-    };
-    let config = validate_config(config)?;
-    let mut statuses =
-        read_optional::<BTreeMap<String, CertificateStatus>>(&dir.join("status.json"))?
-            .unwrap_or_default();
+    }
+    let statuses = read_optional::<BTreeMap<String, CertificateStatus>>(&dir.join("status.json"))?
+        .unwrap_or_default();
     let now = now();
-    Ok(config
-        .hostnames
+    Ok(statuses
         .into_iter()
-        .map(|hostname| {
-            let mut status = statuses
-                .remove(&hostname)
-                .unwrap_or_else(|| CertificateStatus::pending(hostname.clone()));
+        .map(|(hostname, mut status)| {
             status.hostname = hostname;
             refresh_status(&mut status, now);
             status
         })
         .collect())
+}
+
+/// The ACME account as the Operator sets it: the CA and the contact address.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AcmeSettings {
+    pub directory_url: String,
+    pub email: String,
+}
+
+pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
+/// What `public.json` says about the account, or `None` while issuance is off.
+pub fn read_acme(dir: &Path) -> anyhow::Result<Option<AcmeSettings>> {
+    reject_symlink(dir)?;
+    Ok(read_config(dir)?.map(|config| AcmeSettings {
+        directory_url: config.directory_url,
+        email: config
+            .contact
+            .first()
+            .map(|contact| contact.trim_start_matches("mailto:").to_string())
+            .unwrap_or_default(),
+    }))
+}
+
+/// Saves the account and turns issuance on. The file's other fields, extra
+/// names and a private CA's trust anchor, are kept. A different CA starts a
+/// new account: the old credentials are removed, and the certificates the
+/// old CA issued keep serving until they are renewed by the new one.
+pub fn write_acme(dir: &Path, settings: &AcmeSettings) -> anyhow::Result<()> {
+    let email = settings.email.trim();
+    anyhow::ensure!(
+        email.contains('@') && !email.contains(['/', '?', '#', ' ']),
+        "contact must be an email address"
+    );
+    let previous = read_config(dir)?;
+    let config = validate_config(CertificateConfig {
+        directory_url: settings.directory_url.trim().to_string(),
+        contact: vec![format!("mailto:{email}")],
+        hostnames: previous
+            .as_ref()
+            .map(|config| config.hostnames.clone())
+            .unwrap_or_default(),
+        ca_cert_path: previous
+            .as_ref()
+            .and_then(|config| config.ca_cert_path.clone()),
+    })?;
+    secure_dir(dir)?;
+    if previous.is_some_and(|previous| previous.directory_url != config.directory_url) {
+        let account = dir.join("account.json");
+        reject_symlink(&account)?;
+        if let Err(error) = std::fs::remove_file(&account)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error.into());
+        }
+    }
+    atomic_json(&dir.join("public.json"), &config)
+}
+
+/// Turns issuance off. Certificates and the account stay on disk.
+pub fn remove_acme(dir: &Path) -> anyhow::Result<()> {
+    let path = dir.join("public.json");
+    reject_symlink(&path)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Every Hostname the Applications answer on outside the DNS Suffix: the
+/// names a public CA can vouch for, since the LAN certificate cannot.
+pub fn public_hostnames(
+    apps: &[crate::store::ApplicationRecord],
+    dns_suffix: &str,
+) -> BTreeSet<String> {
+    let zone = format!(".{}", dns_suffix.to_ascii_lowercase());
+    apps.iter()
+        .flat_map(crate::routes::hostnames)
+        .map(str::to_ascii_lowercase)
+        .filter(|hostname| {
+            !hostname.ends_with(&zone) && *hostname != zone[1..] && valid_hostname(hostname)
+        })
+        .collect()
+}
+
+fn read_config(dir: &Path) -> anyhow::Result<Option<CertificateConfig>> {
+    read_optional::<CertificateConfig>(&dir.join("public.json"))?
+        .map(validate_config)
+        .transpose()
+}
+
+/// The certificate a previous run saved for the name, when it is still
+/// readable and matches; the status reflects what was found either way.
+fn load_entry(
+    dir: &Path,
+    hostname: &str,
+    statuses: &mut BTreeMap<String, CertificateStatus>,
+) -> anyhow::Result<Option<CertificateEntry>> {
+    let status = statuses
+        .entry(hostname.to_string())
+        .or_insert_with(|| CertificateStatus::pending(hostname.to_string()));
+    status.hostname = hostname.to_string();
+    match read_optional::<CertificateBundle>(&bundle_path(dir, hostname))? {
+        Some(bundle) => match validated_bundle(hostname, &bundle) {
+            Ok(entry) => {
+                apply_entry_status(status, &entry);
+                Ok(Some(entry))
+            }
+            Err(_) => {
+                *status = CertificateStatus::pending(hostname.to_string());
+                status.last_error = Some("persisted certificate is invalid".into());
+                Ok(None)
+            }
+        },
+        None => {
+            status.not_before = None;
+            status.expires_at = None;
+            status.renew_at = None;
+            Ok(None)
+        }
+    }
 }
 
 fn refresh_status(status: &mut CertificateStatus, now: i64) {
@@ -572,28 +743,12 @@ fn validate_config(mut config: CertificateConfig) -> anyhow::Result<CertificateC
     let mut names = BTreeSet::new();
     for hostname in &mut config.hostnames {
         *hostname = hostname.to_ascii_lowercase();
-        anyhow::ensure!(
-            hostname.len() <= 253
-                && hostname.contains('.')
-                && hostname.parse::<std::net::IpAddr>().is_err()
-                && hostname.split('.').all(|label| !label.is_empty()
-                    && label.len() <= 63
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')),
-            "invalid certificate hostname"
-        );
+        anyhow::ensure!(valid_hostname(hostname), "invalid certificate hostname");
         anyhow::ensure!(
             names.insert(hostname.clone()),
             "duplicate certificate hostname"
         );
     }
-    anyhow::ensure!(
-        !names.is_empty(),
-        "certificate configuration needs at least one hostname"
-    );
     for contact in &config.contact {
         anyhow::ensure!(
             contact.starts_with("mailto:") && !contact.contains(['\n', '\r']),
@@ -601,6 +756,23 @@ fn validate_config(mut config: CertificateConfig) -> anyhow::Result<CertificateC
         );
     }
     Ok(config)
+}
+
+/// A name a CA can be asked for: a lowercase DNS name with a dot, not an
+/// address and not a wildcard.
+fn valid_hostname(hostname: &str) -> bool {
+    hostname.len() <= 253
+        && hostname.contains('.')
+        && hostname.parse::<std::net::IpAddr>().is_err()
+        && hostname.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 async fn challenge(

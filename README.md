@@ -24,7 +24,8 @@ outside the Host is needed for that local setup.
 - **Routes.** The Routes page lists each hostname and path the proxy answers.
   A change applies at once, without a rebuild or restart.
 - **Certificates.** A private CA issues a wildcard certificate for the DNS
-  Suffix. Public ACME certificates are optional, one per configured name
+  Suffix. With an ACME account saved in Settings, every hostname outside the
+  Suffix gets a public certificate
   ([public certificates](docs/public-certificates.md)).
 - **Virtual machines (macOS).** A persistent Ubuntu workspace with its own name
   and address on the LAN. It is not an Application
