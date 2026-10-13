@@ -11,12 +11,12 @@ import { join } from "shlex";
 import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
-import { routesOf, targetOf } from "../lib/routes.js";
+import { kindIcon, redirectFrom, redirectTo, routesOf, targetLabel, targetOf } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
-import { DomainsCard } from "./DomainsCard.js";
+import { GroupCard, type GroupSection } from "./GroupCard.js";
 import { Icon } from "./Icon.js";
 import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
 import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
@@ -90,6 +90,26 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   const [layout, saveLayout] = useStoredLayout(native ? "summary:native" : "summary:container");
   const routes = routesOf(app);
   const [editor, setEditor] = useState<RouteEditor | null>(null);
+  const target = targetLabel(app);
+  // Every way in: the hostnames, the paths and the redirects, each added from the route dialog set for it.
+  const domainSections: GroupSection[] = [
+    {
+      key: "hostnames", title: "Hostnames", icon: kindIcon.hostname, onAdd: () => setEditor({ app, action: "forward" }),
+      lines: routes.filter((route) => route.kind !== "path").map((route) => ({ key: route.key, icon: kindIcon[route.kind], label: `${route.hostname}/`, to: `→ ${target}` })),
+    },
+    {
+      key: "paths", title: "Paths", icon: kindIcon.path, onAdd: () => setEditor({ app, action: "forward" }),
+      lines: routes.filter((route) => route.kind === "path").map((route) => ({
+        key: route.key, icon: kindIcon.path, label: `${route.hostname}${route.path}`, to: `→ ${route.target ?? target}${route.stripPrefix ? "" : route.path}`,
+      })),
+    },
+    {
+      key: "redirects", title: "Redirects", icon: kindIcon.redirect, onAdd: () => setEditor({ app, action: "redirect" }),
+      lines: (app.redirects ?? []).map((rule, index) => ({
+        key: `redirect:${index}`, icon: kindIcon.redirect, label: redirectFrom(rule), to: `↪ ${redirectTo(rule)} (${rule.permanent ? "301" : "302"})`,
+      })),
+    },
+  ];
   const [patternEditor, setPatternEditor] = useState<RedirectEditor | null>(null);
   const notify = useToast();
   const node = nodeOf(app);
@@ -110,8 +130,8 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
       <Diagram label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
         {routes.length ? (
           <DiagramColumn>
-            <DiagramNode id="domains" title="" className="domains-node">
-              <DomainsCard app={app} onAdd={(group) => setEditor({ app, action: group === "redirects" ? "redirect" : "forward" })} />
+            <DiagramNode id="domains" title="" className="group-node">
+              <GroupCard title="Domains" sections={domainSections} />
             </DiagramNode>
           </DiagramColumn>
         ) : null}
@@ -120,21 +140,23 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             {sourceOf(app)}
           </DiagramNode>
         </DiagramColumn>
-        {/* A database shows only once the Application is connected to it. */}
+        {/* Databases show only once the Application is connected to one. */}
         {connected.length ? (
           <DiagramColumn>
-            {connected.map(({ database }) => (
-              <DiagramNode key={database.id} id={database.id} kind="database" title={database.name} status={statusOf(database.status)}
-                {...opens(() => onOpenApp(database.id))}>
-                {database.image}
-              </DiagramNode>
-            ))}
+            <DiagramNode id="databases" title="" className="group-node">
+              <GroupCard title="Databases" sections={[{
+                key: "postgres", title: "PostgreSQL", icon: "database", addHref: "/console/#databases",
+                lines: connected.map(({ database, variable }) => ({
+                  key: database.id, icon: "database", label: database.name, to: `$${variable}${database.status === "running" ? "" : ` · ${database.status}`}`,
+                  hint: `${app.name} reads ${database.name}'s connection URL from the variable ${variable}.`,
+                  onOpen: () => onOpenApp(database.id),
+                })),
+              }]} />
+            </DiagramNode>
           </DiagramColumn>
         ) : null}
         {routes.length ? <DiagramEdge from="domains" to="app" label={targetOf(app)} /> : null}
-        {connected.map(({ database, variable }) => (
-          <DiagramEdge key={database.id} from="app" to={database.id} label={variable} />
-        ))}
+        {connected.length ? <DiagramEdge from="app" to="databases" /> : null}
       </Diagram>
 
       <PaneGrid aria-label={`${app.name} summary`} defaultLayout={layout} onLayoutChange={saveLayout}>
