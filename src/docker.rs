@@ -441,7 +441,7 @@ impl DockerRuntime for CliDocker {
             cleanup.directories.push(directory.clone());
             let launcher = crate::source_build_guard::compile(&directory).map_err(|_| {
                 source_refusal(
-                    "Dockerfile RUN requires /usr/bin/cc and static libc on the Linux Host",
+                    "Dockerfile RUN requires the release build guard, or /usr/bin/cc and static libc, on the Linux Host",
                 )
             })?;
             let context = directory.join("context");

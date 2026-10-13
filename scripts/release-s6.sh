@@ -88,6 +88,11 @@ mkdir -p "$work/bundle/bin" "$work/bundle/licenses"
 for tool in "${tools[@]}"; do
   install -m 755 "$work/s6-$s6_version/$tool" "$work/bundle/bin/$tool"
 done
+if [[ "$target" == *-linux-* ]]; then
+  # Git builds mount this launcher into every RUN. Shipping it built means a
+  # Host needs no C compiler or static libc of its own.
+  $CC $CFLAGS -static -o "$work/bundle/bin/source-build-guard" "$repository/assets/source-build-guard.c"
+fi
 install -m 644 "$work/s6-$s6_version/COPYING" "$work/bundle/licenses/s6.txt"
 install -m 644 "$work/skalibs-$skalibs_version/COPYING" "$work/bundle/licenses/skalibs.txt"
 if [[ "$target" == *-linux-* ]]; then

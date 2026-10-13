@@ -86,8 +86,10 @@ shell or JSON commands through it. The launcher refuses root identities,
 clears process and ambient capabilities, sets `no-new-privileges`, then
 executes the command. Build descendants cannot regain root through setuid
 programs or file capabilities. A `RUN` requires a Linux Host matching the
-Docker architecture, `/usr/bin/cc` and static libc. If those are unavailable,
-the build fails without a fallback; builds without `RUN` remain available.
+Docker architecture. Releases install the launcher already built, next to the
+bundled s6 tools. A Platform built from source compiles it with `/usr/bin/cc`
+and static libc instead. Without either, the build fails without a fallback;
+builds without `RUN` remain available.
 
 Explicit `SHELL` and inherited base-image shells retain their argv. `RUN`
 supports literal `--mount` flags, with absolute targets that cannot cover the
