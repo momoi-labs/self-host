@@ -11,12 +11,15 @@ import { join } from "shlex";
 import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
-import { kindIcon, redirectFrom, redirectTo, routesOf, targetLabel, targetOf } from "../lib/routes.js";
+import { routesOf, targetOf } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
-import { glyph, Icon } from "./Icon.js";
+import { DomainsCard } from "./DomainsCard.js";
+import { Icon } from "./Icon.js";
+import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
+import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
 import { useToast } from "./Toasts.js";
 
 /** How the console draws its diagrams: solid, rounded nodes without corner marks, on a quiet dot grid. */
@@ -70,12 +73,14 @@ function sourceOf(app: App): string {
  * uses drawn at the top, then panes the Operator can move and resize, each
  * with the way to change what it shows.
  */
-export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration, onOpenApp, onRebuild }: {
+export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfiguration, onOpenApp, onRebuild }: {
   app: App;
   apps: App[];
+  dnsSuffix: string;
+  /** Reads the Applications again once a route is added from the diagram. */
+  reload: () => Promise<unknown>;
   /** An operation is running, so nothing new starts from here. */
   busy: boolean;
-  onOpenRoutes: () => void;
   onOpenConfiguration: () => void;
   onOpenApp: (id: string) => void;
   onRebuild: () => void;
@@ -84,24 +89,9 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
   const native = app.runtime?.kind === "native" ? app.runtime : null;
   const [layout, saveLayout] = useStoredLayout(native ? "summary:native" : "summary:container");
   const routes = routesOf(app);
-  const redirects = app.redirects ?? [];
-  // Every way in, grouped the way the Routes tab lists them, each line with its kind's icon.
-  type Section = { kind: keyof typeof kindIcon; title: string; lines: string[] };
-  const sections = ([
-    { kind: "hostname", title: "Hostname", lines: routes.filter((route) => route.kind === "hostname").map((route) => route.hostname) },
-    { kind: "alias", title: "Custom domains", lines: routes.filter((route) => route.kind === "alias").map((route) => route.hostname) },
-    {
-      kind: "path", title: "Paths", lines: routes.filter((route) => route.kind === "path")
-        .map((route) => `${route.hostname}${route.path} → ${route.target ?? targetLabel(app)}${route.stripPrefix ? "/" : route.path}`),
-    },
-    {
-      kind: "redirect", title: "Redirects", lines: redirects
-        .map((rule) => `${redirectFrom(rule)} → ${redirectTo(rule)} (${rule.permanent ? "301" : "302"})`),
-    },
-  ] satisfies Section[]).filter((section) => section.lines.length > 0);
-  const entries = routes.length + redirects.length;
-  // Each kind folds on its own, so a long list of one does not hide the others.
-  const [collapsed, setCollapsed] = useState<string[]>([]);
+  const [editor, setEditor] = useState<RouteEditor | null>(null);
+  const [patternEditor, setPatternEditor] = useState<RedirectEditor | null>(null);
+  const notify = useToast();
   const node = nodeOf(app);
 
   // A database's connections are the only record of who uses it.
@@ -120,23 +110,8 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
       <Diagram label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
         {routes.length ? (
           <DiagramColumn>
-            <DiagramNode id="domains" kind="route" icon={glyph("globe")} label="Domains"
-              title={`${entries} ${entries === 1 ? "route" : "routes"}`}>
-              {sections.map((section) => {
-                const open = !collapsed.includes(section.kind);
-                return (
-                  <span key={section.kind} className="diagram-section">
-                    <button type="button" className="diagram-section-title" aria-expanded={open}
-                      onClick={() => setCollapsed(open ? [...collapsed, section.kind] : collapsed.filter((kind) => kind !== section.kind))}>
-                      <Icon name={kindIcon[section.kind]} />{section.title}
-                      <span className="diagram-section-count">{section.lines.length}</span>
-                      <Icon name={open ? "chevron-down" : "chevron-right"} />
-                    </button>
-                    {open ? section.lines.map((line) => <span key={line} className="diagram-section-line">{line}</span>) : null}
-                  </span>
-                );
-              })}
-              <Button size="sm" variant="ghost" className="diagram-section-action" onClick={onOpenRoutes}>Manage routes</Button>
+            <DiagramNode id="domains" title="" className="domains-node">
+              <DomainsCard app={app} onAdd={(group) => setEditor({ app, action: group === "redirects" ? "redirect" : "forward" })} />
             </DiagramNode>
           </DiagramColumn>
         ) : null}
@@ -205,6 +180,17 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
           <Icon name="info" /> This Host has no resource controls for native processes, so CPU and memory are not measured or limited.
         </p>
       ) : null}
+      <RouteDialog editor={editor} apps={apps} dnsSuffix={dnsSuffix} onClose={() => setEditor(null)}
+        onPattern={(one) => { setEditor(null); setPatternEditor({ app: one }); }}
+        onSaved={(message) => {
+          setEditor(null);
+          void reload().then(() => notify("success", message));
+        }} />
+      <RedirectDialog editor={patternEditor} onClose={() => setPatternEditor(null)}
+        onSaved={(message) => {
+          setPatternEditor(null);
+          void reload().then(() => notify("success", message));
+        }} />
     </div>
   );
 }

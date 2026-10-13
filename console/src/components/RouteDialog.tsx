@@ -15,7 +15,7 @@ import { Failure } from "./Failure.js";
  * What the dialog opens on: the Application, or null to choose one, and the
  * route or the redirect (by its index) when changing one.
  */
-export type RouteEditor = { app: App | null; route?: Route; redirect?: number };
+export type RouteEditor = { app: App | null; route?: Route; redirect?: number; action?: "forward" | "redirect" };
 
 /** What a hostname and path do: reach the Application, or answer with a redirect. */
 type Action = "forward" | "redirect";
@@ -74,7 +74,7 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
   const [where, setWhere] = useState(inZone ? dnsSuffix : OTHER);
   const [label, setLabel] = useState(inZone ? initial.slice(0, initial.length ? -zone.length : 0) : initial);
   const [path, setPath] = useState(editing?.path ?? draft?.path ?? "/");
-  const [action, setAction] = useState<Action>(draft ? "redirect" : "forward");
+  const [action, setAction] = useState<Action>(draft ? "redirect" : editor.action ?? "forward");
   // Removing the prefix is the default, as Coolify does; a changed route keeps its choice.
   const [strip, setStrip] = useState(editing ? editing.stripPrefix : true);
   const [location, setLocation] = useState(draft?.location ?? "");

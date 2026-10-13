@@ -338,8 +338,7 @@ export function AppDetail({
             {!native || capabilities?.terminal ? <TabsTrigger value="terminal">Terminal</TabsTrigger> : null}
           </TabsList>
           <TabsContent value="summary">
-            <AppSummary app={app} apps={apps} busy={removing || gitBusy}
-              onOpenRoutes={() => setTab("routes")}
+            <AppSummary app={app} apps={apps} dnsSuffix={dnsSuffix} reload={reload} busy={removing || gitBusy}
               onOpenConfiguration={() => setTab("configuration")}
               onOpenApp={onOpenApp}
               onRebuild={() => void rebuildCurrent()} />
