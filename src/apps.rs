@@ -652,6 +652,10 @@ async fn pending_record(
             .clone()
             .or_else(|| existing.as_ref().map(|app| app.route_rules.clone()))
             .unwrap_or_default(),
+        redirects: existing
+            .as_ref()
+            .map(|app| app.redirects.clone())
+            .unwrap_or_default(),
         rewrite_host: existing.as_ref().and_then(|app| app.rewrite_host),
         network_policy: options
             .network_policy
@@ -1707,6 +1711,7 @@ pub async fn prepare_routes(
     aliases: Option<Vec<String>>,
     route_rules: Option<Vec<crate::store::RouteRule>>,
     rewrite_host: Option<Option<bool>>,
+    redirects: Option<Vec<crate::store::RedirectRule>>,
 ) -> Result<PendingDeploy, DeployError> {
     if !store.is_initialized().await? {
         return Err(DeployError::NotInitialized);
@@ -1720,6 +1725,9 @@ pub async fn prepare_routes(
     }
     if let Some(rules) = route_rules {
         record.route_rules = rules;
+    }
+    if let Some(redirects) = redirects {
+        record.redirects = redirects;
     }
     if let Some(rewrite_host) = rewrite_host {
         record.rewrite_host = rewrite_host;

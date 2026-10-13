@@ -118,6 +118,22 @@ pub struct RouteRule {
     pub strip_prefix: bool,
 }
 
+/// An answer the proxy gives on an Application's Hostnames in place of the
+/// Application: a pattern over the request URL, and where to send the client
+/// instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedirectRule {
+    /// A regular expression matched against the whole request URL, as in
+    /// `^https://docs\.example\.com/api/([a-z-]+)\.html$`.
+    pub pattern: String,
+    /// The `Location` to answer with; `${1}` names the pattern's first group.
+    pub replacement: String,
+    /// `301 Moved Permanently` rather than `302 Found`.
+    #[serde(default)]
+    pub permanent: bool,
+}
+
 /// Existing Applications retain their shared network until explicitly changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -190,6 +206,10 @@ pub struct ApplicationRecord {
     pub variable_delivery: VariableDelivery,
     #[serde(default)]
     pub route_rules: Vec<RouteRule>,
+    /// Answered on every Hostname the Application owns, before any request
+    /// reaches it. The first matching rule wins.
+    #[serde(default)]
+    pub redirects: Vec<RedirectRule>,
     /// Whether every route sends the Web Target's loopback address as
     /// `Host`, for an Application that refuses any other name. Unset, the
     /// Operator's setting decides.
@@ -664,6 +684,7 @@ mod tests {
             publication: Publication::Unpublished,
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            redirects: Vec::new(),
             rewrite_host: None,
             network_policy: Default::default(),
         }

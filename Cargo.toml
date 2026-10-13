@@ -25,6 +25,7 @@ portable-pty = "0.9"
 rand = "0.9"
 ring = "0.17"
 rcgen = { version = "0.13", features = ["x509-parser"] }
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rust-embed = "8"

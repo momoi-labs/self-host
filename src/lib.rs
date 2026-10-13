@@ -1031,6 +1031,8 @@ struct UpdateRoutesRequest {
     route_rules: Option<Vec<crate::store::RouteRule>>,
     #[serde(default, deserialize_with = "settings::present")]
     rewrite_host: Option<Option<bool>>,
+    #[serde(default)]
+    redirects: Option<Vec<crate::store::RedirectRule>>,
 }
 
 /// One container of an Application, as Docker sees it right now.
@@ -1096,6 +1098,7 @@ struct ApplicationResponse {
     publication: Publication,
     variable_delivery: VariableDelivery,
     route_rules: Vec<crate::store::RouteRule>,
+    redirects: Vec<crate::store::RedirectRule>,
     rewrite_host: Option<bool>,
     network_policy: crate::store::NetworkPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1153,6 +1156,7 @@ impl From<apps::ApplicationRecord> for ApplicationResponse {
             publication: app.publication,
             variable_delivery: app.variable_delivery,
             route_rules: app.route_rules,
+            redirects: app.redirects,
             rewrite_host: app.rewrite_host,
             network_policy: app.network_policy,
             managed_postgres: None,
@@ -1302,6 +1306,7 @@ mod http_readiness_tests {
             publication: Default::default(),
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            redirects: Vec::new(),
             rewrite_host: None,
             network_policy: Default::default(),
         }
@@ -1672,6 +1677,7 @@ async fn update_routes<S: StateStore>(
         body.aliases,
         body.route_rules,
         body.rewrite_host,
+        body.redirects,
     )
     .await
     {
@@ -3710,6 +3716,7 @@ mod tests {
             publication: Default::default(),
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            redirects: Vec::new(),
             rewrite_host: None,
             network_policy: Default::default(),
         };
@@ -3900,6 +3907,7 @@ mod tests {
                     publication: Default::default(),
                     variable_delivery: VariableDelivery::Referenced,
                     route_rules: Vec::new(),
+                    redirects: Vec::new(),
                     rewrite_host: None,
                     network_policy: Default::default(),
                 })
@@ -3964,6 +3972,7 @@ mod tests {
                 publication: Default::default(),
                 variable_delivery: VariableDelivery::Referenced,
                 route_rules: Vec::new(),
+                redirects: Vec::new(),
                 rewrite_host: None,
                 network_policy: Default::default(),
             })
@@ -4018,12 +4027,14 @@ mod tests {
                 publication: Default::default(),
                 variable_delivery: VariableDelivery::Referenced,
                 route_rules: Vec::new(),
+                redirects: Vec::new(),
                 rewrite_host: None,
                 network_policy: Default::default(),
             })
             .await
             .unwrap();
 
+        let redirect = json!({"pattern": "^https://www\\.home\\.lan/(.*)$", "replacement": "https://blog.home.lan/${1}", "permanent": true});
         let response = put_json(
             &app,
             "/apps/id/blog/routes",
@@ -4032,18 +4043,42 @@ mod tests {
                 "aliases": ["www.home.lan"],
                 "route_rules": [{"hostname": "blog.home.lan", "path_prefix": "/api", "strip_prefix": true}],
                 "rewrite_host": true,
+                "redirects": [redirect.clone()],
             }),
         )
         .await;
 
         // Answered at once: no task, no build, no pull.
         assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        let answered: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(answered["redirects"], json!([redirect]));
         assert!(docker.built.lock().unwrap().is_empty());
         assert!(docker.pulled.lock().unwrap().is_empty());
         let saved = store.get_application("blog").await.unwrap().unwrap();
         assert_eq!(saved.status, apps::STATUS_RUNNING);
         assert_eq!(saved.aliases, ["www.home.lan"]);
         assert_eq!(saved.rewrite_host, Some(true));
+        assert_eq!(saved.redirects[0].replacement, "https://blog.home.lan/${1}");
+
+        // A redirect that does not compile is refused without touching the saved ones.
+        let response = put_json(
+            &app,
+            "/apps/id/blog/routes",
+            Some("test-key"),
+            json!({"redirects": [{"pattern": "^https://(", "replacement": "https://blog.home.lan/"}]}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            store
+                .get_application("blog")
+                .await
+                .unwrap()
+                .unwrap()
+                .redirects,
+            saved.redirects
+        );
         let published = route_store.get("blog").unwrap();
         assert!(published.answers_on("www.home.lan"));
         assert_eq!(published.route_rules, saved.route_rules);
@@ -4569,6 +4604,7 @@ mod tests {
                 "publication": {"kind": "web"},
                 "variable_delivery": "referenced",
                 "route_rules": [],
+                "redirects": [],
                 "rewrite_host": null,
                 "network_policy": {"kind":"private","consumers":[]},
                 "services": [{

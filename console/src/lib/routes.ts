@@ -1,5 +1,5 @@
 import { api, failureOf } from "./api.js";
-import type { App, Report, RouteRule } from "./types.js";
+import type { App, RedirectRule, Report, RouteRule } from "./types.js";
 
 /** How a route came to be: the Application's Hostname, one of its aliases, or a path rule. */
 export type RouteKind = "hostname" | "alias" | "path";
@@ -97,6 +97,15 @@ export async function saveRewriteHost(app: App, rewriteHost: boolean | null): Pr
   const response = await api(`/apps/id/${encodeURIComponent(app.id)}/routes`, {
     method: "PUT",
     body: JSON.stringify({ rewrite_host: rewriteHost }),
+  });
+  return response.ok ? null : failureOf(response);
+}
+
+/** Saves an Application's redirects, in the order they are tried. Nothing is rebuilt or restarted. */
+export async function saveRedirects(app: App, redirects: RedirectRule[]): Promise<Report | null> {
+  const response = await api(`/apps/id/${encodeURIComponent(app.id)}/routes`, {
+    method: "PUT",
+    body: JSON.stringify({ redirects }),
   });
   return response.ok ? null : failureOf(response);
 }

@@ -57,6 +57,14 @@ export type RouteRule = {
   strip_prefix?: boolean;
 };
 
+/** An answer the proxy gives on an Application's hostnames in place of the
+ * Application: a pattern over the request URL, and where to send the client. */
+export type RedirectRule = {
+  pattern: string;
+  replacement: string;
+  permanent?: boolean;
+};
+
 /** How an Application's Variables reach a Compose project. */
 export type VariableDelivery = "broadcast" | "referenced";
 
@@ -103,6 +111,8 @@ export type App = {
   git_build?: GitBuild;
   aliases?: string[];
   route_rules?: RouteRule[];
+  /** Answered on every hostname of the Application before a request reaches it; the first match wins. */
+  redirects?: RedirectRule[];
   /** Whether every route sends the Web Target's loopback address as `Host`. Null follows the setting. */
   rewrite_host?: boolean | null;
   restarts?: number | null;

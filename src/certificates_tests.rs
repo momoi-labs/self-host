@@ -1054,6 +1054,7 @@ fn public_hostnames_are_the_applications_names_outside_the_suffix() {
                 strip_prefix: false,
             })
             .collect(),
+        redirects: Vec::new(),
         rewrite_host: None,
         network_policy: Default::default(),
     };
