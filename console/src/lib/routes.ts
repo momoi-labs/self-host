@@ -11,7 +11,7 @@ export const kindLabel: Record<RouteKind, string> = {
 };
 
 /** The icon that tells each kind apart, on the Routes tab and the Summary diagram. */
-export const kindIcon = { hostname: "globe", alias: "link", path: "split", redirect: "redirect" } as const;
+export const kindIcon = { hostname: "globe", alias: "alias", path: "split", redirect: "redirect" } as const;
 
 /** One hostname and path the proxy answers, and the Application it reaches. */
 export type Route = {

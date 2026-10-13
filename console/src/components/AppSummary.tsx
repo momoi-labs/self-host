@@ -136,19 +136,24 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   // Where the app listens is said once, on its own node; a row names a target only when it is another one.
   const domainSections: GroupSection[] = [
     {
-      key: "hostnames", title: "Hostnames", icon: kindIcon.hostname, onAdd: () => setEditor({ app, action: "forward" }),
-      lines: routes.filter((route) => route.kind !== "path").map((route) => ({ key: route.key, icon: kindIcon[route.kind], label: `${route.hostname}/` })),
+      key: "hostname", title: "Hostname", icon: kindIcon.hostname,
+      lines: routes.filter((route) => route.kind === "hostname").map((route) => ({ key: route.key, label: `${route.hostname}/` })),
+    },
+    {
+      key: "aliases", title: "Aliases", icon: kindIcon.alias, onAdd: () => setEditor({ app, action: "forward" }),
+      lines: routes.filter((route) => route.kind === "alias").map((route) => ({ key: route.key, label: `${route.hostname}/` })),
     },
     {
       key: "paths", title: "Paths", icon: kindIcon.path, onAdd: () => setEditor({ app, action: "forward" }),
       lines: routes.filter((route) => route.kind === "path").map((route) => ({
-        key: route.key, icon: kindIcon.path, label: `${route.hostname}${route.path}`, to: route.target ? `→ ${route.target}${route.stripPrefix ? "" : route.path}` : route.stripPrefix ? undefined : `→ ${route.path}`,
+        key: route.key, label: `${route.hostname}${route.path}`,
+        to: route.target ? `→ ${route.target}${route.stripPrefix ? "" : route.path}` : route.stripPrefix ? undefined : `→ ${route.path}`,
       })),
     },
     {
       key: "redirects", title: "Redirects", icon: kindIcon.redirect, onAdd: () => setEditor({ app, action: "redirect" }),
       lines: (app.redirects ?? []).map((rule, index) => ({
-        key: `redirect:${index}`, icon: kindIcon.redirect, label: redirectFrom(rule), to: `↪ ${redirectTo(rule)} (${rule.permanent ? "301" : "302"})`,
+        key: `redirect:${index}`, label: redirectFrom(rule), to: `↪ ${redirectTo(rule)} (${rule.permanent ? "301" : "302"})`,
       })),
     },
   ];
@@ -236,7 +241,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
               <GroupCard title={native ? "Other processes" : "Other containers"} sections={[{
                 key: "containers", title: "Containers", icon: "box", flat: true,
                 lines: rest.map((container) => ({
-                  key: container.name, icon: "box", label: container.name,
+                  key: container.name, label: container.name,
                   to: [container.image, container.port, container.state && container.state !== "running" ? container.state : ""].filter(Boolean).join(" "),
                 })),
               }]} />
@@ -250,7 +255,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
               <GroupCard title="Databases" sections={[{
                 key: "postgres", title: "PostgreSQL", icon: "database", addHref: "/console/#databases",
                 lines: connected.map(({ database, variable }) => ({
-                  key: database.id, icon: "database", label: database.name, env: variable,
+                  key: database.id, label: database.name, env: variable,
                   to: database.status === "running" ? undefined : database.status,
                   hint: `${app.name} reads ${database.name}'s connection URL from the environment variable ${variable}.`,
                   onOpen: () => onOpenApp(database.id),

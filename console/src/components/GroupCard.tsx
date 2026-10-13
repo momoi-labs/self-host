@@ -2,9 +2,9 @@ import { useState, type ReactNode } from "react";
 
 import { Icon, type IconName } from "./Icon.js";
 
-/** One line of a section: an icon, what it is, and where it goes. */
+/** One line of a section: what it is, and where it goes. Its section's heading carries the icon. */
 /** `env` names the environment variable the line arrives in, drawn as a chip in place of `to`. */
-export type GroupLine = { key: string; icon: IconName; label: string; to?: string; env?: string; hint?: string; onOpen?: () => void };
+export type GroupLine = { key: string; label: string; to?: string; env?: string; hint?: string; onOpen?: () => void };
 
 /** A kind of thing the card lists, with the way to add one: a dialog, or a page that does it. */
 /** A `flat` section has no heading of its own: its lines sit straight under the card's header. */
@@ -58,7 +58,7 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
           </span>}
           {section.lines.map((line) => {
             const body = <>
-              <span className="group-name"><Icon name={line.icon} /><span className="mono">{line.label}</span></span>
+              <span className="group-name"><span className="mono">{line.label}</span></span>
               {line.env ? (
                 <span className="group-env" title={line.hint}><b>env</b><span className="mono">{line.env}</span></span>
               ) : null}

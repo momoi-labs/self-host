@@ -36,7 +36,7 @@ export function DatabaseSummary({ app, apps, database, onOpenApp, onOpenConnecti
                 lines: connections.map((connection) => {
                   const consumer = apps.find((one) => one.id === connection.consumer_application_id);
                   return {
-                    key: connection.id, icon: "box", label: consumer?.name ?? "Removed application", env: connection.variable,
+                    key: connection.id, label: consumer?.name ?? "Removed application", env: connection.variable,
                     to: connection.status === "ready" ? undefined : connection.status,
                     hint: `${consumer?.name ?? "The Application"} reads ${app.name}'s connection URL from the environment variable ${connection.variable}.`,
                     onOpen: consumer ? () => onOpenApp(consumer.id) : undefined,
