@@ -1479,6 +1479,9 @@ struct InspectedVolume {
 struct InspectedService {
     name: String,
     image: String,
+    /// What the file says to run, when it overrides the image's command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
     ports: Vec<InspectedPort>,
     volumes: Vec<InspectedVolume>,
 }
@@ -1506,6 +1509,7 @@ async fn inspect_compose(Json(body): Json<InspectComposeRequest>) -> Response {
         .map(|s| InspectedService {
             name: s.name.clone(),
             image: s.image.clone(),
+            command: s.command(),
             ports: s
                 .ports
                 .iter()
@@ -3334,7 +3338,7 @@ mod tests {
             &app,
             "/compose/inspect",
             Some("test-key"),
-            json!({"compose": "services:\n  hermes:\n    image: x\n    ports:\n      - \"8642:8642\"\n      - \"9119:9119\"\n    volumes:\n      - ~/.hermes:/opt/data\n  db:\n    image: postgres\n    volumes:\n      - pgdata:/var/lib/postgresql\n"}),
+            json!({"compose": "services:\n  hermes:\n    image: x\n    ports:\n      - \"8642:8642\"\n      - \"9119:9119\"\n    volumes:\n      - ~/.hermes:/opt/data\n  db:\n    image: postgres\n    command: [\"postgres\", \"-c\", \"max_connections=50\"]\n    volumes:\n      - pgdata:/var/lib/postgresql\n"}),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -3350,7 +3354,7 @@ mod tests {
                     ], "volumes": [
                         {"source": "~/.hermes", "target": "/opt/data", "kind": "data", "data_path": "data/.hermes"}
                     ]},
-                    {"name": "db", "image": "postgres", "ports": [], "volumes": [
+                    {"name": "db", "image": "postgres", "command": "postgres -c max_connections=50", "ports": [], "volumes": [
                         {"source": "pgdata", "target": "/var/lib/postgresql", "kind": "named"}
                     ]}
                 ],
