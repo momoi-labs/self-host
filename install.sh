@@ -826,7 +826,33 @@ wait_for_vmnet() {
 
 # The pid launchd holds for the daemon; empty when it is not running.
 vmnet_pid() {
-	sudo launchctl print "system/${VMNET_LABEL}" 2>/dev/null | awk '/^\tpid = /{print $3}'
+	daemon_pid "$VMNET_LABEL"
+}
+
+daemon_pid() {
+	sudo launchctl print "system/$1" 2>/dev/null | awk '/^\tpid = /{print $3}'
+}
+
+# Loaded is not running: a daemon that fails at start exits at once and
+# KeepAlive brings it back, so the proof is the same process still there a
+# moment later.
+wait_for_daemon() {
+	local label="$1" i pid
+	for i in $(seq 1 15); do
+		pid="$(daemon_pid "$label")"
+		if [ -n "$pid" ]; then
+			sleep 2
+			if [ "$(daemon_pid "$label")" = "$pid" ]; then
+				echo "${label} is running (pid ${pid})."
+				return 0
+			fi
+		fi
+		sleep 1
+	done
+	echo "${label} loaded but is not staying up." >&2
+	echo "See $HOME/Library/Logs/self-host/ and" >&2
+	echo "  sudo launchctl print system/${label}" >&2
+	exit 1
 }
 
 # The Platform itself, supervised by launchd as the Operator's user so that
@@ -938,6 +964,24 @@ EOF
 	sudo chown root:wheel "$DAEMON_DIR/${PLATFORM_LABEL}.plist"
 	sudo chmod 644 "$DAEMON_DIR/${PLATFORM_LABEL}.plist"
 	reload_daemon "$PLATFORM_LABEL"
+	wait_for_platform
+}
+
+# A running process is not yet a Platform: it answers once it has opened its
+# state and bound the API. Docker answered earlier in this run, so this is
+# quick unless something is wrong; say where to look rather than fail.
+wait_for_platform() {
+	local i
+	for i in $(seq 1 60); do
+		if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:3721/console/"; then
+			echo "The Platform answers on http://127.0.0.1:3721."
+			return 0
+		fi
+		sleep 2
+	done
+	echo "The Platform has not answered on 127.0.0.1:3721 after two minutes." >&2
+	echo "See $HOME/Library/Logs/self-host/ and" >&2
+	echo "  sudo launchctl print system/${PLATFORM_LABEL}" >&2
 }
 
 # bootout returns before launchd has torn the service down, and a bootstrap
@@ -954,7 +998,7 @@ reload_daemon() {
 	for attempt in $(seq 1 5); do
 		if sudo launchctl bootstrap system "$DAEMON_DIR/${label}.plist"; then
 			sudo launchctl enable "system/${label}"
-			echo "${label} loaded."
+			wait_for_daemon "$label"
 			return 0
 		fi
 		echo "launchd did not take ${label} yet; retrying (${attempt}/5)..." >&2
