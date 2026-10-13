@@ -244,7 +244,7 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
     reconnected.start(&a).await.unwrap();
     assert_eq!(response(a_port).await["secret"], "changed-secret");
     reconnected.restart(&a).await.unwrap();
-    reconnected.remove(&a).await.unwrap();
+    reconnected.remove(&a, false).await.unwrap();
     // The account is retired, not deleted: macOS needs Full Disk Access to
     // delete a record and the daemon has none (#168). A retry is a no-op.
     let a_account = self_host::native::account_name_for(a_id).unwrap();
@@ -263,7 +263,7 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
         real_name(&format!("/Groups/{a_account}")),
         format!("self-host retired Application {a_id}")
     );
-    reconnected.remove(&a).await.unwrap();
+    reconnected.remove(&a, false).await.unwrap();
     // A retired account is never adopted: the same id cannot come back and
     // reach the retained data.
     assert!(reconnected.deploy(&a, vec![], true).await.is_err());
@@ -283,7 +283,7 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
     }
     assert!(!leftover, "processes outlived Application Account {uid}");
     // The retired uid is never reused, and the retained home stays private.
-    reconnected.remove(&b).await.unwrap();
+    reconnected.remove(&b, false).await.unwrap();
     // A fresh port: the removed listener may still hold the old one briefly.
     let c_port = port();
     let c = record(
@@ -297,6 +297,6 @@ async fn native_accounts_lifecycle_logs_and_process_groups() {
     assert_ne!(next["uid"], original["uid"]);
     assert_ne!(next["uid"], other["uid"]);
     assert_eq!(next["peer"], false);
-    reconnected.remove(&c).await.unwrap();
+    reconnected.remove(&c, false).await.unwrap();
     std::fs::remove_file(operator_file).unwrap();
 }

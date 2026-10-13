@@ -97,6 +97,13 @@ enum Command {
         /// Application name
         app: String,
     },
+    /// Remove what removed Applications left behind: volumes, directories,
+    /// images and deployment history no existing Application uses
+    Prune {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
     /// Reset the platform (remove all containers, volumes, and config)
     Reset {
         /// Skip confirmation prompt
@@ -288,6 +295,12 @@ async fn main() {
         }
         Some(Command::Logs { app }) => {
             if let Err(e) = run_logs_command(&app).await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Prune { force }) => {
+            if let Err(e) = run_prune_command(force).await {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
@@ -1101,6 +1114,119 @@ async fn run_logs_command(app_name: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Bytes in binary units with one decimal, as the console shows them.
+fn format_bytes(bytes: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < units.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", units[unit])
+    }
+}
+
+/// Shows what `prune` would remove, asks, then runs it as a task on the
+/// Platform and waits for its event.
+async fn run_prune_command(force: bool) -> anyhow::Result<()> {
+    let config = CliConfig::load()?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "CLI config not found; run 'self-host init' first",
+        )
+    })?;
+    let client = platform_api_client()?;
+    let base = config.api_base_url.trim_end_matches('/').to_string();
+
+    let response = client
+        .get(format!("{base}/prune"))
+        .bearer_auth(&config.api_key)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(api_error("Could not read what to prune", status, &body));
+    }
+    let plan: serde_json::Value = serde_json::from_str(&body)?;
+    let items = plan["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        println!("Nothing to prune.");
+        return Ok(());
+    }
+    for item in &items {
+        let size = item["bytes"].as_u64().map(format_bytes).unwrap_or_default();
+        println!(
+            "  {:<10} {}  {}",
+            item["kind"].as_str().unwrap_or("?"),
+            item["name"].as_str().unwrap_or("?"),
+            size
+        );
+    }
+    println!(
+        "Frees {}.",
+        format_bytes(plan["bytes"].as_u64().unwrap_or(0))
+    );
+    if !force {
+        print!("Remove these? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Prune cancelled.");
+            return Ok(());
+        }
+    }
+
+    let response = client
+        .post(format!("{base}/prune"))
+        .bearer_auth(&config.api_key)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(api_error("Prune failed", status, &body));
+    }
+    let task_id = serde_json::from_str::<serde_json::Value>(&body)?["task_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let response = client
+            .get(format!("{base}/events"))
+            .bearer_auth(&config.api_key)
+            .send()
+            .await?;
+        let events: serde_json::Value = serde_json::from_str(&response.text().await?)?;
+        let Some(event) = events.as_array().and_then(|events| {
+            events
+                .iter()
+                .find(|event| event["id"].as_str() == Some(&task_id))
+        }) else {
+            continue;
+        };
+        match event["status"].as_str() {
+            Some("completed") => {
+                let removed = event["changes"].as_array().map(Vec::len).unwrap_or(0);
+                println!("Removed {removed} of {} items.", items.len());
+                return Ok(());
+            }
+            Some("failed") => {
+                let report = serde_json::from_value(event["error"].clone())
+                    .unwrap_or_else(|_| ErrorReport::plain("unknown error"));
+                return Err(chain_from(report).context("Prune failed"));
+            }
+            _ => continue,
+        }
+    }
 }
 
 async fn run_reset_command(force: bool) -> anyhow::Result<()> {

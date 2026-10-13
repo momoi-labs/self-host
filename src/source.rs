@@ -137,6 +137,12 @@ fn invalid(message: impl Into<String>) -> SourceError {
     SourceError::Invalid(message.into())
 }
 
+/// The repository every image built from an Application's source is tagged
+/// in, so removing the Application can find all of its builds.
+pub fn image_repository(app_id: &str) -> String {
+    format!("sf-source-{app_id}")
+}
+
 pub fn private_root() -> PathBuf {
     crate::file_store::state_dir().join("source")
 }
@@ -693,7 +699,8 @@ pub async fn build(
             context,
             dockerfile,
             tag: format!(
-                "sf-source-{app_id}:{}-{:016x}",
+                "{}:{}-{:016x}",
+                image_repository(app_id),
                 &revision[..12],
                 rand::random::<u64>()
             ),

@@ -31,6 +31,12 @@ pub fn generate_app_id() -> String {
         .collect()
 }
 
+/// Whether a name is shaped like an id `generate_app_id` makes. Cleanup
+/// only touches what carries such an id, so anything else on the Host stays.
+pub fn is_app_id(text: &str) -> bool {
+    text.len() == ID_LEN && text.bytes().all(|byte| ID_ALPHABET.contains(&byte))
+}
+
 pub use crate::store::ApplicationRecord;
 
 /// The states an Application row can be in. `pending` is written before any
@@ -1903,11 +1909,16 @@ pub async fn require_removable(
     Ok(())
 }
 
+/// Takes the Application down and forgets it. With `delete_data`, what it
+/// stored goes too: its named volumes, its project directory and the data
+/// under it, its deployment history, and the images it built or pulled that
+/// no other Application uses. Without it, all of that stays, as before.
 pub async fn remove_application(
     store: &impl StateStore,
     docker: &(impl DockerRuntime + ?Sized),
     routes: &(impl RouteStore + ?Sized),
     name: &str,
+    delete_data: bool,
 ) -> Result<(), RemoveError> {
     if !store.is_initialized().await? {
         return Err(RemoveError::NotInitialized);
@@ -1928,6 +1939,13 @@ pub async fn remove_application(
         None
     };
 
+    // Read before the row and the history go: they are how the images are known.
+    let images = if delete_data {
+        images_only_for(store, &app).await?
+    } else {
+        Vec::new()
+    };
+
     // The route goes first: a Hostname still answering for an Application that
     // is on its way out is worse than one that stops a moment early.
     routes.withdraw(&app.id);
@@ -1935,8 +1953,12 @@ pub async fn remove_application(
     store.delete_application(&app.id).await?;
 
     match project {
-        // Containers go; named volumes and the data directory stay. Removing
-        // an Application is not permission to delete what it wrote.
+        // Without `delete_data`, containers go and named volumes and the data
+        // directory stay: removing an Application is not, by itself,
+        // permission to delete what it wrote.
+        Some(project) if delete_data => {
+            let _ = docker.compose_down_with_volumes(&project).await;
+        }
         Some(project) => {
             let _ = docker.compose_down(&project).await;
         }
@@ -1945,7 +1967,64 @@ pub async fn remove_application(
         }
     }
 
+    if delete_data {
+        let directory = project_dir_for(&app.id);
+        if let Err(error) = std::fs::remove_dir_all(&directory)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("could not delete {}: {error}", directory.display());
+        }
+        crate::deployments::forget(store, &app.id).await?;
+        // Best effort: an image another container still uses stays.
+        for image in &images {
+            let _ = docker.remove_image(image).await;
+        }
+        let _ = docker
+            .remove_image_repository(&crate::source::image_repository(&app.id))
+            .await;
+    }
+
     Ok(())
+}
+
+/// Every image an Application runs now: its image, or each service's.
+pub(crate) fn images_of(app: &ApplicationRecord) -> Vec<String> {
+    match app
+        .compose
+        .as_deref()
+        .and_then(|compose| ComposeDefinition::parse(compose).ok())
+    {
+        Some(definition) => definition
+            .services
+            .into_iter()
+            .map(|service| service.image)
+            .collect(),
+        None if app.image.is_empty() => Vec::new(),
+        None => vec![app.image.clone()],
+    }
+}
+
+/// The images this Application ran, now or in a deployment it kept, that no
+/// other Application runs. A custom image is the custom image's to remove.
+async fn images_only_for(
+    store: &impl StateStore,
+    app: &ApplicationRecord,
+) -> Result<Vec<String>, StoreError> {
+    let others: std::collections::BTreeSet<String> = store
+        .list_applications()
+        .await?
+        .iter()
+        .filter(|other| other.id != app.id)
+        .flat_map(images_of)
+        .collect();
+    let mut images: std::collections::BTreeSet<String> = images_of(app).into_iter().collect();
+    for deployment in crate::deployments::history(store, &app.id).await? {
+        images.extend(deployment.images.into_values());
+    }
+    Ok(images
+        .into_iter()
+        .filter(|image| !image.starts_with("sf-img-") && !others.contains(image))
+        .collect())
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────
@@ -3721,11 +3800,100 @@ mod tests {
         .unwrap();
         assert!(routes.get(&app.id).is_some());
 
-        remove_application(&store, &docker, &routes, "blog")
+        remove_application(&store, &docker, &routes, "blog", false)
             .await
             .unwrap();
 
         assert!(routes.get(&app.id).is_none());
+    }
+
+    #[tokio::test]
+    async fn removing_with_its_data_deletes_what_only_it_used() {
+        const STACK: &str = "services:\n  web:\n    image: nginx:alpine\n  cache:\n    image: redis:7\n    volumes:\n      - cache:/data\nvolumes:\n  cache: {}\n";
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let pending = prepare_deploy_from_compose(
+            &store,
+            "stack",
+            STACK,
+            Some("web"),
+            Some(80),
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        let stack = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+        // Another Application runs nginx too, so that image is not the stack's alone.
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "other",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !crate::deployments::history(&store, &stack.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        remove_application(&store, &docker, &routes, "stack", true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            docker.volumes_removed.lock().unwrap().as_slice(),
+            [project_name_for(&stack.id)]
+        );
+        let removed = docker.removed_images.lock().unwrap().clone();
+        assert!(removed.contains(&"redis:7".to_string()), "{removed:?}");
+        assert!(
+            !removed.contains(&"nginx:alpine".to_string()),
+            "{removed:?}"
+        );
+        assert!(
+            crate::deployments::history(&store, &stack.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_without_its_data_keeps_volumes_images_and_history() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "nginx:alpine",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        remove_application(&store, &docker, &routes, "blog", false)
+            .await
+            .unwrap();
+
+        assert!(docker.volumes_removed.lock().unwrap().is_empty());
+        assert!(docker.removed_images.lock().unwrap().is_empty());
+        assert!(
+            !crate::deployments::history(&store, &app.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -4532,7 +4700,7 @@ services:
         let routes = FakeRoutes::new();
         let app = deploy_hermes(&store, &docker, &routes).await;
 
-        remove_application(&store, &docker, &routes, "hermes")
+        remove_application(&store, &docker, &routes, "hermes", false)
             .await
             .unwrap();
 
