@@ -38,7 +38,9 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
         <span>{title} <span className="group-count">{total}</span></span>
         <Icon name={open ? "chevron-up" : "chevron-down"} />
       </button>
-      {open && present.length > 1 ? (
+      {/* Folded, the body stays in the layout with no height, so the card keeps its width. */}
+      <span className="group-body" data-open={open} aria-hidden={!open}>
+      {present.length > 1 ? (
         <span className="group-chips" role="group" aria-label="Show">
           <button type="button" aria-pressed={shown.length > 1} onClick={() => setOnly(null)}>All {total}</button>
           {present.map((section) => (
@@ -48,7 +50,7 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
           ))}
         </span>
       ) : null}
-      {open ? shown.map((section) => (
+      {shown.map((section) => (
         <span key={section.key} className={section.flat ? "group-section is-flat" : "group-section"}>
           {section.flat ? null : <span className="group-section-head">
             <span><Icon name={section.icon} />{section.title} <span className="group-count">{section.lines.length}</span></span>
@@ -67,7 +69,8 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
               : <span key={line.key} className="group-line">{body}</span>;
           })}
         </span>
-      )) : null}
+      ))}
+      </span>
     </span>
   );
 }
