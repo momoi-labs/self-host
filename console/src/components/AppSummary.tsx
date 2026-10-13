@@ -147,8 +147,9 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
               <GroupCard title="Databases" sections={[{
                 key: "postgres", title: "PostgreSQL", icon: "database", addHref: "/console/#databases",
                 lines: connected.map(({ database, variable }) => ({
-                  key: database.id, icon: "database", label: database.name, to: `$${variable}${database.status === "running" ? "" : ` · ${database.status}`}`,
-                  hint: `${app.name} reads ${database.name}'s connection URL from the variable ${variable}.`,
+                  key: database.id, icon: "database", label: database.name, env: variable,
+                  to: database.status === "running" ? undefined : database.status,
+                  hint: `${app.name} reads ${database.name}'s connection URL from the environment variable ${variable}.`,
                   onOpen: () => onOpenApp(database.id),
                 })),
               }]} />
@@ -156,7 +157,8 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
           </DiagramColumn>
         ) : null}
         {routes.length ? <DiagramEdge from="domains" to="app" label={targetOf(app)} /> : null}
-        {connected.length ? <DiagramEdge from="app" to="databases" /> : null}
+        {/* The app reaches its databases through its environment; the card says which variable. */}
+        {connected.length ? <DiagramEdge from="app" to="databases" label="env" /> : null}
       </Diagram>
 
       <PaneGrid aria-label={`${app.name} summary`} defaultLayout={layout} onLayoutChange={saveLayout}>
