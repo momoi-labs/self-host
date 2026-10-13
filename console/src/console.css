@@ -195,30 +195,44 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
    grid of stacked lines, so the row has to be asked for. */
 .card-header.between { display: flex; }
 .route-path { color: var(--color-muted-foreground); }
-/* The Summary's Domains card lays its own header, chips and sections inside a kiso
+/* kiso sizes a diagram to its widest content, so a long line scrolls it even when
+   wrapping would fit. Fill the card instead, scroll only below min-content, and give
+   spare room to the gaps rather than stretching the columns. */
+.diagram-canvas { width: 100%; min-width: min-content; }
+.diagram-lanes { justify-content: space-between; }
+/* A name or URL keeps its line; only a line that cannot fit breaks inside it. */
+.diagram-node-text { overflow-wrap: break-word; }
+/* The Application's source is often a long URL; it may break anywhere, down to a floor. */
+.diagram-node[data-accent] { min-inline-size: 15rem; }
+.diagram-node[data-accent] > .diagram-node-text { overflow-wrap: anywhere; }
+.group-section-head > span, .group-head > span { white-space: nowrap; }
+/* The Summary's group cards lay out their own header, chips and sections inside a kiso
    diagram node, so the node's padding and its muted, 48ch, pre-line text give way. */
-.domains-node { padding: 0; gap: 0; }
-.domains-node > .diagram-node-title:empty { display: none; }
-.domains-node > .diagram-node-text { max-inline-size: none; white-space: normal; color: var(--color-foreground); font-family: var(--font-body); }
-.domains-card { display: flex; flex-direction: column; min-inline-size: 26rem; }
-.domains-card button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
-.domains-head { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm); padding: var(--spacing-md) var(--spacing-lg); font-weight: var(--type-weight-semibold); border-block-end: 1px solid var(--color-border) !important; text-align: start; }
-.domains-head[aria-expanded="false"] { border-block-end: 0 !important; }
-.domains-count { margin-inline-start: var(--spacing-xs); padding: 0 var(--spacing-xs); border-radius: var(--radius-sm); background: var(--color-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-.domains-chips { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); padding: var(--spacing-sm) var(--spacing-lg) 0; }
-.domains-chips button { padding: 1px var(--spacing-sm); border: 1px solid var(--color-border-strong) !important; border-radius: 999px; font-size: 0.75rem; color: var(--color-muted-foreground); }
-.domains-chips button[aria-pressed="true"] { background: var(--color-muted); color: var(--color-foreground); }
-.domains-section { display: flex; flex-direction: column; padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-md); border-block-start: 1px solid var(--color-border); }
-.domains-chips + .domains-section, .domains-head + .domains-section { border-block-start: 0; }
-.domains-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8125rem; color: var(--color-muted-foreground); }
-.domains-section-head > span { display: inline-flex; align-items: center; gap: var(--spacing-xs); }
-.domains-add { display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border-radius: var(--radius-sm); color: var(--color-muted-foreground) !important; }
-.domains-add:hover { background: var(--color-muted) !important; color: var(--color-foreground) !important; }
+.group-node { padding: 0; gap: 0; }
+.group-node > .diagram-node-title:empty { display: none; }
+.group-node > .diagram-node-text { max-inline-size: none; white-space: normal; color: var(--color-foreground); font-family: var(--font-body); }
+.group-card { display: flex; flex-direction: column; }
+:where(.group-card) :where(button, a) { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: none; }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm); padding: var(--spacing-md) var(--spacing-lg); font-weight: var(--type-weight-semibold); border-block-end: 1px solid var(--color-border); text-align: start; }
+.group-head[aria-expanded="false"] { border-block-end: 0; }
+.group-count { margin-inline-start: var(--spacing-xs); padding: 0 var(--spacing-xs); border-radius: var(--radius-sm); background: var(--color-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.group-chips { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); padding: var(--spacing-sm) var(--spacing-lg) 0; }
+.group-chips button { padding: 1px var(--spacing-sm); border: 1px solid var(--color-border-strong); border-radius: 999px; font-size: 0.75rem; color: var(--color-muted-foreground); }
+.group-chips button[aria-pressed="true"] { background: var(--color-muted); color: var(--color-foreground); }
+.group-section { display: flex; flex-direction: column; padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-md); border-block-start: 1px solid var(--color-border); }
+.group-chips + .group-section, .group-head + .group-section { border-block-start: 0; }
+.group-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8125rem; color: var(--color-muted-foreground); }
+.group-section-head > span { display: inline-flex; align-items: center; gap: var(--spacing-xs); }
+.group-add { display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border-radius: var(--radius-sm); color: var(--color-muted-foreground); }
+.group-add:hover { background: var(--color-muted); color: var(--color-foreground); }
 /* The lines hang from the section's icon as a tree: one rail down, one tick to each line. */
-.domains-line { position: relative; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--spacing-sm); margin-inline-start: 7px; padding: 3px 0 3px 18px; border-inline-start: 1px solid var(--color-border-strong); }
-.domains-line:last-child { border-inline-start-color: transparent; }
-.domains-line::before { content: ""; position: absolute; inset-inline-start: -1px; inset-block-start: 0; block-size: 50%; inline-size: 12px; border-inline-start: 1px solid var(--color-border-strong); border-block-end: 1px solid var(--color-border-strong); border-end-start-radius: 4px; }
-.domains-line > .icon { color: var(--color-muted-foreground); }
+.group-line { position: relative; display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--spacing-sm); inline-size: calc(100% - 7px); box-sizing: border-box; text-align: start; margin-inline-start: 7px; padding: 3px 0 3px 18px; border-inline-start: 1px solid var(--color-border-strong); }
+.group-line:last-child { border-inline-start-color: transparent; }
+.group-line::before { content: ""; position: absolute; inset-inline-start: -1px; inset-block-start: 0; block-size: 50%; inline-size: 12px; border-inline-start: 1px solid var(--color-border-strong); border-block-end: 1px solid var(--color-border-strong); border-end-start-radius: 4px; }
+.group-name { display: inline-flex; align-items: center; gap: var(--spacing-sm); }
+.group-name > .icon { color: var(--color-muted-foreground); }
+.group-line > .muted { white-space: nowrap; margin-inline-start: auto; }
+button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .route-app { display: inline-flex; align-items: center; gap: var(--spacing-xs); }
 /* What the route dialog is about to save, from the address to where it lands. */
 .route-preview { margin: 0; padding: var(--spacing-sm) var(--spacing-md); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); overflow-wrap: anywhere; }
