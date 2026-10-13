@@ -791,10 +791,19 @@ fn callback_html_response(status: StatusCode, body: String, csp: &str) -> Respon
 #[derive(Deserialize)]
 struct InspectGitRequest {
     git: source::GitSource,
+    /// A deployed commit to list the changes since, for an update review.
+    #[serde(default)]
+    since: Option<String>,
 }
 
 async fn inspect_git_source(Json(request): Json<InspectGitRequest>) -> Response {
-    match source::inspection::inspect(&source::private_root(), &request.git).await {
+    match source::inspection::inspect(
+        &source::private_root(),
+        &request.git,
+        request.since.as_deref(),
+    )
+    .await
+    {
         Ok(result) => Json(result).into_response(),
         Err(error) => source_error_response(error),
     }

@@ -388,7 +388,8 @@ pub(crate) async fn execute(
     let mut branch_source = source.clone();
     branch_source.git_ref = format!("refs/heads/{}", branch(&source.git_ref));
     let inspected =
-        crate::source::inspection::inspect(&crate::source::private_root(), &branch_source).await?;
+        crate::source::inspection::inspect(&crate::source::private_root(), &branch_source, None)
+            .await?;
     if revision
         .as_deref()
         .is_some_and(|requested| !requested.eq_ignore_ascii_case(&inspected.revision))

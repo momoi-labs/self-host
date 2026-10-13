@@ -32,18 +32,81 @@ pub struct GitInspection {
     pub build_files: Vec<BuildFile>,
     pub ports: Vec<u16>,
     pub services: Vec<Service>,
+    /// The commits since the one asked about, newest first, when one was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<History>,
+}
+
+/// One commit an update would bring: who wrote it, when, and its subject.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Commit {
+    pub revision: String,
+    pub author: String,
+    pub date: String,
+    pub subject: String,
+}
+
+/// What changed between a deployed commit and the selected one. `complete`
+/// is false when the deployed commit was not among the last commits read,
+/// so there are more than `commits` lists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    pub commits: Vec<Commit>,
+    pub complete: bool,
+}
+
+impl History {
+    /// Reads `git log --format=%H%x1f%an%x1f%aI%x1f%s`, newest first, down to
+    /// `since`, which is not listed. At most `limit` commits are kept.
+    pub fn from_log(log: &str, since: &str, limit: usize) -> Self {
+        let mut commits = Vec::new();
+        for line in log.lines() {
+            let mut fields = line.splitn(4, '\u{1f}');
+            let (Some(revision), Some(author), Some(date), Some(subject)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if revision == since {
+                return History {
+                    commits,
+                    complete: true,
+                };
+            }
+            if commits.len() == limit {
+                break;
+            }
+            commits.push(Commit {
+                revision: revision.into(),
+                author: author.into(),
+                date: date.into(),
+                subject: subject.into(),
+            });
+        }
+        History {
+            commits,
+            complete: false,
+        }
+    }
 }
 
 /// Uses the same isolated Git transport and checkout rules as a build. The
 /// response contains only commit, paths and port numbers, never manifest values.
-pub async fn inspect(root: &Path, source: &GitSource) -> Result<GitInspection, SourceError> {
+/// With `since`, also lists the commits between it and the selected one.
+pub async fn inspect(
+    root: &Path,
+    source: &GitSource,
+    since: Option<&str>,
+) -> Result<GitInspection, SourceError> {
     super::validate(source)?;
     super::private_directory(root)?;
     let workspace = Workspace(root.join(format!("work-{:032x}", rand::random::<u128>())));
     super::private_directory(&workspace.0)?;
-    let (checkout, revision) = super::checkout(&workspace.0, source, None, root).await?;
+    let (checkout, revision, history) =
+        super::checkout(&workspace.0, source, None, root, since).await?;
     let mut result = inspect_checkout(&checkout, source)?;
     result.revision = revision;
+    result.history = history;
     Ok(result)
 }
 
@@ -116,6 +179,7 @@ fn inspect_checkout(checkout: &Path, source: &GitSource) -> Result<GitInspection
         build_files: files,
         ports: ports.into_iter().collect(),
         services,
+        history: None,
     })
 }
 
