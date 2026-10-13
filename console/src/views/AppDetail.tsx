@@ -341,7 +341,8 @@ export function AppDetail({
             <AppSummary app={app} apps={apps} dnsSuffix={dnsSuffix} reload={reload} busy={removing || gitBusy}
               onOpenConfiguration={() => setTab("configuration")}
               onOpenApp={onOpenApp}
-              onRebuild={() => void rebuildCurrent()} />
+              onRebuild={() => void rebuildCurrent()}
+              onUpdate={() => setCheckingUpdate(true)} />
           </TabsContent>
           {isPublished(app) ? <TabsContent value="routes">
             <AppRoutes app={app} apps={apps} dnsSuffix={dnsSuffix} busy={removing || gitBusy} reload={reload}
