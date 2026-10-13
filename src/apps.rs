@@ -1679,8 +1679,10 @@ pub async fn prepare_update(
     // added alias and a new web target are all a route rewrite, which costs
     // no downtime. How Variables reach a project is part of the rendered
     // file, so that change is Docker's too. A single container publishes its
-    // web port on the Host, so a new one means a new container.
+    // web port on the Host, so a new one means a new container. A failed
+    // Application is redeployed whatever changed: that is what Retry is for.
     let needs_docker = pull
+        || current.status == STATUS_FAILED
         || network_changed
         || if current.compose.is_some() {
             file_changed
@@ -2356,12 +2358,19 @@ pub(crate) async fn change_env(
     if !store.is_initialized().await? {
         return Err(EnvError::NotInitialized);
     }
-    if store.get_application(app_id).await?.is_none() {
-        return Err(EnvError::NotFound(app_id.into()));
-    }
+    let app = store
+        .get_application(app_id)
+        .await?
+        .ok_or_else(|| EnvError::NotFound(app_id.into()))?;
     match value {
         Some(value) => store.set_env(app_id, key, value).await?,
         None => store.unset_env(app_id, key).await?,
+    }
+    // A failed deploy is finished by Retry, which redeploys and records the
+    // outcome. Until then the Variables are only saved, so required ones can
+    // be set one at a time (ADR-0030).
+    if app.status == STATUS_FAILED {
+        return Ok(());
     }
     recreate_with_env(store, docker, app_id).await
 }
@@ -4493,23 +4502,21 @@ services:
         assert_eq!(failed.status, STATUS_FAILED);
         assert!(docker.project(&format!("sf-app-{id}")).is_none());
 
-        // The same refusal, with its cause, when a Variable change tries to
-        // render the project while another required one is still missing.
-        let error = set_env(&store, &docker, "gate", "OTHER", "x")
+        // On the failed Application, Variables only save, one at a time,
+        // and Retry is what deploys it.
+        set_env(&store, &docker, "gate", "OTHER", "x")
             .await
-            .unwrap_err();
-        assert!(
-            ErrorReport::new(&error)
-                .caused_by
-                .iter()
-                .any(|c| c.contains("TOKEN")),
-            "{}",
-            ErrorReport::new(&error)
-        );
-
+            .expect("a Variable saves while another required one is missing");
         set_env(&store, &docker, "gate", "TOKEN", "change-me")
             .await
             .unwrap();
+        assert!(docker.project(&format!("sf-app-{id}")).is_none());
+
+        let retried =
+            update_application(&store, &docker, &routes, &id, ApplicationUpdate::default())
+                .await
+                .unwrap();
+        assert_eq!(retried.status, STATUS_RUNNING, "{:?}", retried.last_error);
         let project = docker.project(&format!("sf-app-{id}")).unwrap();
         assert!(
             project.yaml.contains("TOKEN: change-me"),
