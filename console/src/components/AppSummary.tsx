@@ -226,7 +226,8 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
                 </> : undefined} empty="Not built yet" />
               </> : main.image ? <Fact icon="box" label="Image" value={main.image} /> : null}
               {main.port ? <Fact icon="plug" label="Port" value={main.port} /> : null}
-              <Fact icon="terminal" label="Command" value={main.command} empty={main.image ? "Image default" : "None"} />
+              {/* A native command is long and the What runs pane below already shows it. */}
+              {native ? null : <Fact icon="terminal" label="Command" value={main.command} empty="Image default" />}
               {native ? <Fact icon="user" label="Account" value={native.account} /> : null}
             </span>
           </DiagramNode>
