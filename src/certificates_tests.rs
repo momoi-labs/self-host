@@ -864,3 +864,221 @@ fn status_marks_expired_and_future_certificates_unavailable() {
     refresh_status(&mut status, 300);
     assert_eq!(status.state, CertificateState::Expired);
 }
+
+#[tokio::test]
+async fn application_hostnames_are_issued_without_restart_and_withdrawn_when_they_go() {
+    let fixture = Fixture::new().await;
+    let state = fixture.dir.join("state/certificates");
+    let shop = || BTreeSet::from(["shop.example.invalid".to_string()]);
+    fixture.manager.reconcile_for(shop()).await.unwrap();
+    let issued = fixture
+        .peer_leaf("shop.example.invalid", true)
+        .await
+        .unwrap();
+    assert_eq!(fixture.service.state.lock().unwrap().orders.len(), 3);
+    assert_eq!(read_status(&state).unwrap().len(), 3);
+
+    // The Hostname left its Application: the name stops being served, and
+    // the certificate stays on disk.
+    fixture.manager.reconcile().await.unwrap();
+    assert!(
+        fixture
+            .peer_leaf("shop.example.invalid", true)
+            .await
+            .is_err()
+    );
+    assert_eq!(read_status(&state).unwrap().len(), 2);
+    assert!(state.join("shop.example.invalid.json").exists());
+
+    // Back again, it serves the saved certificate without a new order.
+    fixture.manager.reconcile_for(shop()).await.unwrap();
+    assert_eq!(
+        fixture
+            .peer_leaf("shop.example.invalid", true)
+            .await
+            .unwrap(),
+        issued
+    );
+    assert_eq!(fixture.service.state.lock().unwrap().orders.len(), 3);
+
+    // A restart keeps serving it until the Applications are read again.
+    let restored = CertificateManager::open(
+        &state,
+        &fixture.dir.join("cert.pem"),
+        &fixture.dir.join("key.pem"),
+    )
+    .unwrap();
+    assert!(
+        restored
+            .resolver()
+            .for_name(Some("shop.example.invalid"), now())
+            .is_some()
+    );
+
+    // Names the Applications cannot have asked for are not ordered.
+    fixture
+        .manager
+        .reconcile_for(BTreeSet::from([
+            "*.example.invalid".to_string(),
+            "UPPER.example.invalid".to_string(),
+            "127.0.0.1".to_string(),
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(fixture.service.state.lock().unwrap().orders.len(), 3);
+
+    // Removing the account stops issuance and serving at the next read.
+    remove_acme(&state).unwrap();
+    fixture.manager.reconcile_for(shop()).await.unwrap();
+    assert!(
+        fixture
+            .peer_leaf("blog.example.invalid", true)
+            .await
+            .is_err()
+    );
+    assert!(read_status(&state).unwrap().is_empty());
+    assert!(read_acme(&state).unwrap().is_none());
+}
+
+#[test]
+fn acme_settings_round_trip_keep_the_files_extras_and_restart_the_account_for_a_new_ca() {
+    let dir = std::env::temp_dir().join(format!(
+        "self-host-acme-settings-{}-{}",
+        std::process::id(),
+        FIXTURE_ID.fetch_add(1, Ordering::SeqCst)
+    ));
+    assert!(read_acme(&dir).unwrap().is_none());
+    let settings = AcmeSettings {
+        directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory".into(),
+        email: "operator@example.invalid".into(),
+    };
+    write_acme(&dir, &settings).unwrap();
+    assert_eq!(read_acme(&dir).unwrap(), Some(settings.clone()));
+    let config = read_optional::<CertificateConfig>(&dir.join("public.json"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(config.contact, vec!["mailto:operator@example.invalid"]);
+    assert!(config.hostnames.is_empty());
+
+    // Extra names and a private trust anchor written by hand survive a save.
+    let mut extended = config.clone();
+    extended.hostnames = vec!["extra.example.invalid".into()];
+    extended.ca_cert_path = Some(dir.join("ca.pem"));
+    atomic_json(&dir.join("public.json"), &extended).unwrap();
+    std::fs::write(dir.join("account.json"), b"credentials").unwrap();
+    write_acme(
+        &dir,
+        &AcmeSettings {
+            email: "other@example.invalid".into(),
+            ..settings.clone()
+        },
+    )
+    .unwrap();
+    let saved = read_optional::<CertificateConfig>(&dir.join("public.json"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.hostnames, vec!["extra.example.invalid"]);
+    assert_eq!(saved.ca_cert_path, Some(dir.join("ca.pem")));
+    assert!(
+        dir.join("account.json").exists(),
+        "same CA keeps its account"
+    );
+
+    write_acme(
+        &dir,
+        &AcmeSettings {
+            directory_url: LETS_ENCRYPT_DIRECTORY.into(),
+            ..settings.clone()
+        },
+    )
+    .unwrap();
+    assert!(
+        !dir.join("account.json").exists(),
+        "a new CA starts a new account"
+    );
+
+    for (directory_url, email) in [
+        (
+            "http://acme.example.invalid/directory",
+            "operator@example.invalid",
+        ),
+        (LETS_ENCRYPT_DIRECTORY, "not an address"),
+        (LETS_ENCRYPT_DIRECTORY, ""),
+    ] {
+        assert!(
+            write_acme(
+                &dir,
+                &AcmeSettings {
+                    directory_url: directory_url.into(),
+                    email: email.into()
+                }
+            )
+            .is_err(),
+            "{directory_url} {email}"
+        );
+    }
+    remove_acme(&dir).unwrap();
+    remove_acme(&dir).unwrap();
+    assert!(read_acme(&dir).unwrap().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn public_hostnames_are_the_applications_names_outside_the_suffix() {
+    use crate::store::{ApplicationRecord, Publication, RouteRule};
+    let app = |hostname: &str, aliases: &[&str], rules: &[&str]| ApplicationRecord {
+        id: hostname.into(),
+        name: "blog".into(),
+        hostname: hostname.into(),
+        aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
+        image: "nginx".into(),
+        status: "running".into(),
+        source: "image".into(),
+        git: None,
+        git_build: None,
+        last_error: None,
+        compose: None,
+        web_service: None,
+        web_port: None,
+        web_target_port: Some(20001),
+        development: None,
+        runtime: Default::default(),
+        publication: Publication::Web,
+        variable_delivery: crate::store::VariableDelivery::Referenced,
+        route_rules: rules
+            .iter()
+            .map(|hostname| RouteRule {
+                hostname: hostname.to_string(),
+                path_prefix: "/app".into(),
+                target: None,
+                strip_prefix: false,
+            })
+            .collect(),
+        rewrite_host: None,
+        network_policy: Default::default(),
+    };
+    let mut unpublished = app("hidden.example.invalid", &[], &[]);
+    unpublished.publication = Publication::Unpublished;
+    let apps = vec![
+        app(
+            "blog.home.lan",
+            &["Blog.Example.Invalid", "www.example.invalid"],
+            &["labs.example.invalid"],
+        ),
+        app(
+            "api.example.invalid",
+            &["home.lan", "deep.app.home.lan"],
+            &[],
+        ),
+        unpublished,
+    ];
+    assert_eq!(
+        public_hostnames(&apps, "home.lan"),
+        BTreeSet::from([
+            "api.example.invalid".to_string(),
+            "blog.example.invalid".to_string(),
+            "labs.example.invalid".to_string(),
+            "www.example.invalid".to_string(),
+        ])
+    );
+}

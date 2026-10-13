@@ -262,6 +262,12 @@ fn build_platform_with_native<S: StateStore>(
         )
         .route("/certificates", get(certificate_status))
         .route(
+            "/certificates/acme",
+            get(acme_settings)
+                .put(save_acme_settings)
+                .delete(remove_acme_settings),
+        )
+        .route(
             "/source/credentials",
             get(source_credentials).post(save_source_credential),
         )
@@ -469,6 +475,48 @@ async fn certificate_status() -> Response {
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorReport::plain("could not read certificate status")),
+        )
+            .into_response(),
+    }
+}
+
+/// The ACME account public certificates are issued under, or `null` while
+/// issuance is off. The daemon picks a change up within a minute.
+async fn acme_settings() -> Response {
+    match certificates::read_acme(&file_store::state_dir().join("certificates")) {
+        Ok(settings) => Json(settings).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorReport::plain(format!(
+                "could not read the certificate settings: {error:#}"
+            ))),
+        )
+            .into_response(),
+    }
+}
+
+async fn save_acme_settings(Json(settings): Json<certificates::AcmeSettings>) -> Response {
+    let dir = file_store::state_dir().join("certificates");
+    if let Err(error) = certificates::write_acme(&dir, &settings) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorReport::plain(format!(
+                "invalid certificate settings: {error:#}"
+            ))),
+        )
+            .into_response();
+    }
+    acme_settings().await
+}
+
+async fn remove_acme_settings() -> Response {
+    match certificates::remove_acme(&file_store::state_dir().join("certificates")) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorReport::plain(format!(
+                "could not remove the certificate settings: {error:#}"
+            ))),
         )
             .into_response(),
     }
@@ -2827,6 +2875,71 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), json!([]));
+    }
+
+    #[tokio::test]
+    async fn acme_settings_are_saved_validated_and_removed_through_the_api() {
+        let (router, store) = setup_initialized_app("test-key", "home.lan").await;
+        let response = send(&router, "/certificates/acme", None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let settings = json!({"directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory", "email": "operator@example.invalid"});
+        let response = put_json(
+            &router,
+            "/certificates/acme",
+            Some("test-key"),
+            settings.clone(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), settings);
+        let response = send(&router, "/certificates/acme", Some("test-key")).await;
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), settings);
+
+        let response = put_json(
+            &router,
+            "/certificates/acme",
+            Some("test-key"),
+            json!({"directory_url": "http://acme.example.invalid/directory", "email": "operator@example.invalid"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = put_json(
+            &router,
+            "/certificates/acme",
+            Some("test-key"),
+            json!({"directory_url": certificates::LETS_ENCRYPT_DIRECTORY, "email": "operator@example.invalid", "hostnames": []}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = delete_req(&router, "/certificates/acme", Some("test-key")).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = send(&router, "/certificates/acme", Some("test-key")).await;
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            Value::Null
+        );
+
+        let events = store.list_audit_events().await.unwrap();
+        let recorded: Vec<audit::Event> = events
+            .iter()
+            .map(|event| serde_json::from_str(event).unwrap())
+            .collect();
+        let certificates: Vec<_> = recorded
+            .iter()
+            .filter(|event| event.subject.id == "public-certificates")
+            .collect();
+        assert_eq!(certificates.len(), 4, "{recorded:?}");
+        assert!(
+            certificates
+                .iter()
+                .all(|event| event.subject.kind == "settings"
+                    && event.subject.name == "Public certificates"
+                    && event.action == "configure")
+        );
     }
 
     #[tokio::test]

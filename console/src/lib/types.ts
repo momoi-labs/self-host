@@ -193,6 +193,24 @@ export type Inspection = {
   web_service?: string;
 };
 
+/** The ACME account public certificates are issued under; `null` turns issuance off. */
+export type AcmeSettings = {
+  directory_url: string;
+  email: string;
+};
+
+/** How one public certificate stands, as `GET /certificates` reads it. Times are Unix seconds. */
+export type Certificate = {
+  hostname: string;
+  state: "pending" | "valid" | "renewal_failed" | "expired";
+  not_before: number | null;
+  expires_at: number | null;
+  renew_at: number | null;
+  last_attempt: number | null;
+  retry_at: number | null;
+  last_error: string | null;
+};
+
 export type ApiKey = {
   id: string;
   label: string;

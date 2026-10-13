@@ -1404,7 +1404,13 @@ async fn run_api_server(
     remove_legacy_system_network(docker.as_ref()).await;
 
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
-        let proxy = serve_proxy(dns_suffix, app.clone(), table, metrics.clone());
+        let proxy = serve_proxy(
+            dns_suffix,
+            app.clone(),
+            table,
+            metrics.clone(),
+            store.clone(),
+        );
         tokio::spawn(async move {
             if let Err(error) = proxy.await {
                 // Without this listener there is no console, no API over
@@ -1438,6 +1444,7 @@ async fn serve_proxy(
     admin_router: axum::Router,
     table: self_host::proxy::RouteTable,
     metrics: self_host::metrics::Metrics,
+    store: FileStateStore,
 ) -> anyhow::Result<()> {
     let certificates = self_host::certificates::CertificateManager::open(
         &file_store::state_dir().join("certificates"),
@@ -1461,14 +1468,26 @@ async fn serve_proxy(
         .with_certificate_resolver(certificates.resolver())
         .with_challenge_router(certificates.challenge_router());
 
+    // Every Hostname outside the Suffix gets a public certificate, read off
+    // the Applications once a minute along with the account the Operator
+    // saved, so neither a new Hostname nor a changed CA needs a restart.
     let renewal = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if certificates.reconcile().await.is_err() {
+            let hostnames = match store.list_applications().await {
+                Ok(apps) => self_host::certificates::public_hostnames(&apps, &dns_suffix),
+                Err(error) => {
+                    tracing::warn!(
+                        "could not read the Applications for their certificates: {error}"
+                    );
+                    continue;
+                }
+            };
+            if let Err(error) = certificates.reconcile_for(hostnames).await {
                 tracing::error!(
-                    "failed to persist certificate status; inspect certificate storage permissions"
+                    "certificate reconcile failed: {error:#}. Inspect state/certificates and its permissions"
                 );
             }
         }
