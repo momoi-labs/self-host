@@ -222,6 +222,9 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .group-node > .diagram-node-title:empty { display: none; }
 .group-node > .diagram-node-text { max-inline-size: none; white-space: normal; color: var(--color-foreground); font-family: var(--font-body); }
 .group-card { display: flex; flex-direction: column; }
+.group-lead { display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--presentation-panel-padding); font-size: var(--type-size-body); }
+.group-lead > .icon { color: var(--color-muted-foreground); }
+.group-lead + .group-card { border-block-start: 1px solid var(--color-border); }
 :where(.group-card) :where(button, a) { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: none; }
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm); padding: var(--spacing-md) var(--spacing-lg); font-weight: var(--type-weight-semibold); border-block-end: 1px solid var(--color-border); text-align: start; }
 .group-head[aria-expanded="false"] { border-block-end: 0; }
@@ -246,10 +249,10 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .group-line > .muted { white-space: nowrap; margin-inline-start: auto; }
 .group-section.is-flat > .group-line { margin-inline-start: 0; inline-size: 100%; padding-inline-start: 0; border-inline-start: 0; }
 .group-section.is-flat > .group-line::before { content: none; }
-/* The container that receives requests and the rest of the Application read as one card. */
-.container-stack { gap: 0; }
-.container-stack > .diagram-node:first-child:not(:last-child) { border-end-start-radius: 0; border-end-end-radius: 0; }
-.container-stack > .container-rest { border-block-start: 0; border-start-start-radius: 0; border-start-end-radius: 0; }
+/* A node that leads (the Hostname, the receiving container) and what folds under it read as one card. */
+.card-stack { gap: 0; }
+.card-stack > .diagram-node:first-child:not(:last-child) { border-end-start-radius: 0; border-end-end-radius: 0; }
+.card-stack > .card-rest { border-block-start: 0; border-start-start-radius: 0; border-start-end-radius: 0; }
 .group-env { display: inline-flex; margin-inline-start: auto; border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); overflow: hidden; font-size: 0.75rem; white-space: nowrap; }
 .group-env > b { padding: 0 var(--spacing-xs); background: var(--color-muted); color: var(--color-muted-foreground); font-weight: var(--type-weight-semibold); }
 .group-env > .mono { padding: 0 var(--spacing-xs); font-size: inherit; }
