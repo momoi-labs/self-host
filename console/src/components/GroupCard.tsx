@@ -3,7 +3,8 @@ import { useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./Icon.js";
 
 /** One line of a section: an icon, what it is, and where it goes. */
-export type GroupLine = { key: string; icon: IconName; label: string; to: string; hint?: string; onOpen?: () => void };
+/** `env` names the environment variable the line arrives in, drawn as a chip in place of `to`. */
+export type GroupLine = { key: string; icon: IconName; label: string; to?: string; env?: string; hint?: string; onOpen?: () => void };
 
 /** A kind of thing the card lists, with the way to add one: a dialog, or a page that does it. */
 export type GroupSection = { key: string; title: string; icon: IconName; lines: GroupLine[]; onAdd?: () => void; addHref?: string };
@@ -55,7 +56,10 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
           {section.lines.map((line) => {
             const body = <>
               <span className="group-name"><Icon name={line.icon} /><span className="mono">{line.label}</span></span>
-              <span className="mono muted" title={line.hint}>{line.to}</span>
+              {line.env ? (
+                <span className="group-env" title={line.hint}><b>env</b><span className="mono">{line.env}</span></span>
+              ) : null}
+              {line.to ? <span className="mono muted" title={line.env ? undefined : line.hint}>{line.to}</span> : null}
             </>;
             return line.onOpen
               ? <button key={line.key} type="button" className="group-line" onClick={line.onOpen}>{body}</button>
