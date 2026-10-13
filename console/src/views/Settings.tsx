@@ -12,10 +12,11 @@ import { ApiKeys } from "./settings/ApiKeys.js";
 import { DnsSetup, YourHost } from "./settings/DnsSetup.js";
 import { ApplicationDefaults, AuditHistory } from "./settings/General.js";
 import { PublicCertificates } from "./settings/PublicCertificates.js";
+import { ScheduledTasks } from "./settings/ScheduledTasks.js";
 
-export type SettingsSection = "general" | "api-keys" | "dns-setup" | "git-connections" | "public-certificates";
+export type SettingsSection = "general" | "api-keys" | "dns-setup" | "git-connections" | "public-certificates" | "scheduled-tasks";
 
-export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup", "git-connections", "public-certificates"];
+export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup", "git-connections", "public-certificates", "scheduled-tasks"];
 
 export function isSettingsSection(value: string): value is SettingsSection {
   return (settingsSections as readonly string[]).includes(value);
@@ -28,6 +29,7 @@ const paneFor: Record<SettingsSection, string> = {
   "dns-setup": "dns-setup",
   "git-connections": "git-connections",
   "public-certificates": "public-certificates",
+  "scheduled-tasks": "scheduled-tasks",
 };
 
 /**
@@ -72,6 +74,7 @@ export function Settings({ section }: { section: SettingsSection }) {
         <ApplicationDefaults id="applications" size={6} />
         <YourHost id="your-host" size={6} />
         <GitConnectionsSettings id="git-connections" size={12} />
+        <ScheduledTasks id="scheduled-tasks" size={12} />
         <PublicCertificates id="public-certificates" size={6} />
         <DnsSetup id="dns-setup" size={6} />
       </PaneGrid>
