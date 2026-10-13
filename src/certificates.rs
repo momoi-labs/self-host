@@ -146,18 +146,6 @@ impl CertificateEntry {
     fn renew_at(&self) -> i64 {
         self.expires_at - ((self.expires_at - self.not_before) / 3).min(MAX_RENEWAL_SECONDS)
     }
-    fn covers(&self, name: &str) -> bool {
-        self.names.iter().any(|san| {
-            san == name
-                || san.strip_prefix("*.").is_some_and(|suffix| {
-                    name.strip_suffix(suffix).is_some_and(|prefix| {
-                        prefix.ends_with('.')
-                            && !prefix[..prefix.len() - 1].contains('.')
-                            && prefix.len() > 1
-                    })
-                })
-        })
-    }
 }
 
 pub struct CertificateResolver {
@@ -189,7 +177,12 @@ impl CertificateResolver {
                 .filter(|entry| entry.valid_at(now))
                 .map(|entry| entry.key.clone());
         }
-        (self.local.valid_at(now) && self.local.covers(&name)).then(|| self.local.key.clone())
+        // Any other name gets the Platform's own certificate, whether or not
+        // its names cover it. A browser rejects the mismatch either way; an
+        // edge proxy that trusts the origin on its own terms, such as
+        // Cloudflare in "Full" mode, completes the handshake and serves the
+        // Application without a public certificate.
+        self.local.valid_at(now).then(|| self.local.key.clone())
     }
 }
 

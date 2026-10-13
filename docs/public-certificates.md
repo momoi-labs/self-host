@@ -86,12 +86,15 @@ An explicitly managed public Hostname receives only its exact saved
 certificate. A missing, expired or not-yet-valid certificate refuses the TLS
 handshake. The proxy does not replace it with the LAN wildcard.
 
-Other SNI names receive the LAN certificate only when its actual SANs cover
-the name. A wildcard covers one label, so `*.home.lan` covers `app.home.lan`
-and does not cover `deep.app.home.lan`. Unknown independent names refuse the
-handshake. Clients without SNI retain the valid LAN certificate for setup
-compatibility. The HTTP Hostname check still controls access to management
-and Application routes.
+Every other name, and a client without SNI, receives the Platform's own
+certificate, whether or not its names cover the one asked for. A browser
+reaching the Host directly rejects the mismatch, as it would have rejected a
+refused handshake. An edge proxy that trusts the origin on its own terms,
+such as Cloudflare in its "Full" mode, completes the handshake and serves the
+Application with no public certificate at all; that is the setup for a Host
+whose domains all sit behind such a proxy, and it needs no ACME account. The
+HTTP Hostname check still controls access to management and Application
+routes.
 
 The proxy answers `/.well-known/acme-challenge/{token}` before redirects,
 management routes and Application rules on both listeners. A response is

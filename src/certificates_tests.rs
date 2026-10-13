@@ -457,6 +457,62 @@ impl Fixture {
             .as_ref()
             .to_vec())
     }
+
+    /// The leaf an edge proxy that trusts the origin on its own terms sees:
+    /// the handshake completes whatever the certificate says.
+    async fn peer_leaf_unverified(&self, hostname: &str) -> anyhow::Result<Vec<u8>> {
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(TrustAnything))
+            .with_no_client_auth();
+        let stream = tokio::net::TcpStream::connect(self.https).await?;
+        let connection = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(
+                rustls::pki_types::ServerName::try_from(hostname.to_string())?,
+                stream,
+            )
+            .await?;
+        Ok(connection.get_ref().1.peer_certificates().unwrap()[0]
+            .as_ref()
+            .to_vec())
+    }
+}
+
+#[derive(Debug)]
+struct TrustAnything;
+
+impl rustls::client::danger::ServerCertVerifier for TrustAnything {
+    fn verify_server_cert(
+        &self,
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &[rustls::pki_types::CertificateDer<'_>],
+        _: &rustls::pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn verify_tls13_signature(
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 #[tokio::test]
@@ -469,21 +525,21 @@ async fn local_acme_checks_signed_requests_challenges_csr_sni_restart_and_live_r
             .is_err(),
         "missing managed certificate must refuse TLS"
     );
-    assert!(
-        fixture
-            .peer_leaf("unknown.other.invalid", true)
-            .await
-            .is_err(),
-        "unknown independent SNI must refuse TLS"
-    );
-    assert!(fixture.peer_leaf("admin.home.lan", true).await.is_ok());
+    let local = fixture.peer_leaf("admin.home.lan", true).await.unwrap();
+    for name in ["unknown.other.invalid", "deep.app.home.lan"] {
+        assert!(
+            fixture.peer_leaf(name, true).await.is_err(),
+            "{name}: a browser still rejects the mismatch"
+        );
+        assert_eq!(
+            fixture.peer_leaf_unverified(name).await.unwrap(),
+            local,
+            "{name}: a name without its own certificate gets the Platform's, so an edge proxy that trusts the origin can serve it"
+        );
+    }
     assert!(
         fixture.peer_leaf("admin.home.lan", false).await.is_ok(),
         "no SNI keeps LAN compatibility"
-    );
-    assert!(
-        fixture.peer_leaf("deep.app.home.lan", true).await.is_err(),
-        "LAN wildcard covers one label only"
     );
     fixture.manager.reconcile().await.unwrap();
     let first = fixture
