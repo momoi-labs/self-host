@@ -209,7 +209,8 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .facts-node > .diagram-node-text { max-inline-size: 26rem; white-space: normal; color: var(--color-foreground); font-family: var(--font-body); margin-block-start: var(--spacing-xs); }
 .facts-node .group-section.is-flat { padding: 0; border: 0; }
 .facts-node .group-line { row-gap: 0; }
-.facts-node .group-name { color: var(--color-muted-foreground); font-size: 0.8125rem; }
+.group-facts { padding-block-end: var(--spacing-sm); }
+.facts-node .group-name, .group-facts .group-name { color: var(--color-muted-foreground); font-size: 0.8125rem; }
 .badge-button { padding: 0; border: 0; background: none; font: inherit; cursor: pointer; border-radius: var(--radius-sm); }
 .badge-button:hover > * { filter: brightness(1.15); }
 .badge-button:disabled { cursor: default; opacity: 0.6; }

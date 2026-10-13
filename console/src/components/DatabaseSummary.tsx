@@ -4,8 +4,8 @@ import { HardDrive } from "lucide-react";
 import { formatBytes } from "../lib/format.js";
 import type { App, DatabaseDetail } from "../lib/types.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
-import { diagramLook, Fact, opens, statusOf } from "./AppSummary.js";
-import { GroupCard } from "./GroupCard.js";
+import { diagramLook, opens, statusOf } from "./AppSummary.js";
+import { Fact, GroupCard } from "./GroupCard.js";
 
 /**
  * A database's Summary: the Applications connected to it, each with the
