@@ -202,6 +202,19 @@ pub async fn history(store: &impl StateStore, id: &str) -> Result<Vec<Deployment
     Ok(entries)
 }
 
+/// Every deployment on record, of every Application, oldest first.
+pub async fn all(store: &impl StateStore) -> Result<Vec<Deployment>, StoreError> {
+    DEPLOYMENTS.list(store).await
+}
+
+/// Drops every deployment of an Application whose data was deleted with it.
+pub async fn forget(store: &impl StateStore, id: &str) -> Result<(), StoreError> {
+    for deployment in history(store, id).await? {
+        DEPLOYMENTS.remove(store, &deployment.id).await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn list<S: StateStore>(
     State(state): State<AppState<S>>,
     Path(id): Path<String>,

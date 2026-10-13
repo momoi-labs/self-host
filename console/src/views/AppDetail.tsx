@@ -14,6 +14,7 @@ import {
   Button,
   Card,
   Checkbox,
+  FormField,
   Label,
   PageHeader,
   PageHeaderDescription,
@@ -76,6 +77,9 @@ export function AppDetail({
   const wide = useMediaQuery("(min-width: 1024px)");
   const native = app.runtime?.kind === "native" ? app.runtime : null;
   const [confirming, setConfirming] = useState(false);
+  // Deleting what the Application stored is its own choice, confirmed by typing its name.
+  const [deleteData, setDeleteData] = useState(false);
+  const [confirmName, setConfirmName] = useState("");
   /** The restart waiting for confirmation, or null. */
   const [restart, setRestart] = useState<{ pull: boolean } | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -214,7 +218,7 @@ export function AppDetail({
     setRemoving(true);
     notify("neutral", "Removing application...");
     try {
-      const res = await api(`/apps/id/${encodeURIComponent(app.id)}`, { method: "DELETE" });
+      const res = await api(`/apps/id/${encodeURIComponent(app.id)}${deleteData ? "?delete_data=true" : ""}`, { method: "DELETE" });
       if (!res.ok) {
         const failure = await failureOf(res);
         notify("danger", `Could not remove ${app.name}`, failure);
@@ -232,7 +236,9 @@ export function AppDetail({
         return;
       }
       notify("success", "Application removed", {
-        error: native ? `${app.name} and its processes are gone. Its data stays on the Host.` : `${app.name} and its containers are gone. Its data stays on the Host.`,
+        error: deleteData
+          ? `${app.name} and everything it stored are gone.`
+          : native ? `${app.name} and its processes are gone. Its data stays on the Host.` : `${app.name} and its containers are gone. Its data stays on the Host.`,
         caused_by: [],
       });
     } catch (cause) {
@@ -418,21 +424,34 @@ export function AppDetail({
         Replaces window.confirm, which cannot be styled and says the hostname
         out loud. Only the destructive button removes anything.
       */}
-      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+      <AlertDialog open={confirming} onOpenChange={(open) => { setConfirming(open); if (!open) { setDeleteData(false); setConfirmName(""); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Remove application</AlertDialogTitle>
           </AlertDialogHeader>
-          <div className="dialog-body">
+          <div className="dialog-body stack">
             <AlertDialogDescription>
               <code>{app.name}</code> and its {native ? "processes and Application Account" : isCompose(app) ? "containers" : "container"} will be removed.
-              {native ? " The Application data stays on the Host with access revoked." : " Named volumes and the data directory are kept on the Host."}
+              {deleteData ? null : native ? " The Application data stays on the Host with access revoked." : " Named volumes and the data directory are kept on the Host."}
             </AlertDialogDescription>
+            <div className="check">
+              <Checkbox id="delete-application-data" checked={deleteData} onCheckedChange={(checked) => setDeleteData(checked === true)} />
+              <Label htmlFor="delete-application-data">Also delete everything it stored</Label>
+            </div>
+            {deleteData ? <>
+              <p className="muted t-label">
+                {native
+                  ? "Its data directory is deleted for good."
+                  : "Its volumes, its data directory, its deployment history and the images only it used are deleted for good."}
+              </p>
+              <FormField id="confirm-application-name" label="Type the application name" value={confirmName} autoComplete="off"
+                onChange={(event) => setConfirmName(event.target.value)} />
+            </> : null}
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction className="btn-danger" onClick={() => void remove()}>
-              Remove
+            <AlertDialogAction className="btn-danger" disabled={deleteData && confirmName !== app.name} onClick={() => void remove()}>
+              {deleteData ? "Remove and delete data" : "Remove"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

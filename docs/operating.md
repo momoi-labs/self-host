@@ -178,6 +178,27 @@ daemon scans and publishes what the interfaces have. If an address you pinned
 with `--host-ip` is gone for good, re-run `self-host init` or remove it from
 `include` in `dns.json`.
 
+## Removing an Application and cleaning up
+
+Removing an Application keeps what it wrote: its named volumes, its project
+directory `apps/<id>/` with any `data/` under it, its deployment history and
+the images it pulled or built. In the console's Remove dialog, **Also delete
+everything it stored** removes all of that too, after you type the
+Application's name. Over the API it is `DELETE /apps/id/<id>?delete_data=true`.
+An image another Application uses stays, and so does a custom image, which has
+its own delete.
+
+`self-host prune` removes what Applications that no longer exist left behind,
+and Git builds that no deployment keeps any more. It lists each item and the
+space it frees, and asks before removing; `--force` skips the question.
+`GET /prune` shows the same list, and `POST /prune` runs it as a task whose
+event lists what went.
+
+Prune is safe while everything runs. It only touches names that carry an
+Application id, and anything that still has a container, running or stopped,
+stays whoever owns it. A Docker shared with another Platform or with your own
+containers keeps what they use.
+
 ## Upgrading from a Platform that kept its state in JSON files
 
 Platforms before 0.5.0 wrote `state/platform.json` and one

@@ -287,6 +287,30 @@ pub trait DockerRuntime: Send + Sync {
     /// are the Application's data, and removing an Application is not
     /// permission to delete what it wrote.
     async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError>;
+    /// `compose_down`, and the project's named volumes with it, for an
+    /// Application whose data the Operator chose to delete. A volume the
+    /// file declares `external` is not the project's and stays.
+    async fn compose_down_with_volumes(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        self.compose_down(project).await
+    }
+    /// Removes one image reference, never by force: an image a container
+    /// still uses stays, and that is not an error. Says whether it went.
+    async fn remove_image(&self, _reference: &str) -> Result<bool, DockerError> {
+        Ok(false)
+    }
+    /// Every tagged image on the Host: its reference, its immutable id
+    /// (`sha256:…`) and the bytes it takes.
+    async fn image_references(&self) -> Result<Vec<(String, String, u64)>, DockerError> {
+        Ok(Vec::new())
+    }
+    /// Removes a volume no container uses; says whether it went.
+    async fn remove_volume(&self, _name: &str) -> Result<bool, DockerError> {
+        Ok(false)
+    }
+    /// The name of every container on the Host, running or not, whoever owns it.
+    async fn container_names(&self) -> Result<Vec<String>, DockerError> {
+        Ok(Vec::new())
+    }
     /// Every service's output, interleaved and prefixed by service name.
     async fn stream_compose_logs(
         &self,
@@ -1248,6 +1272,100 @@ impl DockerRuntime for CliDocker {
         )
     }
 
+    async fn compose_down_with_volumes(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        if !project_file(project).exists() {
+            return Ok(());
+        }
+        compose(
+            project,
+            &["down", "--remove-orphans", "--volumes"],
+            "failed to remove the Application and its volumes",
+        )
+    }
+
+    async fn remove_image(&self, reference: &str) -> Result<bool, DockerError> {
+        let output = tokio::process::Command::new("docker")
+            .args(["image", "rm", reference])
+            .output()
+            .await
+            .map_err(|e| DockerError::spawn(format!("failed to remove image '{reference}'"), e))?;
+        Ok(output.status.success())
+    }
+
+    async fn image_references(&self) -> Result<Vec<(String, String, u64)>, DockerError> {
+        let step = "failed to list images";
+        let listed = tokio::process::Command::new("docker")
+            .args([
+                "image",
+                "ls",
+                "--format",
+                "{{.Repository}}:{{.Tag}} {{.ID}}",
+            ])
+            .output()
+            .await
+            .map_err(|e| DockerError::spawn(step, e))?;
+        if !listed.status.success() {
+            return Err(DockerError::refused(step, &listed));
+        }
+        let references: Vec<(String, String)> = String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(reference, _)| !reference.contains("<none>"))
+            .map(|(reference, id)| (reference.to_string(), id.to_string()))
+            .collect();
+        let mut ids: Vec<&str> = references.iter().map(|(_, id)| id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut sizes = std::collections::HashMap::new();
+        if !ids.is_empty() {
+            let inspected = tokio::process::Command::new("docker")
+                .args(["image", "inspect", "--format", "{{.Id}} {{.Size}}"])
+                .args(&ids)
+                .output()
+                .await
+                .map_err(|e| DockerError::spawn(step, e))?;
+            for line in String::from_utf8_lossy(&inspected.stdout).lines() {
+                if let Some((id, size)) = line.split_once(' ') {
+                    sizes.insert(id.to_string(), size.trim().parse::<u64>().unwrap_or(0));
+                }
+            }
+        }
+        Ok(references
+            .into_iter()
+            .filter_map(|(reference, short)| {
+                let (full, bytes) = sizes
+                    .iter()
+                    .find(|(full, _)| full.trim_start_matches("sha256:").starts_with(&short))?;
+                Some((reference, full.clone(), *bytes))
+            })
+            .collect())
+    }
+
+    async fn remove_volume(&self, name: &str) -> Result<bool, DockerError> {
+        let output = tokio::process::Command::new("docker")
+            .args(["volume", "rm", name])
+            .output()
+            .await
+            .map_err(|e| DockerError::spawn(format!("failed to remove volume '{name}'"), e))?;
+        Ok(output.status.success())
+    }
+
+    async fn container_names(&self) -> Result<Vec<String>, DockerError> {
+        let step = "failed to list containers";
+        let output = tokio::process::Command::new("docker")
+            .args(["ps", "-a", "--format", "{{.Names}}"])
+            .output()
+            .await
+            .map_err(|error| DockerError::spawn(step, error))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(step, &output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    }
+
     async fn stream_compose_logs(
         &self,
         project: &ComposeProject,
@@ -1627,6 +1745,10 @@ pub struct FakeDocker {
     pub health: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// The bytes each volume holds, by name.
     pub volumes: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    /// Compose projects taken down with their volumes, by name.
+    pub volumes_removed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Image references removed.
+    pub removed_images: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl FakeDocker {
@@ -1650,6 +1772,8 @@ impl FakeDocker {
             network_syncs: Default::default(),
             health: Default::default(),
             volumes: Default::default(),
+            volumes_removed: Default::default(),
+            removed_images: Default::default(),
         }
     }
 
@@ -2062,6 +2186,52 @@ impl DockerRuntime for FakeDocker {
         Ok(())
     }
 
+    async fn compose_down_with_volumes(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        self.volumes_removed
+            .lock()
+            .unwrap()
+            .push(project.name.clone());
+        self.compose_down(project).await
+    }
+
+    async fn remove_image(&self, reference: &str) -> Result<bool, DockerError> {
+        self.removed_images
+            .lock()
+            .unwrap()
+            .push(reference.to_string());
+        Ok(self.images.lock().unwrap().remove(reference).is_some())
+    }
+
+    async fn image_references(&self) -> Result<Vec<(String, String, u64)>, DockerError> {
+        let mut references: Vec<(String, String, u64)> = self
+            .images
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(reference, id)| (reference.clone(), id.clone(), 1))
+            .collect();
+        references.sort();
+        Ok(references)
+    }
+
+    async fn remove_volume(&self, name: &str) -> Result<bool, DockerError> {
+        Ok(self.volumes.lock().unwrap().remove(name).is_some())
+    }
+
+    async fn container_names(&self) -> Result<Vec<String>, DockerError> {
+        let mut names: Vec<String> = self
+            .apps
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|app| app.name.clone())
+            .collect();
+        for project in self.projects.lock().unwrap().iter() {
+            names.extend(project.containers.iter().map(|(_, name)| name.clone()));
+        }
+        Ok(names)
+    }
+
     async fn stream_compose_logs(
         &self,
         project: &ComposeProject,
@@ -2239,6 +2409,21 @@ where
 
     async fn compose_down(&self, project: &ComposeProject) -> Result<(), DockerError> {
         (**self).compose_down(project).await
+    }
+    async fn compose_down_with_volumes(&self, project: &ComposeProject) -> Result<(), DockerError> {
+        (**self).compose_down_with_volumes(project).await
+    }
+    async fn remove_image(&self, reference: &str) -> Result<bool, DockerError> {
+        (**self).remove_image(reference).await
+    }
+    async fn image_references(&self) -> Result<Vec<(String, String, u64)>, DockerError> {
+        (**self).image_references().await
+    }
+    async fn remove_volume(&self, name: &str) -> Result<bool, DockerError> {
+        (**self).remove_volume(name).await
+    }
+    async fn container_names(&self) -> Result<Vec<String>, DockerError> {
+        (**self).container_names().await
     }
 
     async fn stream_compose_logs(

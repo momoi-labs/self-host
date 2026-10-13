@@ -39,6 +39,9 @@ enum Request {
     },
     Remove {
         id: String,
+        /// Absent from a request an older Platform sends, which kept the data.
+        #[serde(default)]
+        delete_data: bool,
     },
     Status {
         id: String,
@@ -55,7 +58,7 @@ impl Request {
             Self::Start { id }
             | Self::Stop { id }
             | Self::Restart { id }
-            | Self::Remove { id }
+            | Self::Remove { id, .. }
             | Self::Status { id }
             | Self::Logs { id } => id,
         }
@@ -202,9 +205,10 @@ impl NativeRuntime for HelperRuntime {
         .await?;
         Ok(())
     }
-    async fn remove(&self, record: &ApplicationRecord) -> Result<()> {
+    async fn remove(&self, record: &ApplicationRecord, delete_data: bool) -> Result<()> {
         Self::call(Request::Remove {
             id: record.id.clone(),
+            delete_data,
         })
         .await?;
         Ok(())
@@ -324,8 +328,8 @@ pub async fn control() -> Result<()> {
             Request::Start { .. } => runtime.start(&record).await?,
             Request::Stop { .. } => runtime.stop(&record).await?,
             Request::Restart { .. } => runtime.restart(&record).await?,
-            Request::Remove { .. } => {
-                runtime.remove(&record).await?;
+            Request::Remove { delete_data, .. } => {
+                runtime.remove(&record, delete_data).await?;
                 std::fs::remove_file(&record_path)?;
             }
             Request::Status { .. } => return Ok(Some(runtime.status(&record).await?)),
@@ -398,7 +402,7 @@ async fn remove_records(records: &Path) -> Result<()> {
             bail!("invalid native record filename");
         }
         let _lock = operation_lock(&record.id)?;
-        S6Runtime::default().remove(&record).await?;
+        S6Runtime::default().remove(&record, false).await?;
         std::fs::remove_file(path)?;
     }
     Ok(())

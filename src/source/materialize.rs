@@ -232,7 +232,8 @@ pub(super) async fn compose(
                 context,
                 dockerfile,
                 tag: format!(
-                    "sf-source-{app_id}:{}-{:016x}",
+                    "{}:{}-{:016x}",
+                    super::image_repository(app_id),
                     &revision[..12],
                     rand::random::<u64>()
                 ),

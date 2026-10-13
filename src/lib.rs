@@ -41,6 +41,7 @@ pub mod paths;
 pub mod ports;
 pub mod postgres;
 pub mod proxy;
+pub mod prune;
 pub mod routes;
 pub mod schema;
 pub mod settings;
@@ -321,6 +322,7 @@ fn build_platform_with_native<S: StateStore>(
             get(environments::machine_log::<S>),
         )
         .route("/apps/{name}", delete(remove_app::<S>))
+        .route("/prune", get(prune_plan::<S>).post(prune_run::<S>))
         .route(
             "/apps/id/{id}",
             get(get_app::<S>)
@@ -2023,20 +2025,43 @@ async fn list_apps<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
     }
 }
 
+/// What `prune` would remove now, and the space it would free.
+async fn prune_plan<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
+    match prune::plan(&state.store, state.docker.as_ref()).await {
+        Ok(plan) => Json(plan).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &*error),
+    }
+}
+
+/// Runs `prune` as a task; the event lists what it removed.
+async fn prune_run<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
+    let subject = audit::Subject::new("platform", "prune", "Unused data");
+    accepted_task(tasks::enqueue(&state, "prune", subject, tasks::Work::Prune).await)
+}
+
+/// `?delete_data=true` also deletes what the Application stored.
+#[derive(Deserialize, Default)]
+struct RemoveAppQuery {
+    #[serde(default)]
+    delete_data: bool,
+}
+
 async fn remove_app<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<RemoveAppQuery>,
 ) -> Response {
     let app = match application_named(&state, &name).await {
         Ok(app) => app,
         Err(e) => return remove_error_response(e),
     };
-    remove_app_record(state, app).await
+    remove_app_record(state, app, query.delete_data).await
 }
 
 async fn remove_app_record<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     app: apps::ApplicationRecord,
+    delete_data: bool,
 ) -> Response {
     if postgres::metadata(&state.store, &app.id)
         .await
@@ -2058,7 +2083,10 @@ async fn remove_app_record<S: StateStore>(
             &state,
             "delete",
             subject,
-            tasks::Work::RemoveApplication { id: app.id },
+            tasks::Work::RemoveApplication {
+                id: app.id,
+                delete_data,
+            },
         )
         .await,
     )
@@ -2067,9 +2095,10 @@ async fn remove_app_record<S: StateStore>(
 async fn remove_app_by_id<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<RemoveAppQuery>,
 ) -> Response {
     match apps::get_application(&state.store, &id).await {
-        Ok(app) => remove_app_record(state, app).await,
+        Ok(app) => remove_app_record(state, app, query.delete_data).await,
         Err(error) => deploy_error_response(error),
     }
 }
@@ -4764,7 +4793,8 @@ mod tests {
             Some("other-app")
         );
 
-        let response = remove_app_record(axum::extract::State(state), resolved.clone()).await;
+        let response =
+            remove_app_record(axum::extract::State(state), resolved.clone(), false).await;
         let accepted: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
         assert_eq!(

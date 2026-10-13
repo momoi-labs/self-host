@@ -38,7 +38,9 @@ pub trait NativeRuntime: Send + Sync {
     async fn start(&self, record: &ApplicationRecord) -> Result<()>;
     async fn stop(&self, record: &ApplicationRecord) -> Result<()>;
     async fn restart(&self, record: &ApplicationRecord) -> Result<()>;
-    async fn remove(&self, record: &ApplicationRecord) -> Result<()>;
+    /// Retires the Application's service and account. Its home stays,
+    /// root-owned, unless `delete_data` asks for it to go too.
+    async fn remove(&self, record: &ApplicationRecord, delete_data: bool) -> Result<()>;
     async fn status(&self, record: &ApplicationRecord) -> Result<ServiceStatus>;
     async fn logs(&self, record: &ApplicationRecord) -> Result<mpsc::Receiver<String>>;
     async fn open_terminal(
@@ -380,7 +382,7 @@ impl NativeRuntime for S6Runtime {
         })
         .await
     }
-    async fn remove(&self, record: &ApplicationRecord) -> Result<()> {
+    async fn remove(&self, record: &ApplicationRecord, delete_data: bool) -> Result<()> {
         let record = record.clone();
         self.blocking(move |runtime| {
             let supervisor = runtime.supervisor()?;
@@ -411,8 +413,12 @@ impl NativeRuntime for S6Runtime {
                     if std::fs::symlink_metadata(&home)?.file_type().is_symlink() {
                         bail!("refusing symlink Application home");
                     }
-                    std::os::unix::fs::chown(&home, Some(0), Some(0))?;
-                    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
+                    if delete_data {
+                        std::fs::remove_dir_all(&home)?;
+                    } else {
+                        std::os::unix::fs::chown(&home, Some(0), Some(0))?;
+                        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
+                    }
                 }
                 super::identity::revoke(&request)?;
             }
@@ -793,9 +799,10 @@ pub async fn remove(
     runtime: &dyn NativeRuntime,
     routes: &dyn RouteStore,
     record: &ApplicationRecord,
+    delete_data: bool,
 ) -> Result<(), DeployError> {
     routes.withdraw(&record.id);
-    if let Err(error) = runtime.remove(record).await {
+    if let Err(error) = runtime.remove(record, delete_data).await {
         let error = DeployError::Native(error);
         let _ = store
             .set_application_outcome(

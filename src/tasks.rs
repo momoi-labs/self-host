@@ -70,8 +70,14 @@ pub enum Work {
         #[serde(default)]
         pull: bool,
     },
+    /// `prune`: removes what removed Applications left behind (#200).
+    Prune,
     RemoveApplication {
         id: String,
+        /// Also delete what the Application stored. Absent in tasks queued
+        /// before it existed, which kept the data.
+        #[serde(default)]
+        delete_data: bool,
     },
     SetEnvironment {
         name: String,
@@ -425,7 +431,7 @@ async fn execute<S: StateStore>(
         Work::StartApplication { id }
         | Work::StopApplication { id }
         | Work::RestartApplication { id, .. }
-        | Work::RemoveApplication { id }
+        | Work::RemoveApplication { id, .. }
         | Work::RecoverApplication { id, .. }
         | Work::TriggerImageApplication { id, .. } => Some(id.as_str()),
         Work::DeployApplication { pending } => Some(pending.record.id.as_str()),
@@ -562,18 +568,24 @@ async fn execute<S: StateStore>(
         }
         // By id, then by the name it has now: a rename in between is not a
         // reason to leave the Application behind.
-        Work::RemoveApplication { id } => {
+        Work::RemoveApplication { id, delete_data } => {
             let _namespace = state.dns_records.lock_namespace().await;
             match apps::get_application(store, &id).await {
                 Ok(app) if matches!(app.runtime, crate::store::Runtime::Native(_)) => {
                     apps::require_removable(store, &app)
                         .await
                         .map_err(|e| ErrorReport::new(&e))?;
-                    crate::native::lifecycle::remove(store, state.native.as_ref(), routes, &app)
-                        .await
-                        .map_err(|e| ErrorReport::new(&e))
+                    crate::native::lifecycle::remove(
+                        store,
+                        state.native.as_ref(),
+                        routes,
+                        &app,
+                        delete_data,
+                    )
+                    .await
+                    .map_err(|e| ErrorReport::new(&e))
                 }
-                Ok(app) => apps::remove_application(store, docker, routes, &app.name)
+                Ok(app) => apps::remove_application(store, docker, routes, &app.name, delete_data)
                     .await
                     .map_err(|e| ErrorReport::new(&e)),
                 Err(e) => Err(ErrorReport::new(&e)),
@@ -621,6 +633,21 @@ async fn execute<S: StateStore>(
         }
         Work::BuildCustomImage { image } => custom_images::run_build(&state, *image).await,
         Work::RemoveCustomImage { id } => custom_images::run_remove(&state, &id).await,
+        Work::Prune => {
+            let removed = crate::prune::run(store, docker)
+                .await
+                .map_err(|e| ErrorReport::plain(format!("{e:#}")))?;
+            // Each thing removed is a line of the event, so the run says what went.
+            return Ok(removed
+                .items
+                .into_iter()
+                .map(|item| audit::Change {
+                    setting: item.kind.into(),
+                    from: item.name,
+                    to: "removed".into(),
+                })
+                .collect());
+        }
     };
     done.map(|()| Vec::new())
 }
