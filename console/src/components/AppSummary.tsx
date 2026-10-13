@@ -16,8 +16,8 @@ import type { App, GitInspection, Inspection } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
-import { GroupCard, type GroupSection } from "./GroupCard.js";
-import { Icon, type IconName } from "./Icon.js";
+import { Fact, GroupCard, type GroupSection } from "./GroupCard.js";
+import { Icon } from "./Icon.js";
 import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
 import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
 import { useToast } from "./Toasts.js";
@@ -98,15 +98,6 @@ function containersOf(app: App, inspected: Inspection | undefined): Container[] 
   });
 }
 
-/** One fact about a container, drawn like the lines of the cards beside it. */
-export function Fact({ icon, label, value, empty }: { icon: IconName; label: string; value?: ReactNode; empty?: string }) {
-  return (
-    <span className="group-line">
-      <span className="group-name"><Icon name={icon} /><span>{label}</span></span>
-      <span className={value ? "mono fact-value" : "muted"}>{value ?? empty}</span>
-    </span>
-  );
-}
 
 /**
  * An Application's Summary as a working view: what reaches it and what it
@@ -134,11 +125,8 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   const [editor, setEditor] = useState<RouteEditor | null>(null);
   // Every way in: the hostnames, the paths and the redirects, each added from the route dialog set for it.
   // Where the app listens is said once, on its own node; a row names a target only when it is another one.
+  // An Application has one Hostname, so it is a fact of the card, not a list to filter.
   const domainSections: GroupSection[] = [
-    {
-      key: "hostname", title: "Hostname", icon: kindIcon.hostname,
-      lines: routes.filter((route) => route.kind === "hostname").map((route) => ({ key: route.key, label: `${route.hostname}/` })),
-    },
     {
       key: "aliases", title: "Aliases", icon: kindIcon.alias, onAdd: () => setEditor({ app, action: "forward" }),
       lines: routes.filter((route) => route.kind === "alias").map((route) => ({ key: route.key, label: `${route.hostname}/` })),
@@ -209,7 +197,8 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
         {routes.length ? (
           <DiagramColumn>
             <DiagramNode id="domains" title="" className="group-node">
-              <GroupCard title="Domains" sections={domainSections} />
+              <GroupCard title="Domains" count={routes.length + (app.redirects?.length ?? 0)} sections={domainSections}
+                facts={<Fact icon={kindIcon.hostname} label="Hostname" value={app.hostname} />} />
             </DiagramNode>
           </DiagramColumn>
         ) : null}

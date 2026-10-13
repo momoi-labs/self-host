@@ -17,7 +17,14 @@ export type GroupSection = { key: string; title: string; icon: IconName; lines: 
  * as a tree. Once more than one kind is there, chips show one at a time.
  * It sits in a kiso diagram node with `className="group-node"`.
  */
-export function GroupCard({ title, sections }: { title: string; sections: GroupSection[] }) {
+export function GroupCard({ title, sections, facts, count }: {
+  title: string;
+  sections: GroupSection[];
+  /** Single facts drawn above the sections, such as the one Hostname; they are not filtered. */
+  facts?: ReactNode;
+  /** The header's count when it covers more than the sections' lines. */
+  count?: number;
+}) {
   const [open, setOpen] = useState(true);
   const [only, setOnly] = useState<string | null>(null);
   const present = sections.filter((section) => section.lines.length > 0);
@@ -35,11 +42,12 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
   return (
     <span className="group-card">
       <button type="button" className="group-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span>{title} <span className="group-count">{total}</span></span>
+        <span>{title} <span className="group-count">{count ?? total}</span></span>
         <Icon name={open ? "chevron-up" : "chevron-down"} />
       </button>
       {/* Folded, the body stays in the layout with no height, so the card keeps its width. */}
       <span className="group-body" data-open={open} aria-hidden={!open}>
+      {facts ? <span className="group-section is-flat group-facts">{facts}</span> : null}
       {present.length > 1 ? (
         <span className="group-chips" role="group" aria-label="Show">
           <button type="button" aria-pressed={shown.length > 1} onClick={() => setOnly(null)}>All {total}</button>
@@ -71,6 +79,16 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
         </span>
       ))}
       </span>
+    </span>
+  );
+}
+
+/** One fact as a line: its icon and name, and the value on the right. */
+export function Fact({ icon, label, value, empty }: { icon: IconName; label: string; value?: ReactNode; empty?: string }) {
+  return (
+    <span className="group-line">
+      <span className="group-name"><Icon name={icon} /><span>{label}</span></span>
+      <span className={value ? "mono fact-value" : "muted"}>{value ?? empty}</span>
     </span>
   );
 }
