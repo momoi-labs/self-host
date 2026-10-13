@@ -157,8 +157,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
           </DiagramColumn>
         ) : null}
         {routes.length ? <DiagramEdge from="domains" to="app" label={targetOf(app)} /> : null}
-        {/* The app reaches its databases through its environment; the card says which variable. */}
-        {connected.length ? <DiagramEdge from="app" to="databases" label="env" /> : null}
+        {connected.length ? <DiagramEdge from="app" to="databases" /> : null}
       </Diagram>
 
       <PaneGrid aria-label={`${app.name} summary`} defaultLayout={layout} onLayoutChange={saveLayout}>
