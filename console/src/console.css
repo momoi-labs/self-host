@@ -522,3 +522,7 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .update-ref > :first-child { flex: 1; }
 .update-skeleton { block-size: 5rem; }
 .update-change-ref { margin-inline-end: auto; }
+
+/* A scheduled task: its name over what it does, and when it runs, side by side. */
+.schedule-task { display: grid; gap: 2px; }
+.schedule-when { display: inline-flex; gap: var(--spacing-sm); align-items: center; }

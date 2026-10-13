@@ -199,6 +199,21 @@ Application id, and anything that still has a container, running or stopped,
 stays whoever owns it. A Docker shared with another Platform or with your own
 containers keeps what they use.
 
+### Scheduled tasks
+
+Settings → Scheduled tasks lists the work the Platform runs on its own. The
+first is **Remove unused data**, which runs `prune`. Each schedule is off until
+you turn it on, then runs daily or weekly on Sunday, at the hour you pick in
+your browser's time. A run is a task like any console action, so its outcome
+and what it removed are in Events, and **Run now** starts one at once.
+
+Turning a schedule on, or moving its hour, does not run it at once; it waits
+for the next slot. A slot the Host missed while it was off runs once when the
+Platform starts, not once per missed slot, and a run never starts while the
+previous one is still going. The API is `GET /schedules`,
+`PUT /schedules/<id>` with `{"enabled", "every": "day"|"week", "hour"}` in UTC,
+and `POST /schedules/<id>/run`.
+
 ## Upgrading from a Platform that kept its state in JSON files
 
 Platforms before 0.5.0 wrote `state/platform.json` and one

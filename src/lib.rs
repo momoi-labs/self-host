@@ -44,6 +44,7 @@ pub mod processes;
 pub mod proxy;
 pub mod prune;
 pub mod routes;
+pub mod schedules;
 pub mod schema;
 pub mod settings;
 pub mod source;
@@ -148,6 +149,7 @@ pub async fn boot_app_with_vm_runtime<S: StateStore>(
         tracing::warn!(%error, "native reconciliation failed");
     }
     tasks::recover(&state).await;
+    schedules::spawn(state);
     router
 }
 
@@ -324,6 +326,9 @@ fn build_platform_with_native<S: StateStore>(
         )
         .route("/apps/{name}", delete(remove_app::<S>))
         .route("/prune", get(prune_plan::<S>).post(prune_run::<S>))
+        .route("/schedules", get(list_schedules::<S>))
+        .route("/schedules/{id}", axum::routing::put(update_schedule::<S>))
+        .route("/schedules/{id}/run", post(run_schedule::<S>))
         .route(
             "/apps/id/{id}",
             get(get_app::<S>)
@@ -2037,8 +2042,45 @@ async fn prune_plan<S: StateStore>(state: axum::extract::State<AppState<S>>) -> 
 
 /// Runs `prune` as a task; the event lists what it removed.
 async fn prune_run<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
-    let subject = audit::Subject::new("platform", "prune", "Unused data");
+    let subject = schedules::prune_subject();
     accepted_task(tasks::enqueue(&state, "prune", subject, tasks::Work::Prune).await)
+}
+
+async fn list_schedules<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
+    match schedules::list(&state.store).await {
+        Ok(views) => Json(views).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
+fn schedule_error(error: schedules::Error) -> Response {
+    let status = match error {
+        schedules::Error::NotFound(_) => StatusCode::NOT_FOUND,
+        schedules::Error::InvalidHour(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        schedules::Error::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    error_response(status, &error)
+}
+
+async fn update_schedule<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(change): Json<schedules::Change>,
+) -> Response {
+    match schedules::update(&state.store, &id, change).await {
+        Ok(view) => Json(view).into_response(),
+        Err(error) => schedule_error(error),
+    }
+}
+
+async fn run_schedule<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    match schedules::run(&state, &id).await {
+        Ok(task_id) => (StatusCode::ACCEPTED, Json(tasks::Accepted { task_id })).into_response(),
+        Err(error) => schedule_error(error),
+    }
 }
 
 /// `?delete_data=true` also deletes what the Application stored.
