@@ -62,3 +62,15 @@ test("a changed rule keeps the target it named, and a removed one goes", () => {
   assert.deepEqual(replaceRoute(app, api, null).route_rules, [app.route_rules[1]]);
   assert.deepEqual(replaceRoute(app, api, null).aliases, app.aliases);
 });
+
+test("a root redirect reads back from the rule it writes, and lands on the route that holds its path", async () => {
+  const { rootRedirectRule, rootRedirect, redirectFrom, landingRoute } = await import(pathToFileURL(join(outDir, "routes.mjs")));
+  const rule = rootRedirectRule("www.home.lan", "/admin", false);
+  assert.deepEqual(rule, { pattern: "^https?://www\\.home\\.lan/?$", replacement: "https://www.home.lan/admin", permanent: false });
+  assert.deepEqual(rootRedirect(rule), { hostname: "www.home.lan", path: "/admin" });
+  assert.equal(redirectFrom(rule), "https://www.home.lan/");
+  assert.equal(rootRedirect({ pattern: "^https://old\\.home\\.lan/(.*)", replacement: "https://www.home.lan/${1}", permanent: true }), null);
+  assert.equal(landingRoute(routesOf(app), rule.replacement)?.key, www.key);
+  assert.equal(landingRoute(routesOf(app), "https://web.home.lan/api/v1")?.key, api.key);
+  assert.equal(landingRoute(routesOf(app), "https://elsewhere.example.com/"), undefined);
+});

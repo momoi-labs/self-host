@@ -10,7 +10,7 @@ import {
 
 import { asReport } from "../lib/api.js";
 import { settingsQuery } from "../lib/queries.js";
-import { routesOf, saveRedirects, saveRewriteHost, type RouteKind } from "../lib/routes.js";
+import { kindIcon, redirectFrom, routesOf, saveRedirects, saveRewriteHost, type RouteKind } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { Icon } from "./Icon.js";
 import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
@@ -58,7 +58,7 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
   const redirects = app.redirects ?? [];
   const [redirectQuery, setRedirectQuery] = useState("");
   const shownRedirects = redirects.map((redirect, index) => ({ redirect, index }))
-    .filter(({ redirect }) => `${redirect.pattern} ${redirect.replacement}`.toLowerCase().includes(redirectQuery.trim().toLowerCase()));
+    .filter(({ redirect }) => `${redirectFrom(redirect)} ${redirect.pattern} ${redirect.replacement}`.toLowerCase().includes(redirectQuery.trim().toLowerCase()));
 
   async function removeRedirect(index: number) {
     try {
@@ -102,7 +102,7 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
           <Table aria-label="Redirects">
             <TableHeader>
               <TableRow>
-                <TableHead scope="col">Pattern</TableHead>
+                <TableHead scope="col">From</TableHead>
                 <TableHead scope="col">Send to</TableHead>
                 <TableHead scope="col">Status</TableHead>
                 <TableHead scope="col" className="col-tight">Actions</TableHead>
@@ -115,7 +115,7 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
                 <TableRow><TableCell colSpan={4} className="muted">No redirects match your search.</TableCell></TableRow>
               ) : shownRedirects.map(({ redirect, index }) => (
                 <TableRow key={`${index}:${redirect.pattern}`}>
-                  <TableCell className="mono">{redirect.pattern}</TableCell>
+                  <TableCell><span className="route-kind"><Icon name={kindIcon.redirect} /><span className="mono">{redirectFrom(redirect)}</span></span></TableCell>
                   <TableCell className="mono">{redirect.replacement}</TableCell>
                   <TableCell><Badge variant="neutral">{redirect.permanent ? "301" : "302"}</Badge></TableCell>
                   <TableCell className="col-tight">
