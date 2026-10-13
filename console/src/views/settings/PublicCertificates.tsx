@@ -153,7 +153,7 @@ export function PublicCertificates({ id, size }: PaneProps) {
   ) : enabled ? (
     `Saved. Every Hostname outside .${suffix ?? "the Suffix"} gets a certificate from ${authorityName}.`
   ) : (
-    "Off. Hostnames outside the DNS Suffix refuse HTTPS. Save an account to turn it on."
+    "Off. Hostnames outside the DNS Suffix answer with the Platform's own certificate, which only an edge proxy such as Cloudflare accepts. Save an account to turn it on."
   );
 
   const rows = certificates.data ?? noCertificates;
