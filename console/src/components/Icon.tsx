@@ -1,6 +1,6 @@
 import {
-  Box, ChartColumn, Check, CircleAlert, CircleX, Clock, Database, Download, Ellipsis, Eye, EyeOff, File, GitBranch, Globe,
-  Hammer, History, Info, KeyRound, Layers, Lock, Plus, Route, Settings, SquareTerminal, User, X, type LucideIcon,
+  Box, ChartColumn, Check, CircleAlert, CircleX, Clock, CornerUpRight, Database, Download, Ellipsis, Eye, EyeOff, File, GitBranch, Globe,
+  Hammer, History, Info, KeyRound, Layers, Link, Lock, Plus, Route, Settings, Split, SquareTerminal, User, X, type LucideIcon,
 } from "lucide-react";
 
 /**
@@ -35,9 +35,17 @@ const icons = {
   "eye-off": EyeOff,
   gear: Settings,
   route: Route,
+  link: Link,
+  split: Split,
+  redirect: CornerUpRight,
 } satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof icons;
+
+/** The drawing behind a name, for a component that takes Lucide's own, such as a diagram node. */
+export function glyph(name: IconName): LucideIcon {
+  return icons[name];
+}
 
 export function Icon({
   name,

@@ -11,12 +11,12 @@ import { join } from "shlex";
 import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
-import { kindLabel, routesOf, targetLabel, targetOf, urlOf } from "../lib/routes.js";
+import { kindIcon, kindLabel, landingRoute, redirectFrom, routesOf, targetLabel, targetOf, urlOf } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
-import { Icon } from "./Icon.js";
+import { glyph, Icon } from "./Icon.js";
 import { useToast } from "./Toasts.js";
 
 /** How the console draws its diagrams: solid, rounded nodes without corner marks, on a quiet dot grid. */
@@ -85,6 +85,11 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
   const [layout, saveLayout] = useStoredLayout(native ? "summary:native" : "summary:container");
   const routes = routesOf(app);
   const shown = routes.slice(0, 3);
+  // A redirect answers before any route; its dashed line ends on the route its location arrives at.
+  const redirects = (app.redirects ?? []).slice(0, 3).map((rule, index) => {
+    const landing = landingRoute(routes, rule.replacement);
+    return { id: `redirect-${index}`, rule, lands: landing ? (shown.includes(landing) ? landing.key : "more") : undefined };
+  });
   const node = nodeOf(app);
 
   // A database's connections are the only record of who uses it.
@@ -100,11 +105,21 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
 
   return (
     <div className="stack">
-      <Diagram label={`${app.name}: the routes that reach it and the databases it uses`} {...diagramLook}>
+      <Diagram label={`${app.name}: the redirects and routes that reach it and the databases it uses`} {...diagramLook}>
+        {redirects.length ? (
+          <DiagramColumn>
+            {redirects.map(({ id, rule }) => (
+              <DiagramNode key={id} id={id} kind="route" icon={glyph(kindIcon.redirect)} label={`Redirect ${rule.permanent ? "301" : "302"}`}
+                title={redirectFrom(rule)} {...opens(onOpenRoutes)}>
+                {`→ ${rule.replacement}`}
+              </DiagramNode>
+            ))}
+          </DiagramColumn>
+        ) : null}
         {routes.length ? (
           <DiagramColumn>
             {shown.map((route) => (
-              <DiagramNode key={route.key} id={route.key} kind="route" label={kindLabel[route.kind]} title={urlOf(route)} {...opens(onOpenRoutes)}>
+              <DiagramNode key={route.key} id={route.key} kind="route" icon={glyph(kindIcon[route.kind])} label={kindLabel[route.kind]} title={urlOf(route)} {...opens(onOpenRoutes)}>
                 {/* The edges share one run into the Application, so a path says on its node where it arrives. */}
                 {route.kind === "path" ? `→ ${route.target ?? targetLabel(app)}${route.stripPrefix ? "/" : route.path}` : null}
               </DiagramNode>
@@ -133,6 +148,7 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
         {routes.length ? (
           <DiagramEdge from={[...shown.map((route) => route.key), ...(routes.length > shown.length ? ["more"] : [])]} to="app" label={targetOf(app)} />
         ) : null}
+        {redirects.map(({ id, lands }) => lands ? <DiagramEdge key={id} from={id} to={lands} line="dashed" /> : null)}
         {connected.map(({ database, variable }) => (
           <DiagramEdge key={database.id} from="app" to={database.id} label={variable} />
         ))}

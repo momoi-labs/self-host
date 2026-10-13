@@ -5,7 +5,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger, Skeleton, Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
-import { kindLabel, replaceRoute, saveRoutes, targetLabel, urlOf, type Route } from "../lib/routes.js";
+import { kindIcon, kindLabel, replaceRoute, saveRoutes, targetLabel, urlOf, type Route } from "../lib/routes.js";
 import { statusTone } from "../lib/status.js";
 import { HttpStatus } from "./HttpStatus.js";
 import { Icon } from "./Icon.js";
@@ -86,7 +86,7 @@ export function RouteTable({ routes, total, ready = true, showApplication, toolb
                     </a>
                   </TableCell>
                 ) : null}
-                <TableCell><Badge variant="neutral">{kindLabel[route.kind]}</Badge></TableCell>
+                <TableCell><Badge variant="neutral"><Icon name={kindIcon[route.kind]} />{kindLabel[route.kind]}</Badge></TableCell>
                 <TableCell className="mono muted">{route.target ?? targetLabel(route.app)}</TableCell>
                 <TableCell>
                   {/* The probe reads the Web Target; a rule that names its own target is not checked. */}
