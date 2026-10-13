@@ -19,7 +19,7 @@ const definitions: {
     label: "Container image",
     icon: "box",
     guidance: "An image that is already published, such as nginx:alpine.",
-    flow: [["download", "Pulls the image"], ["box", "Runs one container"], ["globe", "Hostname reaches port 80"]],
+    flow: [["download", "Pulls the image"], ["box", "Runs one container"], ["globe", "Hostname reaches its web port"]],
   },
   {
     value: "custom-image",

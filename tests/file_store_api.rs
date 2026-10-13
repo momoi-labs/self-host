@@ -165,6 +165,7 @@ async fn late_deploy_keeps_the_edited_namespace_on_disk() {
         &store,
         "blog",
         "nginx",
+        None,
         self_host::apps::DeployOptions::default(),
     )
     .await

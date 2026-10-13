@@ -443,6 +443,7 @@ export function AppForm({
         if (port.trim()) body.web_port = Number(port.trim());
       } else {
         body.image = image.trim();
+        if (port.trim()) body.web_port = Number(port.trim());
       }
 
       if (!creating && source !== "git") body.pull = pull;
@@ -543,16 +544,31 @@ export function AppForm({
   );
 
   const imageField = (
-    <FormField
-      label="Container image"
-      id="f-image"
-      className="mono"
-      value={image}
-      onChange={(event) => setImage(event.target.value)}
-      placeholder="nginx:alpine"
-      required={source === "image"}
-      hint="One container serving HTTP on port 80."
-    />
+    <div className="field-row">
+      <FormField
+        label="Container image"
+        id="f-image"
+        className="mono"
+        value={image}
+        onChange={(event) => setImage(event.target.value)}
+        placeholder="nginx:alpine"
+        required={source === "image"}
+        hint="One container serving HTTP."
+      />
+      <FormField
+        label="Web port"
+        id="f-image-port"
+        className="mono"
+        type="number"
+        min={1}
+        max={65535}
+        placeholder="80"
+        value={port}
+        onChange={(event) => setPort(event.target.value)}
+        onWheel={(event) => event.currentTarget.blur()}
+        hint="The port it listens on inside the container."
+      />
+    </div>
   );
 
   const routingFields = <>
