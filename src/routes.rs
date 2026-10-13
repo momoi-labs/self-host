@@ -9,7 +9,11 @@
 use std::net::SocketAddr;
 
 use crate::proxy::{Publisher, RouteTable};
-use crate::store::{ApplicationRecord, Publication, RouteRule};
+use crate::store::{ApplicationRecord, Publication, RedirectRule, RouteRule};
+
+/// How many redirects one Application may carry. Enough for a site's worth
+/// of moved pages, not for a rewrite engine.
+pub const MAX_REDIRECTS: usize = 50;
 
 /// Publishing an Application's route and taking it down again.
 ///
@@ -169,14 +173,15 @@ pub fn validate_rules(
     admin_hostname: &str,
 ) -> Result<(), RouteError> {
     if app.publication == Publication::Unpublished {
-        return if app.route_rules.is_empty() {
+        return if app.route_rules.is_empty() && app.redirects.is_empty() {
             Ok(())
         } else {
             Err(RouteError::Invalid(
-                "an unpublished Application has no route rules".into(),
+                "an unpublished Application has no route rules or redirects".into(),
             ))
         };
     }
+    validate_redirects(&app.redirects)?;
     let mut explicit = std::collections::HashSet::new();
     for rule in &app.route_rules {
         validate_rule(rule)?;
@@ -205,6 +210,19 @@ pub fn validate_rules(
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+/// Every rule must compile, and there cannot be more than a site's worth.
+pub(crate) fn validate_redirects(redirects: &[RedirectRule]) -> Result<(), RouteError> {
+    if redirects.len() > MAX_REDIRECTS {
+        return Err(RouteError::Invalid(format!(
+            "an Application can have at most {MAX_REDIRECTS} redirects"
+        )));
+    }
+    for rule in redirects {
+        crate::proxy::compile_redirect(rule)?;
     }
     Ok(())
 }
@@ -261,12 +279,13 @@ impl RouteStore for ProxyRoutes {
             .into_iter()
             .map(str::to_string)
             .collect();
-        if let Err(error) = self.table.publish_rules(
+        if let Err(error) = self.table.publish_rules_with_redirects(
             &app.id,
             &hostnames,
             target(app),
             &app.route_rules,
             app.rewrite_host,
+            &app.redirects,
         ) {
             tracing::error!(application_id = %app.id, %error, "could not publish Application routes");
         }
@@ -364,6 +383,7 @@ mod tests {
             publication: Publication::Web,
             variable_delivery: crate::store::VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            redirects: Vec::new(),
             rewrite_host: None,
             network_policy: Default::default(),
         }
@@ -570,6 +590,31 @@ mod tests {
         record.publication = Publication::Unpublished;
         assert!(validate_rules(&record, &[], "admin.example.invalid").is_err());
         assert!(hostnames(&record).is_empty());
+    }
+
+    #[test]
+    fn redirects_must_compile_stay_bounded_and_belong_to_a_published_application() {
+        let redirect = |pattern: &str| RedirectRule {
+            pattern: pattern.into(),
+            replacement: "https://blog.example.invalid/".into(),
+            permanent: true,
+        };
+        let mut record = app("a", "blog.example.invalid", &[]);
+        record.redirects = vec![redirect("^https://blog\\.example\\.invalid/old$")];
+        validate_rules(&record, &[], "admin.example.invalid").unwrap();
+        record.redirects = vec![redirect("^https://(")];
+        assert!(matches!(
+            validate_rules(&record, &[], "admin.example.invalid"),
+            Err(RouteError::Invalid(_))
+        ));
+        record.redirects = vec![redirect("^x$"); MAX_REDIRECTS + 1];
+        assert!(matches!(
+            validate_rules(&record, &[], "admin.example.invalid"),
+            Err(RouteError::Invalid(_))
+        ));
+        record.redirects = vec![redirect("^x$")];
+        record.publication = Publication::Unpublished;
+        assert!(validate_rules(&record, &[], "admin.example.invalid").is_err());
     }
 
     #[test]

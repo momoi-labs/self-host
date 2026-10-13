@@ -12,9 +12,10 @@ the saved list. An omitted field preserves the current rules on update;
 `[]` removes the explicit rules. Records created before this field existed
 read an empty list.
 
-`PUT /apps/id/{id}/routes` changes only `aliases`, `route_rules` and
-`rewrite_host` (see [Host header](#host-header)), with
-the same rules for an omitted field and `[]`. It never builds, pulls or
+`PUT /apps/id/{id}/routes` changes only `aliases`, `route_rules`,
+`redirects` (see [Redirects](#redirects)) and `rewrite_host` (see
+[Host header](#host-header)), with the same rules for an omitted field and
+`[]`. It never builds, pulls or
 restarts, whatever the Application is made from, so a Git Application can
 gain a path without a new build. It answers `200` once the proxy serves the
 new routes.
@@ -43,6 +44,39 @@ address with a nonzero port.
 An unpublished Application cannot have rules. Native Applications use the
 same route contract. The route contract itself
 uses socket addresses, so the proxy does not depend on how a target runs.
+
+## Redirects
+
+An Application can answer a request with a redirect instead of serving it.
+Each rule is a regular expression over the whole request URL, as the client
+asked for it over HTTPS, and the location to send the client to. The rules
+are tried in order on every Hostname the Application owns, including aliases
+and the Hostnames of its route rules; the first match answers. The proxy
+checks them before the Application's target, so a redirect answers even
+while the Application is stopped.
+
+```json
+{
+  "redirects": [
+    {
+      "pattern": "^https://docs\\.example\\.invalid/api/([a-z-]+)\\.html$",
+      "replacement": "https://example.invalid/guide/${1}",
+      "permanent": true
+    }
+  ]
+}
+```
+
+`${1}` in the replacement inserts the pattern's first group; `$0` is the
+whole match. `permanent: true` answers `301 Moved Permanently`, which
+browsers cache; `false`, the default, answers `302 Found`. The replacement
+must start with `https://`, `http://`, `/` or a group reference, and holds no
+spaces. A pattern that does not compile, or more than 50 rules, is refused
+with `400`. The query is part of the URL the pattern sees, so a pattern that
+ends in `$` without capturing it does not match a request that carries one.
+
+The Application's Routes tab lists its redirects and adds, edits or removes
+one in a dialog. Like a route, a redirect applies at once.
 
 ## Host header
 

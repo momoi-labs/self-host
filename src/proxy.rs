@@ -28,7 +28,7 @@ use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
 use crate::routes::{RouteError, is_challenge_path, matches_path};
-use crate::store::RouteRule;
+use crate::store::{RedirectRule, RouteRule};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 // `UnsyncBoxBody`, not `BoxBody`: axum's own response body isn't `Sync`
@@ -69,6 +69,8 @@ pub struct RouteTable {
 #[derive(Default)]
 struct Tables {
     rules: HashMap<(String, String), OwnedRoute>,
+    /// What each owner answers in place of itself, in the order it said.
+    redirects: HashMap<String, Vec<CompiledRedirect>>,
     /// The Operator's setting, for an Application that does not choose.
     rewrite_host_default: bool,
 }
@@ -79,6 +81,61 @@ struct OwnedRoute {
     target: Option<SocketAddr>,
     strip_prefix: bool,
     rewrite_host: Option<bool>,
+}
+
+#[derive(Clone)]
+struct CompiledRedirect {
+    pattern: regex::Regex,
+    replacement: String,
+    permanent: bool,
+}
+
+/// Where a request is sent instead of the Application, and with which status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redirect {
+    pub location: String,
+    pub permanent: bool,
+}
+
+/// What the rules are matched against: the URL as the client typed it,
+/// without the port the proxy happens to listen on.
+pub fn request_url(host: &str, path_and_query: &str) -> String {
+    format!("https://{host}{path_and_query}")
+}
+
+/// Compiles a rule, or says what is wrong with it. The size limit keeps a
+/// pathological pattern from costing the proxy memory on every request.
+pub fn compile_redirect(rule: &RedirectRule) -> Result<regex::Regex, RouteError> {
+    if rule.pattern.is_empty() || rule.pattern.len() > 512 {
+        return Err(RouteError::Invalid(
+            "redirect pattern must be 1 to 512 characters".into(),
+        ));
+    }
+    if rule.replacement.is_empty()
+        || rule.replacement.len() > 2048
+        || rule
+            .replacement
+            .bytes()
+            .any(|byte| !byte.is_ascii_graphic())
+    {
+        return Err(RouteError::Invalid(
+            "redirect replacement must be a URL or path without spaces or control characters"
+                .into(),
+        ));
+    }
+    if !(rule.replacement.starts_with("https://")
+        || rule.replacement.starts_with("http://")
+        || rule.replacement.starts_with('/')
+        || rule.replacement.starts_with('$'))
+    {
+        return Err(RouteError::Invalid(
+            "redirect replacement must start with https://, http://, / or a group reference".into(),
+        ));
+    }
+    regex::RegexBuilder::new(&rule.pattern)
+        .size_limit(1 << 16)
+        .build()
+        .map_err(|error| RouteError::Invalid(format!("redirect pattern does not compile: {error}")))
 }
 
 /// The longest matching route, copied while holding the table's read lock.
@@ -118,6 +175,31 @@ impl RouteTable {
             })
     }
 
+    /// The first redirect of the route's owner that matches the request URL,
+    /// with its groups expanded into the location. `None` lets the request
+    /// through to the Application.
+    pub fn redirect_for(&self, host: &str, path_and_query: &str) -> Option<Redirect> {
+        let hostname = host.to_ascii_lowercase();
+        let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+        let tables = self.inner.read().unwrap();
+        let owner = tables
+            .rules
+            .iter()
+            .filter(|((host, prefix), _)| host == &hostname && matches_path(prefix, path))
+            .max_by_key(|((_, prefix), _)| prefix.len())
+            .map(|(_, route)| route.owner.as_str())?;
+        let url = request_url(&hostname, path_and_query);
+        tables.redirects.get(owner)?.iter().find_map(|redirect| {
+            let captures = redirect.pattern.captures(&url)?;
+            let mut location = String::new();
+            captures.expand(&redirect.replacement, &mut location);
+            Some(Redirect {
+                location,
+                permanent: redirect.permanent,
+            })
+        })
+    }
+
     /// Whether an Application that does not choose gets its target's
     /// address as `Host`. Applies to the next request.
     pub fn set_rewrite_host_default(&self, on: bool) {
@@ -134,11 +216,34 @@ impl RouteTable {
         rules: &[RouteRule],
         rewrite_host: Option<bool>,
     ) -> Result<(), RouteError> {
+        self.publish_rules_with_redirects(id, hostnames, target, rules, rewrite_host, &[])
+    }
+
+    /// `publish_rules`, with what the owner answers in place of itself.
+    pub fn publish_rules_with_redirects(
+        &self,
+        id: &str,
+        hostnames: &[String],
+        target: Option<SocketAddr>,
+        rules: &[RouteRule],
+        rewrite_host: Option<bool>,
+        redirects: &[RedirectRule],
+    ) -> Result<(), RouteError> {
         if target.is_some_and(|target| !target.ip().is_loopback() || target.port() == 0) {
             return Err(RouteError::Invalid(
                 "target must be a loopback address with a nonzero port".into(),
             ));
         }
+        let compiled = redirects
+            .iter()
+            .map(|rule| {
+                Ok(CompiledRedirect {
+                    pattern: compile_redirect(rule)?,
+                    replacement: rule.replacement.clone(),
+                    permanent: rule.permanent,
+                })
+            })
+            .collect::<Result<Vec<_>, RouteError>>()?;
         let mut next = HashMap::new();
         for hostname in hostnames {
             next.insert(
@@ -184,6 +289,11 @@ impl RouteTable {
         }
         tables.rules.retain(|_, route| route.owner != id);
         tables.rules.extend(next);
+        if compiled.is_empty() {
+            tables.redirects.remove(id);
+        } else {
+            tables.redirects.insert(id.to_string(), compiled);
+        }
         Ok(())
     }
 }
@@ -196,11 +306,9 @@ impl Publisher for RouteTable {
     }
 
     fn withdraw(&self, id: &str) {
-        self.inner
-            .write()
-            .unwrap()
-            .rules
-            .retain(|_, route| route.owner != id);
+        let mut tables = self.inner.write().unwrap();
+        tables.rules.retain(|_, route| route.owner != id);
+        tables.redirects.remove(id);
     }
 }
 
@@ -427,6 +535,21 @@ fn requested_by_ip(req: &Request<Incoming>) -> bool {
         })
 }
 
+fn redirect_to(redirect: &Redirect) -> Response<ProxyBody> {
+    let Ok(location) = HeaderValue::from_str(&redirect.location) else {
+        return bad_gateway();
+    };
+    Response::builder()
+        .status(if redirect.permanent {
+            StatusCode::MOVED_PERMANENTLY
+        } else {
+            StatusCode::FOUND
+        })
+        .header(header::LOCATION, location)
+        .body(empty_body())
+        .unwrap()
+}
+
 fn redirect_to_https(req: &Request<Incoming>) -> Response<ProxyBody> {
     let Some(host) = host_of(req) else {
         return bad_request("missing Host header");
@@ -467,6 +590,18 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
 
     if host == ctx.admin_hostname {
         return serve_router(&ctx.admin_router, req).await;
+    }
+
+    // An Application's redirects answer before it does, whether or not it
+    // can answer right now: sending a Consumer elsewhere needs no target.
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    if let Some(redirect) = ctx.table.redirect_for(&host, path_and_query) {
+        ctx.metrics.count_proxy_request(&host, false);
+        return redirect_to(&redirect);
     }
 
     // Only Hostnames the Platform published are counted as Application
@@ -1536,6 +1671,166 @@ mod integration {
         let mut buf = [0u8; 5];
         io.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"hello");
+    }
+
+    fn redirect(pattern: &str, replacement: &str, permanent: bool) -> RedirectRule {
+        RedirectRule {
+            pattern: pattern.into(),
+            replacement: replacement.into(),
+            permanent,
+        }
+    }
+
+    #[tokio::test]
+    async fn redirects_answer_on_the_owners_hostnames_before_the_application() {
+        let app = spawn_fixture(Router::new().fallback(|| async { "app target" })).await;
+        let table = RouteTable::new();
+        let rules = [
+            redirect(
+                r"^https://docs\.example\.invalid/api/?(?:index\.html)?$",
+                "https://blog.example.invalid/guide/api",
+                true,
+            ),
+            redirect(
+                r"^https://docs\.example\.invalid/api/([a-z-]+)\.html(\?.*)?$",
+                "https://blog.example.invalid/guide/${1}${2}",
+                true,
+            ),
+            redirect(r"^https://docs\.example\.invalid/old$", "/new", false),
+        ];
+        table
+            .publish_rules_with_redirects(
+                "blog",
+                &["blog.example.invalid".into(), "docs.example.invalid".into()],
+                Some(app),
+                &[],
+                None,
+                &rules,
+            )
+            .unwrap();
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table.clone()).await;
+
+        // The first matching rule wins, groups expand, and the query rides
+        // along only when the pattern captured it.
+        for (path, status, location) in [
+            (
+                "/api",
+                StatusCode::MOVED_PERMANENTLY,
+                "https://blog.example.invalid/guide/api",
+            ),
+            (
+                "/api/index.html",
+                StatusCode::MOVED_PERMANENTLY,
+                "https://blog.example.invalid/guide/api",
+            ),
+            (
+                "/api/getting-started.html?v=2",
+                StatusCode::MOVED_PERMANENTLY,
+                "https://blog.example.invalid/guide/getting-started?v=2",
+            ),
+            ("/old", StatusCode::FOUND, "/new"),
+        ] {
+            let (got, headers, _) = request(
+                https_addr,
+                client_config(cert.clone()),
+                "docs.example.invalid",
+                path,
+                &[],
+                vec![],
+            )
+            .await;
+            assert_eq!(got, status, "{path}");
+            assert_eq!(headers[header::LOCATION], location, "{path}");
+        }
+        // Anything else reaches the Application, on either Hostname.
+        for host in ["docs.example.invalid", "blog.example.invalid"] {
+            let (status, _, body) = request(
+                https_addr,
+                client_config(cert.clone()),
+                host,
+                "/api/other",
+                &[],
+                vec![],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{host}");
+            assert_eq!(body, b"app target");
+        }
+
+        // A redirect needs no target: it answers while the Application is
+        // down, and a hot update replaces it without a restart.
+        table
+            .publish_rules_with_redirects(
+                "blog",
+                &["docs.example.invalid".into()],
+                None,
+                &[],
+                None,
+                &[redirect(
+                    "^https://docs\\.example\\.invalid/.*",
+                    "https://blog.example.invalid/guide",
+                    true,
+                )],
+            )
+            .unwrap();
+        let (status, headers, _) = request(
+            https_addr,
+            client_config(cert.clone()),
+            "docs.example.invalid",
+            "/api/other",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            headers[header::LOCATION],
+            "https://blog.example.invalid/guide"
+        );
+
+        // A rule that does not compile leaves the published routes as they were.
+        assert!(matches!(
+            table.publish_rules_with_redirects(
+                "blog",
+                &["docs.example.invalid".into()],
+                None,
+                &[],
+                None,
+                &[redirect(
+                    "^https://(",
+                    "https://blog.example.invalid/",
+                    true
+                )],
+            ),
+            Err(RouteError::Invalid(_))
+        ));
+        assert!(
+            table
+                .redirect_for("docs.example.invalid", "/anything")
+                .is_some()
+        );
+        for bad in [
+            redirect("", "https://blog.example.invalid/", true),
+            redirect("^x$", "", true),
+            redirect("^x$", "ftp://blog.example.invalid/", true),
+            redirect("^x$", "https://blog.example.invalid/a b", true),
+        ] {
+            assert!(compile_redirect(&bad).is_err(), "{bad:?}");
+        }
+
+        // Withdrawing the owner takes its redirects with it.
+        table.withdraw("blog");
+        assert_eq!(table.redirect_for("docs.example.invalid", "/api"), None);
+        let (status, _, _) = request(
+            https_addr,
+            client_config(cert),
+            "docs.example.invalid",
+            "/api",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     fn path_rule(host: &str, prefix: &str, target: SocketAddr, strip: bool) -> RouteRule {

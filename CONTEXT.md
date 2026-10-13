@@ -49,6 +49,10 @@ _Avoid_: URL (URLs include scheme/path), public domain
 An additional Application Hostname the same Application answers on, alongside its Hostname. Aliases are always explicit: changing a Hostname never leaves one behind on its own.
 _Avoid_: CNAME, redirect (an alias serves the Application, it does not forward)
 
+**Redirect rule**:
+An answer the Platform's proxy gives on an Application's Hostnames in place of the Application: a pattern over the request URL and the location the Consumer is sent to instead. The Application owns its Redirect rules, and the first one that matches answers.
+_Avoid_: rewrite (the proxy changes no request on its way in), forward, alias (an alias serves the Application)
+
 **DNS Suffix**:
 The configurable local zone suffix for the Platform under which Application Hostnames are derived. The MVP has a single DNS Suffix, set via `self-host init --dns` (default **`home.lan`**, intentionally not `.local` because of mDNS conflicts). Multiple suffixes are out of MVP scope.
 _Avoid_: domain, TLD, home.local (as default)

@@ -538,6 +538,7 @@ mod tests {
             publication: Default::default(),
             variable_delivery: crate::store::VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            redirects: Vec::new(),
             rewrite_host: None,
             network_policy: Default::default(),
         };

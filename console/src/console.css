@@ -191,6 +191,9 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .dns-instructions p { max-width: 65ch; }
 
 /* A route reads as one address: the hostname, then its path in a quieter tone. */
+/* A card whose header carries an action beside its title: kiso's header is a
+   grid of stacked lines, so the row has to be asked for. */
+.card-header.between { display: flex; }
 .route-path { color: var(--color-muted-foreground); }
 .route-app { display: inline-flex; align-items: center; gap: var(--spacing-xs); }
 /* What the route dialog is about to save, from the address to where it lands. */

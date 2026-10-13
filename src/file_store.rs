@@ -90,6 +90,8 @@ struct ApplicationBody {
     variable_delivery: VariableDelivery,
     #[serde(default)]
     route_rules: Vec<crate::store::RouteRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    redirects: Vec<crate::store::RedirectRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rewrite_host: Option<bool>,
     #[serde(default)]
@@ -299,6 +301,7 @@ impl FileStateStore {
             publication: body.publication,
             variable_delivery: body.variable_delivery,
             route_rules: body.route_rules,
+            redirects: body.redirects,
             rewrite_host: body.rewrite_host,
             network_policy: body.network_policy,
         })
@@ -342,6 +345,7 @@ fn body_from(app: &ApplicationRecord, compose_file: Option<String>) -> Applicati
         publication: app.publication,
         variable_delivery: app.variable_delivery,
         route_rules: app.route_rules.clone(),
+        redirects: app.redirects.clone(),
         rewrite_host: app.rewrite_host,
         network_policy: app.network_policy.clone(),
         env: BTreeMap::new(),
@@ -979,6 +983,7 @@ mod tests {
             publication: Publication::Web,
             variable_delivery: VariableDelivery::Referenced,
             route_rules: Vec::new(),
+            redirects: Vec::new(),
             rewrite_host: None,
             network_policy: Default::default(),
         }
@@ -1046,6 +1051,11 @@ mod tests {
             path_prefix: "/api".into(),
             target: Some("127.0.0.1:28001".parse().unwrap()),
             strip_prefix: true,
+        });
+        app.redirects.push(crate::store::RedirectRule {
+            pattern: "^https://api\\.example\\.invalid/docs/?$".into(),
+            replacement: "https://docs.example.invalid/".into(),
+            permanent: true,
         });
         app.network_policy = crate::store::NetworkPolicy::Private {
             consumers: vec!["synthetic".into()],
