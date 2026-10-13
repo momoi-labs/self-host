@@ -2,8 +2,9 @@
 
 Git updates still require manual review by default. An Operator can enable a
 scoped deploy trigger for one Application from its Deployments tab. Enabling
-a trigger lets that branch deploy without the review dialog. No Application
-receives a trigger when it is created.
+a trigger lets that branch deploy without the review dialog. An image
+Application's trigger lets CI redeploy it after pushing to its registry
+repository. No Application receives a trigger when it is created.
 
 ## Optional automatic deployment
 
@@ -11,14 +12,22 @@ The Operator API uses the existing API key:
 
 | Request | Result |
 | --- | --- |
-| `GET /apps/id/{id}/deploy-trigger` | Whether a trigger is enabled, its branch and creation time. No token. |
+| `GET /apps/id/{id}/deploy-trigger` | Whether a trigger is enabled, its branch or image repository, and creation time. No token. |
 | `POST /apps/id/{id}/deploy-trigger` with `{"branch":"main"}` | Enable or rotate the token for the configured branch. The token is shown once. |
+| `POST /apps/id/{id}/deploy-trigger` with `{}` | The same for an image Application. The trigger binds to the image's repository. |
 | `DELETE /apps/id/{id}/deploy-trigger` | Revoke the token. Previously accepted Tasks keep their place in the queue. |
 
 Only a Git container Application with a named branch and no explicit commit
-pin can enable a trigger. The trigger binds to the saved Git source, including
-its repository and build inputs. Changing that source requires a new trigger.
-Manual update review and rebuild remain available when a trigger is enabled.
+pin can enable a Git trigger. The trigger binds to the saved Git source,
+including its repository and build inputs. Changing that source requires a new
+trigger. Manual update review and rebuild remain available when a trigger is
+enabled.
+
+An image Application, one deployed from a registry reference with no Compose
+definition, enables a trigger without a branch. The trigger binds to the
+reference's repository, `ghcr.io/org/app` for `ghcr.io/org/app:v4`. Changing
+the Application to another repository requires a new trigger; changing its tag
+does not.
 
 A CI job sends `POST /deploy/{id}` using the trigger token in
 `Authorization: Bearer <token>`. The token cannot list Applications, change
@@ -32,6 +41,19 @@ configuration or deploy a different Application.
 pins that commit before building. When `revision` is supplied, it must still
 match the branch head at execution time. A moved branch fails that Task before
 building. Send a new delivery for the new head.
+
+For an image trigger, the delivery names no branch:
+
+```json
+{"delivery_id":"build-42","image":"ghcr.io/org/app:v5"}
+```
+
+`image` is optional. Without it, the worker pulls the configured reference
+again, which is how a moving tag such as `v4` picks up a new push. With it,
+the reference must belong to the trigger's repository; the worker pulls it
+and saves it as the Application's image. A reference from another repository,
+a branch or a revision returns `400`. The Task records a deployment and waits
+for health checks like any other image deploy.
 
 Invalid credentials return `401`. An authenticated event for another branch
 returns `200` with `ignored: true`. An accepted event returns `202` with its

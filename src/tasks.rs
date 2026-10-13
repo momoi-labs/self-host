@@ -48,6 +48,12 @@ pub enum Work {
         source: Box<crate::source::GitSource>,
         revision: Option<String>,
     },
+    /// A delivery for an image Application: pull `image`, or the configured
+    /// reference when CI named none, and redeploy.
+    TriggerImageApplication {
+        id: String,
+        image: Option<String>,
+    },
     RecoverApplication {
         id: String,
         deployment: String,
@@ -420,7 +426,8 @@ async fn execute<S: StateStore>(
         | Work::StopApplication { id }
         | Work::RestartApplication { id, .. }
         | Work::RemoveApplication { id }
-        | Work::RecoverApplication { id, .. } => Some(id.as_str()),
+        | Work::RecoverApplication { id, .. }
+        | Work::TriggerImageApplication { id, .. } => Some(id.as_str()),
         Work::DeployApplication { pending } => Some(pending.record.id.as_str()),
         _ => None,
     };
@@ -455,6 +462,11 @@ async fn execute<S: StateStore>(
             )
             .await
             .map_err(|error| ErrorReport::new(&error));
+        }
+        Work::TriggerImageApplication { id, image } => {
+            return crate::deployments::triggers::execute_image(store, docker, routes, &id, image)
+                .await
+                .map_err(|error| ErrorReport::new(&error));
         }
         Work::RecoverApplication { id, deployment } => {
             // Metadata-only edits bypass the task queue. Serialize them with
@@ -656,6 +668,7 @@ pub async fn queued_application_ids<S: StateStore>(store: &S) -> Result<Vec<Stri
                     Work::DeployApplication { .. }
                         | Work::BuildGitApplication { .. }
                         | Work::TriggerGitApplication { .. }
+                        | Work::TriggerImageApplication { .. }
                         | Work::RecoverApplication { .. }
                 )
         })
