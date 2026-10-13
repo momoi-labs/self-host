@@ -1,5 +1,13 @@
 # self-host
 
+## 0.9.1
+
+### Patch Changes
+
+- 5e8857e: The Configuration tab of an image, Compose, Git or custom image Application now edits its Variables: add one, replace its value or remove it. Before, only a native Application had this editor, and the others needed `self-host apps env set` on the Host.
+- 591e106: A container image Application can now listen on a port other than 80. The create and edit forms have a Web port field, and the API accepts `web_port` when creating one from an image. Changing the port of an existing image Application now recreates its container on the new port; before, the change was saved but the container kept publishing the old one, and the Hostname answered with an error.
+- 9ed1622: Git builds with a Dockerfile `RUN` no longer need a C compiler on the Host. The release now ships the static build launcher with its bundled s6 tools, and the Platform uses it instead of compiling one with `/usr/bin/cc`. A Platform built from source still compiles it.
+
 ## 0.9.0
 
 ### Minor Changes
