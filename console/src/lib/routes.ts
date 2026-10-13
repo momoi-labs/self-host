@@ -113,8 +113,8 @@ export async function saveRedirects(app: App, redirects: RedirectRule[]): Promis
   return response.ok ? null : failureOf(response);
 }
 
-/** Saves an Application's aliases and rules. Nothing is rebuilt or restarted; the failure comes back as a report. */
-export async function saveRoutes(app: App, routes: { aliases: string[]; route_rules: RouteRule[] }): Promise<Report | null> {
+/** Saves an Application's aliases and rules, and its redirects when given. Nothing is rebuilt or restarted; the failure comes back as a report. */
+export async function saveRoutes(app: App, routes: { aliases: string[]; route_rules: RouteRule[]; redirects?: RedirectRule[] }): Promise<Report | null> {
   const response = await api(`/apps/id/${encodeURIComponent(app.id)}/routes`, {
     method: "PUT",
     body: JSON.stringify(routes),
@@ -122,27 +122,44 @@ export async function saveRoutes(app: App, routes: { aliases: string[]; route_ru
   return response.ok ? null : failureOf(response);
 }
 
-const escapeHost = (hostname: string) => hostname.replace(/\./g, "\\.");
+const escape = (text: string) => text.replace(/\./g, "\\.");
 
-/** A redirect that sends one hostname's root to a path: `admin.example.com/` to `/admin`. */
-export function rootRedirectRule(hostname: string, path: string, permanent: boolean): RedirectRule {
-  return { pattern: `^https?://${escapeHost(hostname)}/?$`, replacement: `https://${hostname}${path}`, permanent };
+/** A redirect from one hostname and path, as the route dialog writes it. A location on the same hostname is its path. */
+export type RedirectDraft = { hostname: string; path: string; location: string; permanent: boolean };
+
+/** The rule for a draft: the exact path, with or without a trailing slash, on that hostname only. */
+export function redirectRule(draft: RedirectDraft): RedirectRule {
+  const path = draft.path === "/" ? "" : draft.path.replace(/\/+$/, "");
+  return {
+    pattern: `^https?://${escape(draft.hostname)}${escape(path)}/?$`,
+    replacement: draft.location.startsWith("/") ? `https://${draft.hostname}${draft.location}` : draft.location,
+    permanent: draft.permanent,
+  };
 }
 
-/** The hostname and path of a redirect written by `rootRedirectRule`, or null for any other pattern. */
-export function rootRedirect(rule: RedirectRule): { hostname: string; path: string } | null {
-  const match = /^\^https\?:\/\/((?:[a-z0-9-]+\\\.)*[a-z0-9-]+)\/\?\$$/.exec(rule.pattern);
-  if (!match) return null;
+/** The draft behind a rule `redirectRule` wrote, or null for a pattern written by hand. */
+export function redirectDraft(rule: RedirectRule): RedirectDraft | null {
+  const match = /^\^https\?:\/\/((?:[a-z0-9-]+\\\.)*[a-z0-9-]+)((?:\/(?:[A-Za-z0-9_~-]|\\\.)+)*)\/\?\$$/.exec(rule.pattern);
+  if (!match || /[\s$]/.test(rule.replacement)) return null;
   const hostname = match[1].replace(/\\\./g, ".");
-  const prefix = `https://${hostname}/`;
-  if (!rule.replacement.startsWith(prefix) || /[\s?#$]/.test(rule.replacement)) return null;
-  return { hostname, path: rule.replacement.slice(prefix.length - 1) };
+  const own = `https://${hostname}/`;
+  return {
+    hostname,
+    path: match[2].replace(/\\\./g, ".") || "/",
+    location: rule.replacement.startsWith(own) ? rule.replacement.slice(own.length - 1) : rule.replacement,
+    permanent: rule.permanent ?? false,
+  };
 }
 
 /** What a redirect answers, as a table or the diagram reads it: a URL when it has one, else its pattern. */
 export function redirectFrom(rule: RedirectRule): string {
-  const root = rootRedirect(rule);
-  return root ? `https://${root.hostname}/` : rule.pattern;
+  const draft = redirectDraft(rule);
+  return draft ? `${draft.hostname}${draft.path}` : rule.pattern;
+}
+
+/** Where a redirect sends, as a table or the diagram reads it: a path on the same hostname, or the location. */
+export function redirectTo(rule: RedirectRule): string {
+  return redirectDraft(rule)?.location ?? rule.replacement;
 }
 
 /** The route a redirect's location arrives at: its hostname, and the longest path prefix that holds it. */

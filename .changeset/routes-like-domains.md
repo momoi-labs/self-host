@@ -1,0 +1,7 @@
+---
+"self-host": patch
+---
+
+Routes are now a hostname, a path and what they do. The Add route dialog picks the domain first, the Zone or any other domain pointed at the Host, then a subdomain or the whole hostname; before, it appended the Zone to anything typed. It then chooses between sending requests to the Application and redirecting them to a path or URL, so sending `admin.example.com` to `/admin` no longer needs a regular expression. A redirect on a new hostname makes it an alias too, so the Host answers it.
+
+Redirects are listed with the routes, on the Routes page and an Application's Routes tab, and Hostname, Alias, Path and Redirect each have an icon. A redirect written as a pattern still opens in the pattern editor. On the Summary, one Domains node groups the hostname, custom domains, paths and redirects, each with its icon.
