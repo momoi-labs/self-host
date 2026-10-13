@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle, Badge, Button, Dot, DropdownMenu, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuSeparator, DropdownMenuTrigger, Skeleton, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  DropdownMenuSeparator, DropdownMenuTrigger, Skeleton, Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { kindLabel, replaceRoute, saveRoutes, targetLabel, urlOf, type Route } from "../lib/routes.js";
@@ -16,13 +16,15 @@ import { useToast } from "./Toasts.js";
  * Application's Routes tab only its own. The Hostname is renamed in
  * Configuration; aliases and paths are changed here.
  */
-export function RouteTable({ routes, total, ready = true, showApplication, empty, reload, onEdit, onOpenApp, onRename }: {
+export function RouteTable({ routes, total, ready = true, showApplication, toolbar, empty, reload, onEdit, onOpenApp, onRename }: {
   /** The routes left after filtering. */
   routes: Route[];
   /** How many there are before filtering. */
   total: number;
   ready?: boolean;
   showApplication?: boolean;
+  /** The pane's header, inside the frame above the rows. */
+  toolbar?: ReactNode;
   /** Said in place of the rows when there are no routes at all. */
   empty: ReactNode;
   /** Reads the Applications again once a route is removed. */
@@ -47,7 +49,8 @@ export function RouteTable({ routes, total, ready = true, showApplication, empty
     }
   }
   return (
-    <div className="table-wrap" aria-busy={!ready}>
+    <TableFrame aria-busy={!ready}>
+      {toolbar}
       <div className="table-scroll">
         <Table aria-label="Routes">
           <TableHeader>
@@ -130,6 +133,6 @@ export function RouteTable({ routes, total, ready = true, showApplication, empty
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </TableFrame>
   );
 }

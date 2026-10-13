@@ -11,7 +11,7 @@ import { join } from "shlex";
 import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
-import { kindLabel, routesOf, targetOf, urlOf } from "../lib/routes.js";
+import { kindLabel, routesOf, targetLabel, targetOf, urlOf } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
@@ -104,7 +104,10 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
         {routes.length ? (
           <DiagramColumn>
             {shown.map((route) => (
-              <DiagramNode key={route.key} id={route.key} kind="route" label={kindLabel[route.kind]} title={urlOf(route)} {...opens(onOpenRoutes)} />
+              <DiagramNode key={route.key} id={route.key} kind="route" label={kindLabel[route.kind]} title={urlOf(route)} {...opens(onOpenRoutes)}>
+                {/* The edges share one run into the Application, so a path says on its node where it arrives. */}
+                {route.kind === "path" ? `→ ${route.target ?? targetLabel(app)}${route.stripPrefix ? "/" : route.path}` : null}
+              </DiagramNode>
             ))}
             {routes.length > shown.length ? (
               <DiagramNode id="more" kind="route" label="Routes" title={`+${routes.length - shown.length} more`} {...opens(onOpenRoutes)} />

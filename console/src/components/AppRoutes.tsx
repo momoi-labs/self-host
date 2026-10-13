@@ -5,7 +5,7 @@ import {
   AlertDialogHeader, AlertDialogTitle, Badge, Button, Card, CardContent, CardHeader, CardTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
   EmptyState, EmptyStateTitle, KV, KVKey, KVValue, Label, Search, Switch,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { asReport } from "../lib/api.js";
@@ -56,6 +56,9 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
 
   const visible = routes.filter((route) => `${route.hostname}${route.path}`.includes(query.trim().toLowerCase()));
   const redirects = app.redirects ?? [];
+  const [redirectQuery, setRedirectQuery] = useState("");
+  const shownRedirects = redirects.map((redirect, index) => ({ redirect, index }))
+    .filter(({ redirect }) => `${redirect.pattern} ${redirect.replacement}`.toLowerCase().includes(redirectQuery.trim().toLowerCase()));
 
   async function removeRedirect(index: number) {
     try {
@@ -70,64 +73,70 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
 
   return (
     <div className="stack">
-      <div className="between">
-        <p className="muted">The hostnames and paths that reach {app.name}. A change applies at once, without a redeploy.</p>
-        <Button size="sm" variant="primary" disabled={busy} onClick={() => setEditor({ app })}><Icon name="plus" />Add route</Button>
-      </div>
-      <div className="list-filters">
-        <Search aria-label="Search routes" placeholder="Search routes..." value={query} onChange={(event) => setQuery(event.target.value)} />
-        {query.trim() ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
-      </div>
       <RouteTable routes={visible} total={routes.length} reload={reload}
+        toolbar={
+          <div className="table-toolbar panel-toolbar">
+            <h2 className="section-title">Routes</h2>
+            <Search aria-label="Search routes" containerClassName="section-search" placeholder="Search routes…"
+              value={query} onChange={(event) => setQuery(event.target.value)} />
+            <Button size="sm" variant="ghost" className="panel-action" disabled={busy} onClick={() => setEditor({ app })}>
+              <Icon name="plus" />
+              Add route
+            </Button>
+          </div>
+        }
         onEdit={(route) => setEditor({ app, route })}
         onRename={onRename}
         empty={<EmptyState variant="first-run"><EmptyStateTitle>No routes</EmptyStateTitle></EmptyState>} />
-      <Card>
-        <CardHeader className="between">
-          <CardTitle>Redirects</CardTitle>
-          <Button size="sm" disabled={busy} onClick={() => setRedirectEditor({ app })}><Icon name="plus" />Add redirect</Button>
-        </CardHeader>
-        <CardContent>
-          <div className="table-wrap">
-            <div className="table-scroll">
-              <Table aria-label="Redirects">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead scope="col">Pattern</TableHead>
-                    <TableHead scope="col">Send to</TableHead>
-                    <TableHead scope="col">Status</TableHead>
-                    <TableHead scope="col" className="col-tight">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {redirects.length === 0 ? (
-                    <TableRow><TableCell colSpan={4} className="muted">No redirects. One answers on every hostname of {app.name} before a request reaches it; the first match wins.</TableCell></TableRow>
-                  ) : redirects.map((redirect, index) => (
-                    <TableRow key={`${index}:${redirect.pattern}`}>
-                      <TableCell className="mono">{redirect.pattern}</TableCell>
-                      <TableCell className="mono">{redirect.replacement}</TableCell>
-                      <TableCell><Badge variant="neutral">{redirect.permanent ? "301" : "302"}</Badge></TableCell>
-                      <TableCell className="col-tight">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for redirect ${redirect.pattern}`}><Icon name="more" /></Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onSelect={() => setRedirectEditor({ app, index })}>Edit redirect</DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem className="is-danger" onSelect={() => setRemovingRedirect(index)}>Remove redirect</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <p className="table-footer"><span>{redirects.length} {redirects.length === 1 ? "redirect" : "redirects"}</span></p>
-          </div>
-        </CardContent>
-      </Card>
+      <TableFrame>
+        <div className="table-toolbar panel-toolbar">
+          <h2 className="section-title">Redirects</h2>
+          <Search aria-label="Search redirects" containerClassName="section-search" placeholder="Search redirects…"
+            value={redirectQuery} disabled={!redirects.length} onChange={(event) => setRedirectQuery(event.target.value)} />
+          <Button size="sm" variant="ghost" className="panel-action" disabled={busy} onClick={() => setRedirectEditor({ app })}>
+            <Icon name="plus" />
+            Add redirect
+          </Button>
+        </div>
+        <div className="table-scroll">
+          <Table aria-label="Redirects">
+            <TableHeader>
+              <TableRow>
+                <TableHead scope="col">Pattern</TableHead>
+                <TableHead scope="col">Send to</TableHead>
+                <TableHead scope="col">Status</TableHead>
+                <TableHead scope="col" className="col-tight">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {redirects.length === 0 ? (
+                <TableRow><TableCell colSpan={4} className="muted">No redirects. One answers on every hostname of {app.name} before a request reaches it; the first match wins.</TableCell></TableRow>
+              ) : shownRedirects.length === 0 ? (
+                <TableRow><TableCell colSpan={4} className="muted">No redirects match your search.</TableCell></TableRow>
+              ) : shownRedirects.map(({ redirect, index }) => (
+                <TableRow key={`${index}:${redirect.pattern}`}>
+                  <TableCell className="mono">{redirect.pattern}</TableCell>
+                  <TableCell className="mono">{redirect.replacement}</TableCell>
+                  <TableCell><Badge variant="neutral">{redirect.permanent ? "301" : "302"}</Badge></TableCell>
+                  <TableCell className="col-tight">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for redirect ${redirect.pattern}`}><Icon name="more" /></Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => setRedirectEditor({ app, index })}>Edit redirect</DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem className="is-danger" onSelect={() => setRemovingRedirect(index)}>Remove redirect</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <p className="table-footer"><span>{shownRedirects.length} of {redirects.length} {redirects.length === 1 ? "redirect" : "redirects"}</span></p>
+      </TableFrame>
       <Card>
         <CardHeader><CardTitle>Proxy</CardTitle></CardHeader>
         <CardContent>
