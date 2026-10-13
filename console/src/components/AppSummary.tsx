@@ -11,7 +11,7 @@ import { join } from "shlex";
 import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
-import { kindIcon, kindLabel, landingRoute, redirectFrom, routesOf, targetLabel, targetOf, urlOf } from "../lib/routes.js";
+import { kindIcon, redirectFrom, redirectTo, routesOf, targetLabel, targetOf } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
@@ -84,12 +84,22 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
   const native = app.runtime?.kind === "native" ? app.runtime : null;
   const [layout, saveLayout] = useStoredLayout(native ? "summary:native" : "summary:container");
   const routes = routesOf(app);
-  const shown = routes.slice(0, 3);
-  // A redirect answers before any route; its dashed line ends on the route its location arrives at.
-  const redirects = (app.redirects ?? []).slice(0, 3).map((rule, index) => {
-    const landing = landingRoute(routes, rule.replacement);
-    return { id: `redirect-${index}`, rule, lands: landing ? (shown.includes(landing) ? landing.key : "more") : undefined };
-  });
+  const redirects = app.redirects ?? [];
+  // Every way in, grouped the way the Routes tab lists them, each line with its kind's icon.
+  type Section = { kind: keyof typeof kindIcon; title: string; lines: string[] };
+  const sections = ([
+    { kind: "hostname", title: "Hostname", lines: routes.filter((route) => route.kind === "hostname").map((route) => route.hostname) },
+    { kind: "alias", title: "Custom domains", lines: routes.filter((route) => route.kind === "alias").map((route) => route.hostname) },
+    {
+      kind: "path", title: "Paths", lines: routes.filter((route) => route.kind === "path")
+        .map((route) => `${route.hostname}${route.path} → ${route.target ?? targetLabel(app)}${route.stripPrefix ? "/" : route.path}`),
+    },
+    {
+      kind: "redirect", title: "Redirects", lines: redirects
+        .map((rule) => `${redirectFrom(rule)} → ${redirectTo(rule)} (${rule.permanent ? "301" : "302"})`),
+    },
+  ] satisfies Section[]).filter((section) => section.lines.length > 0);
+  const entries = routes.length + redirects.length;
   const node = nodeOf(app);
 
   // A database's connections are the only record of who uses it.
@@ -105,28 +115,19 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
 
   return (
     <div className="stack">
-      <Diagram label={`${app.name}: the redirects and routes that reach it and the databases it uses`} {...diagramLook}>
-        {redirects.length ? (
-          <DiagramColumn>
-            {redirects.map(({ id, rule }) => (
-              <DiagramNode key={id} id={id} kind="route" icon={glyph(kindIcon.redirect)} label={`Redirect ${rule.permanent ? "301" : "302"}`}
-                title={redirectFrom(rule)} {...opens(onOpenRoutes)}>
-                {`→ ${rule.replacement}`}
-              </DiagramNode>
-            ))}
-          </DiagramColumn>
-        ) : null}
+      <Diagram label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
         {routes.length ? (
           <DiagramColumn>
-            {shown.map((route) => (
-              <DiagramNode key={route.key} id={route.key} kind="route" icon={glyph(kindIcon[route.kind])} label={kindLabel[route.kind]} title={urlOf(route)} {...opens(onOpenRoutes)}>
-                {/* The edges share one run into the Application, so a path says on its node where it arrives. */}
-                {route.kind === "path" ? `→ ${route.target ?? targetLabel(app)}${route.stripPrefix ? "/" : route.path}` : null}
-              </DiagramNode>
-            ))}
-            {routes.length > shown.length ? (
-              <DiagramNode id="more" kind="route" label="Routes" title={`+${routes.length - shown.length} more`} {...opens(onOpenRoutes)} />
-            ) : null}
+            <DiagramNode id="domains" kind="route" icon={glyph("globe")} label="Domains"
+              title={`${entries} ${entries === 1 ? "route" : "routes"}`} {...opens(onOpenRoutes)}>
+              {sections.map((section) => (
+                <span key={section.kind} className="diagram-section">
+                  <span className="diagram-section-title"><Icon name={kindIcon[section.kind]} />{section.title}</span>
+                  {section.lines.slice(0, 3).map((line) => <span key={line} className="diagram-section-line">{line}</span>)}
+                  {section.lines.length > 3 ? <span className="diagram-section-line muted">+{section.lines.length - 3} more</span> : null}
+                </span>
+              ))}
+            </DiagramNode>
           </DiagramColumn>
         ) : null}
         <DiagramColumn>
@@ -145,10 +146,7 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
             ))}
           </DiagramColumn>
         ) : null}
-        {routes.length ? (
-          <DiagramEdge from={[...shown.map((route) => route.key), ...(routes.length > shown.length ? ["more"] : [])]} to="app" label={targetOf(app)} />
-        ) : null}
-        {redirects.map(({ id, lands }) => lands ? <DiagramEdge key={id} from={id} to={lands} line="dashed" /> : null)}
+        {routes.length ? <DiagramEdge from="domains" to="app" label={targetOf(app)} /> : null}
         {connected.map(({ database, variable }) => (
           <DiagramEdge key={database.id} from="app" to={database.id} label={variable} />
         ))}

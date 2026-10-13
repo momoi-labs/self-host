@@ -1,26 +1,23 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
-  AlertDialogHeader, AlertDialogTitle, Badge, Button, Card, CardContent, CardHeader, CardTitle,
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  Button, Card, CardContent, CardHeader, CardTitle,
   EmptyState, EmptyStateTitle, KV, KVKey, KVValue, Label, Search, Switch,
-  Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { asReport } from "../lib/api.js";
 import { settingsQuery } from "../lib/queries.js";
-import { kindIcon, redirectFrom, routesOf, saveRedirects, saveRewriteHost, type RouteKind } from "../lib/routes.js";
+import { redirectDraft, redirectFrom, redirectTo, routesOf, saveRewriteHost, type RouteKind } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { Icon } from "./Icon.js";
 import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
 import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
-import { RouteTable } from "./RouteTable.js";
+import { RouteTable, type RedirectEntry } from "./RouteTable.js";
 import { useToast } from "./Toasts.js";
 
 const order: Record<RouteKind, number> = { hostname: 0, alias: 1, path: 2 };
 
-/** An Application's Routes tab: its Hostname first, then its aliases and paths, each changed without a redeploy. */
+/** An Application's Routes tab: its Hostname first, then its aliases, paths and redirects, each changed without a redeploy. */
 export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
   app: App;
   apps: App[];
@@ -34,7 +31,6 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<RouteEditor | null>(null);
   const [redirectEditor, setRedirectEditor] = useState<RedirectEditor | null>(null);
-  const [removingRedirect, setRemovingRedirect] = useState<number | null>(null);
   const [toggling, setToggling] = useState(false);
   const settings = useQuery(settingsQuery).data;
   const rewriteHost = app.rewrite_host ?? settings?.rewriteHost.effective ?? false;
@@ -54,26 +50,21 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
     }
   }
 
-  const visible = routes.filter((route) => `${route.hostname}${route.path}`.includes(query.trim().toLowerCase()));
+  const needle = query.trim().toLowerCase();
+  const visible = routes.filter((route) => `${route.hostname}${route.path}`.includes(needle));
   const redirects = app.redirects ?? [];
-  const [redirectQuery, setRedirectQuery] = useState("");
-  const shownRedirects = redirects.map((redirect, index) => ({ redirect, index }))
-    .filter(({ redirect }) => `${redirectFrom(redirect)} ${redirect.pattern} ${redirect.replacement}`.toLowerCase().includes(redirectQuery.trim().toLowerCase()));
-
-  async function removeRedirect(index: number) {
-    try {
-      const refused = await saveRedirects(app, redirects.filter((_, at) => at !== index));
-      if (refused) { notify("danger", "Could not remove the redirect", refused); return; }
-      await reload();
-      notify("success", "Redirect removed");
-    } catch (cause) {
-      notify("danger", "Could not remove the redirect", asReport(cause));
-    }
+  const shownRedirects = redirects.map((rule, index) => ({ app, rule, index }))
+    .filter(({ rule }) => `${redirectFrom(rule)} ${redirectTo(rule)}`.toLowerCase().includes(needle));
+  // A redirect the route dialog can say opens there; one written as a pattern opens in the pattern editor.
+  function editRedirect({ index }: RedirectEntry) {
+    if (redirectDraft(redirects[index])) setEditor({ app, redirect: index });
+    else setRedirectEditor({ app, index });
   }
 
   return (
     <div className="stack">
-      <RouteTable routes={visible} total={routes.length} reload={reload}
+      <RouteTable routes={visible} redirects={shownRedirects} total={routes.length + redirects.length} reload={reload}
+        onEditRedirect={editRedirect}
         toolbar={
           <div className="table-toolbar panel-toolbar">
             <h2 className="section-title">Routes</h2>
@@ -88,55 +79,6 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
         onEdit={(route) => setEditor({ app, route })}
         onRename={onRename}
         empty={<EmptyState variant="first-run"><EmptyStateTitle>No routes</EmptyStateTitle></EmptyState>} />
-      <TableFrame>
-        <div className="table-toolbar panel-toolbar">
-          <h2 className="section-title">Redirects</h2>
-          <Search aria-label="Search redirects" containerClassName="section-search" placeholder="Search redirects…"
-            value={redirectQuery} disabled={!redirects.length} onChange={(event) => setRedirectQuery(event.target.value)} />
-          <Button size="sm" variant="ghost" className="panel-action" disabled={busy} onClick={() => setRedirectEditor({ app })}>
-            <Icon name="plus" />
-            Add redirect
-          </Button>
-        </div>
-        <div className="table-scroll">
-          <Table aria-label="Redirects">
-            <TableHeader>
-              <TableRow>
-                <TableHead scope="col">From</TableHead>
-                <TableHead scope="col">Send to</TableHead>
-                <TableHead scope="col">Status</TableHead>
-                <TableHead scope="col" className="col-tight">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {redirects.length === 0 ? (
-                <TableRow><TableCell colSpan={4} className="muted">No redirects. One answers on every hostname of {app.name} before a request reaches it; the first match wins.</TableCell></TableRow>
-              ) : shownRedirects.length === 0 ? (
-                <TableRow><TableCell colSpan={4} className="muted">No redirects match your search.</TableCell></TableRow>
-              ) : shownRedirects.map(({ redirect, index }) => (
-                <TableRow key={`${index}:${redirect.pattern}`}>
-                  <TableCell><span className="route-kind"><Icon name={kindIcon.redirect} /><span className="mono">{redirectFrom(redirect)}</span></span></TableCell>
-                  <TableCell className="mono">{redirect.replacement}</TableCell>
-                  <TableCell><Badge variant="neutral">{redirect.permanent ? "301" : "302"}</Badge></TableCell>
-                  <TableCell className="col-tight">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for redirect ${redirect.pattern}`}><Icon name="more" /></Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => setRedirectEditor({ app, index })}>Edit redirect</DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem className="is-danger" onSelect={() => setRemovingRedirect(index)}>Remove redirect</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-        <p className="table-footer"><span>{shownRedirects.length} of {redirects.length} {redirects.length === 1 ? "redirect" : "redirects"}</span></p>
-      </TableFrame>
       <Card>
         <CardHeader><CardTitle>Proxy</CardTitle></CardHeader>
         <CardContent>
@@ -153,6 +95,7 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
         </CardContent>
       </Card>
       <RouteDialog editor={editor} apps={apps} dnsSuffix={dnsSuffix} onClose={() => setEditor(null)}
+        onPattern={(one) => { setEditor(null); setRedirectEditor({ app: one }); }}
         onSaved={(message) => {
           setEditor(null);
           void reload().then(() => notify("success", message));
@@ -162,20 +105,6 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
           setRedirectEditor(null);
           void reload().then(() => notify("success", message));
         }} />
-      <AlertDialog open={removingRedirect !== null} onOpenChange={(open) => { if (!open) setRemovingRedirect(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Remove redirect</AlertDialogTitle></AlertDialogHeader>
-          <div className="dialog-body">
-            <AlertDialogDescription>
-              <code>{removingRedirect === null ? null : redirects[removingRedirect]?.pattern}</code> stops answering. Requests it matched reach {app.name} instead.
-            </AlertDialogDescription>
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction className="btn-danger" onClick={() => { if (removingRedirect !== null) void removeRedirect(removingRedirect); setRemovingRedirect(null); }}>Remove redirect</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
