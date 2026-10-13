@@ -100,6 +100,8 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
     },
   ] satisfies Section[]).filter((section) => section.lines.length > 0);
   const entries = routes.length + redirects.length;
+  // Each kind folds on its own, so a long list of one does not hide the others.
+  const [collapsed, setCollapsed] = useState<string[]>([]);
   const node = nodeOf(app);
 
   // A database's connections are the only record of who uses it.
@@ -119,14 +121,22 @@ export function AppSummary({ app, apps, busy, onOpenRoutes, onOpenConfiguration,
         {routes.length ? (
           <DiagramColumn>
             <DiagramNode id="domains" kind="route" icon={glyph("globe")} label="Domains"
-              title={`${entries} ${entries === 1 ? "route" : "routes"}`} {...opens(onOpenRoutes)}>
-              {sections.map((section) => (
-                <span key={section.kind} className="diagram-section">
-                  <span className="diagram-section-title"><Icon name={kindIcon[section.kind]} />{section.title}</span>
-                  {section.lines.slice(0, 3).map((line) => <span key={line} className="diagram-section-line">{line}</span>)}
-                  {section.lines.length > 3 ? <span className="diagram-section-line muted">+{section.lines.length - 3} more</span> : null}
-                </span>
-              ))}
+              title={`${entries} ${entries === 1 ? "route" : "routes"}`}>
+              {sections.map((section) => {
+                const open = !collapsed.includes(section.kind);
+                return (
+                  <span key={section.kind} className="diagram-section">
+                    <button type="button" className="diagram-section-title" aria-expanded={open}
+                      onClick={() => setCollapsed(open ? [...collapsed, section.kind] : collapsed.filter((kind) => kind !== section.kind))}>
+                      <Icon name={kindIcon[section.kind]} />{section.title}
+                      <span className="diagram-section-count">{section.lines.length}</span>
+                      <Icon name={open ? "chevron-down" : "chevron-right"} />
+                    </button>
+                    {open ? section.lines.map((line) => <span key={line} className="diagram-section-line">{line}</span>) : null}
+                  </span>
+                );
+              })}
+              <Button size="sm" variant="ghost" className="diagram-section-action" onClick={onOpenRoutes}>Manage routes</Button>
             </DiagramNode>
           </DiagramColumn>
         ) : null}
