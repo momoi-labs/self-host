@@ -436,12 +436,16 @@ fn git_command(workspace: &Path) -> tokio::process::Command {
     command
 }
 
+/// How many commits an update review lists before it says there are more.
+const HISTORY_LIMIT: usize = 50;
+
 async fn checkout(
     workspace: &Path,
     source: &GitSource,
     revision: Option<&str>,
     root: &Path,
-) -> Result<(PathBuf, String), SourceError> {
+    history_since: Option<&str>,
+) -> Result<(PathBuf, String, Option<inspection::History>), SourceError> {
     let directory = workspace.join("checkout");
     let mut authentication = Vec::new();
     if let Some(id) = &source.credential_id {
@@ -522,18 +526,19 @@ async fn checkout(
         .as_deref()
         .or(revision)
         .unwrap_or(&source.git_ref);
+    // A review fetches enough history to list what changed since the deployed commit.
+    let depth = format!(
+        "--depth={}",
+        if history_since.is_some() {
+            HISTORY_LIMIT + 1
+        } else {
+            1
+        }
+    );
     let fetch = run(
         workspace,
         &authentication,
-        &[
-            "-C",
-            path,
-            "fetch",
-            "--no-tags",
-            "--depth=1",
-            "origin",
-            selected,
-        ],
+        &["-C", path, "fetch", "--no-tags", &depth, "origin", selected],
     )
     .await;
     if fetch.is_err() {
@@ -566,6 +571,29 @@ async fn checkout(
     if !valid_revision(&pinned) {
         return Err(SourceError::Checkout);
     }
+    let history = match history_since.filter(|since| valid_revision(since)) {
+        Some(since) => {
+            let log = run(
+                workspace,
+                &authentication,
+                &[
+                    "-C",
+                    path,
+                    "log",
+                    "--format=%H%x1f%an%x1f%aI%x1f%s",
+                    &format!("--max-count={}", HISTORY_LIMIT + 1),
+                    &pinned,
+                ],
+            )
+            .await?;
+            Some(inspection::History::from_log(
+                &String::from_utf8_lossy(&log),
+                since,
+                HISTORY_LIMIT,
+            ))
+        }
+        None => None,
+    };
     run(
         workspace,
         &authentication,
@@ -574,7 +602,7 @@ async fn checkout(
     .await?;
     std::fs::remove_dir_all(directory.join(".git"))?;
     check_tree(&directory)?;
-    Ok((directory, pinned))
+    Ok((directory, pinned, history))
 }
 
 pub async fn build(
@@ -593,7 +621,8 @@ pub async fn build(
     private_directory(root)?;
     let workspace = Workspace(root.join(format!("work-{:032x}", rand::random::<u128>())));
     private_directory(&workspace.0)?;
-    let (checkout, revision) = checkout(&workspace.0, source, pinned_revision, root).await?;
+    let (checkout, revision, _) =
+        checkout(&workspace.0, source, pinned_revision, root, None).await?;
     let mut secret_files = BTreeMap::new();
     for (name, id) in &source.build_secrets {
         let credential = load_credential(root, id)?;

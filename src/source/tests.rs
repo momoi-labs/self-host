@@ -376,7 +376,9 @@ async fn inspection_reads_a_commit_without_returning_manifest_values() {
     let mut selected = source(repository);
     selected.git_ref = "HEAD".into();
     let storage = workspace.0.join("private");
-    let inspected = inspection::inspect(&storage, &selected).await.unwrap();
+    let inspected = inspection::inspect(&storage, &selected, None)
+        .await
+        .unwrap();
     assert_eq!(inspected.revision, revision);
     assert_eq!(inspected.git_ref, "HEAD");
     assert_eq!(
@@ -409,11 +411,17 @@ async fn inspection_reads_a_commit_without_returning_manifest_values() {
     assert!(std::fs::read_dir(&storage).unwrap().next().is_none());
 
     selected.compose_path = Some("compose.yaml".into());
-    let compose = inspection::inspect(&storage, &selected).await.unwrap();
+    let compose = inspection::inspect(&storage, &selected, None)
+        .await
+        .unwrap();
     assert_eq!(compose.ports, vec![8080, 9000]);
 
     selected.compose_path = Some("../outside".into());
-    assert!(inspection::inspect(&storage, &selected).await.is_err());
+    assert!(
+        inspection::inspect(&storage, &selected, None)
+            .await
+            .is_err()
+    );
     selected.compose_path = None;
     std::fs::write(
         repo.join("compose.yaml"),
@@ -423,16 +431,78 @@ async fn inspection_reads_a_commit_without_returning_manifest_values() {
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "fixture unselected compose"]);
     assert!(
-        inspection::inspect(&storage, &selected).await.is_ok(),
+        inspection::inspect(&storage, &selected, None).await.is_ok(),
         "an unselected Compose build does not change Dockerfile inspection"
     );
     selected.compose_path = Some("compose.yaml".into());
-    assert!(inspection::inspect(&storage, &selected).await.is_err());
+    assert!(
+        inspection::inspect(&storage, &selected, None)
+            .await
+            .is_err()
+    );
     selected.compose_path = None;
     std::os::unix::fs::symlink("Dockerfile", repo.join("alias")).unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "fixture symlink"]);
-    assert!(inspection::inspect(&storage, &selected).await.is_err());
+    assert!(
+        inspection::inspect(&storage, &selected, None)
+            .await
+            .is_err()
+    );
+    assert!(std::fs::read_dir(&storage).unwrap().next().is_none());
+    server.abort();
+}
+
+#[tokio::test]
+async fn inspection_lists_the_commits_since_a_deployed_one() {
+    let workspace = workspace();
+    let repo = workspace.0.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-b", "main"]);
+    std::fs::write(repo.join("Dockerfile"), "FROM alpine\nUSER 1001\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "deployed"]);
+    let deployed = git(&repo, &["rev-parse", "HEAD"]);
+    for subject in ["first change", "second change"] {
+        std::fs::write(repo.join("notes"), subject).unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", subject]);
+    }
+    let (repository, server) = fixture_server(workspace.0.clone()).await;
+    let mut selected = source(repository);
+    selected.git_ref = "HEAD".into();
+    let storage = workspace.0.join("private");
+
+    let inspected = inspection::inspect(&storage, &selected, Some(&deployed))
+        .await
+        .unwrap();
+    let history = inspected.history.unwrap();
+    assert!(history.complete);
+    assert_eq!(
+        history
+            .commits
+            .iter()
+            .map(|commit| commit.subject.as_str())
+            .collect::<Vec<_>>(),
+        ["second change", "first change"]
+    );
+    assert_eq!(history.commits[0].revision, inspected.revision);
+
+    // Nothing asked, nothing listed; a deployed commit not in reach is not complete.
+    assert!(
+        inspection::inspect(&storage, &selected, None)
+            .await
+            .unwrap()
+            .history
+            .is_none()
+    );
+    let unknown = inspection::inspect(&storage, &selected, Some(&"0".repeat(40)))
+        .await
+        .unwrap()
+        .history
+        .unwrap();
+    assert!(!unknown.complete);
+    assert_eq!(unknown.commits.len(), 3);
     assert!(std::fs::read_dir(&storage).unwrap().next().is_none());
     server.abort();
 }
