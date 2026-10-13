@@ -7,7 +7,8 @@ import { Icon, type IconName } from "./Icon.js";
 export type GroupLine = { key: string; icon: IconName; label: string; to?: string; env?: string; hint?: string; onOpen?: () => void };
 
 /** A kind of thing the card lists, with the way to add one: a dialog, or a page that does it. */
-export type GroupSection = { key: string; title: string; icon: IconName; lines: GroupLine[]; onAdd?: () => void; addHref?: string };
+/** A `flat` section has no heading of its own: its lines sit straight under the card's header. */
+export type GroupSection = { key: string; title: string; icon: IconName; lines: GroupLine[]; onAdd?: () => void; addHref?: string; flat?: boolean };
 
 /**
  * A card that lists what one side of the Summary diagram holds, in the shape
@@ -48,11 +49,11 @@ export function GroupCard({ title, sections }: { title: string; sections: GroupS
         </span>
       ) : null}
       {open ? shown.map((section) => (
-        <span key={section.key} className="group-section">
-          <span className="group-section-head">
+        <span key={section.key} className={section.flat ? "group-section is-flat" : "group-section"}>
+          {section.flat ? null : <span className="group-section-head">
             <span><Icon name={section.icon} />{section.title} <span className="group-count">{section.lines.length}</span></span>
             {add(section)}
-          </span>
+          </span>}
           {section.lines.map((line) => {
             const body = <>
               <span className="group-name"><Icon name={line.icon} /><span className="mono">{line.label}</span></span>
