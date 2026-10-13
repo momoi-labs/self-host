@@ -203,6 +203,26 @@ pub struct ServiceDefinition {
 }
 
 impl ServiceDefinition {
+    /// The `command` the file gives the service, a list joined by spaces, or
+    /// `None` when the image's own command runs.
+    pub fn command(&self) -> Option<String> {
+        match self.body.get("command")? {
+            Value::String(command) => Some(command.clone()),
+            Value::Sequence(parts) => Some(
+                parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Value::String(text) => Some(text.clone()),
+                        Value::Number(number) => Some(number.to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            _ => None,
+        }
+    }
+
     pub fn has_extra_hosts(&self) -> bool {
         self.body
             .get("extra_hosts")
