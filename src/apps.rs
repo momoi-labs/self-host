@@ -936,11 +936,13 @@ async fn prepare_native_update(
 }
 
 /// Writes the `pending` row for an image deploy. Nothing has reached Docker
-/// yet; `finish_deploy` is what does the pulling.
+/// yet; `finish_deploy` is what does the pulling. `web_port` is the port the
+/// container listens on; without it, the Hostname reaches port 80.
 pub async fn prepare_deploy_from_image(
     store: &impl StateStore,
     name: &str,
     image: &str,
+    web_port: Option<u16>,
     options: DeployOptions,
 ) -> Result<PendingDeploy, DeployError> {
     validate_app_name(name)?;
@@ -948,19 +950,33 @@ pub async fn prepare_deploy_from_image(
     if image.is_empty() {
         return Err(DeployError::MissingImage);
     }
+    validate_image_web_port(web_port)?;
+    if options.publication == Some(Publication::Unpublished) {
+        refuse_routing_for_unpublished(None, None, None, web_port)?;
+    }
 
     if !store.is_initialized().await? {
         return Err(DeployError::NotInitialized);
     }
 
-    let record =
+    let mut record =
         pending_record(store, name, image.to_string(), SOURCE_IMAGE, None, &options).await?;
+    record.web_port = web_port;
     store.insert_application(&record).await?;
 
     Ok(PendingDeploy {
         record,
         work: DeployWork::Pull,
     })
+}
+
+fn validate_image_web_port(web_port: Option<u16>) -> Result<(), DeployError> {
+    if web_port == Some(0) {
+        return Err(DeployError::Source(crate::source::SourceError::Invalid(
+            "web port must be nonzero".into(),
+        )));
+    }
+    Ok(())
 }
 
 /// Checks a Compose definition and resolves where its Hostname points. The
@@ -1442,7 +1458,7 @@ pub async fn deploy_from_image(
     image: &str,
     options: DeployOptions,
 ) -> Result<ApplicationRecord, DeployError> {
-    let pending = prepare_deploy_from_image(store, name, image, options).await?;
+    let pending = prepare_deploy_from_image(store, name, image, None, options).await?;
     finish_deploy(store, docker, routes, pending).await
 }
 
@@ -1627,6 +1643,8 @@ pub async fn prepare_update(
         record.image = spec.image;
         record.web_service = spec.web_service;
         record.web_port = spec.web_port;
+    } else {
+        validate_image_web_port(record.web_port)?;
     }
 
     if record.name != current.name {
@@ -1644,6 +1662,7 @@ pub async fn prepare_update(
     let image_changed = record.image != current.image;
     let file_changed = record.compose != current.compose;
     let delivery_changed = record.variable_delivery != current.variable_delivery;
+    let port_changed = record.web_port != current.web_port;
     let network_changed = record.network_policy != current.network_policy;
     if network_changed && current.compose.is_none() {
         return Err(DeployError::Connectivity(
@@ -1659,7 +1678,8 @@ pub async fn prepare_update(
     // Only the image is Docker's business. A rename, a new Hostname, an
     // added alias and a new web target are all a route rewrite, which costs
     // no downtime. How Variables reach a project is part of the rendered
-    // file, so that change is Docker's too.
+    // file, so that change is Docker's too. A single container publishes its
+    // web port on the Host, so a new one means a new container.
     let needs_docker = pull
         || network_changed
         || if current.compose.is_some() {
@@ -1667,7 +1687,7 @@ pub async fn prepare_update(
                 || delivery_changed
                 || (record.development.is_some() && record.name != current.name)
         } else {
-            image_changed
+            image_changed || port_changed
         };
     if !needs_docker || (current.status == STATUS_STOPPED && current.compose.is_some()) {
         record.status = current.status.clone();
@@ -3016,10 +3036,15 @@ mod tests {
 
         let routes = FakeRoutes::new();
 
-        let pending =
-            prepare_deploy_from_image(&store, "blog", "nginx:alpine", DeployOptions::default())
-                .await
-                .unwrap();
+        let pending = prepare_deploy_from_image(
+            &store,
+            "blog",
+            "nginx:alpine",
+            None,
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(pending.record.status, STATUS_PENDING);
         assert!(!pending.is_settled());
@@ -3251,10 +3276,15 @@ mod tests {
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
-        let pending =
-            prepare_deploy_from_image(&store, "blog", "nginx:alpine", DeployOptions::default())
-                .await
-                .unwrap();
+        let pending = prepare_deploy_from_image(
+            &store,
+            "blog",
+            "nginx:alpine",
+            None,
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         // The row is written; the deploy never ran.
         drop(pending);
 
@@ -3320,14 +3350,16 @@ mod tests {
         assert_eq!(renamed.hostname, app.hostname);
         assert_eq!(docker.apps.lock().unwrap().len(), 1);
 
-        let first = prepare_deploy_from_image(&store, "Teste", "nginx", DeployOptions::default())
-            .await
-            .unwrap()
-            .record;
-        let second = prepare_deploy_from_image(&store, "teste", "nginx", DeployOptions::default())
-            .await
-            .unwrap()
-            .record;
+        let first =
+            prepare_deploy_from_image(&store, "Teste", "nginx", None, DeployOptions::default())
+                .await
+                .unwrap()
+                .record;
+        let second =
+            prepare_deploy_from_image(&store, "teste", "nginx", None, DeployOptions::default())
+                .await
+                .unwrap()
+                .record;
         assert_eq!(first.hostname, "teste.home.lan");
         assert_eq!(second.hostname, format!("teste-{}.home.lan", second.id));
         assert_ne!(first.id, second.id);
@@ -3350,7 +3382,7 @@ mod tests {
             second.id
         );
         let unicode =
-            prepare_deploy_from_image(&store, "数据库", "nginx", DeployOptions::default())
+            prepare_deploy_from_image(&store, "数据库", "nginx", None, DeployOptions::default())
                 .await
                 .unwrap()
                 .record;
@@ -3377,10 +3409,11 @@ mod tests {
             .await
             .unwrap();
         for name in ["Office", "Admin"] {
-            let app = prepare_deploy_from_image(&store, name, "nginx", DeployOptions::default())
-                .await
-                .unwrap()
-                .record;
+            let app =
+                prepare_deploy_from_image(&store, name, "nginx", None, DeployOptions::default())
+                    .await
+                    .unwrap()
+                    .record;
             assert_eq!(
                 app.hostname,
                 format!("{}-{}.home.lan", name.to_ascii_lowercase(), app.id)
@@ -3390,6 +3423,7 @@ mod tests {
             &store,
             "Explicit Name",
             "nginx",
+            None,
             DeployOptions {
                 hostname: Some("office.home.lan".into()),
                 ..Default::default()
@@ -3401,6 +3435,7 @@ mod tests {
             &store,
             "Separate Name",
             "nginx",
+            None,
             DeployOptions {
                 hostname: Some("chosen.home.lan".into()),
                 ..Default::default()
@@ -3560,6 +3595,64 @@ mod tests {
             "a Hostname change must not recreate the container"
         );
         assert!(routes.get(&app.id).unwrap().answers_on("writing.home.lan"));
+    }
+
+    #[tokio::test]
+    async fn an_image_application_listens_on_the_web_port_it_is_given() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let pending = prepare_deploy_from_image(
+            &store,
+            "api",
+            "ghcr.io/example/api:v1",
+            Some(3000),
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        let app = finish_deploy(&store, &docker, &routes, pending)
+            .await
+            .unwrap();
+
+        assert_eq!(app.web_port, Some(3000));
+        let published = docker.apps.lock().unwrap().last().unwrap().ports.clone();
+        assert!(published[0].ends_with(":3000"), "{published:?}");
+    }
+
+    #[tokio::test]
+    async fn changing_the_web_port_recreates_the_container_on_the_new_port() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+
+        let app = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "api",
+            "ghcr.io/example/api:v1",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        let updated = update_application(
+            &store,
+            &docker,
+            &routes,
+            &app.id,
+            ApplicationUpdate {
+                web_port: Some(3000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.web_port, Some(3000));
+        let published = docker.apps.lock().unwrap().last().unwrap().ports.clone();
+        assert!(published[0].ends_with(":3000"), "{published:?}");
     }
 
     #[tokio::test]
@@ -4074,10 +4167,15 @@ services:
         let store = initialized_store().await;
         let docker = FakeDocker::new();
         let routes = FakeRoutes::new();
-        let pending =
-            prepare_deploy_from_image(&store, "blog", "nginx:alpine", DeployOptions::default())
-                .await
-                .unwrap();
+        let pending = prepare_deploy_from_image(
+            &store,
+            "blog",
+            "nginx:alpine",
+            None,
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
         let app = finish_deploy(&store, &docker, &routes, pending)
             .await
             .unwrap();
@@ -4577,7 +4675,7 @@ services:
             hostname: Some("worker.home.lan".into()),
             ..unpublished()
         };
-        let err = prepare_deploy_from_image(&store, "worker", "alpine", with_hostname)
+        let err = prepare_deploy_from_image(&store, "worker", "alpine", None, with_hostname)
             .await
             .unwrap_err();
         assert!(matches!(err, DeployError::InvalidHostname(_)), "{err}");
@@ -4587,7 +4685,7 @@ services:
             aliases: Some(vec!["jobs.home.lan".into()]),
             ..unpublished()
         };
-        let err = prepare_deploy_from_image(&store, "worker", "alpine", with_alias)
+        let err = prepare_deploy_from_image(&store, "worker", "alpine", None, with_alias)
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), expected);
@@ -4621,7 +4719,7 @@ services:
             ..Default::default()
         };
 
-        let err = prepare_deploy_from_image(&store, "api", "alpine", options)
+        let err = prepare_deploy_from_image(&store, "api", "alpine", None, options)
             .await
             .unwrap_err();
 
@@ -4666,7 +4764,7 @@ services:
         );
 
         // A deploy under the same name is a redeploy, and keeps the row's.
-        let err = prepare_deploy_from_image(&store, "blog", "nginx:alpine", unpublished())
+        let err = prepare_deploy_from_image(&store, "blog", "nginx:alpine", None, unpublished())
             .await
             .unwrap_err();
         assert!(matches!(err, DeployError::PublicationFixed), "{err}");

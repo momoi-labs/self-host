@@ -1308,6 +1308,7 @@ mod tests {
             &store,
             "blog",
             "nginx",
+            None,
             crate::apps::DeployOptions::default(),
         )
         .await

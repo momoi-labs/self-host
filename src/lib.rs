@@ -1943,7 +1943,8 @@ async fn deploy_app<S: StateStore>(
         }
         ("", "", "", None) => Err(apps::DeployError::MissingImage),
         (image, "", "", None) => {
-            apps::prepare_deploy_from_image(&state.store, &body.name, image, options).await
+            apps::prepare_deploy_from_image(&state.store, &body.name, image, body.web_port, options)
+                .await
         }
         ("", path, "", None) => {
             apps::prepare_deploy_from_path(&state.store, &body.name, path, options).await
