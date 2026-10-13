@@ -1,5 +1,16 @@
 # self-host
 
+## 0.9.2
+
+### Patch Changes
+
+- a21ab99: Typing or pasting `NAME=value` into the Name field of the Add variable dialog now fills both fields, so a line copied from a `.env` file lands in the right place. An `export` prefix and one pair of quotes around the value are dropped.
+- 8879353: Routes are now a hostname, a path and what they do. The Add route dialog picks the domain first, the Zone or any other domain pointed at the Host, then a subdomain or the whole hostname; before, it appended the Zone to anything typed. It then chooses between sending requests to the Application and redirecting them to a path or URL, so sending `admin.example.com` to `/admin` no longer needs a regular expression. A redirect on a new hostname makes it an alias too, so the Host answers it.
+  
+  Redirects are listed with the routes, on the Routes page and an Application's Routes tab, and Hostname, Alias, Path and Redirect each have an icon, the alias a corner arrow. A redirect written as a pattern still opens in the pattern editor. On the Summary, a Domains card lists the hostnames, paths and redirects in sections with their icons and an add action each, drawn as a tree. The card folds, and chips show one kind at a time when there is more than one. The connected databases get the same card, each line with an env chip naming the variable that carries its connection URL, and the diagram fits its card, scrolling only when its content cannot wrap any further. The Application shows the container that receives requests, with its image and port, and the arrow from the domains ends on it; any other containers are listed under it in the same card. That container lists its image, port and start command, or for a Git Application its repository, ref, the file it was built from and the deployed commit with a badge saying whether the ref has moved since. The database page draws the same way: its Applications in a card with their env chips, and the database and volume with their facts.
+- 2d3400f: Updating a Git Application now checks the saved branch or tag as soon as the dialog opens and lists the commits it would deploy, newest first, down to the deployed one. When nothing moved it says so and offers to rebuild the deployed commit. Changing the branch or tag is one action away, in the console's form style.
+- f89b800: An Application that failed because a required Variable has no value can now have its Variables set one at a time. Before, each save failed while any other required Variable was still empty. On a failed Application a Variable change is only saved, and Retry redeploys it; Retry also redeploys now when nothing else changed, where before it did nothing.
+
 ## 0.9.1
 
 ### Patch Changes
