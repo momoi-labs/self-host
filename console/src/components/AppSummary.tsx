@@ -11,8 +11,8 @@ import { join } from "shlex";
 import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
-import { kindIcon, redirectFrom, redirectTo, routesOf, targetLabel, targetOf } from "../lib/routes.js";
-import type { App } from "../lib/types.js";
+import { kindIcon, redirectFrom, redirectTo, routesOf, targetOf } from "../lib/routes.js";
+import type { App, Inspection } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
@@ -68,6 +68,34 @@ function sourceOf(app: App): string {
   return app.git?.repository ?? app.image;
 }
 
+/** One container (or the native process) of an Application, as the diagram draws it. */
+type Container = { name: string; image: string; state?: string; port?: string };
+
+/**
+ * The Application's containers: the services Docker reports, with the image
+ * and ports the definition names, and the one requests reach marked by its
+ * port. Before anything runs, the definition alone names them.
+ */
+function containersOf(app: App, inspected: Inspection | undefined): Container[] {
+  if (app.runtime?.kind === "native") return [{ name: app.name, image: sourceOf(app), state: app.status, port: targetOf(app) }];
+  const defined = new Map((inspected?.services ?? []).map((service) => [service.name, service]));
+  const names = app.services?.length ? app.services.map((service) => service.service) : [...defined.keys()];
+  if (names.length === 0) names.push(app.web_service ?? app.name);
+  const receiving = app.web_service ?? (names.length === 1 ? names[0] : undefined);
+  return [...new Set(names)].map((name) => {
+    const service = defined.get(name);
+    const declared = service?.ports.map((port) => `:${port.container}`).join(" ") || undefined;
+    // An image the Host built is named after its source, so the source says more.
+    const image = service?.image && !/^(sf-|self-host-dev-|sha256:)/.test(service.image) ? service.image : sourceOf(app);
+    return {
+      name,
+      image,
+      state: app.services?.find((one) => one.service === name)?.state,
+      port: name === receiving ? `:${app.development?.web_port ?? app.web_port ?? 80}` : declared,
+    };
+  });
+}
+
 /**
  * An Application's Summary as a working view: what reaches it and what it
  * uses drawn at the top, then panes the Operator can move and resize, each
@@ -113,6 +141,19 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   const [patternEditor, setPatternEditor] = useState<RedirectEditor | null>(null);
   const notify = useToast();
   const node = nodeOf(app);
+  // The definition names each service's image and ports; Docker only knows what runs.
+  const inspected = useQuery({
+    queryKey: ["compose-inspect", app.id, app.compose ?? ""],
+    enabled: !!app.compose,
+    staleTime: Infinity,
+    queryFn: async ({ signal }) => {
+      const response = await api("/compose/inspect", { method: "POST", body: JSON.stringify({ compose: app.compose }), signal });
+      return response.ok ? (await response.json()) as Inspection : undefined;
+    },
+  }).data;
+  const containers = containersOf(app, inspected);
+  const main = containers.find((container) => container.name === app.web_service) ?? containers[0];
+  const rest = containers.filter((container) => container !== main);
 
   // A database's connections are the only record of who uses it.
   const databases = apps.filter((one) => one.managed_postgres);
@@ -135,10 +176,23 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             </DiagramNode>
           </DiagramColumn>
         ) : null}
-        <DiagramColumn>
-          <DiagramNode id="app" kind={node.kind} icon={node.icon} label={node.label} title={app.name} accent status={statusOf(app.status)}>
-            {targetOf(app) ? `${sourceOf(app)}\nListens on ${targetLabel(app)}` : sourceOf(app)}
+        {/* The container that receives requests is the node the arrow reaches; the rest hang under it as one card. */}
+        <DiagramColumn className="container-stack">
+          <DiagramNode id="receiver" kind={node.kind} icon={node.icon} label={app.name} title={main.name} accent
+            status={statusOf(app.status === "failed" || !main.state || main.state === "running" ? app.status : "stopped")}>
+            {main.port ? `${main.image}\nListens on ${main.port}` : main.image}
           </DiagramNode>
+          {rest.length ? (
+            <DiagramNode id="containers" title="" className="group-node container-rest">
+              <GroupCard title={native ? "Other processes" : "Other containers"} sections={[{
+                key: "containers", title: "Containers", icon: "box", flat: true,
+                lines: rest.map((container) => ({
+                  key: container.name, icon: "box", label: container.name,
+                  to: [container.image, container.port, container.state && container.state !== "running" ? container.state : ""].filter(Boolean).join(" "),
+                })),
+              }]} />
+            </DiagramNode>
+          ) : null}
         </DiagramColumn>
         {/* Databases show only once the Application is connected to one. */}
         {connected.length ? (
@@ -156,8 +210,8 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             </DiagramNode>
           </DiagramColumn>
         ) : null}
-        {routes.length ? <DiagramEdge from="domains" to="app" /> : null}
-        {connected.length ? <DiagramEdge from="app" to="databases" /> : null}
+        {routes.length ? <DiagramEdge from="domains" to="receiver" /> : null}
+        {connected.length ? <DiagramEdge from="receiver" to="databases" /> : null}
       </Diagram>
 
       <PaneGrid aria-label={`${app.name} summary`} defaultLayout={layout} onLayoutChange={saveLayout}>
