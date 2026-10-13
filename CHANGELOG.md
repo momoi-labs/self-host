@@ -1,5 +1,14 @@
 # self-host
 
+## 0.9.0
+
+### Minor Changes
+
+- 141be8a: An Application can answer a request with a redirect instead of serving it. Each rule is a regular expression over the request URL and a location, with `${1}` for the pattern's groups and a choice of 301 or 302. Rules are tried in order on every hostname the Application owns, before the request reaches it, so they answer even while it is stopped. The Routes tab lists them and adds, edits or removes one in a dialog; `PUT /apps/id/{id}/routes` takes them as `redirects`.
+- 5cfc3fe: An image Application can enable a deploy trigger from its Deployments tab, like a Git Application. CI calls `POST /deploy/{id}` with the trigger token after pushing to the image's registry repository, naming the new tag in `image` or leaving it out to pull the configured reference again. The trigger binds to the repository, so a different tag deploys and a different repository is refused.
+- 78498e8: A hostname without a certificate of its own now answers HTTPS with the Platform's own certificate instead of refusing the handshake. A browser reaching the Host directly still rejects the mismatch, but an edge proxy that trusts the origin on its own terms, such as Cloudflare in "Full" mode, completes the handshake and serves the Application. A Host whose domains all sit behind such a proxy needs no ACME account.
+- 1de8cb3: Public certificates follow the Applications. Save an ACME account once, in the new Public certificates card of Settings or with `PUT /certificates/acme`, and every Hostname outside the DNS Suffix is issued a certificate: Hostnames, aliases and route rule names alike. The daemon reads the account and the Hostnames again every minute, so a new name, a removed one or a changed CA no longer needs a restart or a hand-edited `public.json`. The card lists each certificate's state, expiry and last error.
+
 ## 0.8.0
 
 ### Minor Changes
