@@ -90,17 +90,17 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   const [layout, saveLayout] = useStoredLayout(native ? "summary:native" : "summary:container");
   const routes = routesOf(app);
   const [editor, setEditor] = useState<RouteEditor | null>(null);
-  const target = targetLabel(app);
   // Every way in: the hostnames, the paths and the redirects, each added from the route dialog set for it.
+  // Where the app listens is said once, on its own node; a row names a target only when it is another one.
   const domainSections: GroupSection[] = [
     {
       key: "hostnames", title: "Hostnames", icon: kindIcon.hostname, onAdd: () => setEditor({ app, action: "forward" }),
-      lines: routes.filter((route) => route.kind !== "path").map((route) => ({ key: route.key, icon: kindIcon[route.kind], label: `${route.hostname}/`, to: `→ ${target}` })),
+      lines: routes.filter((route) => route.kind !== "path").map((route) => ({ key: route.key, icon: kindIcon[route.kind], label: `${route.hostname}/` })),
     },
     {
       key: "paths", title: "Paths", icon: kindIcon.path, onAdd: () => setEditor({ app, action: "forward" }),
       lines: routes.filter((route) => route.kind === "path").map((route) => ({
-        key: route.key, icon: kindIcon.path, label: `${route.hostname}${route.path}`, to: `→ ${route.target ?? target}${route.stripPrefix ? "" : route.path}`,
+        key: route.key, icon: kindIcon.path, label: `${route.hostname}${route.path}`, to: route.target ? `→ ${route.target}${route.stripPrefix ? "" : route.path}` : route.stripPrefix ? undefined : `→ ${route.path}`,
       })),
     },
     {
@@ -137,7 +137,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
         ) : null}
         <DiagramColumn>
           <DiagramNode id="app" kind={node.kind} icon={node.icon} label={node.label} title={app.name} accent status={statusOf(app.status)}>
-            {sourceOf(app)}
+            {targetOf(app) ? `${sourceOf(app)}\nListens on ${targetLabel(app)}` : sourceOf(app)}
           </DiagramNode>
         </DiagramColumn>
         {/* Databases show only once the Application is connected to one. */}
@@ -156,7 +156,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             </DiagramNode>
           </DiagramColumn>
         ) : null}
-        {routes.length ? <DiagramEdge from="domains" to="app" label={targetOf(app)} /> : null}
+        {routes.length ? <DiagramEdge from="domains" to="app" /> : null}
         {connected.length ? <DiagramEdge from="app" to="databases" /> : null}
       </Diagram>
 
