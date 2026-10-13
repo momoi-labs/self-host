@@ -93,6 +93,8 @@ export type GitInspection = {
   build_files: { kind: "dockerfile" | "compose"; path: string }[];
   ports: number[];
   services: { name: string; ports: number[] }[];
+  /** The commits since the deployed one, newest first, when the check asked for them. */
+  history?: { commits: { revision: string; author: string; date: string; subject: string }[]; complete: boolean };
 };
 
 export type App = {

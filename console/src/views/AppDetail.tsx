@@ -370,7 +370,7 @@ export function AppDetail({
         </Tabs>
       </Card>
 
-      {checkingUpdate ? <GitUpdateDialog key={`${app.id}:${app.git_build?.revision}:${JSON.stringify(app.git)}`} app={app} onClose={() => setCheckingUpdate(false)} onDeploy={deployUpdate} /> : null}
+      {checkingUpdate ? <GitUpdateDialog key={`${app.id}:${app.git_build?.revision}:${JSON.stringify(app.git)}`} app={app} onClose={() => setCheckingUpdate(false)} onDeploy={deployUpdate} onRebuild={() => void rebuildCurrent()} /> : null}
 
       {/*
         The checkbox starts where the Platform setting is, and this restart
