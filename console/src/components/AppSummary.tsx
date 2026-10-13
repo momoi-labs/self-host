@@ -12,12 +12,12 @@ import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
 import { kindIcon, redirectFrom, redirectTo, routesOf, targetOf } from "../lib/routes.js";
-import type { App, Inspection } from "../lib/types.js";
+import type { App, GitInspection, Inspection } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
 import { GroupCard, type GroupSection } from "./GroupCard.js";
-import { Icon } from "./Icon.js";
+import { Icon, type IconName } from "./Icon.js";
 import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
 import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
 import { useToast } from "./Toasts.js";
@@ -69,7 +69,8 @@ function sourceOf(app: App): string {
 }
 
 /** One container (or the native process) of an Application, as the diagram draws it. */
-type Container = { name: string; image: string; state?: string; port?: string };
+/** `command` is what the definition runs; none means the image's own. A native process has no image. */
+type Container = { name: string; image?: string; command?: string; state?: string; port?: string };
 
 /**
  * The Application's containers: the services Docker reports, with the image
@@ -77,7 +78,7 @@ type Container = { name: string; image: string; state?: string; port?: string };
  * port. Before anything runs, the definition alone names them.
  */
 function containersOf(app: App, inspected: Inspection | undefined): Container[] {
-  if (app.runtime?.kind === "native") return [{ name: app.name, image: sourceOf(app), state: app.status, port: targetOf(app) }];
+  if (app.runtime?.kind === "native") return [{ name: app.name, command: join(app.runtime.command), state: app.status, port: targetOf(app) }];
   const defined = new Map((inspected?.services ?? []).map((service) => [service.name, service]));
   const names = app.services?.length ? app.services.map((service) => service.service) : [...defined.keys()];
   if (names.length === 0) names.push(app.web_service ?? app.name);
@@ -90,10 +91,21 @@ function containersOf(app: App, inspected: Inspection | undefined): Container[] 
     return {
       name,
       image,
+      command: service?.command ?? (name === receiving ? app.development?.command : undefined),
       state: app.services?.find((one) => one.service === name)?.state,
       port: name === receiving ? `:${app.development?.web_port ?? app.web_port ?? 80}` : declared,
     };
   });
+}
+
+/** One fact about a container, drawn like the lines of the cards beside it. */
+export function Fact({ icon, label, value, empty }: { icon: IconName; label: string; value?: ReactNode; empty?: string }) {
+  return (
+    <span className="group-line">
+      <span className="group-name"><Icon name={icon} /><span>{label}</span></span>
+      <span className={value ? "mono fact-value" : "muted"}>{value ?? empty}</span>
+    </span>
+  );
 }
 
 /**
@@ -153,6 +165,24 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   }).data;
   const containers = containersOf(app, inspected);
   const main = containers.find((container) => container.name === app.web_service) ?? containers[0];
+  // The commit the saved ref points at now, read from the remote the way Update does; a pinned commit has nothing to follow.
+  const deployed = app.git_build?.revision;
+  const latest = useQuery({
+    queryKey: ["git-latest", app.id, app.git?.repository, app.git?.git_ref],
+    enabled: !!app.git && !!deployed && !app.git.revision,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const response = await api("/source/inspect", { method: "POST", signal, body: JSON.stringify({ git: { ...app.git, revision: null } }) });
+      if (!response.ok) throw await failureOf(response);
+      return (await response.json() as GitInspection).revision;
+    },
+  });
+  const freshness = app.git?.revision ? "Pinned"
+    : latest.isPending ? "Checking"
+      : latest.isError ? "Not checked"
+        : latest.data === deployed ? "Up to date" : "Update available";
   const rest = containers.filter((container) => container !== main);
 
   // A database's connections are the only record of who uses it.
@@ -178,9 +208,21 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
         ) : null}
         {/* The container that receives requests is the node the arrow reaches; the rest hang under it as one card. */}
         <DiagramColumn className="container-stack">
-          <DiagramNode id="receiver" kind={node.kind} icon={node.icon} label={app.name} title={main.name} accent
+          <DiagramNode id="receiver" className="facts-node" kind={node.kind} icon={node.icon} label={app.name} title={main.name} accent
             status={statusOf(app.status === "failed" || !main.state || main.state === "running" ? app.status : "stopped")}>
-            {main.port ? `${main.image}\nListens on ${main.port}` : main.image}
+            <span className="group-section is-flat">
+              {app.git ? <>
+                <Fact icon="branch" label="Repository" value={app.git.repository} />
+                <Fact icon="tag" label="Ref" value={app.git.revision ? undefined : app.git.git_ref} empty="Pinned commit" />
+                <Fact icon="file-code" label="Built from" value={app.git.compose_path || app.git.dockerfile} />
+                <Fact icon="commit" label="Commit" value={app.git_build?.revision ? <>
+                  {app.git_build.revision.slice(0, 12)}{" "}
+                  <StatusBadge tone={freshness === "Up to date" ? "success" : "neutral"}>{freshness}</StatusBadge>
+                </> : undefined} empty="Not built yet" />
+              </> : main.image ? <Fact icon="box" label="Image" value={main.image} /> : null}
+              {main.port ? <Fact icon="plug" label="Port" value={main.port} /> : null}
+              <Fact icon="terminal" label="Command" value={main.command} empty={main.image ? "Image default" : "None"} />
+            </span>
           </DiagramNode>
           {rest.length ? (
             <DiagramNode id="containers" title="" className="group-node container-rest">

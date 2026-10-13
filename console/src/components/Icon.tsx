@@ -1,6 +1,6 @@
 import {
   Box, ChartColumn, Check, ChevronDown, ChevronUp, CircleAlert, CircleX, Clock, CornerUpRight, Database, Download, Ellipsis, Eye, EyeOff, File, GitBranch, Globe,
-  Hammer, History, Info, KeyRound, Layers, Link, Lock, Plus, Route, Settings, Split, SquareTerminal, User, X, type LucideIcon,
+  Hammer, History, Info, KeyRound, Layers, FileCode, GitCommitHorizontal, Tag, Link, Lock, Plug, Plus, Route, Settings, Split, SquareTerminal, User, X, type LucideIcon,
 } from "lucide-react";
 
 /**
@@ -37,6 +37,10 @@ const icons = {
   route: Route,
   link: Link,
   split: Split,
+  plug: Plug,
+  tag: Tag,
+  commit: GitCommitHorizontal,
+  "file-code": FileCode,
   redirect: CornerUpRight,
   "chevron-down": ChevronDown,
   "chevron-up": ChevronUp,

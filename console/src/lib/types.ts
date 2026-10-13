@@ -195,6 +195,7 @@ export type ComposeVolume = {
 export type ComposeService = {
   name: string;
   image?: string;
+  command?: string;
   ports: ComposePort[];
   volumes: ComposeVolume[];
 };
