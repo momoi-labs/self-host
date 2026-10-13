@@ -113,7 +113,7 @@ export function Fact({ icon, label, value, empty }: { icon: IconName; label: str
  * uses drawn at the top, then panes the Operator can move and resize, each
  * with the way to change what it shows.
  */
-export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfiguration, onOpenApp, onRebuild }: {
+export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfiguration, onOpenApp, onRebuild, onUpdate }: {
   app: App;
   apps: App[];
   dnsSuffix: string;
@@ -124,6 +124,8 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   onOpenConfiguration: () => void;
   onOpenApp: (id: string) => void;
   onRebuild: () => void;
+  /** Opens the same check and build as the Update action. */
+  onUpdate: () => void;
 }) {
   const { capabilities } = useNativeCapabilities();
   const native = app.runtime?.kind === "native" ? app.runtime : null;
@@ -219,7 +221,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
                   {app.git_build.revision.slice(0, 12)}{" "}
                   {/* A ref that moved on is something to act on, not a state of the container, so it warns. */}
                   {freshness === "Update available"
-                    ? <Badge variant="warning">{freshness}</Badge>
+                    ? <button type="button" className="badge-button" disabled={busy} onClick={onUpdate} title="Review and build the newer commit"><Badge variant="warning">{freshness}</Badge></button>
                     : <StatusBadge tone={freshness === "Up to date" ? "success" : "neutral"}>{freshness}</StatusBadge>}
                 </> : undefined} empty="Not built yet" />
               </> : main.image ? <Fact icon="box" label="Image" value={main.image} /> : null}
