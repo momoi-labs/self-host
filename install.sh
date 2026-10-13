@@ -163,6 +163,8 @@ install_bundled_s6() {
 		check_native_macos_directory "$licenses"
 	fi
 	local tools=(s6-svscan s6-supervise s6-svscanctl s6-svc s6-svwait s6-svok s6-svstat s6-log s6-setlock s6-ftrigrd)
+	# Linux Git builds use the release's static launcher instead of a Host compiler.
+	if [[ "$target" = *-linux-* ]]; then tools+=(source-build-guard); fi
 	for tool in "${tools[@]}"; do
 		[ -f "$tmpdir/s6/bin/$tool" ] && [ -x "$tmpdir/s6/bin/$tool" ] || {
 			echo "incomplete release: missing executable s6/bin/$tool" >&2

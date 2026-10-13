@@ -43,6 +43,7 @@ jobs:
         run: |
           machine='Advanced Micro Devices X86-64'
           if [[ "$TARGET" == aarch64-* ]]; then machine=AArch64; fi
+          test -x target/"$TARGET"/release/s6/bin/source-build-guard
           for binary in target/"$TARGET"/release/s6/bin/*; do
             readelf -h "$binary" | grep -q "Machine:.*$machine"
             if readelf -l "$binary" | grep -q INTERP; then
