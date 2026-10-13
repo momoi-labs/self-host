@@ -13,3 +13,7 @@ test("text that is not one assignment is left alone", () => {
   assert.equal(variableAssignment("1BAD=x"), null);
   assert.equal(variableAssignment("A=1\nB=2"), null);
 });
+
+test("typing the equals sign ends the name", () => {
+  assert.deepEqual(variableAssignment("X="), { name: "X", value: "" });
+});

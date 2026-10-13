@@ -106,13 +106,12 @@ export function VariableDialog({ app, editor, name, disabled, onClose, onSaved, 
         <form onSubmit={(event) => void submit(event)}>
           <DialogBody>
             {editor === "remove" ? <p>Remove <code>{key}</code>?</p> : <>
-              <FormField id="native-variable-key" label="Name" value={key} autoComplete="off" required pattern="[A-Za-z_][A-Za-z0-9_]*" disabled={busy || editor === "replace"} autoFocus={editor === "add"} onChange={(event) => setKey(event.target.value)}
-                onPaste={(event) => {
-                  const assignment = variableAssignment(event.clipboardData.getData("text"));
-                  if (!assignment) return;
-                  event.preventDefault();
+              <FormField id="native-variable-key" label="Name" value={key} autoComplete="off" required pattern="[A-Za-z_][A-Za-z0-9_]*" disabled={busy || editor === "replace"} autoFocus={editor === "add"} onChange={(event) => {
+                  // A typed or pasted NAME=value splits at the "=", and what follows goes to Value.
+                  const assignment = variableAssignment(event.target.value);
+                  if (!assignment) { setKey(event.target.value); return; }
                   setKey(assignment.name);
-                  setValue(assignment.value);
+                  if (assignment.value) setValue(assignment.value);
                   document.getElementById("native-variable-value")?.focus();
                 }} />
               <FormField id="native-variable-value" label={editor === "replace" ? "New value" : "Value"} type="password" autoComplete="new-password" value={value} disabled={busy} autoFocus={editor === "replace"} onChange={(event) => setValue(event.target.value)} />
