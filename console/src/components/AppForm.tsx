@@ -23,6 +23,7 @@ import { gitFieldsOf, gitSourceOf, type GitFields } from "./GitSourceFields.js";
 import { GitWorkflowFields, type GitSourceMode } from "./GitWorkflowFields.js";
 import type { GitRepository } from "./GitRepositoryPicker.js";
 import { NativeAppForm } from "./NativeAppForm.js";
+import { NativeVariables } from "./NativeVariables.js";
 import { DefinitionPicker, definitionOf, type Definition } from "./DefinitionPicker.js";
 import { ComposeEditor } from "./ComposeEditor.js";
 import { Failure } from "./Failure.js";
@@ -127,6 +128,7 @@ export function AppForm({
   const [gitInspection, setGitInspection] = useState<GitInspection | null>(null);
   const [gitReviewKey, setGitReviewKey] = useState("");
   const [checkingGit, setCheckingGit] = useState(false);
+  const [editingVariable, setEditingVariable] = useState(false);
   const [recipeChosen, setRecipeChosen] = useState(!creating);
   const gitRequest = useRef(0);
   const gitDraft = useRef(git);
@@ -389,7 +391,7 @@ export function AppForm({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (submitting || checkingGit) return;
+    if (submitting || checkingGit || editingVariable) return;
     if (creating && source === "git" && !gitReviewed) {
       await inspectGit();
       return;
@@ -722,6 +724,8 @@ export function AppForm({
 
       {source !== "git" ? routingFields : null}
 
+      {app ? <NativeVariables app={app} reload={onReload} disabled={submitting} onEditingChange={setEditingVariable} /> : null}
+
       {failure ? <Failure failure={failure} /> : null}
       </div>
 
@@ -756,7 +760,7 @@ export function AppForm({
               Discard
             </Button>
           ) : null}
-          <Button size="sm" variant="primary" type="submit" disabled={submitting}>
+          <Button size="sm" variant="primary" type="submit" disabled={submitting || editingVariable}>
             {source === "git" ? "Save and build" : "Save and redeploy"}
           </Button>
         </FormActions>
