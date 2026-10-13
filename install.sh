@@ -940,12 +940,28 @@ EOF
 	reload_daemon "$PLATFORM_LABEL"
 }
 
+# bootout returns before launchd has torn the service down, and a bootstrap
+# while the old instance is still there fails with error 5 (#183). So wait for
+# launchd to let go of the label, then retry the bootstrap a few times before
+# giving up.
 reload_daemon() {
-	local label="$1"
+	local label="$1" attempt
 	sudo launchctl bootout "system/${label}" >/dev/null 2>&1 || true
-	sudo launchctl bootstrap system "$DAEMON_DIR/${label}.plist"
-	sudo launchctl enable "system/${label}"
-	echo "${label} loaded."
+	for attempt in $(seq 1 20); do
+		sudo launchctl print "system/${label}" >/dev/null 2>&1 || break
+		sleep 1
+	done
+	for attempt in $(seq 1 5); do
+		if sudo launchctl bootstrap system "$DAEMON_DIR/${label}.plist"; then
+			sudo launchctl enable "system/${label}"
+			echo "${label} loaded."
+			return 0
+		fi
+		echo "launchd did not take ${label} yet; retrying (${attempt}/5)..." >&2
+		sleep 2
+	done
+	echo "could not load ${label}; run this installer again" >&2
+	return 1
 }
 
 main "$@"
