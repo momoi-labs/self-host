@@ -375,11 +375,22 @@ pub async fn run(inventory: &Inventory) -> Vec<String> {
         "native Applications",
         remove_native(&inventory.native).await,
     );
-    step(
-        "containers, volumes and networks",
-        remove_docker_resources(&inventory.ids, false),
+    // A Host that runs only native Applications may have no Docker at all.
+    // One whose Docker does not answer still fails below: its containers
+    // would stay.
+    let docker_installed = !matches!(
+        Command::new("docker").arg("--version").output(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
     );
-    step("images", remove_images(inventory).await);
+    if docker_installed {
+        step(
+            "containers, volumes and networks",
+            remove_docker_resources(&inventory.ids, false),
+        );
+        step("images", remove_images(inventory).await);
+    } else {
+        println!("No Docker on this Host; skipping containers, volumes, networks and images.");
+    }
     if let Some(ca) = &inventory.ca {
         step("the CA in the trust store", untrust_ca(ca));
     }
