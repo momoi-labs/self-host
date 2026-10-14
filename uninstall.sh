@@ -54,11 +54,13 @@ main() {
 		exit 1
 	fi
 
-	DATA_DIR="$(data_dir)"
-	# Only a data directory that was given goes to reset; the default one
-	# is what reset uses on its own.
-	if [ "$DATA_DIR" != "$HOME/.config/self-host" ]; then
-		export SELF_HOST_DATA_DIR="$DATA_DIR"
+	# A data directory that was given goes to reset as given, even at the
+	# default path: given, it holds the machines' disks too.
+	local given
+	given="$(data_dir)"
+	DATA_DIR="${given:-$HOME/.config/self-host}"
+	if [ -n "$given" ]; then
+		export SELF_HOST_DATA_DIR="$given"
 	fi
 	SUFFIX="$(dns_suffix)"
 	confirm
@@ -80,14 +82,15 @@ main() {
 	summary
 }
 
-# Where the Platform keeps its data: SELF_HOST_DATA_DIR, or the one the
-# installer gave the LaunchDaemon, read before that plist goes.
+# The data directory the Platform was given: SELF_HOST_DATA_DIR, or the one
+# the installer gave the LaunchDaemon, read before that plist goes. Empty
+# when it uses the default places.
 data_dir() {
 	local plist="$DAEMON_DIR/${PLATFORM_LABEL}.plist" found="${SELF_HOST_DATA_DIR:-}"
 	if [ -z "$found" ] && [ -f "$plist" ]; then
 		found="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:SELF_HOST_DATA_DIR" "$plist" 2>/dev/null || true)"
 	fi
-	echo "${found:-$HOME/.config/self-host}"
+	echo "$found"
 }
 
 # The Platform records the DNS Suffix in dns.json. Read it before the reset
@@ -177,7 +180,15 @@ reset_platform() {
 		return
 	fi
 	echo "removing containers, volumes, networks and configuration..."
-	"$INSTALL_DIR/$BINARY" reset --force
+	# Reset refuses while Virtual machines or native Applications keep their
+	# disks and homes in a data directory. The daemon is gone by now, so say
+	# how to finish instead of stopping halfway.
+	if ! "$INSTALL_DIR/$BINARY" reset --force; then
+		echo "the Platform reset refused; nothing under ${DATA_DIR} was removed." >&2
+		echo "Delete its machines with 'LIMA_HOME=${DATA_DIR}/lima limactl delete -f <name>'," >&2
+		echo "then run this script again." >&2
+		return
+	fi
 	rm -rf "$DATA_DIR"
 }
 

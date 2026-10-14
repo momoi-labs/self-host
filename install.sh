@@ -539,8 +539,8 @@ mount_entries() {
 # with.
 has_mount_entries() {
 	awk '
-		/^[^[:space:]#]/ { inside = ($0 ~ /^mounts:/) }
-		inside && /^[[:space:]]+-[[:space:]]/ { found = 1 }
+		/^[^[:space:]#-]/ { inside = ($0 ~ /^mounts:/) }
+		inside && /^[[:space:]]*-[[:space:]]/ { found = 1 }
 		END { exit !found }' "$1"
 }
 
