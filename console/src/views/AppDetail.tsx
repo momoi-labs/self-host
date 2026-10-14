@@ -46,7 +46,6 @@ import { waitForTask } from "../lib/tasks.js";
 import type { App, GitSource, Metrics, Report } from "../lib/types.js";
 import { fetchEvents, useEvents } from "../lib/useEvents.js";
 import { seriesFor } from "../lib/useMetrics.js";
-import { useMediaQuery } from "../lib/useMediaQuery.js";
 
 // xterm is a third of the console's JavaScript and only the Terminal tab needs
 // it, so the chunk arrives when the Operator opens that tab.
@@ -74,7 +73,6 @@ export function AppDetail({
   const { capabilities } = useNativeCapabilities();
   const notify = useToast();
   const queryClient = useQueryClient();
-  const wide = useMediaQuery("(min-width: 1024px)");
   const native = app.runtime?.kind === "native" ? app.runtime : null;
   const [confirming, setConfirming] = useState(false);
   // Deleting what the Application stored is its own choice, confirmed by typing its name.
@@ -257,7 +255,7 @@ export function AppDetail({
   return (
     <>
       <div className="between">
-        <PageHeader className={wide ? "grow" : undefined}>
+        <PageHeader>
           <PageHeaderTitle>{app.name}</PageHeaderTitle>
           {app.hostname ? <PageHeaderDescription>
             {hostnames(app).map((host, index) => (
