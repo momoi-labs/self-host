@@ -262,6 +262,13 @@ pub trait DockerRuntime: Send + Sync {
     async fn volume_sizes(&self) -> Result<std::collections::HashMap<String, u64>, DockerError> {
         Ok(Default::default())
     }
+    /// What `docker top` lists for a running container.
+    async fn container_processes(
+        &self,
+        _name: &str,
+    ) -> Result<Vec<crate::processes::Process>, DockerError> {
+        Ok(Vec::new())
+    }
     async fn open_terminal(
         &self,
         container: &str,
@@ -1176,6 +1183,23 @@ impl DockerRuntime for CliDocker {
             });
         }
         Ok(result)
+    }
+
+    async fn container_processes(
+        &self,
+        name: &str,
+    ) -> Result<Vec<crate::processes::Process>, DockerError> {
+        let step = format!("failed to list the processes of container '{name}'");
+        let output = std::process::Command::new("docker")
+            .args(["top", name, "-eo", "pid,ppid,user,pcpu,rss,args"])
+            .output()
+            .map_err(|e| DockerError::spawn(&step, e))?;
+        if !output.status.success() {
+            return Err(DockerError::refused(&step, &output));
+        }
+        Ok(crate::processes::parse_ps(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     async fn start_container(&self, name: &str) -> Result<(), DockerError> {
@@ -2111,6 +2135,13 @@ where
 
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
         (**self).container_images().await
+    }
+
+    async fn container_processes(
+        &self,
+        name: &str,
+    ) -> Result<Vec<crate::processes::Process>, DockerError> {
+        (**self).container_processes(name).await
     }
 
     async fn remove_image_repository(&self, repository: &str) -> Result<(), DockerError> {
