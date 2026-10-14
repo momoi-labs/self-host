@@ -55,7 +55,9 @@ Application data to `<dir>/native-data`. Docker named volumes stay where
 Docker keeps them; move Docker's own `data-root` to put them elsewhere.
 
 Give it to every command that acts on that Platform, or set
-`SELF_HOST_DATA_DIR`:
+`SELF_HOST_DATA_DIR`. `install.sh` takes the same variable, and on macOS
+it also mounts a data directory outside your home into the Colima VM, where
+Compose bind mounts are resolved:
 
 ```bash
 self-host -D /srv/self-host init

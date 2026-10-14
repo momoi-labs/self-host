@@ -1488,6 +1488,14 @@ async fn run_api_server(
     if store.get_api_key().await.ok().flatten().is_none() && !api_key.is_empty() {
         let _ = store.store_state("api_key", &api_key).await;
     }
+    // Reading the CLI config tightens one an older release left 0644.
+    let _ = CliConfig::load();
+
+    // Native Applications must not take the port this daemon serves on,
+    // which `--port` or SELF_HOST_LISTEN may have moved off the default.
+    if let Err(e) = store.store_state("api_listen_addr", &listen_addr).await {
+        tracing::warn!("could not record the API listen address: {e}");
+    }
 
     // Nothing here talks to Docker yet, and nothing needs to: DNS, the
     // console and the API are served whether or not it ever answers.

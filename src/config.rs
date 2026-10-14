@@ -19,6 +19,9 @@ impl CliConfig {
 
         let content =
             std::fs::read_to_string(&path).map_err(|e| CliConfigError::Read(path.clone(), e))?;
+        // Older releases wrote it 0644, readable through a data directory
+        // others may traverse. Best effort: a copy someone else owns stays.
+        restrict(&path);
 
         let config: CliConfig =
             serde_json::from_str(&content).map_err(|e| CliConfigError::Parse(path.clone(), e))?;
@@ -35,9 +38,32 @@ impl CliConfig {
 
         let content = serde_json::to_string_pretty(self).map_err(CliConfigError::Serialize)?;
 
-        std::fs::write(&path, content).map_err(|e| CliConfigError::Write(path.clone(), e))?;
+        // It holds the Operator's API key: only its owner reads it.
+        {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|e| CliConfigError::Write(path.clone(), e))?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| CliConfigError::Write(path.clone(), e))?;
+        }
+        restrict(&path);
 
         Ok(())
+    }
+}
+
+fn restrict(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    if let Ok(metadata) = std::fs::metadata(path)
+        && metadata.permissions().mode() & 0o077 != 0
+    {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
 }
 
@@ -68,5 +94,31 @@ impl std::error::Error for CliConfigError {
             CliConfigError::Parse(_, e) => Some(e),
             CliConfigError::Serialize(e) => Some(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// The file holds the Operator's API key, and a data directory may be
+    /// one Application accounts traverse.
+    #[test]
+    fn only_its_owner_reads_the_saved_api_key() {
+        let path = CliConfig::config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        CliConfig {
+            api_base_url: "https://admin.home.lan".into(),
+            api_key: "secret".into(),
+        }
+        .save()
+        .unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }
