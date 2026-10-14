@@ -933,7 +933,7 @@ async fn audit_keeps_one_event_for_a_failed_vm_operation() {
     assert!(events.iter().all(|event| event["action"] == "create"
         && event["subject"]["id"] == id
         && event["subject"]["name"] == "audited-vm"
-        && event["apiName"].is_null()));
+        && event["apiName"] == "admin"));
 }
 
 #[tokio::test]

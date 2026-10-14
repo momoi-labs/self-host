@@ -466,8 +466,9 @@ async fn a_host_with_no_database_keeps_what_the_operator_deployed_across_a_resta
 
     let (status, keys) = call(&app, "GET", "/api-keys", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(keys.as_array().unwrap().len(), 1);
-    assert_eq!(keys[0]["label"], "laptop");
+    // The Platform key comes first, as admin.
+    assert_eq!(keys.as_array().unwrap().len(), 2);
+    assert_eq!(keys[1]["label"], "laptop");
 }
 
 #[tokio::test]

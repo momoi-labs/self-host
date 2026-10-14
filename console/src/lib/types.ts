@@ -229,6 +229,8 @@ export type ApiKey = {
   id: string;
   label: string;
   created_at: string;
+  /** The Platform's own key, `admin`: made by init, never revoked. */
+  primary?: boolean;
 };
 
 /** One minute of one scope: an Application, or one of its containers
