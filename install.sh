@@ -482,7 +482,7 @@ EOF
 		has_mount "$profile" "$location" || missing+=("$location")
 	done
 	[ "${#missing[@]}" -gt 0 ] || return 0
-	if ! grep -qE '^[[:space:]]*-[[:space:]]*location:' "$profile"; then
+	if ! has_mount_entries "$profile"; then
 		echo "adding ${missing[*]} to the existing Colima profile ($profile)..."
 		sed -i '' -E '/^mounts:[[:space:]]*(null|\[\])?[[:space:]]*$/d' "$profile"
 		printf 'mounts:\n%s\n' "$(mount_entries "  " "${missing[@]}")" >>"$profile"
@@ -533,6 +533,15 @@ mount_entries() {
 		quoted=${quoted//\"/\\\"}
 		printf '%s- location: "%s"\n%s  writable: true\n' "$indent" "$quoted" "$indent"
 	done
+}
+
+# Whether a Colima profile lists any mount, whichever key each entry starts
+# with.
+has_mount_entries() {
+	awk '
+		/^[^[:space:]#]/ { inside = ($0 ~ /^mounts:/) }
+		inside && /^[[:space:]]+-[[:space:]]/ { found = 1 }
+		END { exit !found }' "$1"
 }
 
 # Whether a Colima profile already mounts a path, quoted or not.

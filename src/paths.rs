@@ -34,6 +34,11 @@ pub fn platform_config_dir() -> PathBuf {
     }
 }
 
+/// Whether a data directory was given, rather than the default places.
+pub fn data_dir_given() -> bool {
+    DATA_DIR.get().is_some()
+}
+
 /// Where Lima keeps Virtual machines, when a data directory was given.
 /// Without one, Lima's own default, `~/.lima`.
 pub fn lima_home() -> Option<PathBuf> {

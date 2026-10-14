@@ -1286,8 +1286,12 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     // Platforms on one Docker, so it gets the reset it always had: every
     // container and volume with the Platform's prefixes.
     let state = file_store::state_dir();
+    // The PostgreSQL container has a fixed name, so on a shared Docker it
+    // may be another Platform's. It can only be this one's when this one
+    // uses the default places, which is all that release knew.
     let legacy = state.join("platform.json").exists()
-        || (!state.join(file_store::DB_FILE).exists()
+        || (!self_host::paths::data_dir_given()
+            && !state.join(file_store::DB_FILE).exists()
             && CliDocker::new()
                 .container_running(&self_host::apps::system_container_name(
                     bootstrap::LEGACY_STATE_CONTAINER_ROLE,
