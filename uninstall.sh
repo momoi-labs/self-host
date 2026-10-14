@@ -66,6 +66,13 @@ main() {
 	refuse_machines
 	confirm
 
+	# The LaunchDaemon that names the data directory goes first, so a run
+	# that stops halfway, for Full Disk Access say, would leave the next run
+	# guessing. Say how to run again with what this run found.
+	if [ -n "$given" ]; then
+		trap 'status=$?; [ "$status" -eq 0 ] || echo "Run this again with SELF_HOST_DATA_DIR=\"${DATA_DIR}\" to finish." >&2' EXIT
+	fi
+
 	# The daemon goes first. launchd would otherwise restart it between the
 	# steps below, and `serve` brings the Platform Infra back up.
 	remove_daemon "$PLATFORM_LABEL"
