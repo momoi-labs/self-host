@@ -183,7 +183,9 @@ remove_native() {
 		echo "removing native Application accounts (requires sudo; macOS may ask for Full Disk Access)..."
 		sudo "$helper" native-uninstall
 	fi
-	sudo rm -rf "/Library/Application Support/self-host/native-data"
+	# The helper's records and supervision tree, and the data its accounts
+	# kept, all live here.
+	sudo rm -rf "/Library/Application Support/self-host"
 	remove_daemon dev.momoi.self-host.native
 	sudo rm -f /private/etc/sudoers.d/self-host-native "$helper"
 	sudo rm -rf /Library/PrivilegedHelperTools/dev.momoi.self-host.s6 \
