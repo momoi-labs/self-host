@@ -149,6 +149,7 @@ export function App() {
           <EventsPage onOpenSubject={(subject) => {
             if (subject.kind === "api-key") { go({ view: "settings", id: "api-keys" }); return; }
             if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
+            if (subject.kind === "platform") { go({ view: "settings", id: "scheduled-tasks" }); return; }
             go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
           }} />
         ) : view.view === "routes" ? (
