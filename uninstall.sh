@@ -4,13 +4,14 @@
 # from nothing. This is the cleanup between validation runs
 # (docs/macos-host.md), not a polite uninstaller: the Applications, their
 # volumes, the Platform CA and the bridged network for machines go with it.
+# What the Platform created is `self-host uninstall`'s to remove; this script
+# runs it, then removes what install.sh itself set up.
 #
 # The Colima VM survives by default. Rebuilding it costs minutes, nothing in
 # it belongs to the Platform, and the installer patches the profile it finds.
 #
 # Environment:
 #   INSTALL_DIR             where the binary went          (default /usr/local/bin)
-#   SELF_HOST_DNS           DNS Suffix, if dns.json is gone (default home.lan)
 #   SELF_HOST_DELETE_VM     set to 1 to delete the Colima VM too
 #   SELF_HOST_FORCE         set to 1 to skip the confirmation
 #   SELF_HOST_DATA_DIR      the Platform's data directory  (default: the one
@@ -22,7 +23,6 @@ set -euo pipefail
 BINARY="self-host"
 WATCHDOG="self-host-colima"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-CA_NAME="Self-Host LAN CA"
 
 PLATFORM_LABEL="dev.momoi.self-host"
 COLIMA_LABEL="dev.momoi.self-host.colima"
@@ -32,7 +32,6 @@ DAEMON_DIR="/Library/LaunchDaemons"
 SOCKET_VMNET_PREFIX="/opt/socket_vmnet"
 VMNET_SOCKET="/var/run/self-host-vmnet.sock"
 
-SUFFIX=""
 DATA_DIR=""
 
 # Homebrew's bin is not on a non-login PATH, and this runs over SSH as often
@@ -54,7 +53,7 @@ main() {
 		exit 1
 	fi
 
-	# A data directory that was given goes to reset as given, even at the
+	# A data directory that was given goes to the uninstall as given, even at the
 	# default path: given, it holds the machines' disks too.
 	local given
 	given="$(data_dir)"
@@ -62,28 +61,27 @@ main() {
 	if [ -n "$given" ]; then
 		export SELF_HOST_DATA_DIR="$given"
 	fi
-	SUFFIX="$(dns_suffix)"
-	refuse_machines
 	confirm
 
-	# The LaunchDaemon that names the data directory goes first, so a run
-	# that stops halfway, for Full Disk Access say, would leave the next run
-	# guessing. Say how to run again with what this run found.
+	# Until the end, the LaunchDaemon's plist stays: it names the data
+	# directory, so a run that stops halfway, for Full Disk Access say, can
+	# be run again and find it.
 	if [ -n "$given" ]; then
 		trap 'status=$?; [ "$status" -eq 0 ] || echo "Run this again with SELF_HOST_DATA_DIR=\"${DATA_DIR}\" to finish." >&2' EXIT
 	fi
 
-	# The daemon goes first. launchd would otherwise restart it between the
+	# The daemon stops first. launchd would otherwise restart it between the
 	# steps below, and `serve` brings the Platform Infra back up.
-	remove_daemon "$PLATFORM_LABEL"
+	stop_daemon "$PLATFORM_LABEL"
+	# The Platform's own uninstall needs Docker and the native helper, so
+	# both are still up.
+	uninstall_platform
 	remove_native
-	reset_platform
 	remove_daemon "$COLIMA_LABEL"
 	delete_vm
 	remove_vmnet
+	remove_daemon "$PLATFORM_LABEL"
 
-	remove_resolver
-	remove_ca
 	remove_binary
 	remove_logs
 
@@ -101,46 +99,18 @@ data_dir() {
 	echo "$found"
 }
 
-# Virtual machines in a data directory keep their disks there, and reset
-# refuses to delete them under a machine. Find out before anything is torn
-# down, while the console that removes them still runs.
-refuse_machines() {
-	local lima="$DATA_DIR/lima" found=""
-	if [ -n "${SELF_HOST_DATA_DIR:-}" ] && [ -d "$lima" ]; then
-		found="$(find "$lima" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \; | tr '\n' ' ')"
-	fi
-	if [ -n "$found" ]; then
-		echo "Virtual machines still keep their disks in ${lima}: ${found}" >&2
-		echo "Delete them in the console first, then run this script again." >&2
-		exit 1
-	fi
-}
-
-# The Platform records the DNS Suffix in dns.json. Read it before the reset
-# deletes the configuration directory it lives in.
-dns_suffix() {
-	local file="$DATA_DIR/dns.json" found=""
-
-	if [ -f "$file" ]; then
-		found="$(sed -n 's/.*"dns_suffix"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
-	fi
-	echo "${found:-${SELF_HOST_DNS:-home.lan}}"
-}
-
 confirm() {
 	if [ "${SELF_HOST_FORCE:-}" = "1" ]; then
 		return
 	fi
 
 	echo "This removes from this Mac:"
+	echo "  - everything the Platform created: Applications with their data and images,"
+	echo "    Virtual machines, native Applications and their accounts, the CA in the"
+	echo "    System Keychain, its /etc/resolver files and ${DATA_DIR}"
 	echo "  - every LaunchDaemon the installer wrote, so nothing starts at boot"
 	echo "  - the bridged network for machines: socket_vmnet in ${SOCKET_VMNET_PREFIX} and its socket"
-	echo "  - every Platform and Application container, volume and network"
-	echo "  - native Application accounts, supervisor, helper and sudoers grant"
-	echo "Native Application data stays root-protected in /Library/Application Support/self-host/native-data."
-	echo "  - ${DATA_DIR}, including the CA and the API key"
-	echo "  - the CA from the System Keychain, so browsers warn again"
-	echo "  - /etc/resolver/${SUFFIX}"
+	echo "  - the native helper, supervisor and sudoers grant"
 	echo "  - ${INSTALL_DIR}/${BINARY}, ${INSTALL_DIR}/${WATCHDOG} and the logs"
 	if [ "${SELF_HOST_DELETE_VM:-}" = "1" ]; then
 		echo "  - the Colima VM and everything else inside it"
@@ -166,6 +136,33 @@ confirm() {
 	esac
 }
 
+stop_daemon() {
+	local label="$1"
+
+	if [ ! -f "$DAEMON_DIR/${label}.plist" ]; then
+		return
+	fi
+	echo "stopping LaunchDaemon ${label} (requires sudo)..."
+	sudo launchctl bootout "system/${label}" >/dev/null 2>&1 || true
+}
+
+# What the Platform created, `self-host uninstall` removes: Applications,
+# their data and images, Virtual machines, native Applications and their
+# accounts, the data directory, the CA and the resolver files. It needs
+# Docker, which is why the Colima daemon is still up at this point.
+uninstall_platform() {
+	if [ ! -x "$INSTALL_DIR/$BINARY" ]; then
+		echo "no ${BINARY} in ${INSTALL_DIR}; skipping what the Platform created."
+		return
+	fi
+	if ! docker info >/dev/null 2>&1; then
+		echo "Docker does not answer, so the Platform's containers and data stay." >&2
+		echo "Start the runtime, then run this script again." >&2
+		exit 1
+	fi
+	"$INSTALL_DIR/$BINARY" uninstall --force
+}
+
 remove_daemon() {
 	local label="$1"
 
@@ -179,37 +176,10 @@ remove_daemon() {
 
 remove_native() {
 	local helper=/Library/PrivilegedHelperTools/dev.momoi.self-host
-	if [ -f "$helper" ]; then
-		sudo "$helper" native-uninstall
-	fi
 	remove_daemon dev.momoi.self-host.native
 	sudo rm -f /private/etc/sudoers.d/self-host-native "$helper"
 	sudo rm -rf /Library/PrivilegedHelperTools/dev.momoi.self-host.s6 \
 		/Library/PrivilegedHelperTools/dev.momoi.self-host.s6-licenses
-}
-
-# `reset` is the Platform's own: containers, volumes, networks and the
-# configuration directory. It needs Docker, which is why the Colima daemon is
-# still up at this point.
-reset_platform() {
-	if [ ! -x "$INSTALL_DIR/$BINARY" ]; then
-		echo "no ${BINARY} in ${INSTALL_DIR}; skipping the Platform reset."
-		return
-	fi
-	if ! docker info >/dev/null 2>&1; then
-		echo "Docker does not answer, so containers and volumes stay behind." >&2
-		echo "Start the runtime, run '${BINARY} reset --force', then run this" >&2
-		echo "script again." >&2
-		return
-	fi
-	echo "removing containers, volumes, networks and configuration..."
-	# refuse_machines already caught what reset refuses; anything else it
-	# refuses stops here, before the rest is torn down.
-	if ! "$INSTALL_DIR/$BINARY" reset --force; then
-		echo "the Platform reset refused; nothing under ${DATA_DIR} was removed." >&2
-		exit 1
-	fi
-	rm -rf "$DATA_DIR"
 }
 
 delete_vm() {
@@ -240,36 +210,6 @@ remove_vmnet() {
 		sudo rm -f "$SOCKET_VMNET_PREFIX/bin/socket_vmnet"
 		sudo rmdir "$SOCKET_VMNET_PREFIX/bin" "$SOCKET_VMNET_PREFIX" 2>/dev/null || true
 	fi
-}
-
-remove_resolver() {
-	if [ -f "/etc/resolver/${SUFFIX}" ]; then
-		echo "removing /etc/resolver/${SUFFIX} (requires sudo)..."
-		sudo rm -f "/etc/resolver/${SUFFIX}"
-	fi
-
-	# A suffix the Mac was set up with earlier is not ours to guess at.
-	local others
-	others="$(ls -A /etc/resolver 2>/dev/null || true)"
-	if [ -n "$others" ]; then
-		echo "/etc/resolver still holds: ${others}" >&2
-		echo "Remove by hand any that belonged to an earlier DNS Suffix." >&2
-	fi
-}
-
-# `init` mints a CA per install, so a Mac that was set up more than once has
-# more than one to delete.
-remove_ca() {
-	local hashes sha
-	hashes="$(security find-certificate -c "$CA_NAME" -a -Z /Library/Keychains/System.keychain 2>/dev/null | awk '/^SHA-1 hash:/{print $3}')"
-
-	if [ -z "$hashes" ]; then
-		return
-	fi
-	echo "removing '${CA_NAME}' from the System Keychain (requires sudo)..."
-	for sha in $hashes; do
-		sudo security delete-certificate -Z "$sha" /Library/Keychains/System.keychain || true
-	done
 }
 
 # The binary and the Colima watchdog the installer wrote beside it.

@@ -69,6 +69,14 @@ enum Command {
     },
     /// Configure persistent Host DNS on Linux with systemd-resolved
     SetupDns,
+    /// Remove everything the Platform created on this Host: Applications,
+    /// their data and images, Virtual machines, native Applications, the data
+    /// directory, the CA in the trust store and the host DNS routing
+    Uninstall {
+        /// Do not ask first
+        #[arg(long)]
+        force: bool,
+    },
     /// Start the platform daemon
     Serve {
         /// How often the daemon samples Docker and folds its own counters,
@@ -345,6 +353,12 @@ async fn main() {
         }
         Some(Command::SetupDns) => {
             if let Err(e) = run_setup_dns_command().await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Uninstall { force }) => {
+            if let Err(e) = run_uninstall_command(force).await {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
@@ -1298,18 +1312,17 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
                 ))
                 .await
                 .unwrap_or(false));
-    let mut ids = std::collections::BTreeSet::new();
+    let mut store = None;
     if state.exists() && !legacy {
-        let store = FileStateStore::read_only(&state)
+        let opened = FileStateStore::read_only(&state)
             .context("cannot read the Platform state to find its Applications")?;
         // Virtual machines and native Applications run outside Docker, and
         // reset only stops containers. Deleting their disks and homes under a
         // running machine or service is worse than refusing.
-        let applications = store.list_applications().await?;
+        let applications = opened.list_applications().await?;
         // Only a data directory holds them: by default machines stay in
         // ~/.lima and native data in its own root-owned place, which reset
-        // leaves alone, as uninstall.sh relies on. On macOS native data never
-        // moves.
+        // leaves alone. On macOS native data never moves.
         let (native, machines) = if self_host::paths::data_dir_given() {
             let native = applications
                 .iter()
@@ -1319,7 +1332,7 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
                 .count();
             (
                 native,
-                self_host::collection::MACHINES.list(&store).await?.len(),
+                self_host::collection::MACHINES.list(&opened).await?.len(),
             )
         } else {
             (0, 0)
@@ -1327,124 +1340,13 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         if native + machines > 0 {
             anyhow::bail!(
                 "this Platform has {machines} Virtual machine(s) and {native} native Application(s), \
-                 which reset cannot stop. Remove them in the console first, then reset again"
+                 which reset cannot stop. Remove them in the console first, or run 'self-host uninstall'"
             );
         }
-        for app in applications {
-            ids.insert(app.id);
-        }
-        for deployment in self_host::deployments::all(&store).await? {
-            ids.insert(deployment.application_id);
-        }
+        store = Some(opened);
     }
-    if let Some(projects) = self_host::apps::project_dir_for("_").parent()
-        && let Ok(entries) = std::fs::read_dir(projects)
-    {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if self_host::apps::is_app_id(&name) {
-                ids.insert(name);
-            }
-        }
-    }
-    let listed = |args: &[&str], filters: Vec<String>| -> anyhow::Result<Vec<String>> {
-        // No filter would list every container on the Host.
-        if filters.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut command = std::process::Command::new("docker");
-        command.args(args);
-        // Repeated name filters are an OR.
-        for filter in filters {
-            command.args(["--filter", &format!("name={filter}")]);
-        }
-        let output = command.output()?;
-        let mut found: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        found.sort();
-        found.dedup();
-        Ok(found)
-    };
-    let owned = |patterns: &[&str], everything: &[&str]| -> Vec<String> {
-        if legacy {
-            return everything
-                .iter()
-                .map(|pattern| pattern.to_string())
-                .collect();
-        }
-        ids.iter()
-            .flat_map(|id| {
-                patterns
-                    .iter()
-                    .map(move |pattern| pattern.replace("{id}", id))
-            })
-            // The Platform Infra names are fixed, so they are only this
-            // Platform's when it uses the default places.
-            .chain(
-                ["^self-host", "^sf-system"]
-                    .into_iter()
-                    .filter(|_| !self_host::paths::data_dir_given())
-                    .map(str::to_string),
-            )
-            .collect()
-    };
-
-    println!("Stopping and removing containers...");
-    // An image Application's one container is sf-app-<id>; a Compose
-    // service's is sf-app-<id>-<service>.
-    let container_ids = listed(
-        &["ps", "-aq"],
-        owned(&["^sf-app-{id}$", "^sf-app-{id}-"], &["self-host", "sf-"]),
-    )?;
-    if !container_ids.is_empty() {
-        std::process::Command::new("docker")
-            .args(["rm", "-f"])
-            .args(&container_ids)
-            .output()?;
-        println!("Containers removed.");
-    } else {
-        println!("No containers found.");
-    }
-
-    // A Compose Application's named volumes are created under its project,
-    // so they are sf-app-<id>_<volume>.
-    println!("Removing volumes...");
-    let volume_names = listed(
-        &["volume", "ls", "-q"],
-        owned(&["^sf-app-{id}_"], &["self-host", "^sf-app-"]),
-    )?;
-    if !volume_names.is_empty() {
-        std::process::Command::new("docker")
-            .args(["volume", "rm"])
-            .args(&volume_names)
-            .output()?;
-        println!("Volumes removed.");
-    } else {
-        println!("No volumes found.");
-    }
-
-    println!("Removing networks...");
-    // Compose names its default network sf-app-<id>_default, and a private
-    // provider has sf-private-<id>.
-    let mut network_names = listed(
-        &["network", "ls", "--format", "{{.Name}}"],
-        owned(
-            &["^sf-app-{id}$", "^sf-app-{id}_", "^sf-private-{id}$"],
-            &["sf-"],
-        ),
-    )?;
-    network_names.retain(|name| name != "self-host");
-    // The shared networks every Platform on this Docker joins. One still in
-    // use by another Platform's containers stays: Docker refuses it.
-    network_names.push("self-host".into());
-    network_names.push(self_host::docker::APP_NETWORK.into());
-    let _ = std::process::Command::new("docker")
-        .args(["network", "rm"])
-        .args(&network_names)
-        .output();
-    println!("Networks removed.");
+    let ids = self_host::uninstall::application_ids(store.as_ref()).await?;
+    self_host::uninstall::remove_docker_resources(&ids, legacy)?;
 
     let config_dir = self_host::paths::platform_config_dir();
     if config_dir.exists() {
@@ -1456,6 +1358,46 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     }
 
     println!("\nReset complete. You can run 'self-host init' to start fresh.");
+    Ok(())
+}
+
+async fn run_uninstall_command(force: bool) -> anyhow::Result<()> {
+    let inventory = self_host::uninstall::inventory().await?;
+    if !force {
+        println!("This removes from this Host:");
+        for line in self_host::uninstall::describe(&inventory) {
+            println!("  - {line}");
+        }
+        anyhow::ensure!(
+            std::io::IsTerminal::is_terminal(&std::io::stdin()),
+            "no terminal to confirm on; pass --force to proceed"
+        );
+        print!("Continue? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Uninstall cancelled.");
+            return Ok(());
+        }
+    }
+
+    let failures = self_host::uninstall::run(&inventory).await;
+    if !failures.is_empty() {
+        let again = if self_host::paths::data_dir_given() {
+            format!("self-host -D '{}' uninstall", inventory.data_dir.display())
+        } else {
+            "self-host uninstall".to_string()
+        };
+        anyhow::bail!(
+            "{} step(s) did not finish, so {} stays for a second run. Fix the above, then run '{again}'",
+            failures.len(),
+            inventory.data_dir.display()
+        );
+    }
+    println!(
+        "\nUninstall complete. The binary itself stays; remove it, or its package, to finish."
+    );
     Ok(())
 }
 

@@ -53,6 +53,7 @@ pub mod store;
 pub mod tasks;
 pub mod terminal;
 pub mod tls;
+pub mod uninstall;
 pub mod vms;
 
 use apps::{DeployError, RemoveError};
