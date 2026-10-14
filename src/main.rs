@@ -253,13 +253,21 @@ fn chain_from(report: ErrorReport) -> anyhow::Error {
 
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+
+    // uninstall prints its own progress; the runtimes it drives would
+    // otherwise interleave their daemon log lines with it. RUST_LOG still
+    // wins.
+    let level = if matches!(cli.command, Some(Command::Uninstall { .. })) {
+        "warn"
+    } else {
+        "info"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level)),
         )
         .init();
-
-    let cli = Cli::parse();
     if let Some(dir) = cli
         .data_dir
         .clone()
