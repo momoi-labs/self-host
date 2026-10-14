@@ -13,6 +13,9 @@
 #   SELF_HOST_DNS           DNS Suffix, if dns.json is gone (default home.lan)
 #   SELF_HOST_DELETE_VM     set to 1 to delete the Colima VM too
 #   SELF_HOST_FORCE         set to 1 to skip the confirmation
+#   SELF_HOST_DATA_DIR      the Platform's data directory  (default: the one
+#                           the installer gave the LaunchDaemon, or
+#                           ~/.config/self-host)
 #
 set -euo pipefail
 
@@ -30,6 +33,7 @@ SOCKET_VMNET_PREFIX="/opt/socket_vmnet"
 VMNET_SOCKET="/var/run/self-host-vmnet.sock"
 
 SUFFIX=""
+DATA_DIR=""
 
 # Homebrew's bin is not on a non-login PATH, and this runs over SSH as often
 # as in Terminal. Without this, `docker` and `colima` look absent and the
@@ -50,6 +54,12 @@ main() {
 		exit 1
 	fi
 
+	DATA_DIR="$(data_dir)"
+	# Only a data directory that was given goes to reset; the default one
+	# is what reset uses on its own.
+	if [ "$DATA_DIR" != "$HOME/.config/self-host" ]; then
+		export SELF_HOST_DATA_DIR="$DATA_DIR"
+	fi
 	SUFFIX="$(dns_suffix)"
 	confirm
 
@@ -70,10 +80,20 @@ main() {
 	summary
 }
 
+# Where the Platform keeps its data: SELF_HOST_DATA_DIR, or the one the
+# installer gave the LaunchDaemon, read before that plist goes.
+data_dir() {
+	local plist="$DAEMON_DIR/${PLATFORM_LABEL}.plist" found="${SELF_HOST_DATA_DIR:-}"
+	if [ -z "$found" ] && [ -f "$plist" ]; then
+		found="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:SELF_HOST_DATA_DIR" "$plist" 2>/dev/null || true)"
+	fi
+	echo "${found:-$HOME/.config/self-host}"
+}
+
 # The Platform records the DNS Suffix in dns.json. Read it before the reset
 # deletes the configuration directory it lives in.
 dns_suffix() {
-	local file="$HOME/.config/self-host/dns.json" found=""
+	local file="$DATA_DIR/dns.json" found=""
 
 	if [ -f "$file" ]; then
 		found="$(sed -n 's/.*"dns_suffix"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
@@ -92,7 +112,7 @@ confirm() {
 	echo "  - every Platform and Application container, volume and network"
 	echo "  - native Application accounts, supervisor, helper and sudoers grant"
 	echo "Native Application data stays root-protected in /Library/Application Support/self-host/native-data."
-	echo "  - ${HOME}/.config/self-host, including the CA and the API key"
+	echo "  - ${DATA_DIR}, including the CA and the API key"
 	echo "  - the CA from the System Keychain, so browsers warn again"
 	echo "  - /etc/resolver/${SUFFIX}"
 	echo "  - ${INSTALL_DIR}/${BINARY}, ${INSTALL_DIR}/${WATCHDOG} and the logs"
@@ -158,7 +178,7 @@ reset_platform() {
 	fi
 	echo "removing containers, volumes, networks and configuration..."
 	"$INSTALL_DIR/$BINARY" reset --force
-	rm -rf "$HOME/.config/self-host"
+	rm -rf "$DATA_DIR"
 }
 
 delete_vm() {

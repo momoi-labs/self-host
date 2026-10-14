@@ -1306,11 +1306,24 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         // reset only stops containers. Deleting their disks and homes under a
         // running machine or service is worse than refusing.
         let applications = store.list_applications().await?;
-        let native = applications
-            .iter()
-            .filter(|app| app.source == self_host::apps::SOURCE_NATIVE)
-            .count();
-        let machines = self_host::collection::MACHINES.list(&store).await?.len();
+        // Only a data directory holds them: by default machines stay in
+        // ~/.lima and native data in its own root-owned place, which reset
+        // leaves alone, as uninstall.sh relies on. On macOS native data never
+        // moves.
+        let (native, machines) = if self_host::paths::data_dir_given() {
+            let native = applications
+                .iter()
+                .filter(|app| {
+                    cfg!(not(target_os = "macos")) && app.source == self_host::apps::SOURCE_NATIVE
+                })
+                .count();
+            (
+                native,
+                self_host::collection::MACHINES.list(&store).await?.len(),
+            )
+        } else {
+            (0, 0)
+        };
         if native + machines > 0 {
             anyhow::bail!(
                 "this Platform has {machines} Virtual machine(s) and {native} native Application(s), \
@@ -1335,6 +1348,10 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         }
     }
     let listed = |args: &[&str], filters: Vec<String>| -> anyhow::Result<Vec<String>> {
+        // No filter would list every container on the Host.
+        if filters.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut command = std::process::Command::new("docker");
         command.args(args);
         // Repeated name filters are an OR.
@@ -1363,7 +1380,14 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
                     .iter()
                     .map(move |pattern| pattern.replace("{id}", id))
             })
-            .chain(["^self-host".to_string(), "^sf-system".to_string()])
+            // The Platform Infra names are fixed, so they are only this
+            // Platform's when it uses the default places.
+            .chain(
+                ["^self-host", "^sf-system"]
+                    .into_iter()
+                    .filter(|_| !self_host::paths::data_dir_given())
+                    .map(str::to_string),
+            )
             .collect()
     };
 
