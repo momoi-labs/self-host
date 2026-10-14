@@ -58,8 +58,10 @@ struct Builtin {
 }
 
 /// The subject a `prune` run is recorded under, scheduled or asked for.
+/// Named for what it cleans up after, so the Events row does not repeat the
+/// action ("Remove unused data").
 pub fn prune_subject() -> Subject {
-    Subject::new("platform", "prune", "Unused data")
+    Subject::new("platform", "prune", "Removed applications")
 }
 
 const BUILTINS: &[Builtin] = &[Builtin {

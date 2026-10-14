@@ -418,7 +418,7 @@ pub(crate) async fn list<S: StateStore>(State(state): State<AppState<S>>) -> Res
                         .map(|keys| keys.iter().any(|key| &key.id == id)),
                     "virtual-machine" => machines.as_ref().map(|ids| ids.contains(id)),
                     "custom-image" => images.as_ref().map(|ids| ids.contains(id)),
-                    "settings" => Some(true),
+                    "settings" | "platform" => Some(true),
                     "dns-record" => records.as_ref().map(|ids| ids.contains(id)),
                     _ => Some(false),
                 };
