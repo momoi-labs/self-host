@@ -240,6 +240,22 @@ pub async fn inventory() -> Result<Inventory> {
         "this Platform still keeps its state in JSON files; import it first \
          (docs/operating.md), or run 'self-host reset --force'"
     );
+    // A Platform that kept its state in PostgreSQL names its Applications
+    // nowhere this can read. Its container has a fixed name, so it can only
+    // be this Platform's in the default places.
+    if !crate::paths::data_dir_given() && !state.join(crate::file_store::DB_FILE).exists() {
+        use crate::docker::DockerRuntime;
+        let legacy =
+            crate::apps::system_container_name(crate::bootstrap::LEGACY_STATE_CONTAINER_ROLE);
+        anyhow::ensure!(
+            !crate::docker::CliDocker::new()
+                .container_running(&legacy)
+                .await
+                .unwrap_or(false),
+            "this Platform still keeps its state in PostgreSQL ({legacy}); export it and run \
+             'self-host reset --force' instead (docs/operating.md)"
+        );
+    }
     // The writer lock, held until the uninstall ends: a daemon still running
     // would go on writing state and starting work while it goes.
     let store = if state.join(crate::file_store::DB_FILE).exists() {
@@ -357,6 +373,36 @@ fn ours(text: &str, name: Option<&str>, suffix: Option<&str>, local: &BTreeSet<S
             && words.next().is_some_and(|server| local.contains(server))
     });
     marked || here
+}
+
+/// The Operator's home, and their name when this runs as root under sudo,
+/// so per-user state like the browsers' certificates is theirs, not root's.
+#[cfg(target_os = "linux")]
+fn operator_home() -> (Option<PathBuf>, Option<String>) {
+    // SAFETY: geteuid has no arguments or memory effects.
+    let root = unsafe { libc::geteuid() } == 0;
+    match std::env::var("SUDO_USER")
+        .ok()
+        .filter(|user| root && user != "root")
+    {
+        Some(user) => {
+            let name = std::ffi::CString::new(user.clone()).ok();
+            // SAFETY: getpwnam reads a NUL-terminated name and returns a
+            // pointer into static storage, read here before any other call.
+            let home = name.and_then(|name| unsafe {
+                let entry = libc::getpwnam(name.as_ptr());
+                (!entry.is_null()).then(|| {
+                    PathBuf::from(
+                        std::ffi::CStr::from_ptr((*entry).pw_dir)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                })
+            });
+            (home, Some(user))
+        }
+        None => (dirs::home_dir(), None),
+    }
 }
 
 /// A directory only this process's user can enter, for files a root step
@@ -548,21 +594,29 @@ async fn remove_native(native: &[ApplicationRecord]) -> Result<()> {
 /// What every Platform on the Host shares for native Applications on Linux:
 /// the supervision service, the default native directories and the bundled
 /// s6. It goes last, once every other step worked, since a retry still needs
-/// the supervision tree, and only when no other Platform still has a service
-/// in it. On macOS the helper and its accounts are the whole Mac's, and
+/// the supervision tree, only with the Platform in the default places, which
+/// set them up, and only when no other Platform still has a service in it. On macOS the helper and its accounts are the whole Mac's, and
 /// uninstall.sh removes them with the helper.
 fn remove_native_shared(native: &[ApplicationRecord]) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
+        // Its native data, /var/lib/self-host/native-data, is the default
+        // Platform's; one with a data directory keeps its own there.
+        if crate::paths::data_dir_given() {
+            return Ok(());
+        }
         let ours: BTreeSet<&str> = native.iter().map(|app| app.id.as_str()).collect();
-        let others = std::fs::read_dir("/var/lib/self-host/native/services")
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-                    .any(|entry| !ours.contains(entry.file_name().to_string_lossy().as_ref()))
-            })
-            .unwrap_or(false);
+        let services = Path::new("/var/lib/self-host/native/services");
+        // A tree it cannot read may hold another Platform's services, so it
+        // stays: guessing it empty would stop them.
+        let others = match std::fs::read_dir(services) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                .any(|entry| !ours.contains(entry.file_name().to_string_lossy().as_ref())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => true,
+        };
         if others {
             println!(
                 "Another Platform still runs native Applications; keeping native supervision."
@@ -740,13 +794,27 @@ fn untrust_ca(der: &[u8]) -> Result<()> {
             }
         }
 
-        // The browsers' own store: the same nickname may be another
+        // The browsers' own store, the Operator's: under sudo that is the
+        // user who ran it, not root. The same nickname may be another
         // Platform's CA, so the certificate is compared first.
-        if let Some(home) = dirs::home_dir() {
+        let (home, user) = operator_home();
+        let certutil = || {
+            let mut command = match &user {
+                Some(user) => {
+                    let mut command = Command::new("sudo");
+                    command.args(["-u", user, "certutil"]);
+                    command
+                }
+                None => Command::new("certutil"),
+            };
+            command.env_remove("HOME");
+            command
+        };
+        if let Some(home) = home {
             let nss = home.join(".pki/nssdb");
             if nss.join("cert9.db").exists() {
                 let database = format!("sql:{}", nss.display());
-                let listed = Command::new("certutil")
+                let listed = certutil()
                     .args(["-L", "-a", "-n", CA_NAME, "-d", &database])
                     .output();
                 let matches = listed
@@ -755,7 +823,7 @@ fn untrust_ca(der: &[u8]) -> Result<()> {
                     .is_some_and(|certs| certs.iter().any(|cert| cert.contents() == der));
                 if matches {
                     checked(
-                        Command::new("certutil").args(["-D", "-n", CA_NAME, "-d", &database]),
+                        certutil().args(["-D", "-n", CA_NAME, "-d", &database]),
                         "removing the CA from the browsers' certificate database",
                     )?;
                 }
