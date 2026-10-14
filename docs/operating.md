@@ -68,7 +68,8 @@ again. On macOS, native Application data stays in
 `/Library/Application Support/self-host/native-data`. The privileged helper
 that runs native Applications is shared by the whole Mac and only trusts that
 fixed path. On Linux, native data requires a data directory owned by root
-whose parents only root can write to.
+whose parents only root can write to, and that others can traverse
+(`chmod 711`), so each Application's account reaches its home.
 
 For two Platforms on one machine, give each its own data directory and port,
 and move the second one's proxy off 80 and 443:
