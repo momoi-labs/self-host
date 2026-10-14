@@ -25,7 +25,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+// Who asked for an action: `admin` for the Platform's own key, a custom
+// key's label, or nobody for what the Platform does on its own (scheduled
+// tasks, Git deliveries), which the console shows as `system`.
 tokio::task_local! { pub static ACTOR: Option<String>; }
+
+/// The name the Platform's own key acts under.
+pub const ADMIN: &str = "admin";
+
+/// Names a custom key may not take, so an actor always says who it was.
+pub fn reserved_actor(label: &str) -> bool {
+    let label = label.trim();
+    label.eq_ignore_ascii_case(ADMIN) || label.eq_ignore_ascii_case("system")
+}
 tokio::task_local! { pub static EVENT_ID: Option<String>; }
 
 pub fn event_id() -> Option<String> {
@@ -788,7 +800,37 @@ mod tests {
         let events = read(&store).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, "failed");
-        assert_eq!(events[0].api_name, None);
+        // The Platform's own key acts as admin.
+        assert_eq!(events[0].api_name.as_deref(), Some(ADMIN));
+    }
+
+    #[tokio::test]
+    async fn the_admin_key_is_listed_and_its_names_are_reserved() {
+        let (app, _) = setup().await;
+        let (status, keys) = call(&app, "GET", "/api-keys", "root-secret", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(keys[0]["label"], "admin");
+        assert_eq!(keys[0]["primary"], true);
+        for label in ["admin", " System "] {
+            let (status, _) = call(
+                &app,
+                "POST",
+                "/api-keys",
+                "root-secret",
+                json!({"label": label}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{label}");
+        }
+        let (status, _) = call(
+            &app,
+            "DELETE",
+            "/api-keys/admin",
+            "root-secret",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 
     #[tokio::test]

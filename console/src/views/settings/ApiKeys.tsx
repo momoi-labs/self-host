@@ -26,7 +26,7 @@ import {
 
 import { Icon } from "../../components/Icon.js";
 import type { PaneProps } from "./General.js";
-import { api, readJson, requireKey } from "../../lib/api.js";
+import { api, failureOf, readJson, requireKey } from "../../lib/api.js";
 import type { ApiKey } from "../../lib/types.js";
 
 const noKeys: ApiKey[] = [];
@@ -55,7 +55,8 @@ export function ApiKeys({ id, size }: PaneProps) {
         method: "POST",
         body: JSON.stringify({ label: label.trim() }),
       });
-      if (!res.ok) throw new Error("Could not create the key. Try again.");
+      // A reserved name is refused with a reason worth showing as it is.
+      if (!res.ok) throw new Error(res.status === 422 ? (await failureOf(res)).error : "Could not create the key. Try again.");
       const data = (await res.json()) as { key: string };
       setLabel("");
       setCreating(false);
@@ -132,17 +133,20 @@ export function ApiKeys({ id, size }: PaneProps) {
                 visible.map((key) => (
                   <TableRow key={key.id}>
                     <TableCell className="mono">{key.id}</TableCell>
-                    <TableCell>{key.label}</TableCell>
-                    <TableCell>{key.created_at}</TableCell>
+                    <TableCell>{key.primary ? <>{key.label} <span className="muted t-label">Platform key, made by init</span></> : key.label}</TableCell>
+                    <TableCell>{key.created_at || <span className="muted">At init</span>}</TableCell>
                     <TableCell className="col-tight">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="btn-danger-ghost"
-                        onClick={() => void revoke(key.id)}
-                      >
-                        Revoke
-                      </Button>
+                      {/* The Platform's own key cannot be revoked; it is what the console and CLI use. */}
+                      {key.primary ? null : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="btn-danger-ghost"
+                          onClick={() => void revoke(key.id)}
+                        >
+                          Revoke
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))

@@ -2611,6 +2611,9 @@ struct ApiKeyResponse {
     id: String,
     label: String,
     created_at: String,
+    /// The Platform's own key, which `init` made and cannot be revoked.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    primary: bool,
 }
 
 #[derive(Serialize)]
@@ -2624,14 +2627,20 @@ struct CreateKeyResponse {
 async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
     match state.store.list_api_keys().await {
         Ok(keys) => {
-            let body: Vec<ApiKeyResponse> = keys
-                .into_iter()
-                .map(|k| ApiKeyResponse {
-                    id: k.id,
-                    label: k.label,
-                    created_at: k.created_at,
-                })
-                .collect();
+            // The Platform's own key leads the list under the name it acts as.
+            let body: Vec<ApiKeyResponse> = std::iter::once(ApiKeyResponse {
+                id: audit::ADMIN.into(),
+                label: audit::ADMIN.into(),
+                created_at: String::new(),
+                primary: true,
+            })
+            .chain(keys.into_iter().map(|k| ApiKeyResponse {
+                id: k.id,
+                label: k.label,
+                created_at: k.created_at,
+                primary: false,
+            }))
+            .collect();
             (StatusCode::OK, Json(body)).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
@@ -2642,6 +2651,16 @@ async fn create_key<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     Json(body): Json<CreateKeyRequest>,
 ) -> Response {
+    if audit::reserved_actor(&body.label) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorReport::plain(format!(
+                "'{}' is reserved: admin is the Platform's own key and system is what it does on its own",
+                body.label.trim()
+            ))),
+        )
+            .into_response();
+    }
     let key_bytes: [u8; 32] = rand::rng().random();
     let key: String = key_bytes.iter().map(|b| format!("{b:02x}")).collect();
     let id = format!("sk-{}", &key[..12]);
@@ -2673,6 +2692,15 @@ async fn revoke_key<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
+    if id == audit::ADMIN {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorReport::plain(
+                "the admin key is the Platform's own and cannot be revoked",
+            )),
+        )
+            .into_response();
+    }
     match state.store.revoke_api_key(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(StoreError::NotFound(_)) => {
@@ -2731,7 +2759,9 @@ async fn require_api_key<S: StateStore>(
 
     if let Some(key) = auth_header.filter(|key| !key.is_empty()) {
         if !expected_key.is_empty() && constant_time_eq(key, &expected_key) {
-            return audit::ACTOR.scope(None, next.run(req)).await;
+            return audit::ACTOR
+                .scope(Some(audit::ADMIN.into()), next.run(req))
+                .await;
         }
         use sha2::{Digest, Sha256};
         let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
