@@ -158,6 +158,17 @@ impl S6Runtime {
             std::fs::set_permissions(&self.data_root, std::fs::Permissions::from_mode(0o711))?;
         }
         protected_parent(&self.data_root)?;
+        // An Application Account walks down to its home, so a data directory
+        // the Operator made 0700 would fail later as a bare permission error.
+        for ancestor in self.data_root.ancestors() {
+            if std::fs::metadata(ancestor)?.mode() & 0o001 == 0 {
+                bail!(
+                    "native Applications cannot reach {}: give {} execute permission for others (chmod o+x)",
+                    self.data_root.display(),
+                    ancestor.display()
+                );
+            }
+        }
         let home = self.home(&record.id)?;
         if home.exists() {
             let metadata = std::fs::symlink_metadata(&home)?;
