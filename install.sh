@@ -28,14 +28,16 @@ WATCHDOG="self-host-colima"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 DNS_SUFFIX="${SELF_HOST_DNS:-home.lan}"
 HOST_IP="${SELF_HOST_IP:-}"
-# Resolved once, so init and the daemon launchd starts from / open the
-# same directory.
+# Resolved once, without `..` or symlinks, so init, the daemon launchd
+# starts from / and the Colima mount all name the same directory. /tmp on
+# macOS is really /private/tmp, and the Colima guest only has the latter.
 DATA_DIR="${SELF_HOST_DATA_DIR:-}"
 if [ -n "$DATA_DIR" ]; then
-	case "$DATA_DIR" in
-		/*) ;;
-		*) DATA_DIR="$PWD/$DATA_DIR" ;;
-	esac
+	mkdir -p "$DATA_DIR" || {
+		echo "cannot create ${DATA_DIR}; create it and give it to $(id -un) first" >&2
+		exit 1
+	}
+	DATA_DIR=$(cd "$DATA_DIR" && pwd -P)
 	export SELF_HOST_DATA_DIR="$DATA_DIR"
 fi
 RUNTIME="${SELF_HOST_RUNTIME:-}"
@@ -447,17 +449,12 @@ write_colima_template() {
 
 	# Compose bind mounts live in the data directory, so the guest needs it
 	# too when it is outside the home.
-	local locations=("$home") real
+	local locations=("$home")
+	# DATA_DIR is already resolved; the home may be a symlink too.
 	if [ -n "${DATA_DIR:-}" ]; then
-		mkdir -p "$DATA_DIR" || {
-			echo "cannot create ${DATA_DIR}; create it and give it to ${USER} first" >&2
-			exit 1
-		}
-		# `..` and symlinks decide what the home mount really covers.
-		real=$(cd "$DATA_DIR" && pwd -P)
-		case "$real/" in
+		case "$DATA_DIR/" in
 			"$(cd "$home" && pwd -P)"/*) ;;
-			*) locations+=("$real") ;;
+			*) locations+=("$DATA_DIR") ;;
 		esac
 	fi
 	mounts=""

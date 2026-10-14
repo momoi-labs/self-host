@@ -1272,16 +1272,33 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     // Docker can be shared with another Platform, one started with its own
     // data directory for testing. Only this Platform's Applications go:
     // their containers, volumes and networks are all named sf-app-<id>.
-    let ids: Vec<String> = match FileStateStore::open(file_store::state_dir()) {
-        Ok(store) => store
-            .list_applications()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|app| app.id)
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+    //
+    // An Application removed without its data is gone from the list but
+    // keeps its volumes, its project and its deployment history, so those
+    // name it too. State that cannot be read stops the reset: guessing an
+    // empty Platform would delete the records and leave the containers.
+    let state = file_store::state_dir();
+    let mut ids = std::collections::BTreeSet::new();
+    if state.exists() {
+        let store = FileStateStore::read_only(&state)
+            .context("cannot read the Platform state to find its Applications")?;
+        for app in store.list_applications().await? {
+            ids.insert(app.id);
+        }
+        for deployment in self_host::deployments::all(&store).await? {
+            ids.insert(deployment.application_id);
+        }
+    }
+    if let Some(projects) = self_host::apps::project_dir_for("_").parent()
+        && let Ok(entries) = std::fs::read_dir(projects)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if self_host::apps::is_app_id(&name) {
+                ids.insert(name);
+            }
+        }
+    }
     let listed = |args: &[&str], filters: Vec<String>| -> anyhow::Result<Vec<String>> {
         let mut command = std::process::Command::new("docker");
         command.args(args);
@@ -1298,15 +1315,21 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         found.dedup();
         Ok(found)
     };
-    let owned = |suffix: &str| -> Vec<String> {
+    let owned = |patterns: &[&str]| -> Vec<String> {
         ids.iter()
-            .map(|id| format!("^sf-app-{id}{suffix}"))
+            .flat_map(|id| {
+                patterns
+                    .iter()
+                    .map(move |pattern| pattern.replace("{id}", id))
+            })
             .chain(["^self-host".to_string(), "^sf-system".to_string()])
             .collect()
     };
 
     println!("Stopping and removing containers...");
-    let container_ids = listed(&["ps", "-aq"], owned("-"))?;
+    // An image Application's one container is sf-app-<id>; a Compose
+    // service's is sf-app-<id>-<service>.
+    let container_ids = listed(&["ps", "-aq"], owned(&["^sf-app-{id}$", "^sf-app-{id}-"]))?;
     if !container_ids.is_empty() {
         std::process::Command::new("docker")
             .args(["rm", "-f"])
@@ -1320,7 +1343,7 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     // A Compose Application's named volumes are created under its project,
     // so they are sf-app-<id>_<volume>.
     println!("Removing volumes...");
-    let volume_names = listed(&["volume", "ls", "-q"], owned("_"))?;
+    let volume_names = listed(&["volume", "ls", "-q"], owned(&["^sf-app-{id}_"]))?;
     if !volume_names.is_empty() {
         std::process::Command::new("docker")
             .args(["volume", "rm"])
@@ -1332,7 +1355,12 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     }
 
     println!("Removing networks...");
-    let mut network_names = listed(&["network", "ls", "--format", "{{.Name}}"], owned("$"))?;
+    // Compose names its default network sf-app-<id>_default, and a private
+    // provider has sf-private-<id>.
+    let mut network_names = listed(
+        &["network", "ls", "--format", "{{.Name}}"],
+        owned(&["^sf-app-{id}$", "^sf-app-{id}_", "^sf-private-{id}$"]),
+    )?;
     network_names.retain(|name| name != "self-host");
     // A network still in use by another Platform's containers stays.
     network_names.push("self-host".into());
