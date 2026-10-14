@@ -148,9 +148,11 @@ pub fn remove_docker_resources(ids: &BTreeSet<String>, legacy: bool) -> Result<(
         &owned(&["^sf-app-{id}$", "^sf-app-{id}-"], &["self-host", "sf-"]),
     )?;
     if !container_ids.is_empty() {
+        // -v: a Compose mount with no source makes an anonymous volume, whose
+        // generated name no filter can find later.
         docker_checked(
             Command::new("docker")
-                .args(["rm", "-f"])
+                .args(["rm", "-f", "-v"])
                 .args(&container_ids),
         )?;
         println!("Containers removed.");
@@ -277,6 +279,9 @@ pub async fn inventory() -> Result<Inventory> {
     }
     // Native Applications run no image.
     images.retain(|image| !image.is_empty());
+    // Docker lists `nginx` as `nginx:latest`, and drops the default registry.
+    let named: Vec<String> = images.iter().map(|image| docker_name(image)).collect();
+    images.extend(named);
 
     let suffix = std::fs::read(data_dir.join("dns.json"))
         .ok()
@@ -367,6 +372,21 @@ fn private_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// An image reference as `docker image ls` shows it: without the default
+/// registry, and with `:latest` when it names no tag or digest.
+fn docker_name(image: &str) -> String {
+    let short = image
+        .strip_prefix("docker.io/library/")
+        .or_else(|| image.strip_prefix("docker.io/"))
+        .unwrap_or(image);
+    let last = short.rsplit('/').next().unwrap_or(short);
+    if short.starts_with("sha256:") || last.contains(':') || last.contains('@') {
+        short.to_string()
+    } else {
+        format!("{short}:latest")
+    }
+}
+
 /// What `run` would remove, one line each, for the Operator to confirm.
 pub fn describe(inventory: &Inventory) -> Vec<String> {
     let mut lines = vec![format!(
@@ -446,6 +466,13 @@ pub async fn run(inventory: &Inventory) -> Vec<String> {
             remove_docker_resources(&inventory.ids, false),
         );
         step("images", remove_images(inventory).await);
+    } else if inventory.ids.len() > inventory.native.len() {
+        step(
+            "containers, volumes and networks",
+            Err(anyhow::anyhow!(
+                "this Platform has container Applications, but docker is not on the PATH"
+            )),
+        );
     } else {
         println!("No Docker on this Host; skipping containers, volumes, networks and images.");
     }
@@ -458,7 +485,7 @@ pub async fn run(inventory: &Inventory) -> Vec<String> {
     );
 
     if failures.is_empty()
-        && let Err(error) = remove_native_shared()
+        && let Err(error) = remove_native_shared(&inventory.native)
     {
         eprintln!("native supervision: {error:#}");
         failures.push(format!("native supervision: {error:#}"));
@@ -518,15 +545,30 @@ async fn remove_native(native: &[ApplicationRecord]) -> Result<()> {
     Ok(())
 }
 
-/// What every Platform on the Host shares for native Applications. It goes
-/// last, once every other step worked: a retry still needs the supervision
-/// tree to remove what a failed run left.
-fn remove_native_shared() -> Result<()> {
-    if crate::paths::data_dir_given() {
-        return Ok(());
-    }
+/// What every Platform on the Host shares for native Applications on Linux:
+/// the supervision service, the default native directories and the bundled
+/// s6. It goes last, once every other step worked, since a retry still needs
+/// the supervision tree, and only when no other Platform still has a service
+/// in it. On macOS the helper and its accounts are the whole Mac's, and
+/// uninstall.sh removes them with the helper.
+fn remove_native_shared(native: &[ApplicationRecord]) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
+        let ours: BTreeSet<&str> = native.iter().map(|app| app.id.as_str()).collect();
+        let others = std::fs::read_dir("/var/lib/self-host/native/services")
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                    .any(|entry| !ours.contains(entry.file_name().to_string_lossy().as_ref()))
+            })
+            .unwrap_or(false);
+        if others {
+            println!(
+                "Another Platform still runs native Applications; keeping native supervision."
+            );
+            return Ok(());
+        }
         if Path::new("/etc/systemd/system/self-host-native.service").exists() {
             println!("Removing self-host-native.service...");
             checked(
@@ -548,25 +590,8 @@ fn remove_native_shared() -> Result<()> {
             }
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        let helper = Path::new(crate::native::macos::HELPER);
-        if helper.exists() {
-            println!("Removing native Application accounts...");
-            checked(
-                privileged(crate::native::macos::HELPER).arg("native-uninstall"),
-                "removing native Application accounts (macOS asks for Full Disk Access)",
-            )?;
-        }
-        // The accounts are gone, so macOS lets their homes go too.
-        let data = Path::new(crate::native::macos::DATA);
-        if data.exists() {
-            checked(
-                privileged("rm").arg("-rf").arg(data),
-                "removing native Application data",
-            )?;
-        }
-    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = native;
     Ok(())
 }
 
@@ -777,6 +802,18 @@ fn remove_host_dns(resolvers: &[PathBuf], suffix: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_references_read_as_docker_lists_them() {
+        assert_eq!(docker_name("nginx"), "nginx:latest");
+        assert_eq!(docker_name("docker.io/library/nginx:1.27"), "nginx:1.27");
+        assert_eq!(docker_name("ghcr.io/org/app"), "ghcr.io/org/app:latest");
+        assert_eq!(
+            docker_name("localhost:5000/app"),
+            "localhost:5000/app:latest"
+        );
+        assert_eq!(docker_name("redis@sha256:abc"), "redis@sha256:abc");
+    }
 
     #[test]
     fn a_resolver_file_is_ours_when_it_routes_this_platforms_suffix() {
