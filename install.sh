@@ -295,6 +295,16 @@ bootstrap_macos() {
 	choose_runtime
 	if [ "$RUNTIME" = "colima" ]; then
 		prepare_colima "$operator" "$home"
+	elif [ -n "$DATA_DIR" ]; then
+		case "$DATA_DIR/" in
+			"$(cd "$home" && pwd -P)"/*) ;;
+			*)
+				# A runtime this installer does not manage mounts what it
+				# mounts. Compose bind mounts resolve inside it.
+				echo "the data directory ${DATA_DIR} is outside your home; share it with" >&2
+				echo "the Docker runtime you already run, or bind mounts will be empty." >&2
+				;;
+		esac
 	fi
 
 	wait_for_docker
