@@ -18,6 +18,7 @@ import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
 import { Fact, GroupCard, type GroupSection } from "./GroupCard.js";
 import { Icon } from "./Icon.js";
+import { ProcessCard } from "./ProcessCard.js";
 import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
 import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
 import { useToast } from "./Toasts.js";
@@ -222,11 +223,11 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
                 </> : undefined} empty="Not built yet" />
               </> : main.image ? <Fact icon="box" label="Image" value={main.image} /> : null}
               {main.port ? <Fact icon="plug" label="Port" value={main.port} /> : null}
-              {/* A native command is long and the What runs pane below already shows it. */}
-              {native ? null : <Fact icon="terminal" label="Command" value={main.command} empty="Image default" />}
               {native ? <Fact icon="user" label="Account" value={native.account} /> : null}
             </span>
           </DiagramNode>
+          {/* What runs right now replaces the command the definition names. */}
+          <ProcessCard id={app.id} native={!!native} />
           {rest.length ? (
             <DiagramNode id="containers" title="" className="group-node card-rest">
               <GroupCard title={native ? "Other processes" : "Other containers"} sections={[{
