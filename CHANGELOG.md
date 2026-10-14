@@ -1,5 +1,24 @@
 # self-host
 
+## 0.10.0
+
+### Minor Changes
+
+- 04e5666: An Application's Summary shows what it runs right now. A card under the container that receives requests says how many processes run and the CPU and memory they use together, and opens into the process tree as a table with each command, PID, CPU and memory. A Compose Application has a chip per container. The card reads again every 5 seconds while the Summary is open, and replaces the Command line the container used to show. `GET /apps/id/{id}/processes` returns the same tree by container: from the cgroup on Linux, from `ps` under the s6 runner on macOS, and from `docker top` for containers. Variable values in command lines are replaced with `[redacted]`. CPU is what `ps` reports: on Linux the average over the process's lifetime, on macOS a recent average.
+
+### Patch Changes
+
+- 3669988: Events name who acted: work done with the Platform key shows as **admin**, and work the Platform starts on its own, like a scheduled run, shows as **system**. The Platform key is listed in Settings, API keys, as admin and cannot be revoked there. New keys cannot take the labels admin or system.
+- a44685b: `-D <dir>` (or `--data-dir`, or `SELF_HOST_DATA_DIR`) keeps everything the Platform stores under one directory, the way `postgres -D` does: configuration, state, certificates, Compose projects and their data, Virtual machines, and native Application data on Linux. Without it the default paths apply, and nothing is moved. `install.sh` passes `SELF_HOST_DATA_DIR` on to `init` and the macOS LaunchDaemon. `serve --port` (or `-p`) picks the API port, so two Platforms can run on one machine for testing.
+- 6f7c876: Upgrading a macOS Host with `install.sh` no longer stops with `Bootstrap failed: 5` and needs a second run. The installer now waits for launchd to let go of a daemon it unloaded before loading it again, retries the load a few times, and then checks that each daemon stays up and that the Platform answers on its API before it reports success.
+- fde566b: Git Applications build on macOS Hosts. A build's isolated Docker configuration now uses the Operator's Docker endpoint and plugin directories, so it reaches Colima and finds buildx.
+- 72f50a2: Removing a native Application with its data works on macOS. Its data goes, and its home stays as an empty folder: macOS refuses to delete the home of a registered account, even as root, and deleting the account needs an approval on the Mac's screen.
+- bda44c4: Removing an Application can now delete everything it stored. The console's Remove dialog has **Also delete everything it stored**, confirmed by typing the Application's name, and the API takes `?delete_data=true`: its named volumes, its project directory and data, its deployment history and the images only it used go with it. Without it, removal keeps the data as before.
+  
+  `self-host prune` removes what removed Applications left behind, and Git builds no deployment keeps: volumes, project directories, images and deployment history. It lists each item with the space it frees and asks first. It is safe while everything runs: it only touches names that carry an Application id, and anything that still has a container stays. `GET /prune` shows the list and `POST /prune` runs it as a task.
+- 64e5267: Settings has a Scheduled tasks pane: work the Platform runs on its own. The first is **Remove unused data**, which runs `prune`. It is off until turned on, then runs daily or weekly on Sunday at the hour picked in the browser's time. Each run is a task with its outcome in Events, a run missed while the Host was off runs once on start, and runs never overlap. **Run now** starts one at once.
+- 93189ba: `self-host uninstall` removes everything the Platform created on the Host, on Linux and macOS: Applications with their data and images, Virtual machines, native Applications and their accounts, the CA in the system trust store, the host DNS routing and the data directory. It lists what goes and asks first, and only touches this Platform's names when Docker is shared. On macOS, `uninstall.sh` runs it and then removes what the installer set up. The installer now marks the `/etc/resolver` file it writes, so the uninstall can tell it from Tailscale's.
+
 ## 0.9.2
 
 ### Patch Changes
