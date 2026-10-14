@@ -258,7 +258,17 @@ async fn main() {
         .or_else(|| env::var_os("SELF_HOST_DATA_DIR").map(Into::into))
         .filter(|dir| !dir.as_os_str().is_empty())
     {
-        match std::path::absolute(&dir) {
+        // Without `..` or symlinks, as the installer resolves it: on macOS the
+        // Colima guest has /private/tmp, never /tmp.
+        let resolved = std::path::absolute(&dir).map(|dir| {
+            std::fs::canonicalize(&dir)
+                .or_else(|_| {
+                    let parent = std::fs::canonicalize(dir.parent().unwrap_or(&dir))?;
+                    Ok::<_, std::io::Error>(parent.join(dir.file_name().unwrap_or_default()))
+                })
+                .unwrap_or(dir)
+        });
+        match resolved {
             Ok(dir) => self_host::paths::set_data_dir(dir),
             Err(error) => {
                 eprintln!("error: data directory {}: {error}", dir.display());
@@ -1277,12 +1287,30 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     // keeps its volumes, its project and its deployment history, so those
     // name it too. State that cannot be read stops the reset: guessing an
     // empty Platform would delete the records and leave the containers.
+    // Applications of a Platform that kept its state in PostgreSQL are named
+    // nowhere this reset can read, so it would leave them running.
+    refuse_legacy_state(&CliDocker::new()).await?;
     let state = file_store::state_dir();
     let mut ids = std::collections::BTreeSet::new();
     if state.exists() {
         let store = FileStateStore::read_only(&state)
             .context("cannot read the Platform state to find its Applications")?;
-        for app in store.list_applications().await? {
+        // Virtual machines and native Applications run outside Docker, and
+        // reset only stops containers. Deleting their disks and homes under a
+        // running machine or service is worse than refusing.
+        let applications = store.list_applications().await?;
+        let native = applications
+            .iter()
+            .filter(|app| app.source == self_host::apps::SOURCE_NATIVE)
+            .count();
+        let machines = self_host::collection::MACHINES.list(&store).await?.len();
+        if native + machines > 0 {
+            anyhow::bail!(
+                "this Platform has {machines} Virtual machine(s) and {native} native Application(s), \
+                 which reset cannot stop. Remove them in the console first, then reset again"
+            );
+        }
+        for app in applications {
             ids.insert(app.id);
         }
         for deployment in self_host::deployments::all(&store).await? {
