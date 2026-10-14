@@ -100,6 +100,17 @@ fn listed(args: &[&str], filters: &[String]) -> Result<Vec<String>> {
     Ok(found)
 }
 
+/// A Docker command whose refusal is a failure: what it would remove stays.
+fn docker_checked(command: &mut Command) -> Result<()> {
+    let output = command.output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
 /// Removes the containers, volumes and networks of these Applications. With
 /// `legacy`, a Platform still in an older format that names its Applications
 /// nowhere readable, it removes everything with the Platform's prefixes, as
@@ -137,10 +148,11 @@ pub fn remove_docker_resources(ids: &BTreeSet<String>, legacy: bool) -> Result<(
         &owned(&["^sf-app-{id}$", "^sf-app-{id}-"], &["self-host", "sf-"]),
     )?;
     if !container_ids.is_empty() {
-        Command::new("docker")
-            .args(["rm", "-f"])
-            .args(&container_ids)
-            .output()?;
+        docker_checked(
+            Command::new("docker")
+                .args(["rm", "-f"])
+                .args(&container_ids),
+        )?;
         println!("Containers removed.");
     } else {
         println!("No containers found.");
@@ -154,10 +166,11 @@ pub fn remove_docker_resources(ids: &BTreeSet<String>, legacy: bool) -> Result<(
         &owned(&["^sf-app-{id}_"], &["self-host", "^sf-app-"]),
     )?;
     if !volume_names.is_empty() {
-        Command::new("docker")
-            .args(["volume", "rm"])
-            .args(&volume_names)
-            .output()?;
+        docker_checked(
+            Command::new("docker")
+                .args(["volume", "rm"])
+                .args(&volume_names),
+        )?;
         println!("Volumes removed.");
     } else {
         println!("No volumes found.");
@@ -173,14 +186,23 @@ pub fn remove_docker_resources(ids: &BTreeSet<String>, legacy: bool) -> Result<(
             &["sf-"],
         ),
     )?;
-    network_names.retain(|name| name != "self-host");
+    network_names.retain(|name| name != "self-host" && name != crate::docker::APP_NETWORK);
+    if !network_names.is_empty() {
+        let mut remove = Command::new("docker");
+        remove.args(["network", "rm"]).args(&network_names);
+        // The old prefix match also catches networks this Platform never
+        // made, so only its own Applications' networks must go.
+        if legacy {
+            let _ = remove.output();
+        } else {
+            docker_checked(&mut remove)?;
+        }
+    }
     // The shared networks every Platform on this Docker joins. One still in
-    // use by another Platform's containers stays: Docker refuses it.
-    network_names.push("self-host".into());
-    network_names.push(crate::docker::APP_NETWORK.into());
+    // use by another Platform's containers stays: Docker refuses it, and
+    // that is no failure.
     let _ = Command::new("docker")
-        .args(["network", "rm"])
-        .args(&network_names)
+        .args(["network", "rm", "self-host", crate::docker::APP_NETWORK])
         .output();
     println!("Networks removed.");
     Ok(())
@@ -201,6 +223,8 @@ pub struct Inventory {
     pub ca: Option<Vec<u8>>,
     /// macOS resolver files that route a DNS Suffix to this Host.
     pub resolvers: Vec<PathBuf>,
+    /// The state, open as the writer, so no daemon starts while this runs.
+    _store: Option<FileStateStore>,
 }
 
 pub async fn inventory() -> Result<Inventory> {
@@ -211,11 +235,18 @@ pub async fn inventory() -> Result<Inventory> {
         "this Platform still keeps its state in JSON files; import it first \
          (docs/operating.md), or run 'self-host reset --force'"
     );
+    // The writer lock, held until the uninstall ends: a daemon still running
+    // would go on writing state and starting work while it goes.
     let store = if state.join(crate::file_store::DB_FILE).exists() {
-        Some(
-            FileStateStore::read_only(&state)
-                .context("cannot read the Platform state to find what it created")?,
-        )
+        Some(FileStateStore::open(&state).map_err(|error| {
+            match error {
+                crate::store::StoreError::Locked(_) => anyhow::anyhow!(
+                    "the Platform is running; stop 'self-host serve' first, then uninstall"
+                ),
+                error => anyhow::Error::new(error)
+                    .context("cannot read the Platform state to find what it created"),
+            }
+        })?)
     } else {
         None
     };
@@ -261,6 +292,7 @@ pub async fn inventory() -> Result<Inventory> {
         suffix,
         ca,
         resolvers,
+        _store: store,
     })
 }
 
@@ -315,6 +347,19 @@ fn ours(text: &str, name: Option<&str>, suffix: Option<&str>, local: &BTreeSet<S
                     .nth(1)
                     .is_some_and(|server| local.contains(server))
         })
+}
+
+/// A directory only this process's user can enter, for files a root step
+/// reads: a fixed name under /tmp could be a symlink someone else planted.
+#[cfg(target_os = "linux")]
+fn private_dir() -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = std::env::temp_dir().join(format!(
+        "self-host-uninstall-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    Ok(dir)
 }
 
 /// What `run` would remove, one line each, for the Operator to confirm.
@@ -407,6 +452,12 @@ pub async fn run(inventory: &Inventory) -> Vec<String> {
         remove_host_dns(&inventory.resolvers, inventory.suffix.as_deref()),
     );
 
+    if failures.is_empty()
+        && let Err(error) = remove_native_shared()
+    {
+        eprintln!("native supervision: {error:#}");
+        failures.push(format!("native supervision: {error:#}"));
+    }
     if failures.is_empty() && inventory.data_dir.exists() {
         println!("Removing {}...", inventory.data_dir.display());
         if let Err(error) = std::fs::remove_dir_all(&inventory.data_dir) {
@@ -433,10 +484,6 @@ async fn remove_machines(machines: &[EnvironmentRecord]) -> Result<()> {
 
 /// Each native Application goes through the runtime that runs it, with its
 /// data: the Platform itself on Linux, as root, and the root helper on macOS.
-/// What every Platform on the Host shares, the supervision service, the
-/// default native directories and, on macOS, the accounts the helper keeps
-/// and their data, goes only with the Platform in the default places, which
-/// is the one that set them up.
 async fn remove_native(native: &[ApplicationRecord]) -> Result<()> {
     use crate::native::lifecycle::{HostRuntime, NativeRuntime};
     if !native.is_empty() {
@@ -452,6 +499,13 @@ async fn remove_native(native: &[ApplicationRecord]) -> Result<()> {
             runtime.remove(app, true).await?;
         }
     }
+    Ok(())
+}
+
+/// What every Platform on the Host shares for native Applications. It goes
+/// last, once every other step worked: a retry still needs the supervision
+/// tree to remove what a failed run left.
+fn remove_native_shared() -> Result<()> {
     if crate::paths::data_dir_given() {
         return Ok(());
     }
@@ -504,8 +558,24 @@ async fn remove_native(native: &[ApplicationRecord]) -> Result<()> {
 async fn remove_images(inventory: &Inventory) -> Result<()> {
     use crate::docker::{CliDocker, DockerRuntime};
     let docker = CliDocker::new();
+    let references = docker.image_references().await?;
+    // This Platform's containers are gone by now, so any container left is
+    // someone else's. Whatever it runs stays, under every tag: removing one
+    // tag of an image another Platform uses would take its reference.
+    let mut in_use = BTreeSet::new();
+    for image in docker.container_images().await? {
+        for (reference, id, _) in &references {
+            if *reference == image || *id == image {
+                in_use.insert(id.clone());
+            }
+        }
+        in_use.insert(image);
+    }
     let mut doomed = BTreeSet::new();
-    for (reference, id, _) in docker.image_references().await? {
+    for (reference, id, _) in references {
+        if in_use.contains(&id) {
+            continue;
+        }
         let built = reference
             .strip_prefix("sf-source-")
             .and_then(|rest| rest.get(..12))
@@ -550,6 +620,10 @@ fn untrust_ca(der: &[u8]) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
+        // Removing the anchor and regenerating the bundle are two steps. A
+        // marker in the data directory, which a failed run keeps, makes the
+        // next run regenerate even though the anchor is already gone.
+        let pending = crate::paths::platform_config_dir().join(".trust-refresh-pending");
         let anchor = Path::new("/usr/local/share/ca-certificates/self-host-ca.crt");
         let ours = std::fs::read(anchor)
             .ok()
@@ -557,49 +631,68 @@ fn untrust_ca(der: &[u8]) -> Result<()> {
             .is_some_and(|pem| pem.contents() == der);
         if ours {
             println!("Removing the Platform CA from the system trust store...");
+            std::fs::write(&pending, b"")?;
             checked(privileged("rm").arg("-f").arg(anchor), "removing the CA")?;
+        }
+        if pending.exists() {
             checked(
                 &mut privileged("update-ca-certificates"),
                 "updating the system trust store",
             )?;
+            std::fs::remove_file(&pending)?;
         }
+
         // p11-kit keeps anchors in its own format; ask it instead of
         // guessing at files, and only ask for root when the CA is there.
-        let anchored = Path::new("/etc/arch-release").exists() && {
-            // Every install mints its own CA under the same name, so only the
-            // certificate itself says whether this one is anchored.
-            let bundle =
-                std::env::temp_dir().join(format!("self-host-anchors-{}.pem", std::process::id()));
+        // Every install mints its own CA under the same name, so only the
+        // certificate itself says whether this one is anchored.
+        if Path::new("/etc/arch-release").exists() {
+            let scratch = private_dir()?;
+            let bundle = scratch.join("anchors.pem");
             let _ = Command::new("trust")
                 .args(["extract", "--format=pem-bundle", "--filter=ca-anchors"])
                 .arg(&bundle)
                 .output();
-            let found = std::fs::read(&bundle)
+            let anchored = std::fs::read(&bundle)
                 .ok()
                 .and_then(|bytes| pem::parse_many(bytes).ok())
                 .is_some_and(|anchors| anchors.iter().any(|anchor| anchor.contents() == der));
-            let _ = std::fs::remove_file(&bundle);
-            found
-        };
-        if anchored {
-            println!("Removing the Platform CA from the p11-kit trust store...");
-            let pem = pem::encode(&pem::Pem::new("CERTIFICATE", der.to_vec()));
-            let file =
-                std::env::temp_dir().join(format!("self-host-ca-{}.pem", std::process::id()));
-            std::fs::write(&file, pem)?;
-            let _ = privileged("trust")
-                .args(["anchor", "--remove"])
-                .arg(&file)
-                .status();
-            let _ = std::fs::remove_file(&file);
+            if anchored {
+                println!("Removing the Platform CA from the p11-kit trust store...");
+                let file = scratch.join("ca.pem");
+                std::fs::write(
+                    &file,
+                    pem::encode(&pem::Pem::new("CERTIFICATE", der.to_vec())),
+                )?;
+                let result = checked(
+                    privileged("trust").args(["anchor", "--remove"]).arg(&file),
+                    "removing the CA from p11-kit",
+                );
+                let _ = std::fs::remove_dir_all(&scratch);
+                result?;
+            } else {
+                let _ = std::fs::remove_dir_all(&scratch);
+            }
         }
+
+        // The browsers' own store: the same nickname may be another
+        // Platform's CA, so the certificate is compared first.
         if let Some(home) = dirs::home_dir() {
             let nss = home.join(".pki/nssdb");
             if nss.join("cert9.db").exists() {
-                let _ = Command::new("certutil")
-                    .args(["-D", "-n", CA_NAME, "-d"])
-                    .arg(format!("sql:{}", nss.display()))
+                let database = format!("sql:{}", nss.display());
+                let listed = Command::new("certutil")
+                    .args(["-L", "-a", "-n", CA_NAME, "-d", &database])
                     .output();
+                let matches = listed
+                    .ok()
+                    .and_then(|output| pem::parse_many(output.stdout).ok())
+                    .is_some_and(|certs| certs.iter().any(|cert| cert.contents() == der));
+                if matches {
+                    let _ = Command::new("certutil")
+                        .args(["-D", "-n", CA_NAME, "-d", &database])
+                        .output();
+                }
             }
         }
     }
