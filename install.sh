@@ -447,17 +447,19 @@ write_colima_template() {
 
 	# Compose bind mounts live in the data directory, so the guest needs it
 	# too when it is outside the home.
-	local locations=("$home")
-	case "${DATA_DIR:-$home}/" in
-		"$home"/*) ;;
-		*)
-			mkdir -p "$DATA_DIR" || {
-				echo "cannot create ${DATA_DIR}; create it and give it to ${USER} first" >&2
-				exit 1
-			}
-			locations+=("$DATA_DIR")
-			;;
-	esac
+	local locations=("$home") real
+	if [ -n "${DATA_DIR:-}" ]; then
+		mkdir -p "$DATA_DIR" || {
+			echo "cannot create ${DATA_DIR}; create it and give it to ${USER} first" >&2
+			exit 1
+		}
+		# `..` and symlinks decide what the home mount really covers.
+		real=$(cd "$DATA_DIR" && pwd -P)
+		case "$real/" in
+			"$(cd "$home" && pwd -P)"/*) ;;
+			*) locations+=("$real") ;;
+		esac
+	fi
 	mounts=""
 	for location in "${locations[@]}"; do
 		mounts+="  - location: ${location}
@@ -502,12 +504,14 @@ EOF
 	elif grep -q "location: ${home}\$" "$profile"; then
 		# The home this installer mounted before: the rest go right after it.
 		echo "adding ${missing[*]} to the existing Colima profile ($profile)..."
+		# The new entries go after the whole home entry, whatever order its
+		# keys are in: before the next item, or the next top-level key.
 		EXTRA="$mounts" awk -v home="location: ${home}" '
+			function flush() { if (pending) { printf "%s", ENVIRON["EXTRA"]; pending = 0 } }
+			inside && (/^[[:space:]]*-[[:space:]]/ || /^[^[:space:]]/) { inside = 0; flush() }
 			{ print }
-			index($0, home) && substr($0, length($0) - length(home) + 1) == home {
-				if ((getline next_line) > 0) print next_line
-				printf "%s", ENVIRON["EXTRA"]
-			}' "$profile" >"$profile.tmp" && mv "$profile.tmp" "$profile"
+			substr($0, length($0) - length(home) + 1) == home { inside = 1; pending = 1 }
+			END { flush() }' "$profile" >"$profile.tmp" && mv "$profile.tmp" "$profile"
 	else
 		# Mounts the Operator chose. Where their list ends is a guess, so
 		# say what is missing instead of rewriting it.

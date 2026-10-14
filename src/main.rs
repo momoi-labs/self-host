@@ -1269,76 +1269,77 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         }
     }
 
-    println!("Stopping and removing containers...");
-    let mut container_ids = Vec::new();
-    for name in ["self-host", "sf-"] {
-        let output = std::process::Command::new("docker")
-            .args(["ps", "-aq", "--filter", &format!("name={name}")])
-            .output()?;
-        container_ids.extend(
-            String::from_utf8_lossy(&output.stdout)
-                .split_whitespace()
-                .map(str::to_string),
-        );
-    }
-    container_ids.sort();
-    container_ids.dedup();
-    if !container_ids.is_empty() {
-        let mut remove_cmd = std::process::Command::new("docker");
-        remove_cmd.arg("rm").arg("-f");
-        for id in container_ids {
-            remove_cmd.arg(id);
+    // Docker can be shared with another Platform, one started with its own
+    // data directory for testing. Only this Platform's Applications go:
+    // their containers, volumes and networks are all named sf-app-<id>.
+    let ids: Vec<String> = match FileStateStore::open(file_store::state_dir()) {
+        Ok(store) => store
+            .list_applications()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|app| app.id)
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let listed = |args: &[&str], filters: Vec<String>| -> anyhow::Result<Vec<String>> {
+        let mut command = std::process::Command::new("docker");
+        command.args(args);
+        // Repeated name filters are an OR.
+        for filter in filters {
+            command.args(["--filter", &format!("name={filter}")]);
         }
-        remove_cmd.output()?;
+        let output = command.output()?;
+        let mut found: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        found.sort();
+        found.dedup();
+        Ok(found)
+    };
+    let owned = |suffix: &str| -> Vec<String> {
+        ids.iter()
+            .map(|id| format!("^sf-app-{id}{suffix}"))
+            .chain(["^self-host".to_string(), "^sf-system".to_string()])
+            .collect()
+    };
+
+    println!("Stopping and removing containers...");
+    let container_ids = listed(&["ps", "-aq"], owned("-"))?;
+    if !container_ids.is_empty() {
+        std::process::Command::new("docker")
+            .args(["rm", "-f"])
+            .args(&container_ids)
+            .output()?;
         println!("Containers removed.");
     } else {
         println!("No containers found.");
     }
 
     // A Compose Application's named volumes are created under its project,
-    // so they are sf-app-<id>_<volume> and the self-host prefix alone leaves
-    // them behind. Repeated name filters are an OR.
+    // so they are sf-app-<id>_<volume>.
     println!("Removing volumes...");
-    let output = std::process::Command::new("docker")
-        .args([
-            "volume",
-            "ls",
-            "-q",
-            "--filter",
-            "name=self-host",
-            "--filter",
-            "name=^sf-app-",
-        ])
-        .output()?;
-
-    let volume_names = String::from_utf8_lossy(&output.stdout);
-    if !volume_names.trim().is_empty() {
-        let mut remove_cmd = std::process::Command::new("docker");
-        remove_cmd.arg("volume").arg("rm");
-        for name in volume_names.split_whitespace() {
-            remove_cmd.arg(name);
-        }
-        remove_cmd.output()?;
+    let volume_names = listed(&["volume", "ls", "-q"], owned("_"))?;
+    if !volume_names.is_empty() {
+        std::process::Command::new("docker")
+            .args(["volume", "rm"])
+            .args(&volume_names)
+            .output()?;
         println!("Volumes removed.");
     } else {
         println!("No volumes found.");
     }
 
     println!("Removing networks...");
-    let output = std::process::Command::new("docker")
-        .args(["network", "ls", "-q", "--filter", "name=sf-"])
-        .output()?;
-    let mut network_ids: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .map(str::to_string)
-        .collect();
-    network_ids.push("self-host".into());
-    let mut remove_cmd = std::process::Command::new("docker");
-    remove_cmd.arg("network").arg("rm");
-    for id in network_ids {
-        remove_cmd.arg(id);
-    }
-    let _ = remove_cmd.output();
+    let mut network_names = listed(&["network", "ls", "--format", "{{.Name}}"], owned("$"))?;
+    network_names.retain(|name| name != "self-host");
+    // A network still in use by another Platform's containers stays.
+    network_names.push("self-host".into());
+    let _ = std::process::Command::new("docker")
+        .args(["network", "rm"])
+        .args(&network_names)
+        .output();
     println!("Networks removed.");
 
     let config_dir = self_host::paths::platform_config_dir();
