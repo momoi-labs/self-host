@@ -654,8 +654,9 @@ pub async fn build(
             )
             .as_bytes(),
         );
-        let config =
-            serde_json::json!({"auths": {credential.server.unwrap_or_default(): {"auth": auth}}});
+        let config = crate::docker::isolated_config(
+            serde_json::json!({credential.server.unwrap_or_default(): {"auth": auth}}),
+        );
         private_file(
             &registry_directory.join("config.json"),
             &serde_json::to_vec(&config)
@@ -663,7 +664,12 @@ pub async fn build(
         )?;
         Some(registry_directory)
     } else {
-        private_file(&registry_directory.join("config.json"), b"{\"auths\":{}}")?;
+        let config = crate::docker::isolated_config(serde_json::json!({}));
+        private_file(
+            &registry_directory.join("config.json"),
+            &serde_json::to_vec(&config)
+                .map_err(|_| invalid("registry configuration cannot be prepared"))?,
+        )?;
         Some(registry_directory)
     };
     let mut images = BTreeMap::new();
