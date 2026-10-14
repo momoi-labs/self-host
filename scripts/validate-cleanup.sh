@@ -126,7 +126,12 @@ status="$(wait_running "$id")"
 [ "$status" = running ] && pass "created $id" || { fail "create $id ended $status"; exit 1; }
 docker exec "sf-app-$id-store" sh -c 'echo kept > /data/marker' && pass "wrote to its volume" || fail "could not write to its volume"
 
-[ "$(wait_task "$(remove "$id")")" = completed ] && pass "removed, keeping data" || fail "remove did not complete"
+if [ "$(wait_task "$(remove "$id")")" = completed ]; then
+	pass "removed, keeping data"
+	CREATED=() # gone, so the cleanup on exit does not ask to remove it again
+else
+	fail "remove did not complete"
+fi
 volume_exists "$id" && pass "volume sf-app-${id}_data is still there" || fail "volume went without delete_data"
 
 listed="$(plan)"
@@ -151,7 +156,12 @@ id="$(create)"
 CREATED+=("$id")
 status="$(wait_running "$id")"
 [ "$status" = running ] && pass "created $id" || { fail "create $id ended $status"; exit 1; }
-[ "$(wait_task "$(remove "$id" '?delete_data=true')")" = completed ] && pass "removed with its data" || fail "remove did not complete"
+if [ "$(wait_task "$(remove "$id" '?delete_data=true')")" = completed ]; then
+	pass "removed with its data"
+	CREATED=()
+else
+	fail "remove did not complete"
+fi
 volume_exists "$id" && fail "volume is still there" || pass "volume went with it"
 [ -z "$(plan)" ] && pass "nothing left for prune" || fail "prune still lists: $(plan | tr '\n' ' ')"
 if docker image inspect "$IMAGE" >/dev/null 2>&1; then
