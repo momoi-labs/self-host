@@ -260,14 +260,7 @@ async fn main() {
     {
         // Without `..` or symlinks, as the installer resolves it: on macOS the
         // Colima guest has /private/tmp, never /tmp.
-        let resolved = std::path::absolute(&dir).map(|dir| {
-            std::fs::canonicalize(&dir)
-                .or_else(|_| {
-                    let parent = std::fs::canonicalize(dir.parent().unwrap_or(&dir))?;
-                    Ok::<_, std::io::Error>(parent.join(dir.file_name().unwrap_or_default()))
-                })
-                .unwrap_or(dir)
-        });
+        let resolved = std::path::absolute(&dir).map(|dir| resolve_existing(&dir));
         match resolved {
             Ok(dir) => self_host::paths::set_data_dir(dir),
             Err(error) => {
@@ -1287,12 +1280,22 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     // keeps its volumes, its project and its deployment history, so those
     // name it too. State that cannot be read stops the reset: guessing an
     // empty Platform would delete the records and leave the containers.
-    // Applications of a Platform that kept its state in PostgreSQL are named
-    // nowhere this reset can read, so it would leave them running.
-    refuse_legacy_state(&CliDocker::new()).await?;
+    //
+    // A Platform still in an older format, JSON files or PostgreSQL, names
+    // its Applications nowhere this reset can read. It predates running two
+    // Platforms on one Docker, so it gets the reset it always had: every
+    // container and volume with the Platform's prefixes.
     let state = file_store::state_dir();
+    let legacy = state.join("platform.json").exists()
+        || (!state.join(file_store::DB_FILE).exists()
+            && CliDocker::new()
+                .container_running(&self_host::apps::system_container_name(
+                    bootstrap::LEGACY_STATE_CONTAINER_ROLE,
+                ))
+                .await
+                .unwrap_or(false));
     let mut ids = std::collections::BTreeSet::new();
-    if state.exists() {
+    if state.exists() && !legacy {
         let store = FileStateStore::read_only(&state)
             .context("cannot read the Platform state to find its Applications")?;
         // Virtual machines and native Applications run outside Docker, and
@@ -1343,7 +1346,13 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         found.dedup();
         Ok(found)
     };
-    let owned = |patterns: &[&str]| -> Vec<String> {
+    let owned = |patterns: &[&str], everything: &[&str]| -> Vec<String> {
+        if legacy {
+            return everything
+                .iter()
+                .map(|pattern| pattern.to_string())
+                .collect();
+        }
         ids.iter()
             .flat_map(|id| {
                 patterns
@@ -1357,7 +1366,10 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     println!("Stopping and removing containers...");
     // An image Application's one container is sf-app-<id>; a Compose
     // service's is sf-app-<id>-<service>.
-    let container_ids = listed(&["ps", "-aq"], owned(&["^sf-app-{id}$", "^sf-app-{id}-"]))?;
+    let container_ids = listed(
+        &["ps", "-aq"],
+        owned(&["^sf-app-{id}$", "^sf-app-{id}-"], &["self-host", "sf-"]),
+    )?;
     if !container_ids.is_empty() {
         std::process::Command::new("docker")
             .args(["rm", "-f"])
@@ -1371,7 +1383,10 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     // A Compose Application's named volumes are created under its project,
     // so they are sf-app-<id>_<volume>.
     println!("Removing volumes...");
-    let volume_names = listed(&["volume", "ls", "-q"], owned(&["^sf-app-{id}_"]))?;
+    let volume_names = listed(
+        &["volume", "ls", "-q"],
+        owned(&["^sf-app-{id}_"], &["self-host", "^sf-app-"]),
+    )?;
     if !volume_names.is_empty() {
         std::process::Command::new("docker")
             .args(["volume", "rm"])
@@ -1387,7 +1402,10 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
     // provider has sf-private-<id>.
     let mut network_names = listed(
         &["network", "ls", "--format", "{{.Name}}"],
-        owned(&["^sf-app-{id}$", "^sf-app-{id}_", "^sf-private-{id}$"]),
+        owned(
+            &["^sf-app-{id}$", "^sf-app-{id}_", "^sf-private-{id}$"],
+            &["sf-"],
+        ),
     )?;
     network_names.retain(|name| name != "self-host");
     // A network still in use by another Platform's containers stays.
@@ -1800,6 +1818,28 @@ async fn resolve_server_config(port: Option<u16>) -> (String, String) {
     (api_key, with_port(&listen_addr, port))
 }
 
+/// `dir` with its longest existing ancestor resolved, symlinks and all, and
+/// the components that do not exist yet appended as given.
+fn resolve_existing(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut missing = Vec::new();
+    let mut existing = dir;
+    loop {
+        if let Ok(resolved) = std::fs::canonicalize(existing) {
+            return missing
+                .iter()
+                .rev()
+                .fold(resolved, |path, part| path.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return dir.to_path_buf(),
+        }
+    }
+}
+
 /// `--port` replaces the port of the listen address and keeps its host.
 fn with_port(listen_addr: &str, port: Option<u16>) -> String {
     match (port, listen_addr.rsplit_once(':')) {
@@ -1949,6 +1989,23 @@ mod tests {
         assert_eq!(with_port("0.0.0.0:3721", Some(4000)), "0.0.0.0:4000");
         assert_eq!(with_port("100.1.2.3:3721", Some(4000)), "100.1.2.3:4000");
         assert_eq!(with_port("0.0.0.0:3721", None), "0.0.0.0:3721");
+    }
+
+    /// On macOS /tmp is /private/tmp, and only the latter is mounted into
+    /// the Colima guest, even for a data directory that does not exist yet.
+    #[test]
+    fn a_data_directory_resolves_symlinks_above_missing_parts() {
+        let base = std::env::temp_dir().join(format!("sh-resolve-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("real")).unwrap();
+        let link = base.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(base.join("real"), &link).unwrap();
+
+        let resolved = resolve_existing(&link.join("new").join("platform"));
+
+        let real = std::fs::canonicalize(base.join("real")).unwrap();
+        assert_eq!(resolved, real.join("new").join("platform"));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
