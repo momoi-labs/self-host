@@ -63,6 +63,7 @@ main() {
 		export SELF_HOST_DATA_DIR="$given"
 	fi
 	SUFFIX="$(dns_suffix)"
+	refuse_machines
 	confirm
 
 	# The daemon goes first. launchd would otherwise restart it between the
@@ -91,6 +92,21 @@ data_dir() {
 		found="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:SELF_HOST_DATA_DIR" "$plist" 2>/dev/null || true)"
 	fi
 	echo "$found"
+}
+
+# Virtual machines in a data directory keep their disks there, and reset
+# refuses to delete them under a machine. Find out before anything is torn
+# down, while the console that removes them still runs.
+refuse_machines() {
+	local lima="$DATA_DIR/lima" found=""
+	if [ -n "${SELF_HOST_DATA_DIR:-}" ] && [ -d "$lima" ]; then
+		found="$(find "$lima" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \; | tr '\n' ' ')"
+	fi
+	if [ -n "$found" ]; then
+		echo "Virtual machines still keep their disks in ${lima}: ${found}" >&2
+		echo "Delete them in the console first, then run this script again." >&2
+		exit 1
+	fi
 }
 
 # The Platform records the DNS Suffix in dns.json. Read it before the reset
@@ -180,14 +196,11 @@ reset_platform() {
 		return
 	fi
 	echo "removing containers, volumes, networks and configuration..."
-	# Reset refuses while Virtual machines or native Applications keep their
-	# disks and homes in a data directory. The daemon is gone by now, so say
-	# how to finish instead of stopping halfway.
+	# refuse_machines already caught what reset refuses; anything else it
+	# refuses stops here, before the rest is torn down.
 	if ! "$INSTALL_DIR/$BINARY" reset --force; then
 		echo "the Platform reset refused; nothing under ${DATA_DIR} was removed." >&2
-		echo "Delete its machines with 'LIMA_HOME=${DATA_DIR}/lima limactl delete -f <name>'," >&2
-		echo "then run this script again." >&2
-		return
+		exit 1
 	fi
 	rm -rf "$DATA_DIR"
 }
