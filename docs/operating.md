@@ -248,6 +248,40 @@ previous one is still going. The API is `GET /schedules`,
 `PUT /schedules/<id>` with `{"enabled", "every": "day"|"week", "hour"}` in UTC,
 and `POST /schedules/<id>/run`.
 
+## Uninstalling
+
+`self-host uninstall` removes everything the Platform created on the Host, so
+the next `init` starts from nothing:
+
+- every Application's containers, volumes, networks and project data, and the
+  images it ran or the Platform built for it, unless another container uses
+  them;
+- Virtual machines and their disks;
+- native Applications, their accounts and their data;
+- the Platform CA in the system trust store, and the host DNS routing:
+  `/etc/resolver` files on macOS, `self-host-dns.service` on Linux;
+- on Linux, `self-host-native.service`, `/var/lib/self-host` and the bundled s6;
+- the data directory, with the state, the CA and the API key.
+
+It lists what it will remove and asks; `--force` skips the question. It runs
+as you and asks for sudo where it needs root. On Linux, a Host with native
+Applications needs it run as root. Pass `-D` for a Platform with its own data
+directory. Only that Platform's names go, so a second Platform on the same
+Docker keeps its own.
+
+A step that fails is reported and the others still run. The data directory
+stays until all of them have worked, since it is how a second run knows what
+is left. Removing native accounts on macOS needs Full Disk Access, so run it
+from Terminal in the Mac's graphical session and allow it when asked.
+
+The binary stays; remove it, or its package. On macOS, `uninstall.sh` runs
+`self-host uninstall` and then removes what `install.sh` set up: the
+LaunchDaemons, the native helper, socket_vmnet, the binary and the logs.
+
+`self-host reset` is narrower: the Applications' containers, volumes and
+networks, and the data directory. It refuses while Virtual machines or native
+Applications keep their data in a data directory you gave.
+
 ## Upgrading from a Platform that kept its state in JSON files
 
 Platforms before 0.5.0 wrote `state/platform.json` and one

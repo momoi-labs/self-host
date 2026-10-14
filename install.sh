@@ -729,7 +729,10 @@ configure_resolver() {
 	ip="$(host_ip)"
 	echo "configuring /etc/resolver/${DNS_SUFFIX} -> ${ip} (requires sudo)..."
 	sudo mkdir -p /etc/resolver
-	echo "nameserver ${ip}" | sudo tee "/etc/resolver/${DNS_SUFFIX}" >/dev/null
+	# The marker is how `self-host uninstall` tells this file from others,
+	# such as Tailscale's.
+	printf '# self-host: routes %s to this Host\nnameserver %s\n' "$DNS_SUFFIX" "$ip" |
+		sudo tee "/etc/resolver/${DNS_SUFFIX}" >/dev/null
 }
 
 host_ip() {
