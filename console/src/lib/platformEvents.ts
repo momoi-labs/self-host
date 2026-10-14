@@ -3,7 +3,7 @@ import type { Report } from "./types.js";
 /** One task, as the Events page shows it. The id is the task's id. */
 export type PlatformEvent = {
   id: string;
-  action: "create" | "delete" | "stop" | "start" | "restart" | "configure";
+  action: "create" | "delete" | "stop" | "start" | "restart" | "configure" | "prune";
   status: "pending" | "running" | "completed" | "failed";
   occurredAt: string;
   startedAt?: string | null;
@@ -17,7 +17,7 @@ export type PlatformEvent = {
   changes?: { setting: string; from: string; to: string }[] | null;
   progress?: { stages: OperationStage[] } | null;
   subject: {
-    kind: "application" | "database" | "virtual-machine" | "custom-image" | "api-key" | "dns-record" | "settings";
+    kind: "application" | "database" | "virtual-machine" | "custom-image" | "api-key" | "dns-record" | "settings" | "platform";
     id: string;
     name: string;
     service?: string;
@@ -41,6 +41,8 @@ export function eventSubjectHref(subject: PlatformEvent["subject"]): string | nu
   if (subject.kind === "dns-record") return null;
   if (subject.kind === "api-key") return "/console/#settings/api-keys";
   if (subject.kind === "settings") return "/console/#settings";
+  // Platform work, such as a prune run, is set up under Scheduled tasks.
+  if (subject.kind === "platform") return "/console/#settings/scheduled-tasks";
   if (subject.kind === "custom-image") return `/console/#custom-image-${encodeURIComponent(subject.id)}`;
   const prefix = subject.kind === "virtual-machine" ? "virtual-machine" : "app";
   return `/console/#${prefix}-${encodeURIComponent(subject.id)}`;
@@ -55,9 +57,19 @@ export function filterEvents(events: readonly PlatformEvent[], query: string, st
 }
 
 export function eventActionLabel(event: PlatformEvent): string {
-  const actions = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure" };
-  const resources = { application: "application", database: "database", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key", "dns-record": "DNS record", settings: "settings" };
-  return `${actions[event.action]} ${resources[event.subject.kind]}`;
+  // Work on the Platform itself reads as what it does, not as a verb on a resource.
+  if (event.action === "prune") return "Remove unused data";
+  const actions: Record<string, string> = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure" };
+  const resources: Record<string, string> = { application: "application", database: "database", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key", "dns-record": "DNS record", settings: "settings", platform: "Platform" };
+  // An action or kind this console does not know yet still reads as words, never as "undefined".
+  const action = actions[event.action] ?? event.action.charAt(0).toUpperCase() + event.action.slice(1);
+  return `${action} ${resources[event.subject.kind] ?? event.subject.kind}`;
+}
+
+/** What kind of thing an event is about, as the Events table names it. */
+export function eventSubjectKindLabel(subject: PlatformEvent["subject"]): string {
+  const kinds: Record<string, string> = { database: "Database", "virtual-machine": "Virtual machine", "custom-image": "Custom image", "api-key": "API key", "dns-record": "DNS record", settings: "Settings", platform: "Platform" };
+  return kinds[subject.kind] ?? (subject.service ? subject.name : "Application");
 }
 
 export function eventUpdatedAt(event: PlatformEvent): string {

@@ -42,3 +42,10 @@ test("the pager keeps the ends and the current page's neighbours, with one gap p
   assert.deepEqual(pageItems(5, 9), [1, "gap", 4, 5, 6, "gap", 9]);
   assert.deepEqual(pageItems(9, 9), [1, "gap", 8, 9]);
 });
+
+test("platform work reads as what it does, and an unknown action never as undefined", () => {
+  const platform = { kind: "platform", id: "prune", name: "Unused data" };
+  assert.equal(eventActionLabel({ action: "prune", subject: platform }), "Remove unused data");
+  assert.equal(eventSubjectHref(platform), "/console/#settings/scheduled-tasks");
+  assert.equal(eventActionLabel({ action: "archive", subject: { kind: "gadget", id: "g", name: "g" } }), "Archive gadget");
+});
