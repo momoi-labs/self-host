@@ -218,6 +218,9 @@ pub struct Inventory {
     /// Images its Applications ran, by reference or immutable id, and its
     /// custom images.
     pub images: BTreeSet<String>,
+    /// Custom image ids: every build of one is `sf-img-<id>:<digest>`, and
+    /// a rebuild leaves the earlier tags.
+    pub custom: BTreeSet<String>,
     pub suffix: Option<String>,
     /// The CA certificate, DER, to find it again in the trust stores.
     pub ca: Option<Vec<u8>>,
@@ -255,6 +258,7 @@ pub async fn inventory() -> Result<Inventory> {
     let mut machines = Vec::new();
     let mut native = Vec::new();
     let mut images = BTreeSet::new();
+    let mut custom = BTreeSet::new();
     if let Some(store) = &store {
         machines = collection::MACHINES.list(store).await?;
         for app in store.list_applications().await? {
@@ -268,6 +272,7 @@ pub async fn inventory() -> Result<Inventory> {
         }
         for image in collection::IMAGES.list(store).await? {
             images.insert(image.image);
+            custom.insert(image.id);
         }
     }
     // Native Applications run no image.
@@ -289,6 +294,7 @@ pub async fn inventory() -> Result<Inventory> {
         machines,
         native,
         images,
+        custom,
         suffix,
         ca,
         resolvers,
@@ -296,10 +302,9 @@ pub async fn inventory() -> Result<Inventory> {
     })
 }
 
-/// The resolver files that send a DNS Suffix to this Host: the ones self-host
-/// wrote, which say so, and the one named after the current DNS Suffix whose
-/// nameserver is this Host. Tailscale's, which point at 100.100.100.100, are
-/// never among them.
+/// The resolver file for this Platform's DNS Suffix, when self-host wrote it,
+/// which it says, or it sends the Suffix to this Host. Tailscale's, which
+/// point at 100.100.100.100, are never among them.
 fn resolver_files(dir: &Path, suffix: Option<&str>) -> Vec<PathBuf> {
     if !cfg!(target_os = "macos") {
         return Vec::new();
@@ -333,20 +338,20 @@ fn resolver_files(dir: &Path, suffix: Option<&str>) -> Vec<PathBuf> {
 }
 
 fn ours(text: &str, name: Option<&str>, suffix: Option<&str>, local: &BTreeSet<String>) -> bool {
-    if text.lines().any(|line| {
-        line.trim_start().starts_with('#') && line.to_ascii_lowercase().contains("self-host")
-    }) {
-        return true;
+    // Another Platform on this Mac marks its file the same way, so the name
+    // is what ties a file to this Platform's DNS Suffix.
+    if name.is_none() || name != suffix {
+        return false;
     }
-    name.is_some()
-        && name == suffix
-        && text.lines().any(|line| {
-            line.split_whitespace().collect::<Vec<_>>()[..].starts_with(&["nameserver"])
-                && line
-                    .split_whitespace()
-                    .nth(1)
-                    .is_some_and(|server| local.contains(server))
-        })
+    let marked = text.lines().any(|line| {
+        line.trim_start().starts_with('#') && line.to_ascii_lowercase().contains("self-host")
+    });
+    let here = text.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("nameserver")
+            && words.next().is_some_and(|server| local.contains(server))
+    });
+    marked || here
 }
 
 /// A directory only this process's user can enter, for files a root step
@@ -493,6 +498,17 @@ async fn remove_native(native: &[ApplicationRecord]) -> Result<()> {
             unsafe { libc::geteuid() } == 0,
             "native Applications run as their own accounts; run the uninstall as root"
         );
+        // A run that got as far as removing the shared supervision tree
+        // removed every native Application before it; a retry finds them
+        // still in the state, with nothing left to remove.
+        #[cfg(target_os = "linux")]
+        if !Path::new("/var/lib/self-host/native").exists() {
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        if !Path::new(crate::native::macos::HELPER).exists() {
+            return Ok(());
+        }
         let runtime = HostRuntime::default();
         for app in native {
             println!("Removing native Application {}...", app.name);
@@ -513,9 +529,10 @@ fn remove_native_shared() -> Result<()> {
     {
         if Path::new("/etc/systemd/system/self-host-native.service").exists() {
             println!("Removing self-host-native.service...");
-            let _ = privileged("systemctl")
-                .args(["disable", "--now", "self-host-native.service"])
-                .status();
+            checked(
+                privileged("systemctl").args(["disable", "--now", "self-host-native.service"]),
+                "stopping self-host-native.service",
+            )?;
             checked(
                 privileged("rm").args(["-f", "/etc/systemd/system/self-host-native.service"]),
                 "removing self-host-native.service",
@@ -561,25 +578,22 @@ async fn remove_images(inventory: &Inventory) -> Result<()> {
     let references = docker.image_references().await?;
     // This Platform's containers are gone by now, so any container left is
     // someone else's. Whatever it runs stays, under every tag: removing one
-    // tag of an image another Platform uses would take its reference.
-    let mut in_use = BTreeSet::new();
-    for image in docker.container_images().await? {
-        for (reference, id, _) in &references {
-            if *reference == image || *id == image {
-                in_use.insert(id.clone());
-            }
-        }
-        in_use.insert(image);
-    }
+    // tag of an image another Platform uses would take its reference. Its
+    // immutable id is what says which image that is.
+    let in_use = container_image_ids()?;
     let mut doomed = BTreeSet::new();
     for (reference, id, _) in references {
         if in_use.contains(&id) {
             continue;
         }
-        let built = reference
-            .strip_prefix("sf-source-")
-            .and_then(|rest| rest.get(..12))
-            .is_some_and(|owner| inventory.ids.contains(owner));
+        let owner = |prefix: &str| {
+            reference
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.get(..12))
+                .map(str::to_owned)
+        };
+        let built = owner("sf-source-").is_some_and(|owner| inventory.ids.contains(&owner))
+            || owner("sf-img-").is_some_and(|owner| inventory.custom.contains(&owner));
         if built || inventory.images.contains(&reference) || inventory.images.contains(&id) {
             doomed.insert(reference);
         }
@@ -588,10 +602,36 @@ async fn remove_images(inventory: &Inventory) -> Result<()> {
         return Ok(());
     }
     println!("Removing {} image(s)...", doomed.len());
+    let mut kept = Vec::new();
     for reference in doomed {
-        let _ = docker.remove_image(&reference).await;
+        if !docker.remove_image(&reference).await.unwrap_or(false) {
+            kept.push(reference);
+        }
     }
+    anyhow::ensure!(kept.is_empty(), "Docker kept {}", kept.join(", "));
     Ok(())
+}
+
+/// The immutable image id of every container on the Host.
+fn container_image_ids() -> Result<BTreeSet<String>> {
+    let containers = Command::new("docker").args(["ps", "-aq"]).output()?;
+    anyhow::ensure!(containers.status.success(), "docker ps failed");
+    let ids: Vec<String> = String::from_utf8_lossy(&containers.stdout)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if ids.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let inspected = Command::new("docker")
+        .args(["inspect", "--format", "{{.Image}}"])
+        .args(&ids)
+        .output()?;
+    anyhow::ensure!(inspected.status.success(), "docker inspect failed");
+    Ok(String::from_utf8_lossy(&inspected.stdout)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect())
 }
 
 fn untrust_ca(der: &[u8]) -> Result<()> {
@@ -689,9 +729,10 @@ fn untrust_ca(der: &[u8]) -> Result<()> {
                     .and_then(|output| pem::parse_many(output.stdout).ok())
                     .is_some_and(|certs| certs.iter().any(|cert| cert.contents() == der));
                 if matches {
-                    let _ = Command::new("certutil")
-                        .args(["-D", "-n", CA_NAME, "-d", &database])
-                        .output();
+                    checked(
+                        Command::new("certutil").args(["-D", "-n", CA_NAME, "-d", &database]),
+                        "removing the CA from the browsers' certificate database",
+                    )?;
                 }
             }
         }
@@ -718,9 +759,10 @@ fn remove_host_dns(resolvers: &[PathBuf], suffix: Option<&str>) -> Result<()> {
     {
         println!("Removing self-host-dns.service...");
         // Its ExecStop deletes the dummy link that carries the routing.
-        let _ = privileged("systemctl")
-            .args(["disable", "--now", "self-host-dns.service"])
-            .status();
+        checked(
+            privileged("systemctl").args(["disable", "--now", "self-host-dns.service"]),
+            "stopping self-host-dns.service",
+        )?;
         checked(
             privileged("rm").args(["-f", "/etc/systemd/system/self-host-dns.service"]),
             "removing self-host-dns.service",
@@ -737,12 +779,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_resolver_file_is_ours_when_it_says_so_or_routes_the_suffix_here() {
+    fn a_resolver_file_is_ours_when_it_routes_this_platforms_suffix() {
         let local: BTreeSet<String> = ["127.0.0.1".to_string(), "192.168.1.54".to_string()]
             .into_iter()
             .collect();
         let marked = "# Managed by self-host; re-run 'self-host setup-dns' to change it.\nnameserver 127.0.0.1\n";
-        assert!(ours(marked, Some("old.lan"), Some("home.lan"), &local));
+        assert!(ours(marked, Some("home.lan"), Some("home.lan"), &local));
+        // Another Platform's, marked the same way, for its own Suffix.
+        assert!(!ours(marked, Some("other.lan"), Some("home.lan"), &local));
         // The installer's file for the current suffix, before it was marked.
         assert!(ours(
             "nameserver 192.168.1.54\n",
