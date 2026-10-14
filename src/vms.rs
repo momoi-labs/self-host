@@ -974,6 +974,9 @@ impl VmRuntime for LimaRuntime {
             let mut command = portable_pty::CommandBuilder::new(&executable);
             command.args(["shell", &name, "--", "sudo", "-i", "-u", "dev"]);
             command.env("TERM", "xterm-256color");
+            if let Some(home) = crate::paths::lima_home() {
+                command.env("LIMA_HOME", home);
+            }
             crate::terminal::spawn_on_pty(command, size, None)
         })
         .await
