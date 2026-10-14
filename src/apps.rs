@@ -1941,7 +1941,7 @@ pub async fn remove_application(
 
     // Read before the row and the history go: they are how the images are known.
     let images = if delete_data {
-        images_only_for(store, &app).await?
+        images_only_for(store, docker, &app).await?
     } else {
         Vec::new()
     };
@@ -1950,15 +1950,20 @@ pub async fn remove_application(
     // is on its way out is worse than one that stops a moment early.
     routes.withdraw(&app.id);
 
+    // Deleting the data must not half happen: if its containers and volumes
+    // do not go, the Application and its project stay, so removing it again
+    // can finish the job.
+    if delete_data && let Some(project) = &project {
+        docker.compose_down_with_volumes(project).await?;
+    }
+
     store.delete_application(&app.id).await?;
 
     match project {
         // Without `delete_data`, containers go and named volumes and the data
         // directory stay: removing an Application is not, by itself,
         // permission to delete what it wrote.
-        Some(project) if delete_data => {
-            let _ = docker.compose_down_with_volumes(&project).await;
-        }
+        Some(_) if delete_data => {}
         Some(project) => {
             let _ = docker.compose_down(&project).await;
         }
@@ -2005,25 +2010,50 @@ pub(crate) fn images_of(app: &ApplicationRecord) -> Vec<String> {
 }
 
 /// The images this Application ran, now or in a deployment it kept, that no
-/// other Application runs. A custom image is the custom image's to remove.
+/// other Application runs or keeps to roll back to. A custom image is the
+/// custom image's to remove.
 async fn images_only_for(
     store: &impl StateStore,
+    docker: &(impl DockerRuntime + ?Sized),
     app: &ApplicationRecord,
-) -> Result<Vec<String>, StoreError> {
-    let others: std::collections::BTreeSet<String> = store
+) -> Result<Vec<String>, RemoveError> {
+    let mut others: std::collections::BTreeSet<String> = store
         .list_applications()
         .await?
         .iter()
         .filter(|other| other.id != app.id)
         .flat_map(images_of)
         .collect();
+    for deployment in crate::deployments::all(store).await? {
+        if deployment.application_id != app.id {
+            others.extend(deployment.images.into_values());
+        }
+    }
+    // An image is known by a tag or by its immutable id, and a deployment
+    // records the id, so what is protected under one name is under the other.
+    let references = docker.image_references().await?;
+    for (reference, id, _) in &references {
+        if reference.starts_with("sf-img-") || others.contains(reference) {
+            others.insert(id.clone());
+        }
+    }
+    let id_of = |image: &str| {
+        references
+            .iter()
+            .find(|(reference, _, _)| reference == image)
+            .map(|(_, id, _)| id.clone())
+    };
     let mut images: std::collections::BTreeSet<String> = images_of(app).into_iter().collect();
     for deployment in crate::deployments::history(store, &app.id).await? {
         images.extend(deployment.images.into_values());
     }
     Ok(images
         .into_iter()
-        .filter(|image| !image.starts_with("sf-img-") && !others.contains(image))
+        .filter(|image| {
+            !image.starts_with("sf-img-")
+                && !others.contains(image)
+                && id_of(image).is_none_or(|id| !others.contains(&id))
+        })
         .collect())
 }
 
@@ -3864,6 +3894,57 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn removing_with_its_data_keeps_what_another_can_roll_back_to() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "blog",
+            "redis:7",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        let mut other = deploy_from_image(
+            &store,
+            &docker,
+            &routes,
+            "other",
+            "redis:7",
+            DeployOptions::default(),
+        )
+        .await
+        .unwrap();
+        // Docker knows redis:7 by the id the other's deployment recorded.
+        let recorded = crate::deployments::history(&store, &other.id)
+            .await
+            .unwrap()[0]
+            .images
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        docker
+            .images
+            .lock()
+            .unwrap()
+            .insert("redis:7".into(), recorded);
+        // The other Application moved on, but its history still holds redis:7.
+        other.image = "redis:8".into();
+        store.insert_application(&other).await.unwrap();
+
+        remove_application(&store, &docker, &routes, "blog", true)
+            .await
+            .unwrap();
+
+        let removed = docker.removed_images.lock().unwrap().clone();
+        assert!(!removed.contains(&"redis:7".to_string()), "{removed:?}");
     }
 
     #[tokio::test]

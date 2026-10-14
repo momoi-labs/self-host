@@ -682,6 +682,16 @@ async fn persist<S: StateStore>(
     TASKS.replace_all(&state.store, &tasks).await
 }
 
+/// Every object with a task on file, queued or running. A build in flight
+/// has images no record pins yet, so `prune` leaves its object alone.
+pub async fn busy_subject_ids<S: StateStore>(store: &S) -> Result<Vec<String>, StoreError> {
+    Ok(load(store)
+        .await?
+        .into_iter()
+        .map(|task| task.subject.id)
+        .collect())
+}
+
 /// Applications with a deploy still waiting in the queue. `reconcile` leaves
 /// their `pending` row alone: the scheduler carries the deploy out.
 pub async fn queued_application_ids<S: StateStore>(store: &S) -> Result<Vec<String>, StoreError> {

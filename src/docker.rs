@@ -305,8 +305,8 @@ pub trait DockerRuntime: Send + Sync {
     async fn remove_image(&self, _reference: &str) -> Result<bool, DockerError> {
         Ok(false)
     }
-    /// Every tagged image on the Host: its reference, its immutable id
-    /// (`sha256:…`) and the bytes it takes.
+    /// Every image on the Host: its reference (its id, when nothing tags it
+    /// any more), its immutable id (`sha256:…`) and the bytes it takes.
     async fn image_references(&self) -> Result<Vec<(String, String, u64)>, DockerError> {
         Ok(Vec::new())
     }
@@ -1334,7 +1334,6 @@ impl DockerRuntime for CliDocker {
         let references: Vec<(String, String)> = String::from_utf8_lossy(&listed.stdout)
             .lines()
             .filter_map(|line| line.split_once(' '))
-            .filter(|(reference, _)| !reference.contains("<none>"))
             .map(|(reference, id)| (reference.to_string(), id.to_string()))
             .collect();
         let mut ids: Vec<&str> = references.iter().map(|(_, id)| id.as_str()).collect();
@@ -1360,6 +1359,12 @@ impl DockerRuntime for CliDocker {
                 let (full, bytes) = sizes
                     .iter()
                     .find(|(full, _)| full.trim_start_matches("sha256:").starts_with(&short))?;
+                // An image a newer pull took the tag from is known by its id.
+                let reference = if reference.contains("<none>") {
+                    full.clone()
+                } else {
+                    reference
+                };
                 Some((reference, full.clone(), *bytes))
             })
             .collect())
