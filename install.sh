@@ -28,6 +28,16 @@ WATCHDOG="self-host-colima"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 DNS_SUFFIX="${SELF_HOST_DNS:-home.lan}"
 HOST_IP="${SELF_HOST_IP:-}"
+# Resolved once, so init and the daemon launchd starts from / open the
+# same directory.
+DATA_DIR="${SELF_HOST_DATA_DIR:-}"
+if [ -n "$DATA_DIR" ]; then
+	case "$DATA_DIR" in
+		/*) ;;
+		*) DATA_DIR="$PWD/$DATA_DIR" ;;
+	esac
+	export SELF_HOST_DATA_DIR="$DATA_DIR"
+fi
 RUNTIME="${SELF_HOST_RUNTIME:-}"
 COLIMA_CPU="${SELF_HOST_COLIMA_CPU:-4}"
 COLIMA_MEMORY="${SELF_HOST_COLIMA_MEMORY:-6}"
@@ -236,6 +246,11 @@ EOF
 	echo "Native Application boot supervision enabled."
 }
 
+# A value written into a plist is XML text.
+xml_escape() {
+	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 detect_os() {
 	case "$(uname -s)" in
 		Darwin) echo "darwin" ;;
@@ -426,9 +441,29 @@ EOF
 #
 # An existing profile keeps its own file, so both land there too.
 write_colima_template() {
-	local home="$1" template profile
+	local home="$1" template profile location missing=() mounts
 	template="$home/.colima/_templates/default.yaml"
 	profile="$home/.colima/default/colima.yaml"
+
+	# Compose bind mounts live in the data directory, so the guest needs it
+	# too when it is outside the home.
+	local locations=("$home")
+	case "${DATA_DIR:-$home}/" in
+		"$home"/*) ;;
+		*)
+			mkdir -p "$DATA_DIR" || {
+				echo "cannot create ${DATA_DIR}; create it and give it to ${USER} first" >&2
+				exit 1
+			}
+			locations+=("$DATA_DIR")
+			;;
+	esac
+	mounts=""
+	for location in "${locations[@]}"; do
+		mounts+="  - location: ${location}
+    writable: true
+"
+	done
 
 	mkdir -p "$(dirname "$template")"
 	cat >"$template" <<EOF
@@ -442,31 +477,43 @@ autoActivate: true
 network:
   dns: [${COLIMA_DNS}]
 mounts:
-  - location: ${home}
-    writable: true
+${mounts%$'\n'}
 EOF
 
 	if [ -f "$profile" ]; then
 		patch_colima_profile_dns "$profile"
 	fi
 
-	if [ -f "$profile" ] && ! grep -q "location: ${home}\$" "$profile"; then
-		if grep -qE '^[[:space:]]*-[[:space:]]*location:' "$profile"; then
-			# Mounts the Operator chose. Where their list ends is a guess, so
-			# say what is missing instead of rewriting it.
-			echo "the Colima profile mounts something else; add" >&2
-			echo "  - location: ${home}" >&2
-			echo "    writable: true" >&2
-			echo "to the mounts in $profile, or bind mounts will be empty." >&2
-		else
-			echo "adding ${home} to the existing Colima profile ($profile)..."
-			sed -i '' -E '/^mounts:[[:space:]]*(null|\[\])?[[:space:]]*$/d' "$profile"
-			cat >>"$profile" <<EOF
-mounts:
-  - location: ${home}
+	[ -f "$profile" ] || return 0
+	for location in "${locations[@]}"; do
+		grep -q "location: ${location}\$" "$profile" || missing+=("$location")
+	done
+	[ "${#missing[@]}" -gt 0 ] || return 0
+	mounts=""
+	for location in "${missing[@]}"; do
+		mounts+="  - location: ${location}
     writable: true
-EOF
-		fi
+"
+	done
+	if ! grep -qE '^[[:space:]]*-[[:space:]]*location:' "$profile"; then
+		echo "adding ${missing[*]} to the existing Colima profile ($profile)..."
+		sed -i '' -E '/^mounts:[[:space:]]*(null|\[\])?[[:space:]]*$/d' "$profile"
+		printf 'mounts:\n%s' "$mounts" >>"$profile"
+	elif grep -q "location: ${home}\$" "$profile"; then
+		# The home this installer mounted before: the rest go right after it.
+		echo "adding ${missing[*]} to the existing Colima profile ($profile)..."
+		EXTRA="$mounts" awk -v home="location: ${home}" '
+			{ print }
+			index($0, home) && substr($0, length($0) - length(home) + 1) == home {
+				if ((getline next_line) > 0) print next_line
+				printf "%s", ENVIRON["EXTRA"]
+			}' "$profile" >"$profile.tmp" && mv "$profile.tmp" "$profile"
+	else
+		# Mounts the Operator chose. Where their list ends is a guess, so
+		# say what is missing instead of rewriting it.
+		echo "the Colima profile mounts something else; add" >&2
+		printf '%s' "$mounts" >&2
+		echo "to the mounts in $profile, or bind mounts will be empty." >&2
 	fi
 }
 
@@ -614,7 +661,7 @@ wait_for_docker() {
 # and break every machine that trusts the old CA. A CLI config is what a
 # finished init leaves behind, so its presence is the signal to skip.
 init_platform() {
-	if [ -f "${SELF_HOST_DATA_DIR:-$HOME/.config/self-host}/config.json" ]; then
+	if [ -f "${DATA_DIR:-$HOME/.config/self-host}/config.json" ]; then
 		echo "the Platform is already initialized; keeping its keys and certificates."
 		return
 	fi
@@ -922,10 +969,10 @@ install_platform_daemon() {
 	local operator="$1" home="$2" path data_dir=""
 	path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 	# The daemon needs the data directory init used, every time it starts.
-	if [ -n "${SELF_HOST_DATA_DIR:-}" ]; then
+	if [ -n "$DATA_DIR" ]; then
 		data_dir="
 		<key>SELF_HOST_DATA_DIR</key>
-		<string>${SELF_HOST_DATA_DIR}</string>"
+		<string>$(xml_escape "$DATA_DIR")</string>"
 	fi
 
 	mkdir -p "$home/Library/Logs/self-host"
