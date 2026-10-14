@@ -260,7 +260,8 @@ the next `init` starts from nothing:
 - native Applications, their accounts and their data;
 - the Platform CA in the system trust store, and the host DNS routing:
   `/etc/resolver` files on macOS, `self-host-dns.service` on Linux;
-- on Linux, `self-host-native.service`, `/var/lib/self-host` and the bundled s6;
+- on Linux, in the default places, `self-host-native.service`,
+  `/var/lib/self-host` and the bundled s6;
 - the data directory, with the state, the CA and the API key.
 
 It lists what it will remove and asks; `--force` skips the question. It runs
@@ -271,8 +272,14 @@ Docker keeps its own.
 
 A step that fails is reported and the others still run. The data directory
 stays until all of them have worked, since it is how a second run knows what
-is left. Removing native accounts on macOS needs Full Disk Access, so run it
-from Terminal in the Mac's graphical session and allow it when asked.
+is left.
+
+On macOS the native helper and its accounts belong to the whole Mac, so
+`self-host uninstall` removes this Platform's native Applications and their
+data, and `uninstall.sh` removes the helper with the accounts it kept.
+Deleting those accounts needs Full Disk Access, so run `uninstall.sh` from
+Terminal in the Mac's graphical session and allow it when asked. On Linux the
+shared native supervision goes only when no other Platform still uses it.
 
 The binary stays; remove it, or its package. On macOS, `uninstall.sh` runs
 `self-host uninstall` and then removes what `install.sh` set up: the
