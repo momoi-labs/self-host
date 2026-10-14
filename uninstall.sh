@@ -176,6 +176,14 @@ remove_daemon() {
 
 remove_native() {
 	local helper=/Library/PrivilegedHelperTools/dev.momoi.self-host
+	# The helper and its accounts are the whole Mac's, so the binary leaves
+	# them to the Platform in the default places. This script removes the
+	# helper either way, so its accounts and their data go first.
+	if [ -f "$helper" ]; then
+		echo "removing native Application accounts (requires sudo; macOS may ask for Full Disk Access)..."
+		sudo "$helper" native-uninstall
+	fi
+	sudo rm -rf "/Library/Application Support/self-host/native-data"
 	remove_daemon dev.momoi.self-host.native
 	sudo rm -f /private/etc/sudoers.d/self-host-native "$helper"
 	sudo rm -rf /Library/PrivilegedHelperTools/dev.momoi.self-host.s6 \
