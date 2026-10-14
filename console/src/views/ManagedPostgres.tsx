@@ -20,7 +20,6 @@ import { DatabaseConnections } from "../components/DatabaseConnections.js";
 import { DatabaseSummary } from "../components/DatabaseSummary.js";
 
 export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenApp }: { app: App; apps: App[]; metrics: Metrics | null; reload: () => Promise<App[]>; onRemoved: () => void; onOpenApp: (id: string) => void }) {
-  const wide = useMediaQuery("(min-width: 1024px)");
   const detail = useQuery({ ...databaseQuery(app.id), refetchInterval: 3000 });
   const database = detail.data ?? null;
   const loadFailure = detail.error ? asReport(detail.error) : null;
@@ -71,7 +70,7 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
 
   return <>
     <div className="between">
-      <PageHeader className={wide ? "grow" : undefined}><PageHeaderTitle>{app.name}</PageHeaderTitle>{samples ? <Glance samples={samples} /> : null}</PageHeader>
+      <PageHeader><PageHeaderTitle>{app.name}</PageHeaderTitle>{samples ? <Glance samples={samples} /> : null}</PageHeader>
       <Lifecycle status={<><StatusBadge tone={app.status === "running" ? "success" : app.status === "failed" ? "danger" : "neutral"}>{app.status}</StatusBadge><StatusBadge tone={database?.readiness === "healthy" ? "success" : database?.readiness === "unhealthy" ? "danger" : "neutral"}>{database?.readiness === "healthy" ? "Ready" : database?.readiness ?? "Checking"}</StatusBadge>{taskBusy ? <StatusBadge tone="success" pulse>{phase}</StatusBadge> : null}</>}
         actions={taskBusy ? undefined : <>{app.status !== "running" ? <Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/apps/id/${app.id}/start`, "POST")}>Start</Button> : <Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/apps/id/${app.id}/stop`, "POST")}>Stop</Button>}<Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/apps/id/${app.id}/restart`, "POST", { pull: false })}>Restart</Button><Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/databases/${app.id}/redeploy`, "POST")}>Recreate</Button></>}
         destructive={<Button size="sm" variant="ghost" className="btn-danger-ghost" disabled={busy || taskBusy} onClick={() => { setConfirmName(""); setDeleteData(false); setRemoving(true); }}>Remove</Button>} />
