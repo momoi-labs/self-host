@@ -1419,30 +1419,28 @@ fn operator_docker_config() -> Option<std::path::PathBuf> {
         .or_else(|| dirs::home_dir().map(|home| home.join(".docker")))
 }
 
-/// The endpoint the Operator's Docker CLI talks to, for commands that run
-/// with an isolated DOCKER_CONFIG. None when DOCKER_HOST already says, since
-/// those commands inherit it, or when the CLI cannot tell.
+/// The endpoint the Operator's Docker CLI talks to now, for commands that run
+/// with an isolated DOCKER_CONFIG. Asked each time, since a context switch
+/// moves the rest of the runtime's commands too. None when DOCKER_HOST
+/// already says, since those commands inherit it, or when the CLI cannot
+/// tell.
 fn operator_docker_host() -> Option<String> {
-    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    HOST.get_or_init(|| {
-        if std::env::var_os("DOCKER_HOST").is_some() {
-            return None;
-        }
-        let output = std::process::Command::new("docker")
-            .args([
-                "context",
-                "inspect",
-                "--format",
-                "{{.Endpoints.docker.Host}}",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()?;
-        let host = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        (output.status.success() && !host.is_empty()).then_some(host)
-    })
-    .clone()
+    if std::env::var_os("DOCKER_HOST").is_some() {
+        return None;
+    }
+    let output = std::process::Command::new("docker")
+        .args([
+            "context",
+            "inspect",
+            "--format",
+            "{{.Endpoints.docker.Host}}",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let host = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !host.is_empty()).then_some(host)
 }
 
 /// The configuration a Docker command with an isolated DOCKER_CONFIG uses:
@@ -1450,12 +1448,10 @@ fn operator_docker_host() -> Option<String> {
 /// CLI looks for buildx under DOCKER_CONFIG and Homebrew puts it in
 /// ~/.docker/cli-plugins.
 pub fn isolated_config(auths: serde_json::Value) -> serde_json::Value {
+    // In the order the Operator's CLI searches: their configured extra
+    // directories first, then the config's own cli-plugins.
     let mut dirs = Vec::new();
     if let Some(config) = operator_docker_config() {
-        let plugins = config.join("cli-plugins");
-        if plugins.is_dir() {
-            dirs.push(plugins.display().to_string());
-        }
         if let Some(extra) = std::fs::read(config.join("config.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -1466,6 +1462,10 @@ pub fn isolated_config(auths: serde_json::Value) -> serde_json::Value {
                     .iter()
                     .filter_map(|dir| dir.as_str().map(str::to_owned)),
             );
+        }
+        let plugins = config.join("cli-plugins");
+        if plugins.is_dir() {
+            dirs.push(plugins.display().to_string());
         }
     }
     with_plugin_dirs(auths, dirs)
