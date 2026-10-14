@@ -15,6 +15,11 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "self-host", version, about = "LAN self-host PaaS platform")]
 struct Cli {
+    /// Keep everything the Platform stores here instead of the default
+    /// places, like `postgres -D`. Give it to every command that should act
+    /// on this Platform, or set SELF_HOST_DATA_DIR
+    #[arg(short = 'D', long, global = true, value_name = "DIR")]
+    data_dir: Option<std::path::PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -86,6 +91,10 @@ enum Command {
         /// it the Operator's setting applies, then the default of 30d.
         #[arg(long, value_parser = parse_audit_events_max_age)]
         audit_events_max_age: Option<std::time::Duration>,
+        /// The port the API and the console listen on, on every address
+        /// (default: 3721). SELF_HOST_LISTEN picks the address too.
+        #[arg(short, long)]
+        port: Option<u16>,
     },
     /// Manage Applications
     Apps {
@@ -243,6 +252,20 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
+    if let Some(dir) = cli
+        .data_dir
+        .clone()
+        .or_else(|| env::var_os("SELF_HOST_DATA_DIR").map(Into::into))
+        .filter(|dir| !dir.as_os_str().is_empty())
+    {
+        match std::path::absolute(&dir) {
+            Ok(dir) => self_host::paths::set_data_dir(dir),
+            Err(error) => {
+                eprintln!("error: data directory {}: {error}", dir.display());
+                std::process::exit(2);
+            }
+        }
+    }
 
     match cli.command {
         #[cfg(target_os = "macos")]
@@ -328,11 +351,12 @@ async fn main() {
             monitoring_max_age,
             no_dns,
             audit_events_max_age,
+            port,
         }) => {
             // The two flags only mean something together, so they are checked
             // against each other here rather than one value at a time.
             match self_host::metrics::Window::new(monitoring_collect_interval, monitoring_max_age) {
-                Ok(window) => run_server(window, no_dns, audit_events_max_age).await,
+                Ok(window) => run_server(window, no_dns, audit_events_max_age, port).await,
                 Err(error) => {
                     eprintln!("error: {error}");
                     std::process::exit(2);
@@ -340,7 +364,7 @@ async fn main() {
             }
         }
         None => {
-            run_server(self_host::metrics::Window::default(), false, None).await;
+            run_server(self_host::metrics::Window::default(), false, None, None).await;
         }
     }
 }
@@ -1399,6 +1423,7 @@ async fn run_server(
     window: self_host::metrics::Window,
     no_dns: bool,
     audit_events_max_age: Option<std::time::Duration>,
+    port: Option<u16>,
 ) {
     // One set of metrics for the whole daemon: DNS, the proxy, the collector
     // and the API all count and read from the same place (ADR-0020).
@@ -1414,6 +1439,7 @@ async fn run_server(
                 metrics.clone(),
                 Arc::new(self_host::dns_records::UnservedZone),
                 audit_events_max_age,
+                port,
             )
             .await;
             return Ok::<(), anyhow::Error>(());
@@ -1425,7 +1451,7 @@ async fn run_server(
                 result?;
                 anyhow::bail!("DNS server stopped unexpectedly");
             }
-            () = run_api_server(metrics.clone(), Arc::new(zone), audit_events_max_age) => Ok::<(), anyhow::Error>(()),
+            () = run_api_server(metrics.clone(), Arc::new(zone), audit_events_max_age, port) => Ok::<(), anyhow::Error>(()),
         }
     }
     .await;
@@ -1439,8 +1465,9 @@ async fn run_api_server(
     metrics: self_host::metrics::Metrics,
     zone: Arc<dyn self_host::dns_records::Zone>,
     audit_events_max_age: Option<std::time::Duration>,
+    port: Option<u16>,
 ) {
-    let (api_key, listen_addr) = resolve_server_config().await;
+    let (api_key, listen_addr) = resolve_server_config(port).await;
 
     // The state comes first, and from files. The console, the configuration
     // and the Operator's credentials no longer wait on a container runtime.
@@ -1700,12 +1727,21 @@ async fn remove_legacy_system_network(docker: &dyn DockerRuntime) {
     }
 }
 
-async fn resolve_server_config() -> (String, String) {
+async fn resolve_server_config(port: Option<u16>) -> (String, String) {
     let api_key = env::var("SELF_HOST_API_KEY").unwrap_or_default();
     let listen_addr =
         env::var("SELF_HOST_LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{OPERATOR_API_PORT}"));
 
-    (api_key, listen_addr)
+    (api_key, with_port(&listen_addr, port))
+}
+
+/// `--port` replaces the port of the listen address and keeps its host.
+fn with_port(listen_addr: &str, port: Option<u16>) -> String {
+    match (port, listen_addr.rsplit_once(':')) {
+        (Some(port), Some((host, _))) => format!("{host}:{port}"),
+        (Some(port), None) => format!("{listen_addr}:{port}"),
+        (None, _) => listen_addr.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1818,6 +1854,36 @@ mod tests {
             panic!("expected serve");
         };
         assert!(no_dns);
+    }
+
+    /// Two Platforms on one machine, for testing: each its own data
+    /// directory and port, given before or after the command.
+    #[test]
+    fn a_data_directory_and_a_port_pick_one_platform() {
+        for args in [
+            &["self-host", "-D", "/srv/a", "serve", "-p", "4000"][..],
+            &[
+                "self-host",
+                "serve",
+                "--data-dir",
+                "/srv/a",
+                "--port",
+                "4000",
+            ][..],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(
+                cli.data_dir.as_deref(),
+                Some(std::path::Path::new("/srv/a"))
+            );
+            let Some(Command::Serve { port, .. }) = cli.command else {
+                panic!("expected serve");
+            };
+            assert_eq!(port, Some(4000));
+        }
+        assert_eq!(with_port("0.0.0.0:3721", Some(4000)), "0.0.0.0:4000");
+        assert_eq!(with_port("100.1.2.3:3721", Some(4000)), "100.1.2.3:4000");
+        assert_eq!(with_port("0.0.0.0:3721", None), "0.0.0.0:3721");
     }
 
     #[test]

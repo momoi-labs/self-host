@@ -47,6 +47,37 @@ Directories are `0700` and files `0600`. `state/` holds the Operator's API key
 and every Application's environment, secrets included. Do not loosen it, and do
 not copy it anywhere world-readable.
 
+### Another data directory
+
+`-D <dir>` (or `--data-dir`) puts all of that under `<dir>` instead, the way
+`postgres -D` does. Virtual machines go to `<dir>/lima` and, on Linux, native
+Application data to `<dir>/native-data`. Docker named volumes stay where
+Docker keeps them; move Docker's own `data-root` to put them elsewhere.
+
+Give it to every command that acts on that Platform, or set
+`SELF_HOST_DATA_DIR`:
+
+```bash
+self-host -D /srv/self-host init
+self-host -D /srv/self-host serve
+self-host -D /srv/self-host prune
+```
+
+Nothing is moved: without the flag, the Platform uses the default paths
+again. On macOS, native Application data stays in
+`/Library/Application Support/self-host/native-data`. The privileged helper
+that runs native Applications is shared by the whole Mac and only trusts that
+fixed path. On Linux, native data requires a data directory owned by root
+whose parents only root can write to.
+
+For two Platforms on one machine, give each its own data directory and port,
+and move the second one's proxy off 80 and 443:
+
+```bash
+SELF_HOST_PROXY_HTTP_PORT=18080 SELF_HOST_PROXY_HTTPS_PORT=18443 \
+  self-host -D /tmp/second serve --port 3722 --no-dns
+```
+
 ## Application names
 
 Application and managed database names accept capitals, spaces, accents and
