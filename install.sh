@@ -16,6 +16,8 @@
 #   SELF_HOST_COLIMA_MEMORY  GiB of memory for the Colima VM  (default 6)
 #   SELF_HOST_NATIVE         set to 1 to install Linux s6 boot supervision
 #   SELF_HOST_BINARY_ONLY    set to 1 to install binaries without Host setup
+#   SELF_HOST_DATA_DIR       where the Platform keeps its data
+#                            (default ~/.config/self-host)
 #
 set -euo pipefail
 
@@ -612,7 +614,7 @@ wait_for_docker() {
 # and break every machine that trusts the old CA. A CLI config is what a
 # finished init leaves behind, so its presence is the signal to skip.
 init_platform() {
-	if [ -f "$HOME/.config/self-host/config.json" ]; then
+	if [ -f "${SELF_HOST_DATA_DIR:-$HOME/.config/self-host}/config.json" ]; then
 		echo "the Platform is already initialized; keeping its keys and certificates."
 		return
 	fi
@@ -917,8 +919,14 @@ EOF
 }
 
 install_platform_daemon() {
-	local operator="$1" home="$2" path
+	local operator="$1" home="$2" path data_dir=""
 	path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	# The daemon needs the data directory init used, every time it starts.
+	if [ -n "${SELF_HOST_DATA_DIR:-}" ]; then
+		data_dir="
+		<key>SELF_HOST_DATA_DIR</key>
+		<string>${SELF_HOST_DATA_DIR}</string>"
+	fi
 
 	mkdir -p "$home/Library/Logs/self-host"
 
@@ -952,7 +960,7 @@ install_platform_daemon() {
 		<key>PATH</key>
 		<string>${path}</string>
 		<key>RUST_LOG</key>
-		<string>info</string>
+		<string>info</string>${data_dir}
 	</dict>
 	<key>StandardOutPath</key>
 	<string>${home}/Library/Logs/self-host/self-host.log</string>

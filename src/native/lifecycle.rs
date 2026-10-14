@@ -88,7 +88,8 @@ impl Default for S6Runtime {
             #[cfg(target_os = "macos")]
             binary: super::macos::HELPER.into(),
             #[cfg(not(target_os = "macos"))]
-            data_root: "/var/lib/self-host/native-data".into(),
+            data_root: crate::paths::native_data_root()
+                .unwrap_or_else(|| "/var/lib/self-host/native-data".into()),
             #[cfg(target_os = "macos")]
             data_root: super::macos::DATA.into(),
             #[cfg(not(target_os = "macos"))]

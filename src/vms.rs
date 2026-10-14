@@ -94,6 +94,16 @@ impl Default for LimaRuntime {
     }
 }
 
+/// A `limactl` call, pointed at the data directory's Virtual machines when
+/// the Platform has one (#203).
+fn limactl(executable: &str) -> Command {
+    let mut command = Command::new(executable);
+    if let Some(home) = crate::paths::lima_home() {
+        command.env("LIMA_HOME", home);
+    }
+    command
+}
+
 /// `None` for anything this crate did not issue, so a crafted identifier
 /// cannot name an instance outside the owned prefix.
 fn instance_name(id: &str) -> Result<String, String> {
@@ -232,7 +242,7 @@ impl LimaRuntime {
     async fn command(&self, args: &[&str], timeout: Duration) -> Result<String, String> {
         let output = tokio::time::timeout(
             timeout,
-            Command::new(&self.executable)
+            limactl(&self.executable)
                 .args(args)
                 .stdin(Stdio::null())
                 .kill_on_drop(true)
@@ -271,7 +281,7 @@ impl LimaRuntime {
     /// Runs `script` inside the machine as root, and returns what it printed.
     async fn guest(&self, id: &str, script: &str, timeout: Duration) -> Result<String, String> {
         let name = instance_name(id)?;
-        let mut child = Command::new(&self.executable)
+        let mut child = limactl(&self.executable)
             .args(["shell", &name, "--", "sudo", "bash", "-s"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -373,7 +383,7 @@ impl LimaRuntime {
         progress: &mpsc::UnboundedSender<RuntimeProgress>,
         timeout: Duration,
     ) -> Result<(), String> {
-        let mut child = Command::new(&self.executable)
+        let mut child = limactl(&self.executable)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -612,7 +622,7 @@ impl LimaRuntime {
 /// Where an instance keeps its files and which port its SSH answers on, or
 /// `None` while Lima has not got that far.
 async fn ssh_target(executable: &str, name: &str) -> Option<(String, u64)> {
-    let output = Command::new(executable)
+    let output = limactl(executable)
         .args(["list", "--json"])
         .stdin(Stdio::null())
         .kill_on_drop(true)
@@ -1019,7 +1029,7 @@ impl LimaRuntime {
         progress: &mpsc::UnboundedSender<RuntimeProgress>,
     ) -> Result<(), String> {
         let name = instance_name(id)?;
-        let mut child = Command::new(&self.executable)
+        let mut child = limactl(&self.executable)
             .args(["shell", &name, "--", "sudo", "bash", "-s"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
