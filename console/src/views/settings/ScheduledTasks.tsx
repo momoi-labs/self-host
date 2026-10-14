@@ -36,6 +36,12 @@ function localHour(utcHour: number): string {
   return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** The day a weekly run lands on here: Sunday in UTC can be Saturday or Monday locally. */
+function localWeekday(utcHour: number): string {
+  // 2026-01-04 is a Sunday.
+  return new Date(Date.UTC(2026, 0, 4, utcHour)).toLocaleDateString([], { weekday: "long" });
+}
+
 /**
  * The Scheduled tasks card of Settings: work the Platform runs on its own,
  * each turned on or off, on a day or a week, at an hour. A run is a task like
@@ -116,7 +122,7 @@ export function ScheduledTasks({ id, size }: PaneProps) {
                         <SelectTrigger aria-label="How often"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="day">Daily</SelectItem>
-                          <SelectItem value="week">Weekly, Sunday</SelectItem>
+                          <SelectItem value="week">Weekly, {localWeekday(schedule.hour)}</SelectItem>
                         </SelectContent>
                       </Select>
                       <Select value={String(schedule.hour)} disabled={busy === schedule.id} onValueChange={(hour) => void save(schedule, { hour: Number(hour) })}>
