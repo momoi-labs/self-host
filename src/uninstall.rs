@@ -512,11 +512,11 @@ pub async fn run(inventory: &Inventory) -> Vec<String> {
             remove_docker_resources(&inventory.ids, false),
         );
         step("images", remove_images(inventory).await);
-    } else if inventory.ids.len() > inventory.native.len() {
+    } else if inventory.ids.len() > inventory.native.len() || !inventory.images.is_empty() {
         step(
             "containers, volumes and networks",
             Err(anyhow::anyhow!(
-                "this Platform has container Applications, but docker is not on the PATH"
+                "this Platform has container Applications or images, but docker is not on the PATH"
             )),
         );
     } else {
@@ -618,6 +618,12 @@ fn remove_native_shared(native: &[ApplicationRecord]) -> Result<()> {
             Err(_) => true,
         };
         if others {
+            // The homes are the default Platform's alone: one with a data
+            // directory keeps its own there.
+            let data = "/var/lib/self-host/native-data";
+            if Path::new(data).exists() {
+                checked(privileged("rm").args(["-rf", data]), "removing native data")?;
+            }
             println!(
                 "Another Platform still runs native Applications; keeping native supervision."
             );
@@ -671,8 +677,20 @@ async fn remove_images(inventory: &Inventory) -> Result<()> {
                 .and_then(|rest| rest.get(..12))
                 .map(str::to_owned)
         };
-        let built = owner("sf-source-").is_some_and(|owner| inventory.ids.contains(&owner))
-            || owner("sf-img-").is_some_and(|owner| inventory.custom.contains(&owner));
+        // Another Platform's build can share an immutable id with one of
+        // these, so its tag is never matched by id.
+        let source = owner("sf-source-");
+        let custom = owner("sf-img-");
+        if source
+            .as_ref()
+            .is_some_and(|owner| !inventory.ids.contains(owner))
+            || custom
+                .as_ref()
+                .is_some_and(|owner| !inventory.custom.contains(owner))
+        {
+            continue;
+        }
+        let built = source.is_some() || custom.is_some();
         if built || inventory.images.contains(&reference) || inventory.images.contains(&id) {
             doomed.insert(reference);
         }
@@ -816,11 +834,22 @@ fn untrust_ca(der: &[u8]) -> Result<()> {
                 let database = format!("sql:{}", nss.display());
                 let listed = certutil()
                     .args(["-L", "-a", "-n", CA_NAME, "-d", &database])
-                    .output();
-                let matches = listed
-                    .ok()
-                    .and_then(|output| pem::parse_many(output.stdout).ok())
-                    .is_some_and(|certs| certs.iter().any(|cert| cert.contents() == der));
+                    .output()
+                    .context(
+                        "the browsers' certificate database exists, but certutil cannot run",
+                    )?;
+                // A missing nickname is an answer; anything else is a failure
+                // that must keep the CA, so a retry can still find it.
+                let absent = String::from_utf8_lossy(&listed.stderr)
+                    .to_ascii_lowercase()
+                    .contains("could not find");
+                anyhow::ensure!(
+                    listed.status.success() || absent,
+                    "certutil could not read {database}: {}",
+                    String::from_utf8_lossy(&listed.stderr).trim()
+                );
+                let matches = pem::parse_many(listed.stdout)
+                    .is_ok_and(|certs| certs.iter().any(|cert| cert.contents() == der));
                 if matches {
                     checked(
                         certutil().args(["-D", "-n", CA_NAME, "-d", &database]),
