@@ -1412,6 +1412,73 @@ impl DockerRuntime for CliDocker {
 
 /// Images the Platform builds itself: custom images and development images.
 /// They have no registry to be pulled from.
+/// The Operator's Docker configuration directory, as the CLI finds it.
+fn operator_docker_config() -> Option<std::path::PathBuf> {
+    std::env::var_os("DOCKER_CONFIG")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".docker")))
+}
+
+/// The endpoint the Operator's Docker CLI talks to, for commands that run
+/// with an isolated DOCKER_CONFIG. None when DOCKER_HOST already says, since
+/// those commands inherit it, or when the CLI cannot tell.
+fn operator_docker_host() -> Option<String> {
+    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        if std::env::var_os("DOCKER_HOST").is_some() {
+            return None;
+        }
+        let output = std::process::Command::new("docker")
+            .args([
+                "context",
+                "inspect",
+                "--format",
+                "{{.Endpoints.docker.Host}}",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let host = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (output.status.success() && !host.is_empty()).then_some(host)
+    })
+    .clone()
+}
+
+/// The configuration a Docker command with an isolated DOCKER_CONFIG uses:
+/// these registry `auths`, and the Operator's plugin directories, since the
+/// CLI looks for buildx under DOCKER_CONFIG and Homebrew puts it in
+/// ~/.docker/cli-plugins.
+pub fn isolated_config(auths: serde_json::Value) -> serde_json::Value {
+    let mut dirs = Vec::new();
+    if let Some(config) = operator_docker_config() {
+        let plugins = config.join("cli-plugins");
+        if plugins.is_dir() {
+            dirs.push(plugins.display().to_string());
+        }
+        if let Some(extra) = std::fs::read(config.join("config.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|config| config["cliPluginsExtraDirs"].as_array().cloned())
+        {
+            dirs.extend(
+                extra
+                    .iter()
+                    .filter_map(|dir| dir.as_str().map(str::to_owned)),
+            );
+        }
+    }
+    with_plugin_dirs(auths, dirs)
+}
+
+fn with_plugin_dirs(auths: serde_json::Value, dirs: Vec<String>) -> serde_json::Value {
+    let mut config = serde_json::json!({ "auths": auths });
+    if !dirs.is_empty() {
+        config["cliPluginsExtraDirs"] = serde_json::json!(dirs);
+    }
+    config
+}
+
 pub fn built_on_host(image: &str) -> bool {
     image.starts_with("sf-img-")
         || image.starts_with("self-host-dev-")
@@ -1469,6 +1536,11 @@ async fn source_docker(
         .kill_on_drop(true);
     if let Some(path) = registry_config {
         command.env("DOCKER_CONFIG", path);
+        // The isolated config has no current context, so the CLI would dial
+        // /var/run/docker.sock, which Colima on a Mac does not create.
+        if let Some(host) = operator_docker_host() {
+            command.env("DOCKER_HOST", host);
+        }
     }
     let mut child = command
         .spawn()
@@ -2508,6 +2580,27 @@ fn decimal_size(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::error::ErrorReport;
+
+    /// A Git build runs with an isolated DOCKER_CONFIG for its credentials.
+    /// On a Mac buildx lives in ~/.docker/cli-plugins, so the isolated config
+    /// must point there or BuildKit refuses to build (#207).
+    #[test]
+    fn an_isolated_config_keeps_the_operators_plugins() {
+        let config = with_plugin_dirs(
+            serde_json::json!({"registry.example": {"auth": "x"}}),
+            vec!["/Users/op/.docker/cli-plugins".into()],
+        );
+        assert_eq!(config["auths"]["registry.example"]["auth"], "x");
+        assert_eq!(
+            config["cliPluginsExtraDirs"],
+            serde_json::json!(["/Users/op/.docker/cli-plugins"])
+        );
+        assert!(
+            with_plugin_dirs(serde_json::json!({}), Vec::new())
+                .get("cliPluginsExtraDirs")
+                .is_none()
+        );
+    }
 
     #[test]
     fn volume_sizes_read_dockers_decimal_units_and_skip_what_it_did_not_measure() {
