@@ -429,9 +429,17 @@ impl NativeRuntime for S6Runtime {
                     if std::fs::symlink_metadata(&home)?.file_type().is_symlink() {
                         bail!("refusing symlink Application home");
                     }
-                    if delete_data {
+                    if delete_data && cfg!(not(target_os = "macos")) {
                         std::fs::remove_dir_all(&home)?;
                     } else {
+                        // macOS refuses to delete the home of a registered
+                        // account, even as root, and the account can only be
+                        // retired here: deleting it, or moving its home,
+                        // needs an approval on the Mac's screen. So the data
+                        // goes and the empty folder stays.
+                        if delete_data {
+                            remove_contents(&home)?;
+                        }
                         std::os::unix::fs::chown(&home, Some(0), Some(0))?;
                         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
                     }
@@ -727,6 +735,20 @@ pub async fn validate_port(
     Ok(())
 }
 
+/// Everything inside `dir`, never `dir` itself or what a symlink points at.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn remove_contents(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if std::fs::symlink_metadata(&path)?.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_environment(env: &[(String, String)]) -> Result<()> {
     for (key, value) in env {
         if key.is_empty()
@@ -990,6 +1012,28 @@ pub async fn service_states(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On macOS a native Application's data goes but its home folder stays,
+    /// and nothing a symlink in it points at is touched.
+    #[test]
+    fn emptying_a_home_keeps_the_folder_and_what_links_point_at() {
+        let base = std::env::temp_dir().join(format!("sh-contents-{}", std::process::id()));
+        let home = base.join("home");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(home.join("sub/deeper")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(home.join("note.txt"), "x").unwrap();
+        std::fs::write(home.join("sub/deeper/f"), "x").unwrap();
+        std::fs::write(outside.join("kept"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("link")).unwrap();
+
+        remove_contents(&home).unwrap();
+
+        assert!(home.is_dir());
+        assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0);
+        assert!(outside.join("kept").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
