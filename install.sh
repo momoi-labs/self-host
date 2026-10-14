@@ -443,26 +443,20 @@ EOF
 #
 # An existing profile keeps its own file, so both land there too.
 write_colima_template() {
-	local home="$1" template profile location missing=() mounts
+	local home="$1" template profile location missing=()
 	template="$home/.colima/_templates/default.yaml"
 	profile="$home/.colima/default/colima.yaml"
 
 	# Compose bind mounts live in the data directory, so the guest needs it
-	# too when it is outside the home.
+	# too when it is outside the home. DATA_DIR is already resolved; the
+	# home may be a symlink too.
 	local locations=("$home")
-	# DATA_DIR is already resolved; the home may be a symlink too.
 	if [ -n "${DATA_DIR:-}" ]; then
 		case "$DATA_DIR/" in
 			"$(cd "$home" && pwd -P)"/*) ;;
 			*) locations+=("$DATA_DIR") ;;
 		esac
 	fi
-	mounts=""
-	for location in "${locations[@]}"; do
-		mounts+="  - location: ${location}
-    writable: true
-"
-	done
 
 	mkdir -p "$(dirname "$template")"
 	cat >"$template" <<EOF
@@ -476,7 +470,7 @@ autoActivate: true
 network:
   dns: [${COLIMA_DNS}]
 mounts:
-${mounts%$'\n'}
+$(mount_entries "  " "${locations[@]}")
 EOF
 
 	if [ -f "$profile" ]; then
@@ -485,37 +479,72 @@ EOF
 
 	[ -f "$profile" ] || return 0
 	for location in "${locations[@]}"; do
-		grep -q "location: ${location}\$" "$profile" || missing+=("$location")
+		has_mount "$profile" "$location" || missing+=("$location")
 	done
 	[ "${#missing[@]}" -gt 0 ] || return 0
-	mounts=""
-	for location in "${missing[@]}"; do
-		mounts+="  - location: ${location}
-    writable: true
-"
-	done
 	if ! grep -qE '^[[:space:]]*-[[:space:]]*location:' "$profile"; then
 		echo "adding ${missing[*]} to the existing Colima profile ($profile)..."
 		sed -i '' -E '/^mounts:[[:space:]]*(null|\[\])?[[:space:]]*$/d' "$profile"
-		printf 'mounts:\n%s' "$mounts" >>"$profile"
-	elif grep -q "location: ${home}\$" "$profile"; then
-		# The home this installer mounted before: the rest go right after it.
+		printf 'mounts:\n%s\n' "$(mount_entries "  " "${missing[@]}")" >>"$profile"
+	elif has_mount "$profile" "$home"; then
+		# The home this installer mounted before: the rest go right after
+		# the whole entry, whatever order its keys are in and however deep
+		# the list is indented.
 		echo "adding ${missing[*]} to the existing Colima profile ($profile)..."
-		# The new entries go after the whole home entry, whatever order its
-		# keys are in: before the next item, or the next top-level key.
-		EXTRA="$mounts" awk -v home="location: ${home}" '
-			function flush() { if (pending) { printf "%s", ENVIRON["EXTRA"]; pending = 0 } }
+		HOME_LOC="$home" EXTRA="$(printf '%s\n' "${missing[@]}")" awk '
+			function value(line) {
+				sub(/^[[:space:]]*(-[[:space:]]+)?location:[[:space:]]*/, "", line)
+				gsub(/^"|"$/, "", line)
+				return line
+			}
+			function flush(   n, i, list, path) {
+				if (!pending) return
+				n = split(ENVIRON["EXTRA"], list, "\n")
+				for (i = 1; i <= n; i++) {
+					if (list[i] == "") continue
+					path = list[i]
+					gsub(/\\/, "\\\\", path)
+					gsub(/"/, "\\\"", path)
+					printf "%s- location: \"%s\"\n%s  writable: true\n", indent, path, indent
+				}
+				pending = 0
+			}
 			inside && (/^[[:space:]]*-[[:space:]]/ || /^[^[:space:]]/) { inside = 0; flush() }
+			/^[[:space:]]*-[[:space:]]/ { match($0, /^[[:space:]]*/); item = substr($0, 1, RLENGTH) }
 			{ print }
-			substr($0, length($0) - length(home) + 1) == home { inside = 1; pending = 1 }
+			/location:/ && value($0) == ENVIRON["HOME_LOC"] { inside = 1; pending = 1; indent = item }
 			END { flush() }' "$profile" >"$profile.tmp" && mv "$profile.tmp" "$profile"
 	else
 		# Mounts the Operator chose. Where their list ends is a guess, so
 		# say what is missing instead of rewriting it.
 		echo "the Colima profile mounts something else; add" >&2
-		printf '%s' "$mounts" >&2
+		mount_entries "  " "${missing[@]}" >&2
 		echo "to the mounts in $profile, or bind mounts will be empty." >&2
 	fi
+}
+
+# YAML list entries mounting each path writable, quoted: a path may hold
+# `#` or `: `, which a plain scalar would cut short.
+mount_entries() {
+	local indent="$1" location quoted
+	shift
+	for location in "$@"; do
+		quoted=${location//\\/\\\\}
+		quoted=${quoted//\"/\\\"}
+		printf '%s- location: "%s"\n%s  writable: true\n' "$indent" "$quoted" "$indent"
+	done
+}
+
+# Whether a Colima profile already mounts a path, quoted or not.
+has_mount() {
+	LOC="$2" awk '
+		/^[[:space:]]*(-[[:space:]]+)?location:/ {
+			v = $0
+			sub(/^[[:space:]]*(-[[:space:]]+)?location:[[:space:]]*/, "", v)
+			gsub(/^"|"$/, "", v)
+			if (v == ENVIRON["LOC"]) found = 1
+		}
+		END { exit !found }' "$1"
 }
 
 # The Colima guest runs dnsmasq on port 53, and Lima republishes a guest
