@@ -83,6 +83,14 @@ fn listed(args: &[&str], filters: &[String]) -> Result<Vec<String>> {
         command.args(["--filter", &format!("name={filter}")]);
     }
     let output = command.output()?;
+    // A Docker that does not answer lists nothing, which must not read as
+    // nothing to remove.
+    anyhow::ensure!(
+        output.status.success(),
+        "docker {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
     let mut found: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .split_whitespace()
         .map(str::to_string)
