@@ -52,6 +52,10 @@ pub trait NativeRuntime: Send + Sync {
     async fn sample(&self, _: &ApplicationRecord) -> Result<Option<crate::metrics::AppSample>> {
         Ok(None)
     }
+    /// Every process in the Application's tree, terminals included.
+    async fn processes(&self, _: &ApplicationRecord) -> Result<Vec<crate::processes::Process>> {
+        bail!("This Host cannot list a native Application's processes yet.")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -443,6 +447,27 @@ impl NativeRuntime for S6Runtime {
                 return Ok(None);
             }
             samples.sample(&record.id, cgroup.path())
+        })
+        .await
+    }
+    #[cfg(target_os = "linux")]
+    async fn processes(
+        &self,
+        record: &ApplicationRecord,
+    ) -> Result<Vec<crate::processes::Process>> {
+        let record = record.clone();
+        self.blocking(move |runtime| {
+            let cgroup = runtime.supervisor()?.application_cgroup(&record.id)?;
+            // A stopped Application has no cgroup until it starts again.
+            if !cgroup.path().exists() {
+                return Ok(Vec::new());
+            }
+            let account = &definition(&record)?.account;
+            let uid = super::identity::resolve(&AccountName::parse(account)?)?.uid;
+            Ok(crate::processes::read_proc(
+                &cgroup.processes()?,
+                &[(uid, account.as_str()), (0, "root")],
+            ))
         })
         .await
     }

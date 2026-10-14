@@ -256,6 +256,29 @@ impl NativeRuntime for HelperRuntime {
         });
         Ok(receiver)
     }
+    /// launchd has no cgroup, so the tree is found from `ps`: what the
+    /// root runner s6 supervises for this Application started. `ps` needs
+    /// no privilege to read other accounts' processes on macOS.
+    async fn processes(
+        &self,
+        record: &ApplicationRecord,
+    ) -> Result<Vec<crate::processes::Process>> {
+        let output = tokio::process::Command::new("/bin/ps")
+            .args(["-axww", "-o", "pid,ppid,user,pcpu,rss,args"])
+            .output()
+            .await
+            .context("failed to run ps")?;
+        if !output.status.success() {
+            bail!(
+                "ps failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(crate::processes::under_runner(
+            crate::processes::parse_ps(&String::from_utf8_lossy(&output.stdout)),
+            &record.id,
+        ))
+    }
 }
 
 fn operation_lock(id: &str) -> Result<std::fs::File> {

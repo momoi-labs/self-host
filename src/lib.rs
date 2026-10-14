@@ -40,6 +40,7 @@ pub mod native;
 pub mod paths;
 pub mod ports;
 pub mod postgres;
+pub mod processes;
 pub mod proxy;
 pub mod routes;
 pub mod schema;
@@ -356,6 +357,7 @@ fn build_platform_with_native<S: StateStore>(
         .route("/apps/id/{id}/logs", get(stream_logs_by_id::<S>))
         .route("/apps/id/{id}/variable-names", get(variable_names::<S>))
         .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
+        .route("/apps/id/{id}/processes", get(list_app_processes::<S>))
         .route("/apps/id/{id}/http-status", get(http_status::<S>))
         .route("/metrics", get(get_metrics::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
@@ -2290,6 +2292,59 @@ async fn list_app_containers<S: StateStore>(
         Ok(None) => logs_error_response(&apps::LogsError::NotFound(id)),
         Err(err) => logs_error_response(&apps::LogsError::Store(err)),
     }
+}
+
+/// The processes of one container, or of a native Application's tree.
+#[derive(Serialize)]
+struct ProcessGroup {
+    name: String,
+    processes: Vec<processes::Process>,
+}
+
+/// What an Application runs right now, by container. A native Application
+/// is one group named `process`. A stopped container lists nothing.
+async fn list_app_processes<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let app = match apps::get_application(&state.store, &id).await {
+        Ok(app) => app,
+        Err(error) => return deploy_error_response(error),
+    };
+    let mut groups = Vec::new();
+    if matches!(app.runtime, Runtime::Native(_)) {
+        match state.native.processes(&app).await {
+            Ok(processes) => groups.push(ProcessGroup {
+                name: "process".into(),
+                processes,
+            }),
+            Err(error) => return error_response(StatusCode::SERVICE_UNAVAILABLE, error.as_ref()),
+        }
+    } else {
+        let names = match state.docker.application_containers(&id).await {
+            Ok(names) => names,
+            Err(error) => return logs_error_response(&apps::LogsError::Docker(error)),
+        };
+        for name in names {
+            let processes = match state.docker.container_running(&name).await {
+                Ok(true) => match state.docker.container_processes(&name).await {
+                    Ok(processes) => processes,
+                    Err(error) => return logs_error_response(&apps::LogsError::Docker(error)),
+                },
+                Ok(false) => Vec::new(),
+                Err(error) => return logs_error_response(&apps::LogsError::Docker(error)),
+            };
+            groups.push(ProcessGroup { name, processes });
+        }
+    }
+    let environment = match state.store.get_all_env(&id).await {
+        Ok(environment) => environment,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    };
+    for group in &mut groups {
+        processes::redact(&mut group.processes, &environment);
+    }
+    Json(groups).into_response()
 }
 
 #[derive(Serialize)]
