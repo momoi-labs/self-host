@@ -1436,8 +1436,10 @@ async fn run_reset_command(force: bool) -> anyhow::Result<()> {
         ),
     )?;
     network_names.retain(|name| name != "self-host");
-    // A network still in use by another Platform's containers stays.
+    // The shared networks every Platform on this Docker joins. One still in
+    // use by another Platform's containers stays: Docker refuses it.
     network_names.push("self-host".into());
+    network_names.push(self_host::docker::APP_NETWORK.into());
     let _ = std::process::Command::new("docker")
         .args(["network", "rm"])
         .args(&network_names)
