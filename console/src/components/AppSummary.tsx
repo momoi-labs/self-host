@@ -15,6 +15,7 @@ import { kindIcon, redirectFrom, redirectTo, routesOf, targetOf } from "../lib/r
 import type { App, GitInspection, Inspection } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
+import { addressesOf, canGrant, consumersOf, providersOf } from "../lib/privateAccess.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
 import { Fact, GroupCard, type GroupSection } from "./GroupCard.js";
 import { Icon } from "./Icon.js";
@@ -296,6 +297,12 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             })} />
         ) : null}
         <Variables id="variables" size={6} app={app} />
+        {consumersOf(app).length || providersOf(app, apps).length ? (
+          <GridPane id="private-access" title="Private access" size={12} newRow
+            actions={canGrant(app) ? edit : undefined}>
+            <PrivateAccess app={app} apps={apps} onOpenApp={onOpenApp} />
+          </GridPane>
+        ) : null}
       </PaneGrid>
 
       {native && capabilities?.metrics === false && capabilities.resource_limits === false ? (
@@ -316,6 +323,75 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
         }} />
     </div>
   );
+}
+
+/**
+ * Who reaches whom over private networks, and at which address. The address
+ * is a service's container name, so it is known once that service has run.
+ */
+function PrivateAccess({ app, apps, onOpenApp }: { app: App; apps: App[]; onOpenApp: (id: string) => void }) {
+  const byId = new Map(apps.map((one) => [one.id, one]));
+  const own = addressesOf(app);
+  const rows: { key: string; who: ReactNode; access: string; address?: string }[] = [
+    ...consumersOf(app).map((id) => ({
+      key: `in-${id}`,
+      who: <AppLink app={byId.get(id)} id={id} onOpenApp={onOpenApp} />,
+      access: own.length ? `Reaches ${own.map((one) => one.service).join(", ")}` : "Has access",
+    })),
+    ...own.filter(() => consumersOf(app).length).map((one) => ({
+      key: `own-${one.service}`, who: <span className="mono">{one.service}</span>,
+      access: "Address its Applications use", address: one.address,
+    })),
+    ...providersOf(app, apps).flatMap((provider) => {
+      const addresses = addressesOf(provider);
+      return addresses.length
+        ? addresses.map((one) => ({
+          key: `out-${provider.id}-${one.service}`,
+          who: <><AppLink app={provider} id={provider.id} onOpenApp={onOpenApp} /> <span className="muted mono">{one.service}</span></>,
+          access: "This Application can reach it", address: one.address,
+        }))
+        : [{ key: `out-${provider.id}`, who: <AppLink app={provider} id={provider.id} onOpenApp={onOpenApp} />,
+          access: "This Application can reach it once it runs" }];
+    }),
+  ];
+  return (
+    <div className="table-wrap">
+      <div className="table-scroll">
+        <Table aria-label="Private access">
+          <TableHeader>
+            <TableRow>
+              <TableHead scope="col">Application or service</TableHead>
+              <TableHead scope="col">Access</TableHead>
+              <TableHead scope="col">Address</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.key}>
+                <TableCell>{row.who}</TableCell>
+                <TableCell>{row.access}</TableCell>
+                <TableCell>
+                  {row.address ? (
+                    <>
+                      <code>{row.address}</code>{" "}
+                      <Button size="sm" variant="ghost" aria-label={`Copy ${row.address}`}
+                        onClick={() => void navigator.clipboard?.writeText(row.address ?? "")}>Copy</Button>
+                    </>
+                  ) : <span className="muted">None</span>}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+function AppLink({ app, id, onOpenApp }: { app?: App; id: string; onOpenApp: (id: string) => void }) {
+  // A grant can name an Application that was renamed or is gone; the id still says which.
+  if (!app) return <span className="mono muted">{id}</span>;
+  return <Button size="sm" variant="ghost" className="btn-link" onClick={() => onOpenApp(app.id)}>{app.name}</Button>;
 }
 
 /** A native process tree's limits in one line; a limit that is not set is not one. */

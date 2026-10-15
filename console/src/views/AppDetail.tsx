@@ -353,7 +353,7 @@ export function AppDetail({
               onRename={() => setTab("configuration")} />
           </TabsContent> : null}
           <TabsContent value="configuration">
-            <AppForm key={formRevision} app={app} dnsSuffix={dnsSuffix} onSubmit={save} onReload={reload} />
+            <AppForm key={formRevision} app={app} apps={apps} dnsSuffix={dnsSuffix} onSubmit={save} onReload={reload} />
           </TabsContent>
           {app.git ? <TabsContent value="last-update" className="detail-run">
             <GitBuildRun event={lastBuild} error={eventsError} busy={gitBusy} onRetry={() => setTab("configuration")} />
