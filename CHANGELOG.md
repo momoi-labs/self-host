@@ -1,5 +1,20 @@
 # self-host
 
+## 0.11.0
+
+### Minor Changes
+
+- d52b7f5: The console works on a phone. Below 700px the navigation moves to a bar at the bottom, with Applications, virtual machines and Settings behind More, and from 700px to 1023px it opens from a menu button. The top bar shows the Platform version and the health dot at every width. Detail screens show their tabs as sections you open one at a time, the status badges wrap, and Start, Stop, Restart and Remove sit behind one "More actions" button. The Summary diagram fits the screen instead of running off it. The console moves to kiso-react 0.16.1 and kiso 0.20.4.
+
+### Patch Changes
+
+- bea3acd: The console has a Host page. It opens a login shell on the Host, as the account the Platform runs under, and on a Mac it opens the screen through Screen Sharing in a window of its own, for the dialogs that only take a click. Both are off until the Operator turns them on in Settings > Host, and the page leaves the menu while both are off. On a Linux Host that runs the Platform as root, the shell is a root shell.
+- 1f424a0: A long dependency chip, such as a mise tool with a `url=` option, no longer shows a scrollbar that squeezes it under classic scrollbars. The console moves to kiso 0.19.1.
+- 7cc17be: Upgrading a macOS Host with `install.sh` now reminds you that native Applications reading an external drive need Full Disk Access granted to the helper again, since an upgrade drops it. The steps are in `docs/macos-native-applications.md`.
+- cdadfae: Creating several Applications at once no longer fails some of them with "network with name sf-app-… already exists". Every deploy makes sure each Application's network exists, so two deploys could create the same one; the one that loses now finds it there and goes on.
+- ff5e5c0: The console manages private access. An unpublished Compose Application's Configuration has **Applications with access**, to grant or remove other container Applications, and the Summary lists who reaches whom with each service's address to copy. Editing an unpublished Compose Application no longer asks for a Hostname and a web service it cannot have.
+- 0afbba3: The console's container terminal opens on images without Bash, such as Alpine, with their `sh`. It used to end at once with code 127. Bash is still the shell wherever the image has it.
+
 ## 0.10.0
 
 ### Minor Changes
