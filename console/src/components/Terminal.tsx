@@ -150,9 +150,9 @@ export function Terminal({ id = "", machine = false, native = false, host = fals
             {host
               ? `Start a login shell on the Host as ${account || "the Platform's account"}.`
               : machine
-              ? "Start an interactive Bash session as dev."
+              ? "Start an interactive shell as dev."
               : native ? `Start a shell as ${account || "the Application Account"}. The shell shares the Application resource limits.`
-              : loading ? "Loading containers..." : container ? "Start an interactive Bash session." : "No running containers available."}
+              : loading ? "Loading containers..." : container ? "Start an interactive shell." : "No running containers available."}
           </EmptyStateDescription>
           {!machine && !native && !host && services.length > 1 && (
             <FormField id="terminal-container" label="Container" className="terminal-picker">

@@ -403,6 +403,28 @@ pub(crate) async fn open(
         .map_err(|e| DockerError::Command("Could not open terminal.".into(), e.into()))
 }
 
+/// The shell a container terminal opens: Bash when the image has it, else
+/// the POSIX `sh` every image with a shell has. Alpine and other minimal
+/// images ship no Bash, and asking for it ended the session at once.
+const SHELL: &str = "if command -v bash >/dev/null 2>&1; then exec bash -i; else exec sh -i; fi";
+
+/// The reaper in POSIX shell, for images without Bash; `tr` and `grep` read
+/// each process's NUL-separated environment. Without them it hands over to
+/// the Bash version, passed as `$2`.
+const CLEANUP_POSIX: &str = r#"
+if ! command -v tr >/dev/null 2>&1 || ! command -v grep >/dev/null 2>&1; then
+    exec bash -c "$2" bash "$1"
+fi
+for environment in /proc/[0-9]*/environ; do
+    test -r "$environment" || continue
+    if tr '\0' '\n' < "$environment" 2>/dev/null | grep -qxF -- "$1"; then
+        pid=${environment#/proc/}
+        pid=${pid%/environ}
+        kill -HUP "$pid" 2>/dev/null || :
+    fi
+done
+"#;
+
 const CLEANUP: &str = r#"
 for environment in /proc/[0-9]*/environ; do
     test -r "$environment" || continue
@@ -431,7 +453,7 @@ fn spawn(container: &str, size: Size, user: Option<&str>) -> anyhow::Result<Sess
     if let Some(user) = user {
         command.args(["--user", user]);
     }
-    command.args(["--", container, "bash", "-i"]);
+    command.args(["--", container, "sh", "-c", SHELL]);
     let container = container.to_owned();
     let user = user.map(str::to_owned);
     // Docker keeps exec processes alive after its client disconnects. Signal
@@ -522,7 +544,16 @@ fn reap_docker_exec(container: &str, user: Option<&str>, marker: &str) {
     if let Some(user) = user {
         cleanup.args(["--user", user]);
     }
-    cleanup.args(["--", container, "bash", "-c", CLEANUP, "bash", marker]);
+    cleanup.args([
+        "--",
+        container,
+        "sh",
+        "-c",
+        CLEANUP_POSIX,
+        "sh",
+        marker,
+        CLEANUP,
+    ]);
     cleanup
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
