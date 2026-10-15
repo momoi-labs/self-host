@@ -34,8 +34,22 @@ export function addressesOf(provider: App): { service: string; address: string }
   return (provider.services ?? []).map((service) => ({ service: service.service, address: service.container }));
 }
 
-/** The policy an edit should send, or nothing when the grants did not change. */
-export function policyChange(app: App, consumers: string[]): NetworkPolicy | undefined {
+/**
+ * Whether the Application is still on the old shared network, where every
+ * other shared Application reaches it. Rows from before private networks read
+ * as shared.
+ */
+export function isShared(app: App): boolean {
+  return app.network_policy?.kind !== "private";
+}
+
+/**
+ * The policy an edit should send, or nothing when nothing changed. A shared
+ * Application turns private with its first grant, or when the Operator asks
+ * for it with no grant at all.
+ */
+export function policyChange(app: App, consumers: string[], makePrivate = false): NetworkPolicy | undefined {
+  if (isShared(app)) return consumers.length || makePrivate ? { kind: "private", consumers } : undefined;
   const before = consumersOf(app);
   const same = before.length === consumers.length && before.every((id, index) => id === consumers[index]);
   return same ? undefined : { kind: "private", consumers };
