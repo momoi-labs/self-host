@@ -319,8 +319,9 @@ FileVault off.
 | Data survives recreation | Edit the Compose file, save, confirm the previous conversation is still there | Open |
 | Stopped stays stopped | Stop an Application, reboot, confirm it is still stopped and its Hostname does not answer | Open |
 | Failure is visible | Set a bad `command`, save, confirm `failed` with the exit code and the logs | Open |
-| Bridge returns, no login | After the reboot, `sudo launchctl print system/dev.momoi.self-host.vmnet` shows `state = running`, the socket exists, and `lsof -nP -iTCP:53 -iUDP:53` lists no `mDNSResponder` | Open |
-| A machine gets a LAN address | Attach a Lima instance to the socket; `lima0` holds an address from the router's DHCP pool and another device pings it | Open |
+| Bridge returns, no login | After the reboot, `sudo launchctl print system/dev.momoi.self-host.vmnet` shows `state = running`, the socket exists, and `lsof -nP -iTCP:53 -iUDP:53` lists no `mDNSResponder` | **Passed** — 2026-10-14, on v0.10.0. 47 seconds after boot `/dev/console` was owned by `root`; `dev.momoi.self-host.vmnet`, the Platform, Colima and the native supervisor were all `state = running`; `/var/run/self-host-vmnet.sock` existed; only `self-host` held port 53; `admin.momoi.internal` resolved through the Host from another machine |
+| A machine gets a LAN address | Attach a Lima instance to the socket; `lima0` holds an address from the router's DHCP pool and another device pings it | **Passed** — 2026-10-14. A machine created after that reboot leased 192.168.1.138 from the router, and the Linux workstation pinged it with no loss |
+| Uninstall removes the bridge | Run `uninstall.sh`; the vmnet daemon is gone from `launchctl print`, the socket and `/opt/socket_vmnet` are removed, and a Lima instance on the socket path gets no LAN address | Open on this Host, where it would also remove its Applications. On a second Mac with macOS 26.6.2, `uninstall.sh` removed the daemon, the socket and `/opt/socket_vmnet/bin/socket_vmnet` |
 
 ### What the record does not say
 
