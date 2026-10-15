@@ -31,6 +31,14 @@ _Avoid_: end user, client, visitor
 The LAN machine where the Platform, Platform Infra and Applications run.
 _Avoid_: node, server, VPS (VPS is not the primary MVP environment)
 
+**Remote screen**:
+The Host's own desktop, shown in the console through macOS Screen Sharing. Off until the Operator allows it in Settings; the Mac still asks for one of its accounts (ADR-0033).
+_Avoid_: VNC (the protocol underneath), remote desktop, screen share
+
+**Host terminal**:
+A login shell on the Host, in the console, as the account the Platform runs under. Off until the Operator allows it in Settings (ADR-0033).
+_Avoid_: SSH (nothing here is SSH), host shell, root shell
+
 **Virtual machine**:
 A persistent workspace owned by the Operator, with selected development tools,
 repositories and independent access. Its lifecycle is separate from published

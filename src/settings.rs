@@ -29,6 +29,10 @@ pub const PULL_NEWER_IMAGES_KEY: &str = "pull_newer_images";
 pub const PULL_NEWER_IMAGES_SUBJECT: &str = "pull-newer-images";
 pub const REWRITE_HOST_KEY: &str = "rewrite_host";
 pub const REWRITE_HOST_SUBJECT: &str = "rewrite-host";
+pub const REMOTE_SCREEN_KEY: &str = "remote_screen";
+pub const REMOTE_SCREEN_SUBJECT: &str = "remote-screen";
+pub const HOST_TERMINAL_KEY: &str = "host_terminal";
+pub const HOST_TERMINAL_SUBJECT: &str = "host-terminal";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -67,6 +71,10 @@ pub struct Settings {
     /// Whether an Application that does not choose gets its target's
     /// address as `Host` instead of its Hostname.
     pub rewrite_host: Toggle,
+    /// Whether the console may open the Host's screen.
+    pub remote_screen: Toggle,
+    /// Whether the console may open a shell on the Host.
+    pub host_terminal: Toggle,
 }
 
 /// Only the settings present change. `null` removes one, and the default
@@ -81,6 +89,10 @@ pub struct Update {
     pub pull_newer_images: Option<Option<bool>>,
     #[serde(default, deserialize_with = "present")]
     pub rewrite_host: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "present")]
+    pub remote_screen: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "present")]
+    pub host_terminal: Option<Option<bool>>,
 }
 
 /// Tells a field set to `null` apart from a field left out.
@@ -99,15 +111,25 @@ pub(crate) fn subject(payload: &serde_json::Value) -> (&'static str, &'static st
         payload.get("auditEventsMaxAge").is_some(),
         payload.get("pullNewerImages").is_some(),
         payload.get("rewriteHost").is_some(),
+        payload.get("remoteScreen").is_some(),
+        payload.get("hostTerminal").is_some(),
     )
 }
 
 /// The setting a change touched, or the audit history when it touched more
 /// than one.
-fn subject_for(retention: bool, pull: bool, rewrite: bool) -> (&'static str, &'static str) {
-    match (retention, pull, rewrite) {
-        (false, true, false) => (PULL_NEWER_IMAGES_SUBJECT, "Image pulls"),
-        (false, false, true) => (REWRITE_HOST_SUBJECT, "Host header"),
+fn subject_for(
+    retention: bool,
+    pull: bool,
+    rewrite: bool,
+    screen: bool,
+    terminal: bool,
+) -> (&'static str, &'static str) {
+    match (retention, pull, rewrite, screen, terminal) {
+        (false, true, false, false, false) => (PULL_NEWER_IMAGES_SUBJECT, "Image pulls"),
+        (false, false, true, false, false) => (REWRITE_HOST_SUBJECT, "Host header"),
+        (false, false, false, true, false) => (REMOTE_SCREEN_SUBJECT, "Remote screen"),
+        (false, false, false, false, true) => (HOST_TERMINAL_SUBJECT, "Host terminal"),
         _ => (AUDIT_EVENTS_MAX_AGE_SUBJECT, "Audit history"),
     }
 }
@@ -127,6 +149,22 @@ async fn pull_setting<S: StateStore>(state: &AppState<S>) -> Option<bool> {
 /// start and every change after that.
 pub async fn rewrite_host(store: &impl StateStore) -> bool {
     toggle_setting(store, REWRITE_HOST_KEY)
+        .await
+        .unwrap_or(false)
+}
+
+/// Whether the console may open the Host's screen. Off unless the Operator
+/// turns it on.
+pub(crate) async fn remote_screen(store: &impl StateStore) -> bool {
+    toggle_setting(store, REMOTE_SCREEN_KEY)
+        .await
+        .unwrap_or(false)
+}
+
+/// Whether the console may open a shell on the Host. Off unless the Operator
+/// turns it on.
+pub(crate) async fn host_terminal(store: &impl StateStore) -> bool {
+    toggle_setting(store, HOST_TERMINAL_KEY)
         .await
         .unwrap_or(false)
 }
@@ -194,6 +232,8 @@ async fn current<S: StateStore>(state: &AppState<S>) -> Settings {
         },
         pull_newer_images: toggle(pull),
         rewrite_host: toggle(toggle_setting(&state.store, REWRITE_HOST_KEY).await),
+        remote_screen: toggle(toggle_setting(&state.store, REMOTE_SCREEN_KEY).await),
+        host_terminal: toggle(toggle_setting(&state.store, HOST_TERMINAL_KEY).await),
     }
 }
 
@@ -251,6 +291,28 @@ pub(crate) async fn update<S: StateStore>(
             .await
             .map_err(|e| e.to_string()),
     });
+    let result = result.and(match update.remote_screen {
+        None => Ok(()),
+        Some(value) => state
+            .store
+            .store_state(
+                REMOTE_SCREEN_KEY,
+                value.map(|on| on.to_string()).as_deref().unwrap_or(""),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+    });
+    let result = result.and(match update.host_terminal {
+        None => Ok(()),
+        Some(value) => state
+            .store
+            .store_state(
+                HOST_TERMINAL_KEY,
+                value.map(|on| on.to_string()).as_deref().unwrap_or(""),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+    });
     if let Err(error) = result {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -287,10 +349,26 @@ pub(crate) async fn update<S: StateStore>(
             to: describe_toggle(&after.rewrite_host),
         });
     }
+    if update.remote_screen.is_some() {
+        changes.push(crate::audit::Change {
+            setting: REMOTE_SCREEN_KEY.into(),
+            from: describe_toggle(&before.remote_screen),
+            to: describe_toggle(&after.remote_screen),
+        });
+    }
+    if update.host_terminal.is_some() {
+        changes.push(crate::audit::Change {
+            setting: HOST_TERMINAL_KEY.into(),
+            from: describe_toggle(&before.host_terminal),
+            to: describe_toggle(&after.host_terminal),
+        });
+    }
     let (id, name) = subject_for(
         update.audit_events_max_age.is_some(),
         update.pull_newer_images.is_some(),
         update.rewrite_host.is_some(),
+        update.remote_screen.is_some(),
+        update.host_terminal.is_some(),
     );
     let mut event = crate::audit::event(
         "configure",
@@ -557,6 +635,44 @@ mod tests {
 
         call(&app, "PUT", json!({"rewriteHost": null})).await;
         assert!(!rewrite_host(&store).await);
+    }
+
+    #[tokio::test]
+    async fn the_remote_screen_is_off_until_the_operator_turns_it_on() {
+        let (app, store) = setup(None).await;
+        let (_, body) = call(&app, "GET", Value::Null).await;
+        assert_eq!(
+            body["remoteScreen"],
+            json!({"effective": false, "source": "default", "setting": null})
+        );
+
+        let (status, body) = call(&app, "PUT", json!({"remoteScreen": true})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["remoteScreen"],
+            json!({"effective": true, "source": "operator", "setting": true})
+        );
+        assert!(remote_screen(&store).await);
+
+        call(&app, "PUT", json!({"remoteScreen": null})).await;
+        assert!(!remote_screen(&store).await);
+    }
+
+    #[tokio::test]
+    async fn the_host_terminal_is_off_until_the_operator_turns_it_on() {
+        let (app, store) = setup(None).await;
+        let (_, body) = call(&app, "GET", Value::Null).await;
+        assert_eq!(
+            body["hostTerminal"],
+            json!({"effective": false, "source": "default", "setting": null})
+        );
+
+        let (status, body) = call(&app, "PUT", json!({"hostTerminal": true})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(host_terminal(&store).await);
+
+        call(&app, "PUT", json!({"hostTerminal": null})).await;
+        assert!(!host_terminal(&store).await);
     }
 
     #[test]

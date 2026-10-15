@@ -365,4 +365,34 @@ export type Settings = {
     source: "operator" | "default";
     setting: boolean | null;
   };
+  /** Whether the console may open the Host's screen. */
+  remoteScreen: {
+    effective: boolean;
+    source: "operator" | "default";
+    setting: boolean | null;
+  };
+  /** Whether the console may open a shell on the Host. */
+  hostTerminal: {
+    effective: boolean;
+    source: "operator" | "default";
+    setting: boolean | null;
+  };
+};
+
+/** What the console can open on the Host, and what stands in the way. */
+export type HostStatus = {
+  screen: {
+    /** The Host is a Mac. Other Hosts have no screen to offer yet. */
+    supported: boolean;
+    /** The Operator allows it in Settings. */
+    allowed: boolean;
+    /** Screen Sharing answers on the Host. */
+    listening: boolean;
+  };
+  terminal: {
+    /** The Operator allows it in Settings. */
+    allowed: boolean;
+    /** The account the shell runs as: the one the Platform runs under. */
+    account: string | null;
+  };
 };

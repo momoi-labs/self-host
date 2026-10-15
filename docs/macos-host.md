@@ -191,7 +191,35 @@ device's graphical Terminal session and approve the system prompt. Then open
 the HTTPS console using the link on the page. There is no automatic redirect
 to setup or from setup to the console.
 
-## How the pieces come back after a reboot
+## Remote screen
+
+The console's Host page can show the Mac's screen, for the prompts that only
+take a click. It uses macOS Screen Sharing, so set that up once on the Mac:
+
+1. Turn on System Settings > General > Sharing > Screen Sharing.
+2. In the console, turn on Settings > Host > Remote screen. It is off by
+   default.
+3. Open the console over HTTPS, then Host > Open screen. The screen opens in
+   a window of its own; sign in with a Mac account. The Mac's sign-in does not
+   work on plain HTTP.
+
+The same page can open a shell on the Mac, as the account the Platform runs
+under. Turn on Settings > Host > Host terminal first; it is off by default,
+because that account can run `native-control` without a password.
+
+The screen is black when a MacBook's lid is closed and no display is
+attached. macOS draws nothing in that state, not even on a virtual display.
+Keep the lid open, or attach a monitor, an HDMI dummy plug or a KVM.
+
+Each change on the screen crosses the network, so two settings make it
+faster:
+
+- A solid colour wallpaper. A moving wallpaper sends the whole screen many
+  times a second, even when nothing else changes.
+- A resolution without HiDPI. A Retina mode sends twice the pixels in each
+  direction. System Settings > Displays lists the low resolution modes once
+  "Show all resolutions" is on.
+
 
 | Layer | Brought back by |
 | --- | --- |

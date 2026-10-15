@@ -1,9 +1,11 @@
 import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { OperationOutcomes } from "./components/OperationOutcomes.js";
 import { Shell } from "./components/Shell.js";
 import { useMetrics } from "./lib/useMetrics.js";
 import { useEnvironments } from "./lib/useEnvironments.js";
+import { settingsQuery } from "./lib/queries.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
 import { Dns } from "./views/Dns.js";
@@ -18,12 +20,16 @@ import { CustomImages } from "./views/CustomImages.js";
 import { EventsPage } from "./views/Events.js";
 import { Environments } from "./views/Environments.js";
 import { Settings } from "./views/Settings.js";
+import { Host } from "./views/Host.js";
 
 export function App() {
   const { apps, dnsSuffix, healthy, degraded, failing, version, ready, reload } = usePlatform();
   const { environments } = useEnvironments();
   const metrics = useMetrics();
   const [view, go] = useView();
+  // The Host is in the menu only while the Operator allows something on it.
+  const settings = useQuery(settingsQuery).data;
+  const manageHost = !!(settings?.remoteScreen.effective || settings?.hostTerminal.effective);
 
   const app =
     view.view === "app"
@@ -65,7 +71,9 @@ export function App() {
                 ? "New virtual machine"
                 : view.view === "settings"
                   ? "Settings"
-                  : "Overview";
+                  : view.view === "host"
+                    ? "Host"
+                    : "Overview";
 
   // A database is reached from its list, so the breadcrumb leads back there.
   const parent =
@@ -127,6 +135,7 @@ export function App() {
         active: view.view === "custom-images" || view.view === "custom-image",
         onClick: () => go({ view: "custom-images", id: null }),
       }}
+      host={manageHost ? { href: "/console/#host", active: view.view === "host", onClick: () => go({ view: "host", id: null }) } : undefined}
       settings={{
         href: "/console/#settings",
         active: view.view === "settings",
@@ -160,6 +169,8 @@ export function App() {
           <NewDatabase reload={reload} onCancel={() => go({ view: "databases", id: null })} onCreated={(id) => go({ view: "app", id })} />
         ) : view.view === "settings" ? (
           <Settings section={view.id} />
+        ) : view.view === "host" ? (
+          <Host onOpenSettings={() => go({ view: "settings", id: "host" })} />
         ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
           <Environments
             metrics={metrics}
