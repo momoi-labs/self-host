@@ -97,6 +97,12 @@ export type GitInspection = {
   history?: { commits: { revision: string; author: string; date: string; subject: string }[]; complete: boolean };
 };
 
+/**
+ * An unpublished Compose Application grants named container Applications
+ * access through `consumers`; a shared one joins the old common bridge.
+ */
+export type NetworkPolicy = { kind: "shared" } | { kind: "private"; consumers: string[] };
+
 export type App = {
   managed_postgres?: { application_id: string; major: number; volume: string; native_port: number | null };
   id: string;
@@ -127,6 +133,8 @@ export type App = {
   runtime?: Runtime;
   publication?: Publication;
   variable_delivery?: VariableDelivery;
+  /** Which Applications may reach this one over a private network. Old rows read as shared. */
+  network_policy?: NetworkPolicy;
   /** HTTP server readiness of the configured Web Target, separate from status. */
 };
 

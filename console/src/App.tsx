@@ -245,6 +245,7 @@ function signature(app: import("./lib/types.js").App): string {
     app.image,
     JSON.stringify(app.runtime ?? null),
     JSON.stringify(app.publication ?? null),
+    JSON.stringify(app.network_policy ?? null),
     JSON.stringify(app.git ?? null),
     JSON.stringify(app.git_build ?? null),
     app.hostname,

@@ -18,7 +18,9 @@ import {
 import { api, asReport, failureOf } from "../lib/api.js";
 import { customImagesQuery, settingsQuery } from "../lib/queries.js";
 import { parseAliases } from "../lib/status.js";
-import type { App, ComposeService, CustomImage, GitInspection, GitSource, Inspection, Publication, Report } from "../lib/types.js";
+import type { App, ComposeService, CustomImage, GitInspection, GitSource, Inspection, NetworkPolicy, Publication, Report } from "../lib/types.js";
+import { canGrant, consumersOf, policyChange } from "../lib/privateAccess.js";
+import { PrivateAccessField } from "./PrivateAccessField.js";
 import { gitFieldsOf, gitSourceOf, type GitFields } from "./GitSourceFields.js";
 import { GitWorkflowFields, type GitSourceMode } from "./GitWorkflowFields.js";
 import type { GitRepository } from "./GitRepositoryPicker.js";
@@ -53,6 +55,8 @@ export type Submission = {
   };
   /** Pull newer images before redeploying. Only an edit sends it. */
   pull?: boolean;
+  /** Sent only when the grants changed, so an edit leaves the stored policy alone. */
+  network_policy?: NetworkPolicy;
 };
 
 const noImages: CustomImage[] = [];
@@ -87,6 +91,7 @@ function fieldsOf(app?: App) {
     port: app?.web_port ? String(app.web_port) : "",
     unpublished: app?.publication?.kind === "unpublished",
     git: gitFieldsOf(app?.git),
+    consumers: app ? consumersOf(app) : [],
   };
 }
 type Fields = ReturnType<typeof fieldsOf>;
@@ -108,12 +113,15 @@ function same(a: Fields, b: Fields) {
  */
 export function AppForm({
   app,
+  apps = [],
   dnsSuffix,
   onSubmit,
   onCancel,
   onReload,
 }: {
   app?: App;
+  /** Every Application, for the ones this one can grant access to. */
+  apps?: App[];
   dnsSuffix: string;
   onSubmit: (body: Submission, source: string) => Promise<Report | null>;
   onCancel?: () => void;
@@ -152,13 +160,18 @@ export function AppForm({
   const [webService, setWebService] = useState(saved.webService);
   const [port, setPort] = useState(saved.port);
   const [unpublished, setUnpublished] = useState(saved.unpublished);
+  const [consumers, setConsumers] = useState(saved.consumers);
   const [gitDomains, setGitDomains] = useState(false);
   const portEdited = useRef(false);
   // Starts where the Platform setting is; this redeploy can go the other way.
   const settings = useQuery({ ...settingsQuery, enabled: !creating });
   const [pullChoice, setPull] = useState<boolean | null>(null);
   const pull = pullChoice ?? settings.data?.pullNewerImages.effective ?? false;
-  const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port, unpublished, git };
+  const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port, unpublished, git, consumers };
+  // An unpublished Application has no Hostname and no Web Target, so neither
+  // is asked for nor sent.
+  const routed = !(!creating && unpublished);
+  const granting = !!app && canGrant(app);
   const dirty = !creating && !same(fields, saved);
   const changedGitSelection = source === "git" && (git.repository.trim() !== saved.git.repository.trim() || git.gitRef.trim() !== saved.git.gitRef.trim() || git.revision.trim() !== saved.git.revision.trim());
 
@@ -177,6 +190,7 @@ export function AppForm({
     setWebService(saved.webService);
     setPort(saved.port);
     setUnpublished(saved.unpublished);
+    setConsumers(saved.consumers);
     setGit(saved.git);
     gitDraft.current = saved.git;
     ++gitRequest.current;
@@ -402,11 +416,11 @@ export function AppForm({
       setErrors({});
       setFailure(null);
 
-      const sent = source === "git" && unpublished ? [] : parseAliases(aliases);
+      const sent = (source === "git" && unpublished) || !routed ? [] : parseAliases(aliases);
       const body: Submission = { name, aliases: sent };
       // Editing always sends the Hostname: an empty one is a mistake here, not
       // a request for the default.
-      if ((hostname.trim() || !creating) && !(source === "git" && unpublished)) body.hostname = hostname.trim();
+      if ((hostname.trim() || !creating) && !(source === "git" && unpublished) && routed) body.hostname = hostname.trim();
       if (source === "custom-image") {
         if (!customImageId || !customImageTag || customImagesLoading || customImagesFailure || !startCommand.trim() || !devPort) return;
         body.development = {
@@ -441,14 +455,20 @@ export function AppForm({
         } else body.refresh_source = false;
       } else if (source === "compose") {
         body.compose = compose;
-        body.web_service = webService.trim();
-        if (port.trim()) body.web_port = Number(port.trim());
+        if (routed) {
+          body.web_service = webService.trim();
+          if (port.trim()) body.web_port = Number(port.trim());
+        }
       } else {
         body.image = image.trim();
         if (port.trim()) body.web_port = Number(port.trim());
       }
 
       if (!creating && source !== "git") body.pull = pull;
+      if (app && granting) {
+        const policy = policyChange(app, consumers);
+        if (policy) body.network_policy = policy;
+      }
 
       const report = await onSubmit(body, source);
       if (report) place(report, sent);
@@ -485,6 +505,8 @@ export function AppForm({
         />
       </FormField>
 
+      {/* An unpublished Application has no Web Target to pick. */}
+      {routed ? <>
       <div className="field-row">
         <Select value={webService} onValueChange={chooseService} disabled={!services.length}>
           <FormField id="f-web-service" label="Web service">
@@ -540,6 +562,7 @@ export function AppForm({
       <small className="field-hint" id="f-web-help">
         {webHelp}
       </small>
+      </> : null}
 
       <Storage services={services} />
     </>
@@ -722,7 +745,8 @@ export function AppForm({
         </>
       ) : imageField}
 
-      {source !== "git" ? routingFields : null}
+      {source !== "git" && routed ? routingFields : null}
+      {granting ? <PrivateAccessField app={app} apps={apps} value={consumers} onChange={setConsumers} disabled={submitting} /> : null}
 
       {app ? <NativeVariables app={app} reload={onReload} disabled={submitting} onEditingChange={setEditingVariable} /> : null}
 
