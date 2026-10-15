@@ -78,7 +78,7 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
     {failure ? <Failure failure={failure} /> : null}
     {loadFailure ? <Failure failure={loadFailure} /> : null}
     {app.last_error ? <Failure failure={app.last_error} /> : null}
-    <Card className="detail-tabs"><Tabs value={tab} onValueChange={setTab}>
+    <Card className="detail-tabs"><Tabs sections value={tab} onValueChange={setTab}>
       <TabsList aria-label="Database details"><TabsTrigger value="summary">Summary</TabsTrigger><TabsTrigger value="connections">Connections</TabsTrigger><TabsTrigger value="import">Import</TabsTrigger><TabsTrigger value="last-operation">Last operation</TabsTrigger><TabsTrigger value="logs">Logs</TabsTrigger></TabsList>
       <TabsContent value="summary"><DatabaseSummary app={app} apps={apps} database={database} onOpenApp={onOpenApp} onOpenConnections={() => setTab("connections")} /></TabsContent>
       <TabsContent value="connections">
