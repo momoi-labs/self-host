@@ -152,6 +152,8 @@ export function Shell({
             variant="ghost"
             size="sm"
             aria-current={settings.active ? "page" : undefined}
+            // Tells the drawer and the More sheet to close, as a link would.
+            data-shell-navigate=""
             onClick={() => navigate(settings)}
           >
             <Icon name="gear" />
