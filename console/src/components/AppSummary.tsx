@@ -16,6 +16,7 @@ import type { App, GitInspection, Inspection } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { addressesOf, canGrant, consumersOf, providersOf } from "../lib/privateAccess.js";
+import { copyText } from "../lib/clipboard.js";
 import { definitionOf, describeDefinition } from "./DefinitionPicker.js";
 import { Fact, GroupCard, type GroupSection } from "./GroupCard.js";
 import { Icon } from "./Icon.js";
@@ -330,6 +331,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
  * is a service's container name, so it is known once that service has run.
  */
 function PrivateAccess({ app, apps, onOpenApp }: { app: App; apps: App[]; onOpenApp: (id: string) => void }) {
+  const notify = useToast();
   const byId = new Map(apps.map((one) => [one.id, one]));
   const own = addressesOf(app);
   const rows: { key: string; who: ReactNode; access: string; address?: string }[] = [
@@ -375,7 +377,9 @@ function PrivateAccess({ app, apps, onOpenApp }: { app: App; apps: App[]; onOpen
                     <>
                       <code>{row.address}</code>{" "}
                       <Button size="sm" variant="ghost" aria-label={`Copy ${row.address}`}
-                        onClick={() => void navigator.clipboard?.writeText(row.address ?? "")}>Copy</Button>
+                        onClick={() => void copyText(row.address ?? "").then((copied) => copied
+                          ? notify("success", "Copied", { error: row.address ?? "", caused_by: [] })
+                          : notify("neutral", "Could not copy", { error: `Select ${row.address} and copy it by hand.`, caused_by: [] }))}>Copy</Button>
                     </>
                   ) : <span className="muted">None</span>}
                 </TableCell>

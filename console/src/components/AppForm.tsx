@@ -92,6 +92,7 @@ function fieldsOf(app?: App) {
     unpublished: app?.publication?.kind === "unpublished",
     git: gitFieldsOf(app?.git),
     consumers: app ? consumersOf(app) : [],
+    makePrivate: false,
   };
 }
 type Fields = ReturnType<typeof fieldsOf>;
@@ -161,13 +162,14 @@ export function AppForm({
   const [port, setPort] = useState(saved.port);
   const [unpublished, setUnpublished] = useState(saved.unpublished);
   const [consumers, setConsumers] = useState(saved.consumers);
+  const [makePrivate, setMakePrivate] = useState(saved.makePrivate);
   const [gitDomains, setGitDomains] = useState(false);
   const portEdited = useRef(false);
   // Starts where the Platform setting is; this redeploy can go the other way.
   const settings = useQuery({ ...settingsQuery, enabled: !creating });
   const [pullChoice, setPull] = useState<boolean | null>(null);
   const pull = pullChoice ?? settings.data?.pullNewerImages.effective ?? false;
-  const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port, unpublished, git, consumers };
+  const fields: Fields = { name, image, customImageId, customImageTag, startCommand, devPort, persistData, compose, hostname, aliases, webService, port, unpublished, git, consumers, makePrivate };
   // An unpublished Application has no Hostname and no Web Target, so neither
   // is asked for nor sent.
   const routed = !(!creating && unpublished);
@@ -191,6 +193,7 @@ export function AppForm({
     setPort(saved.port);
     setUnpublished(saved.unpublished);
     setConsumers(saved.consumers);
+    setMakePrivate(saved.makePrivate);
     setGit(saved.git);
     gitDraft.current = saved.git;
     ++gitRequest.current;
@@ -466,7 +469,7 @@ export function AppForm({
 
       if (!creating && source !== "git") body.pull = pull;
       if (app && granting) {
-        const policy = policyChange(app, consumers);
+        const policy = policyChange(app, consumers, makePrivate);
         if (policy) body.network_policy = policy;
       }
 
@@ -746,7 +749,8 @@ export function AppForm({
       ) : imageField}
 
       {source !== "git" && routed ? routingFields : null}
-      {granting ? <PrivateAccessField app={app} apps={apps} value={consumers} onChange={setConsumers} disabled={submitting} /> : null}
+      {granting ? <PrivateAccessField app={app} apps={apps} value={consumers} onChange={setConsumers}
+        makePrivate={makePrivate} onMakePrivate={setMakePrivate} disabled={submitting} /> : null}
 
       {app ? <NativeVariables app={app} reload={onReload} disabled={submitting} onEditingChange={setEditingVariable} /> : null}
 

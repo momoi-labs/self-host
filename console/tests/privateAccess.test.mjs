@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addressesOf, canGrant, consumersOf, grantable, policyChange, providersOf } from "../src/lib/privateAccess.ts";
+import { addressesOf, canGrant, consumersOf, grantable, isShared, policyChange, providersOf } from "../src/lib/privateAccess.ts";
 
 const provider = {
   id: "db000000000a", name: "database", compose: "services:\n  db:\n    image: postgres:17\n",
@@ -56,4 +56,13 @@ test("an edit sends the policy only when the grants changed", () => {
   assert.deepEqual(policyChange(provider, ["api00000000a", "mid00000000a"]), { kind: "private", consumers: ["api00000000a", "mid00000000a"] });
   assert.deepEqual(policyChange({ ...provider, network_policy: { kind: "shared" } }, ["api00000000a"]),
     { kind: "private", consumers: ["api00000000a"] }, "the first grant turns a shared policy private");
+});
+
+test("a shared Application stays shared until a grant or an explicit choice makes it private", () => {
+  const shared = { ...provider, network_policy: { kind: "shared" } };
+  assert.equal(isShared(shared), true);
+  assert.equal(isShared({ ...provider, network_policy: undefined }), true, "rows from before private networks");
+  assert.equal(isShared(provider), false);
+  assert.equal(policyChange(shared, []), undefined, "saving other fields leaves it shared");
+  assert.deepEqual(policyChange(shared, [], true), { kind: "private", consumers: [] }, "isolating needs no grant");
 });
