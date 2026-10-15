@@ -990,6 +990,8 @@ install_native_macos() {
 	sudo install -d -m 755 -o root -g wheel /Library/PrivilegedHelperTools "/Library/Application Support/self-host"
 	sudo install -d -m 700 -o root -g wheel "$root"
 	sudo install -d -m 711 -o root -g wheel "/Library/Application Support/self-host/native-data"
+	local upgrading=""
+	[ -f "$helper" ] && upgrading=1
 	sudo install -m 755 -o root -g wheel "$tmpdir/$BINARY" "$helper.new"
 	sudo mv -f "$helper.new" "$helper"
 	printf '%s ALL=(root) NOPASSWD: NOSETENV: %s native-control\n' "$operator" "$helper" > "$tmpdir/native-sudoers"
@@ -1015,6 +1017,14 @@ EOF
 	/usr/bin/plutil -lint "$tmpdir/native.plist"
 	sudo install -m 644 -o root -g wheel "$tmpdir/native.plist" "$DAEMON_DIR/${label}.plist"
 	reload_daemon "$label"
+	# macOS ties a Full Disk Access grant to the helper's ad-hoc signature,
+	# which every release changes (#213).
+	if [ -n "$upgrading" ]; then
+		echo "If a native Application reads an external drive, grant Full Disk Access to"
+		echo "${helper} again in System Settings > Privacy & Security, then run"
+		echo "  sudo launchctl kickstart -k system/${label}"
+		echo "An upgrade drops that grant. See docs/macos-native-applications.md."
+	fi
 }
 
 install_platform_daemon() {

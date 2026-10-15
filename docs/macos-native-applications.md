@@ -63,6 +63,25 @@ with `setsid` or move children into another process group are outside the MVP.
 Process groups do not provide Linux's cgroup whole-tree or resource guarantees.
 Darwin also has no verified equivalent of Linux `no_new_privs` in this launcher.
 
+### External drives
+
+A native Application cannot read a drive under `/Volumes`, such as a USB SSD
+with a media library, until the helper has Full Disk Access. macOS holds the
+helper responsible for every native Application, and a LaunchDaemon cannot
+ask, so the read is denied without a prompt: the folder simply looks empty.
+
+1. In System Settings > Privacy & Security > Full Disk Access, add
+   `/Library/PrivilegedHelperTools/dev.momoi.self-host`.
+2. Restart the supervisor:
+   `sudo launchctl kickstart -k system/dev.momoi.self-host.native`.
+
+The release binary is signed ad hoc, and macOS ties the grant to that
+signature, so **every upgrade drops it**. Repeat both steps after each
+`install.sh` upgrade; the installer reminds you
+([#213](https://github.com/momoi-labs/self-host/issues/213)). A disk image
+mounted with `hdiutil attach` does not reproduce the denial; only a real
+external drive does.
+
 ## Validate on a disposable Mac
 
 The fixture refuses to overwrite an existing native installation. It asks for
