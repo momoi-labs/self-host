@@ -54,6 +54,7 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 @media (max-width: 720px) {
   .console-shell .breadcrumb { min-width: 0; flex-wrap: nowrap; }
   .console-shell .breadcrumb > li:not(:last-child) { display: none; }
+  .console-shell .breadcrumb > li:last-child { min-width: 0; }
   .console-shell .breadcrumb [aria-current="page"] { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .console-shell [data-slot="breadcrumb"] { min-width: 0; }
   .health-link .health-word, .health-link .health-sep { display: none; }
