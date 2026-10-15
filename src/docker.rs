@@ -781,7 +781,9 @@ impl DockerRuntime for CliDocker {
             .output()
             .map_err(|e| DockerError::spawn("failed to create the Docker network", e))?;
 
-        if !create.status.success() {
+        // Deploys run side by side, and each makes sure every Application's
+        // network exists, so another one may have created it a moment ago.
+        if !create.status.success() && !created_meanwhile(name, &create) {
             return Err(DockerError::refused(
                 format!("failed to create the Docker network '{name}'"),
                 &create,
@@ -809,11 +811,22 @@ impl DockerRuntime for CliDocker {
             .args(["network", "create", "--internal", name])
             .output()
             .map_err(|error| DockerError::spawn("failed to create private network", error))?;
+        // As for ensure_network: a deploy running beside this one may have
+        // just created it. It must still be internal.
         if !create.status.success() {
-            return Err(DockerError::refused(
-                "failed to create private network",
-                &create,
-            ));
+            let internal = std::process::Command::new("docker")
+                .args(["network", "inspect", "--format", "{{.Internal}}", name])
+                .output()
+                .is_ok_and(|output| {
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).trim() == "true"
+                });
+            if !(already_exists(&create) && internal) {
+                return Err(DockerError::refused(
+                    "failed to create private network",
+                    &create,
+                ));
+            }
         }
         Ok(())
     }
@@ -1477,6 +1490,21 @@ fn with_plugin_dirs(auths: serde_json::Value, dirs: Vec<String>) -> serde_json::
         config["cliPluginsExtraDirs"] = serde_json::json!(dirs);
     }
     config
+}
+
+/// Whether a failed `docker network create` says the name is taken.
+fn already_exists(create: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&create.stderr).contains("already exists")
+}
+
+/// Whether a create that failed because the name is taken lost a race: the
+/// network is there now.
+fn created_meanwhile(name: &str, create: &std::process::Output) -> bool {
+    already_exists(create)
+        && std::process::Command::new("docker")
+            .args(["network", "inspect", name])
+            .output()
+            .is_ok_and(|output| output.status.success())
 }
 
 pub fn built_on_host(image: &str) -> bool {
@@ -2580,6 +2608,24 @@ fn decimal_size(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::error::ErrorReport;
+
+    /// Two deploys may create the same network at once (#217); the one that
+    /// loses sees this answer and treats the network as there.
+    #[test]
+    fn a_taken_network_name_reads_as_already_existing() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = |stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(256),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        assert!(already_exists(&output(
+            "Error response from daemon: network with name sf-app-q2mx7sxc7d9i already exists"
+        )));
+        assert!(!already_exists(&output(
+            "Cannot connect to the Docker daemon"
+        )));
+    }
 
     /// A Git build runs with an isolated DOCKER_CONFIG for its credentials.
     /// On a Mac buildx lives in ~/.docker/cli-plugins, so the isolated config
