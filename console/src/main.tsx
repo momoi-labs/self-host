@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 
@@ -7,6 +7,10 @@ import { Toasts } from "@momoi-labs/kiso-react";
 import { api, logout, requireKey } from "./lib/api.js";
 import { queryClient } from "./lib/queryClient.js";
 import "./console.css";
+
+// The Host's screen opens in a window of its own, without the console around
+// it, and noVNC is only fetched there.
+const HostScreen = lazy(() => import("./components/HostScreen.js").then((module) => ({ default: module.HostScreen })));
 
 /*
  * A key in session storage is not proof it still works: the Platform may have
@@ -30,7 +34,7 @@ async function start() {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <Toasts>
-          <App />
+          {location.hash === "#host-screen" ? <Suspense fallback={null}><HostScreen /></Suspense> : <App />}
         </Toasts>
       </QueryClientProvider>
     </StrictMode>,

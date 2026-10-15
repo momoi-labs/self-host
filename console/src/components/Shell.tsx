@@ -54,6 +54,7 @@ export function Shell({
   routes = { href: "/console/#routes", active: false },
   dns = { href: "/console/#dns", active: false },
   events = { href: "/console/#events", active: false },
+  host,
   settings = { href: "/console/#settings", active: false },
   application,
   virtualMachine,
@@ -80,6 +81,8 @@ export function Shell({
   routes?: Destination;
   events?: Destination;
   dns?: Destination;
+  /** Absent while the Operator has allowed nothing on the Host. */
+  host?: Destination;
   settings?: Destination;
   application: (app: App) => Destination;
   virtualMachine: (machine: Environment) => Destination;
@@ -118,6 +121,7 @@ export function Shell({
             { ...routes, label: "Routes", leading: <Icon name="route" /> },
             { ...dns, label: "DNS", leading: <Icon name="globe" /> },
             { ...events, label: "Events", leading: <Icon name="history" /> },
+            ...(host ? [{ ...host, label: "Host", leading: <Icon name="screen" /> }] : []),
             {
               ...customImages,
               label: "Custom images",

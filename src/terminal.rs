@@ -129,6 +129,54 @@ pub(crate) async fn upgrade_environment<S: StateStore>(
         .on_upgrade(move |socket| connected_environment(socket, state, id))
 }
 
+/// A shell on the Host itself, as the account the Platform runs under: the
+/// Operator's own on a Mac, root on a Linux Host that runs the Platform as
+/// root. Off until the Operator allows it.
+pub(crate) async fn upgrade_host<S: StateStore>(
+    State(state): State<AppState<S>>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| connected_host(socket, state))
+}
+
+async fn connected_host<S: StateStore>(mut socket: WebSocket, state: AppState<S>) {
+    let Ok(Some(Ok(Message::Text(first)))) =
+        tokio::time::timeout(Duration::from_secs(5), socket.recv()).await
+    else {
+        return;
+    };
+    let Ok(request) = serde_json::from_str::<ConnectVm>(&first) else {
+        fail(&mut socket, "Invalid terminal request.").await;
+        return;
+    };
+    if !authentic(&state, &request.key).await {
+        fail(&mut socket, "Invalid API key.").await;
+        return;
+    }
+    if !request.size.valid() {
+        fail(&mut socket, "Invalid terminal dimensions.").await;
+        return;
+    }
+    if !crate::settings::host_terminal(&state.store).await {
+        fail(&mut socket, "Host terminal is off. Turn it on in Settings.").await;
+        return;
+    }
+    let size = request.size;
+    match tokio::task::spawn_blocking(move || {
+        // The account's login shell, in its home directory.
+        let mut command = CommandBuilder::new_default_prog();
+        command.env("TERM", "xterm-256color");
+        spawn_on_pty(command, size, None)
+    })
+    .await
+    {
+        Ok(Ok(session)) => pump(socket, session).await,
+        _ => fail(&mut socket, "Could not open a shell on the Host.").await,
+    }
+}
+
 async fn connected_environment<S: StateStore>(
     mut socket: WebSocket,
     state: AppState<S>,
@@ -167,7 +215,7 @@ async fn connected_environment<S: StateStore>(
 
 /// Browsers cannot set a Bearer header on a WebSocket upgrade, so the key
 /// arrives in the first frame and is compared before anything is started.
-async fn authentic<S: StateStore>(state: &AppState<S>, key: &str) -> bool {
+pub(crate) async fn authentic<S: StateStore>(state: &AppState<S>, key: &str) -> bool {
     let expected = state
         .store
         .get_api_key()
@@ -178,7 +226,7 @@ async fn authentic<S: StateStore>(state: &AppState<S>, key: &str) -> bool {
     !expected.is_empty() && crate::constant_time_eq(key, &expected)
 }
 
-async fn fail(socket: &mut WebSocket, message: impl ToString) {
+pub(crate) async fn fail(socket: &mut WebSocket, message: impl ToString) {
     let report = ErrorReport::plain(message.to_string());
     let _ = socket
         .send(Message::Text(

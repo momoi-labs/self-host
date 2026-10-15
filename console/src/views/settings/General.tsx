@@ -285,3 +285,63 @@ export function ApplicationDefaults({ id, size }: PaneProps) {
     </GridPane>
   );
 }
+
+/** What the console may do on the Host itself. Off until the Operator turns it on; the switch applies at once. */
+export function HostAccess({ id, size }: PaneProps) {
+  const queryClient = useQueryClient();
+  const { data: settings } = useQuery(settingsQuery);
+  const [toggling, setToggling] = useState(false);
+  const [toggleError, setToggleError] = useState<string | null>(null);
+
+  async function toggle(change: { remoteScreen: boolean } | { hostTerminal: boolean }) {
+    setToggling(true);
+    setToggleError(null);
+    try {
+      const res = await api("/settings", { method: "PUT", body: JSON.stringify(change) });
+      if (!res.ok) throw new Error((await failureOf(res)).error);
+      queryClient.setQueryData(settingsQuery.queryKey, (await res.json()) as Settings);
+      void queryClient.invalidateQueries({ queryKey: ["host"] });
+    } catch (cause) {
+      setToggleError((cause as Error).message);
+    } finally {
+      setToggling(false);
+    }
+  }
+
+  return (
+    <GridPane id={id} size={size} title="Host">
+      <KV>
+        <KVKey className="kv-setting">
+          <Label htmlFor="remote-screen">Remote screen</Label>
+          <p className="muted t-label">Open the Mac's screen from the Host page, in a window of its own. The Mac still asks for one of its accounts.</p>
+        </KVKey>
+        <KVValue className="kv-switch">
+          <Switch
+            id="remote-screen"
+            checked={settings?.remoteScreen.effective ?? false}
+            disabled={settings == null || toggling}
+            onCheckedChange={(checked) => void toggle({ remoteScreen: checked })}
+          />
+        </KVValue>
+        <KVKey className="kv-setting">
+          <Label htmlFor="host-terminal">Host terminal</Label>
+          <p className="muted t-label">A shell on the Host as the account the Platform runs under, root on a Linux Host that runs it as root. It can do anything that account can.</p>
+        </KVKey>
+        <KVValue className="kv-switch">
+          <Switch
+            id="host-terminal"
+            checked={settings?.hostTerminal.effective ?? false}
+            disabled={settings == null || toggling}
+            onCheckedChange={(checked) => void toggle({ hostTerminal: checked })}
+          />
+        </KVValue>
+      </KV>
+      {toggleError ? (
+        <Alert variant="error">
+          <Icon name="alert" size="md" />
+          <AlertDescription>{toggleError}</AlertDescription>
+        </Alert>
+      ) : null}
+    </GridPane>
+  );
+}

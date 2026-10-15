@@ -33,6 +33,7 @@ pub mod docker;
 pub mod environments;
 pub mod error;
 pub mod file_store;
+pub mod host;
 pub mod host_addresses;
 pub mod host_dns;
 pub mod metrics;
@@ -374,6 +375,7 @@ fn build_platform_with_native<S: StateStore>(
             "/settings",
             get(settings::get::<S>).put(settings::update::<S>),
         )
+        .route("/host", get(host::status::<S>))
         .route(
             "/dns/records",
             get(dns_records::list::<S>).post(dns_records::create::<S>),
@@ -391,13 +393,16 @@ fn build_platform_with_native<S: StateStore>(
             require_api_key::<S>,
         ))
         // These routes authenticate their first WebSocket frame before opening
-        // a PTY: a browser cannot put a Bearer header on an upgrade.
+        // a PTY or the Host's screen: a browser cannot put a Bearer header on
+        // an upgrade.
         .route("/deploy/{id}", post(deployments::triggers::deliver::<S>))
         .route("/apps/id/{id}/terminal", get(terminal::upgrade::<S>))
         .route(
             "/virtual-machines/{id}/terminal",
             get(terminal::upgrade_environment::<S>),
         )
+        .route("/host/screen", get(host::upgrade::<S>))
+        .route("/host/terminal", get(terminal::upgrade_host::<S>))
         .with_state(state.clone());
 
     let router = console::console_router()

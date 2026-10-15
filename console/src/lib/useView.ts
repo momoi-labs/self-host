@@ -15,7 +15,8 @@ export type View =
   | { view: "custom-images"; id: null }
   | { view: "environments"; id: string }
   | { view: "environment-new"; id: null }
-  | { view: "settings"; id: SettingsSection };
+  | { view: "settings"; id: SettingsSection }
+  | { view: "host"; id: null };
 
 const overview: View = { view: "overview", id: null };
 
@@ -33,6 +34,7 @@ function fromHash(): View | null {
   if (hash.startsWith("#settings/") && isSettingsSection(hash.slice(10)))
     return { view: "settings", id: hash.slice(10) as SettingsSection };
   if (hash === "#events") return { view: "events", id: null };
+  if (hash === "#host") return { view: "host", id: null };
   if (hash === "#new") return { view: "new", id: null };
   if (hash === "#custom-images") return { view: "custom-images", id: null };
   if (hash === "#new-custom-image") return { view: "custom-image", id: null };
@@ -52,6 +54,7 @@ function fromHistory(): View {
   if (state?.view === "databases") return { view: "databases", id: null };
   if (state?.view === "database-new") return { view: "database-new", id: null };
   if (state?.view === "events") return { view: "events", id: null };
+  if (state?.view === "host") return { view: "host", id: null };
   if (state?.view === "app") return state;
   if (state?.view === "new") return { view: "new", id: null };
   if (state?.view === "custom-images")
@@ -79,6 +82,7 @@ function hashFor(view: View): string | undefined {
   if (view.view === "environments") return `#virtual-machine-${view.id}`;
   if (view.view === "environment-new") return "#new-virtual-machine";
   if (view.view === "events") return "#events";
+  if (view.view === "host") return "#host";
   if (view.view === "new") return "#new";
   if (view.view === "custom-images") return "#custom-images";
   if (view.view === "custom-image")

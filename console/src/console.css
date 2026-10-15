@@ -398,10 +398,15 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .terminal-screen .xterm { height: 100%; }
 /* The rows rarely fill the height exactly; xterm paints the rest black. */
 .terminal-screen .xterm .xterm-viewport { background-color: #121116; }
-.terminal-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--spacing-md); position: absolute; inset: 0; height: 100%; overflow: auto; border: 0; border-radius: 0; --corner-mark: 0; }
+.terminal-empty, .remote-screen-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--spacing-md); position: absolute; inset: 0; height: 100%; overflow: auto; border: 0; border-radius: 0; --corner-mark: 0; }
 .terminal-picker { width: min(100%, 320px); text-align: start; }
-.terminal-session-controls { position: absolute; inset-block-start: 4px; inset-inline-end: 4px; display: flex; align-items: center; gap: var(--spacing-sm); color: #dedbd7; background: #121116; border-radius: var(--radius-md); }
-.terminal-session-controls button { color: inherit; padding: var(--spacing-xs); }
+.terminal-session-controls, .remote-screen-controls { position: absolute; inset-block-start: 4px; inset-inline-end: 4px; display: flex; align-items: center; gap: var(--spacing-sm); color: #dedbd7; background: #121116; border-radius: var(--radius-md); }
+.terminal-session-controls button, .remote-screen-controls button { color: inherit; padding: var(--spacing-xs); }
+/* The Host's screen fills its card. noVNC scales the picture to fit and paints
+   the margin around it in the same dark as the terminal. */
+.remote-screen { position: relative; min-height: 320px; }
+.remote-screen-view { position: absolute; inset: 0; overflow: hidden; }
+.remote-screen-window { height: 100vh; }
 .advanced > summary { cursor: pointer; font-weight: 600; padding-block: var(--spacing-sm); }
 .advanced[open] > summary { margin-block-end: var(--spacing-md); }
 

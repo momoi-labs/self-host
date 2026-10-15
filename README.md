@@ -32,6 +32,10 @@ outside the Host is needed for that local setup.
   ([ADR-0023](docs/adr/0023-virtual-machines-run-on-apple-virtualization.md)).
 - **Event history.** The console keeps a history of platform events and audit
   records.
+- **Host access.** The console's Host page opens a shell on the Host, as the
+  account the Platform runs under, and on a Mac its screen through Screen
+  Sharing, in a window of its own. Both are off until you turn them on in
+  Settings ([ADR-0033](docs/adr/0033-the-console-shows-the-macs-screen-through-screen-sharing.md)).
 
 ## How it fits together
 
