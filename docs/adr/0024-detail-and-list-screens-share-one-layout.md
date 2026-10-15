@@ -129,6 +129,18 @@ what the guest printed, and offers the retry. The header keeps its badges
 and adds one that names the phase the run is in, Creating, Starting,
 Provisioning, Ready, pulsing; the screen opens on the run when one starts.
 
+### On a phone
+
+The same screen fits a phone without a second layout. Below 1024px the
+sidebar opens as a drawer from a menu button in the top bar, and the top bar
+keeps the page name, the health dot and the Platform version. The detail card
+shows each tab as a section with its own header, one open at a time (kiso's
+`Tabs sections`), because a strip of five triggers does not fit 390px. At
+720px and below the header row keeps the status badges, which wrap, and the
+verbs and the destructive action move into a sheet behind one button. These
+are kiso's ApplicationShell, Tabs and Lifecycle, so the console writes no
+phone layout of its own.
+
 ## What this removed
 
 The machine's screen had no heading: the breadcrumb said its name and the room

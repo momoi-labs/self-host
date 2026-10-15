@@ -49,6 +49,15 @@
 /* Degraded, the line is the way to what failed. */
 button.health-link:not(:disabled) { cursor: pointer; }
 button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: underline; text-underline-offset: 3px; }
+/* On a phone the top bar keeps the page name, the health dot and the version.
+   The trail and the health word give way first; the dot's title still says it. */
+@media (max-width: 720px) {
+  .console-shell .breadcrumb { min-width: 0; flex-wrap: nowrap; }
+  .console-shell .breadcrumb > li:not(:last-child) { display: none; }
+  .console-shell .breadcrumb [aria-current="page"] { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .console-shell [data-slot="breadcrumb"] { min-width: 0; }
+  .health-link .health-word, .health-link .health-sep { display: none; }
+}
 
 /* The cause chain under a failure (ADR-0010). Numbered, because the order is
    the point: each line is one layer further from the Platform and closer to
@@ -205,6 +214,13 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 /* The Application's source is often a long URL; it may break anywhere, down to a floor. */
 .app-diagram .diagram-node[data-accent] { min-inline-size: 15rem; }
 .app-diagram .diagram-node[data-accent] > .diagram-node-text { overflow-wrap: anywhere; }
+/* A phone fits the diagram's one column when the canvas gives back its margin. */
+@media (max-width: 720px) {
+  .app-diagram .diagram-canvas { padding: var(--spacing-md); }
+  .app-diagram .diagram-node[data-accent] { min-inline-size: 0; }
+  .app-diagram .process-card { min-inline-size: 0; }
+  .app-diagram .process-head { flex-wrap: wrap; }
+}
 /* The receiving container lists its facts as lines, like the cards beside it. */
 .facts-node > .diagram-node-text { max-inline-size: 26rem; white-space: normal; color: var(--color-foreground); font-family: var(--font-body); margin-block-start: var(--spacing-xs); }
 .facts-node .group-section.is-flat { padding: 0; border: 0; }

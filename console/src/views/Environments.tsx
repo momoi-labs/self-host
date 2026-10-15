@@ -919,7 +919,7 @@ export function Environments({
           />
         </div>
         <Card className="detail-tabs">
-          <Tabs key={current.id} value={tab} onValueChange={setTab}>
+          <Tabs sections key={current.id} value={tab} onValueChange={setTab}>
             <TabsList aria-label="Virtual machine details">
               <TabsTrigger value="summary">Summary</TabsTrigger>
               <TabsTrigger value="configuration">Configuration</TabsTrigger>

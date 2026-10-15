@@ -81,7 +81,7 @@ Rules:
 </div>
 
 <Card className="detail-tabs">
-  <Tabs value={tab} onValueChange={setTab}>
+  <Tabs sections value={tab} onValueChange={setTab}>
     <TabsList aria-label="Thing details">
       {/* only when the Host reads facts back about the record */}
       <TabsTrigger value="summary">Summary</TabsTrigger>
@@ -210,7 +210,9 @@ screen is the exception.
 6. At 1280px, does the header row still fit on one line, including any badge
    a running action adds? Four verbs plus three badges plus a long
    destructive label does not.
-7. Does it work in both themes, and does the sidebar still stack below 1024px?
+7. Does it work in both themes, and at 390px? The sidebar opens from the menu
+   button, the detail card's `Tabs` take `sections`, the lifecycle actions sit
+   behind "More actions", and the page never scrolls sideways.
 8. Is every status a `StatusBadge` in one of the three tones, with running
    green and only failed red, and does the dot pulse only while a run or a
    build is going? Search the screen for `variant="info"`.

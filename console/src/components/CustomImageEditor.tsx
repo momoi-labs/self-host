@@ -340,7 +340,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
         ) : null}
       </div>
       <Card className="detail-tabs">
-        <Tabs value={tab} onValueChange={setTab}>
+        <Tabs sections value={tab} onValueChange={setTab}>
           <TabsList aria-label="Custom image details">
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
             <TabsTrigger value="log">Build log</TabsTrigger>

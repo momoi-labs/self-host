@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   ApplicationShell,
   BrandMark,
@@ -89,9 +89,13 @@ export function Shell({
   children: ReactNode;
 }) {
   const [theme, setTheme] = useTheme();
+  // Below 1024px the sidebar is a drawer; any way out of it closes it,
+  // including the create menu, which opens in a portal of its own.
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const applications = apps.filter((app) => !app.managed_postgres);
 
   const navigate = (destination: Destination) => {
+    setDrawerOpen(false);
     if (destination.onClick) destination.onClick();
     else window.location.assign(destination.href);
   };
@@ -99,6 +103,8 @@ export function Shell({
   return (
     <ApplicationShell
       className="console-shell"
+      drawerOpen={drawerOpen}
+      onDrawerOpenChange={setDrawerOpen}
       brand={
         <div className="brand">
           <BrandMark>
@@ -205,10 +211,10 @@ export function Shell({
                 onClick={() => { if (failing[0]) onOpenFailing?.(failing[0].id); }}
               >
                 <Dot variant="warning" pulse />
-                <span>{failedLabel(failing)}</span>
+                <span className="health-word">{failedLabel(failing)}</span>
                 {version ? (
                   <>
-                    <span className="muted" aria-hidden="true">·</span>
+                    <span className="muted health-sep" aria-hidden="true">·</span>
                     <span className="muted mono">v{version}</span>
                   </>
                 ) : null}
@@ -219,12 +225,12 @@ export function Shell({
                 title="The daemon answering on this Host"
               >
                 <Dot variant={healthy ? "success" : "neutral"} />
-                <span className="muted">
+                <span className="muted health-word">
                   {healthy ? "Healthy" : "Checking health…"}
                 </span>
                 {version ? (
                   <>
-                    <span className="muted" aria-hidden="true">·</span>
+                    <span className="muted health-sep" aria-hidden="true">·</span>
                     <span className="muted mono">v{version}</span>
                   </>
                 ) : null}
