@@ -158,6 +158,10 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 /* A search on a pane's head sits beside its action at a fixed width; the
    title gives way before it does. */
 .grid-pane-actions .pane-search { width: 12rem; }
+/* On a phone the search gives room back, so the pane keeps its title. */
+@media (max-width: 720px) {
+  .grid-pane-actions .pane-search { width: 8rem; }
+}
 
 /* The Variables columns keep their width when the values are shown: a value
    that does not fit ends in an ellipsis and reads in full on hover. */
