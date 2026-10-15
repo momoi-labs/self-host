@@ -10,7 +10,7 @@
     "keep": "node -e \"require('node:fs').writeFileSync('dist/.gitkeep','')\""
   },
   "dependencies": {
-    "@momoi-labs/kiso-react": "^0.15.0",
+    "@momoi-labs/kiso-react": "^0.16.0",
     "@novnc/novnc": "^1.7.0",
     "@tanstack/react-query": "^5.104.1",
     "@xterm/addon-fit": "^0.11.0",
