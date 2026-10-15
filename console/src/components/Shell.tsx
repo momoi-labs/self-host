@@ -10,9 +10,6 @@ import {
   BreadcrumbSeparator,
   Button,
   Dot,
-  NavigationItem,
-  NavigationLink,
-  NavigationList,
   TerminalIcon,
   ThemeSelector,
 } from "@momoi-labs/kiso-react";
@@ -103,6 +100,7 @@ export function Shell({
   return (
     <ApplicationShell
       className="console-shell"
+      phoneNavigation="bottom"
       drawerOpen={drawerOpen}
       onDrawerOpenChange={setDrawerOpen}
       brand={
@@ -135,23 +133,18 @@ export function Shell({
             },
           ],
         },
-        {
-          destinations: [],
-          empty: (
-            <>
-              {applications.length > 0 && (
-                <ResourceLinks label="Applications" items={applications.map((app) => ({
-                  ...application(app), name: app.name, status: app.status,
-                }))} />
-              )}
-              {environments.length > 0 && (
-                <ResourceLinks label="Virtual machines" items={environments.map((machine) => ({
-                  ...virtualMachine(machine), name: machine.config.name, status: machine.state,
-                }))} />
-              )}
-            </>
-          ),
-        },
+        ...(applications.length ? [{
+          label: "Applications",
+          destinations: applications.map((app) => ({
+            ...application(app), label: app.name, leading: <StatusDot status={app.status} />,
+          })),
+        }] : []),
+        ...(environments.length ? [{
+          label: "Virtual machines",
+          destinations: environments.map((machine) => ({
+            ...virtualMachine(machine), label: machine.config.name, leading: <StatusDot status={machine.state} />,
+          })),
+        }] : []),
       ]}
       footer={
         <div className="sidebar-controls">
@@ -256,40 +249,8 @@ function failedLabel(failing: FailingWorkload[]): string {
   return parts.length ? `${parts.join(" and ")} failed` : "Degraded";
 }
 
-/** Resource groups disappear entirely until they have something to navigate to. */
-function ResourceLinks({ label, items }: {
-  label: string;
-  items: (Destination & { name: string; status: string })[];
-}) {
-  return (
-    <section className="resource-navigation" aria-label={label}>
-      <div className="resource-navigation-heading">
-        <span>{label}</span><span>{items.length}</span>
-      </div>
-      <NavigationList>
-        {items.map((item) => {
-          const tone = statusTone(item.status);
-          return (
-            <NavigationItem key={item.href}>
-              <NavigationLink href={item.href} active={item.active} title={`${item.name}: ${item.status}`}
-                onClick={(event) => {
-                  if (!item.onClick) return;
-                  event.preventDefault();
-                  item.onClick();
-                }}>
-                <Dot
-                  variant={tone}
-                  className={tone === "neutral" ? "subtle" : undefined}
-                  role="img"
-                  aria-label={item.status}
-                  aria-hidden={false}
-                />
-                <span className="grow truncate">{item.name}</span>
-              </NavigationLink>
-            </NavigationItem>
-          );
-        })}
-      </NavigationList>
-    </section>
-  );
+/** A resource's state, read out by screen readers since the color says it to everyone else. */
+function StatusDot({ status }: { status: string }) {
+  const tone = statusTone(status);
+  return <Dot variant={tone} className={tone === "neutral" ? "subtle" : undefined} role="img" aria-label={status} aria-hidden={false} />;
 }
