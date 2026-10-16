@@ -1063,7 +1063,7 @@ async fn import<S: StateStore>(
             if let (Some(log), Some(event)) = (log, audit::event_id()) {
                 state
                     .audit
-                    .stage_log(&state.store, &event, "restore", log)
+                    .stage_log(&state.store, &event, "restore", &restore_log(log))
                     .await?;
             }
             match result {
@@ -1149,6 +1149,38 @@ async fn require_stopped_consumer<S: StateStore>(
         ));
     }
     Ok(())
+}
+
+/// pg_restore's log without the archive's contents. The log is kept in the
+/// Task history, and a failure repeats what the archive held: the whole
+/// statement after `Command was:`, and the row a COPY stopped at. Both can
+/// carry the secrets an Application stored, so they are cut; what failed and
+/// why stays.
+fn restore_log(log: &str) -> String {
+    let mut kept = Vec::new();
+    let mut in_command = false;
+    for line in log.lines() {
+        if line.starts_with("pg_restore:") {
+            in_command = false;
+        }
+        if in_command {
+            continue;
+        }
+        if line.starts_with("Command was:") {
+            kept.push("Command was: (statement omitted)".to_owned());
+            in_command = true;
+            continue;
+        }
+        if let Some(context) = line.strip_prefix("CONTEXT:  COPY ") {
+            // "CONTEXT:  COPY cuts, line 3: \"3\tsecret\"": keep the table
+            // and line, not the row.
+            let place = context.split(": ").next().unwrap_or(context);
+            kept.push(format!("CONTEXT:  COPY {place}"));
+            continue;
+        }
+        kept.push(line.to_owned());
+    }
+    kept.join("\n")
 }
 
 pub(crate) fn import_path(id: &str) -> Result<PathBuf, Error> {
@@ -1861,6 +1893,18 @@ mod tests {
                 assert!(validate_archive_version(&manifest, 17).is_err());
             }
         }
+    }
+
+    #[test]
+    fn restore_log_keeps_what_failed_and_drops_what_the_archive_held() {
+        let log = "pg_restore: processing data for table \"public.tokens\"\npg_restore: error: COPY failed for table \"tokens\": ERROR:  value too long for type character varying(4)\nCONTEXT:  COPY tokens, line 1, column name: \"sk-live-secret\"\npg_restore: error: could not execute query: ERROR:  relation \"keys\" already exists\nCommand was: CREATE TABLE public.keys (\n    token text DEFAULT 'sk-live-secret'\n);\npg_restore: warning: errors ignored on restore: 2";
+        let kept = restore_log(log);
+        assert!(!kept.contains("sk-live-secret"), "{kept}");
+        assert!(kept.contains("value too long for type character varying(4)"));
+        assert!(kept.contains("CONTEXT:  COPY tokens, line 1, column name"));
+        assert!(kept.contains("relation \"keys\" already exists"));
+        assert!(kept.contains("Command was: (statement omitted)"));
+        assert!(kept.ends_with("errors ignored on restore: 2"));
     }
 
     #[test]
