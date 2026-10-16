@@ -47,13 +47,7 @@ pub async fn scope<T>(work: impl std::future::Future<Output = T>) -> (T, Vec<Str
 /// a readiness wait repeats it, is counted instead of written again.
 pub fn record(args: &[impl AsRef<str>], output: &std::process::Output) {
     let _ = LOG.try_with(|log| {
-        let mut text = format!(
-            "$ docker {}",
-            args.iter()
-                .map(|arg| quote(arg.as_ref()))
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+        let mut text = format!("$ docker {}", shown(args).join(" "));
         for stream in [&output.stdout, &output.stderr] {
             let printed = String::from_utf8_lossy(stream);
             let printed = printed.trim_end();
@@ -75,6 +69,33 @@ pub fn record(args: &[impl AsRef<str>], output: &std::process::Output) {
             }
         }
     });
+}
+
+/// The arguments as recorded: an environment value given with `-e` or `--env`
+/// can be any Application's secret, so only its name is kept.
+fn shown(args: &[impl AsRef<str>]) -> Vec<String> {
+    let mut after_env = false;
+    args.iter()
+        .map(|arg| {
+            let arg = arg.as_ref();
+            let value = if after_env {
+                hide_value(arg)
+            } else if let Some(pair) = arg.strip_prefix("--env=") {
+                format!("--env={}", hide_value(pair))
+            } else {
+                arg.to_owned()
+            };
+            after_env = matches!(arg, "-e" | "--env");
+            quote(&value)
+        })
+        .collect()
+}
+
+fn hide_value(pair: &str) -> String {
+    match pair.split_once('=') {
+        Some((name, _)) => format!("{name}=***"),
+        None => pair.to_owned(),
+    }
 }
 
 fn quote(arg: &str) -> String {
@@ -125,6 +146,34 @@ mod tests {
                 "exit status 1",
                 "$ docker exec db psql -c 'select '\\''a b'\\'''",
                 "1",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_values_are_not_kept() {
+        let ((), lines) = scope(async {
+            record(
+                &[
+                    "run",
+                    "-d",
+                    "-e",
+                    "API_TOKEN=sk-live-secret",
+                    "--env",
+                    "PGOPTIONS=-c x",
+                    "--env=SESSION=abc",
+                    "-e",
+                    "PLAIN",
+                    "img",
+                ],
+                &output(0, "", ""),
+            );
+        })
+        .await;
+        assert_eq!(
+            lines,
+            [
+                "$ docker run -d -e 'API_TOKEN=***' --env 'PGOPTIONS=***' '--env=SESSION=***' -e PLAIN img"
             ]
         );
     }
