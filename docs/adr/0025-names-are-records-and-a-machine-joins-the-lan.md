@@ -173,7 +173,8 @@ IPv4 only, and Operator records accept type `A` only. The zone is keyed by
 type so `AAAA` slots in without a change of shape, and
 [#82](https://github.com/momoi-labs/self-host/issues/82) is where that work
 lives. The Host has global IPv6 today, so this is a known gap, not an
-oversight.
+oversight. [ADR-0033](0033-the-platform-serves-both-address-families.md)
+closes it for the wildcard and `admin`; Operator records stay `A` only.
 
 TLS on a machine. A name that resolves to the machine bypasses the proxy and
 the wildcard certificate with it. A per-machine certificate from the
