@@ -2078,7 +2078,10 @@ pub async fn stop_application(
             // containers from an earlier deploy, so stop them by label.
             Err(_) => {
                 for name in docker.application_containers(&app.id).await? {
-                    docker.stop_container(&name).await?;
+                    // A first deploy that failed may have created nothing.
+                    if docker.container_state(&name).await?.is_some() {
+                        docker.stop_container(&name).await?;
+                    }
                 }
             }
         }
