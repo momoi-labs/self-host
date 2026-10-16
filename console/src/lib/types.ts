@@ -79,6 +79,7 @@ export type GitSource = {
   build_secrets: Record<string, string>;
   credential_id?: string | null;
   registry_credential_id?: string | null;
+  strict_build?: boolean;
 };
 
 export type GitBuild = {

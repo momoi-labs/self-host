@@ -341,6 +341,7 @@ async fn source_build_guards_setuid_capabilities_shells_secrets_and_ignore_rules
         build_secrets: BTreeMap::from([("TOKEN".into(), credential.id)]),
         credential_id: None,
         registry_credential_id: None,
+        strict_build: true,
     };
     let built = self_host::source::build(
         &private,

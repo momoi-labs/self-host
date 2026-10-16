@@ -23,13 +23,14 @@ fn source(repository: String) -> GitSource {
         build_secrets: BTreeMap::new(),
         credential_id: None,
         registry_credential_id: None,
+        strict_build: false,
     }
 }
 
 #[test]
 fn rejects_root_steps_custom_frontends_and_ambiguous_users() {
     let good = "FROM alpine:3.21 AS build\nUSER 1001:1001\nRUN echo build\nFROM alpine:3.21\nUSER 1001\nCMD [\"sleep\", \"infinity\"]\n";
-    assert_eq!(dockerfile_policy(good).unwrap(), vec!["alpine:3.21"]);
+    assert_eq!(dockerfile_policy(good, true).unwrap(), vec!["alpine:3.21"]);
     for bad in [
         "FROM alpine\nRUN echo root\nUSER 1001",
         "FROM alpine\nUSER app\nRUN true",
@@ -45,11 +46,34 @@ fn rejects_root_steps_custom_frontends_and_ambiguous_users() {
         "FROM $BASE\nUSER 1000",
         "FROM alpine\nUSER 1000\nRUN --security=insecure true",
     ] {
-        assert!(dockerfile_policy(bad).is_err(), "{bad}");
+        assert!(dockerfile_policy(bad, true).is_err(), "{bad}");
     }
     assert!(!nonroot_user("root"));
     assert!(!nonroot_user("0000"));
     assert!(nonroot_user("1001:1002"));
+}
+
+#[test]
+fn a_plain_build_runs_steps_as_any_user_and_ends_on_a_nonroot_one() {
+    let rails = "FROM ruby:3.3 AS build\nRUN apt-get update && apt-get install -y build-essential\nUSER app\nRUN bundle install\nFROM ruby:3.3\nUSER root\nRUN useradd -u 1000 rails\nUSER 1000:1000\nCMD [\"rails\", \"server\"]\n";
+    assert_eq!(dockerfile_policy(rails, false).unwrap(), vec!["ruby:3.3"]);
+    assert!(
+        dockerfile_policy(rails, true).is_err(),
+        "the guard still refuses root steps"
+    );
+    for bad in [
+        // The running container's identity is not the build's: still non-root.
+        "FROM alpine\nRUN true",
+        "FROM alpine\nUSER 1000\nUSER root",
+        "FROM alpine\nUSER app",
+        "FROM alpine\nUSER 1000\nFROM alpine\nRUN true",
+        "FROM alpine\nRUN --security=insecure true\nUSER 1000",
+        "FROM alpine\nRUN <<EOF\ntrue\nEOF\nUSER 1000",
+        "FROM alpine\nUSER 1000\nONBUILD RUN true",
+        "# syntax=custom/frontend\nFROM alpine\nUSER 1000",
+    ] {
+        assert!(dockerfile_policy(bad, false).is_err(), "{bad}");
+    }
 }
 
 #[test]

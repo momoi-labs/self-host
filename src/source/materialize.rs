@@ -227,7 +227,8 @@ pub(super) async fn compose(
             if args.keys().any(|name| !super::valid_input_name(name)) {
                 return Err(invalid("build argument name is invalid"));
             }
-            let base_images = dockerfile_policy(&std::fs::read_to_string(&dockerfile)?)?;
+            let base_images =
+                dockerfile_policy(&std::fs::read_to_string(&dockerfile)?, source.strict_build)?;
             let request = SourceBuild {
                 context,
                 dockerfile,
@@ -241,6 +242,7 @@ pub(super) async fn compose(
                 secret_files: secrets.clone(),
                 registry_config: registry.map(Path::to_path_buf),
                 base_images,
+                strict: source.strict_build,
             };
             let image = docker.build_source(&request).await?;
             service.insert(Value::String("image".into()), Value::String(image.clone()));

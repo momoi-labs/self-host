@@ -58,16 +58,19 @@ promise an automatic rollback when the new Application fails to start.
 
 ## Dockerfile policy
 
-Every stage that has a `RUN` needs an explicit numeric, nonzero `USER` before
-that instruction. The final stage also needs one. An optional group id must
-be numeric and nonzero. Names such as `app`, root, variable substitutions and
-implicit inherited users are refused.
+A Git build is a plain `docker build` by default. Its steps run as whatever
+user the Dockerfile sets, root included, so a stage can install packages
+before it switches user. The image that runs is held to a rule the build is
+not: the final stage needs an explicit numeric, nonzero `USER`, and the built
+image's user is checked after the build. An optional group id must be numeric
+and nonzero. Names such as `app`, root, variable substitutions and implicit
+inherited users are refused there.
 
 ```dockerfile
-FROM alpine:3.21
+FROM debian:12
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && useradd --uid 1001 app
 USER 1001:1001
-WORKDIR /tmp
-RUN printf 'built by a non-root account\n' > /tmp/build-result
 CMD ["sleep", "infinity"]
 ```
 
@@ -77,26 +80,35 @@ base to its inspected registry digest before building. Multiline `FROM`,
 custom frontend/parser directives, `ONBUILD`, insecure run entitlements and
 heredocs are refused. Standard `COPY`, `ADD`, `WORKDIR`, `ENV`, `ARG`, `LABEL`,
 `EXPOSE`, `ENTRYPOINT`, `CMD`, `HEALTHCHECK`, `VOLUME`, `STOPSIGNAL` and `SHELL`
-remain available.
+remain available. `BUILDKIT_SYNTAX` cannot be supplied as an argument. The
+checked Dockerfile uses Docker's default frontend. The Application context
+keeps its original ignore rules.
 
-Build commands run inside Docker BuildKit. The Platform grants no insecure
-entitlements and does not run them as a Host shell. Each `RUN` mounts a
-trusted static launcher read-only from a separate build context and routes
-shell or JSON commands through it. The launcher refuses root identities,
-clears process and ambient capabilities, sets `no-new-privileges`, then
-executes the command. Build descendants cannot regain root through setuid
-programs or file capabilities. A `RUN` requires a Linux Host matching the
-Docker architecture. Releases install the launcher already built, next to the
-bundled s6 tools. A Platform built from source compiles it with `/usr/bin/cc`
-and static libc instead. Without either, the build fails without a fallback;
-builds without `RUN` remain available.
+Build commands run inside Docker BuildKit, never as a Host shell, and the
+Platform grants no insecure entitlements. A plain build works on any Host
+whose Docker runs the image's platform, a Mac with Colima included.
 
-Explicit `SHELL` and inherited base-image shells retain their argv. `RUN`
-supports literal `--mount` flags, with absolute targets that cannot cover the
-launcher. Other run flags and mount-variable expansion are refused.
-`BUILDKIT_SYNTAX` cannot be supplied as an argument. The checked Dockerfile
-uses Docker's default frontend. The Application context keeps its original
-ignore rules. The launcher is absent from the final image.
+### Strict build
+
+Turn on **Strict build** in the Git source for a repository you do not trust.
+Every stage that has a `RUN` then needs an explicit numeric, nonzero `USER`
+before that instruction, and every `USER` follows the final stage's rule.
+
+Each `RUN` mounts a trusted static launcher read-only from a separate build
+context and routes shell or JSON commands through it. The launcher refuses
+root identities, clears process and ambient capabilities, sets
+`no-new-privileges`, then executes the command. Build descendants cannot
+regain root through setuid programs or file capabilities. Releases install
+the launcher already built, next to the bundled s6 tools. A Platform built
+from source compiles it with `/usr/bin/cc` and static libc instead. Without
+either, the build fails without a fallback. A strict `RUN` requires a Linux
+Host matching the Docker architecture.
+
+Explicit `SHELL` and inherited base-image shells retain their argv. A strict
+`RUN` supports literal `--mount` flags, with absolute targets that cannot
+cover the launcher. Other run flags and mount-variable expansion are refused.
+The launcher is absent from the final image. ADR-0034 records why this is
+opt-in.
 
 Git Application containers
 drop all capabilities and use `no-new-privileges` so setuid programs cannot

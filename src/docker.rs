@@ -17,6 +17,8 @@ pub struct SourceBuild {
     pub secret_files: std::collections::BTreeMap<String, std::path::PathBuf>,
     pub registry_config: Option<std::path::PathBuf>,
     pub base_images: Vec<String>,
+    /// Route every `RUN` through the build guard (ADR-0034).
+    pub strict: bool,
 }
 
 #[derive(Debug)]
@@ -426,14 +428,15 @@ impl DockerRuntime for CliDocker {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let needs_guard = crate::source::dockerfile_instructions(&text)
-            .map_err(|_| source_refusal("Dockerfile cannot be parsed"))?
-            .iter()
-            .any(|line| {
-                line.split_whitespace()
-                    .next()
-                    .is_some_and(|word| word.eq_ignore_ascii_case("RUN"))
-            });
+        let needs_guard = build.strict
+            && crate::source::dockerfile_instructions(&text)
+                .map_err(|_| source_refusal("Dockerfile cannot be parsed"))?
+                .iter()
+                .any(|line| {
+                    line.split_whitespace()
+                        .next()
+                        .is_some_and(|word| word.eq_ignore_ascii_case("RUN"))
+                });
         let guard_name = format!("sf_guard_{:032x}", rand::random::<u128>());
         let mut guard_context = None;
         let mut cleanup = SourceBuildFiles::default();
