@@ -152,6 +152,12 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
     if let Some(writer) = writer {
         let _ = writer.await;
     }
+    let args: Vec<String> = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    crate::command_log::record(&args, &output);
     if let Request::Restore { .. } = request {
         // pg_restore reports progress and errors on stderr. The Operator
         // imports their own archive and needs that log to fix it; the role

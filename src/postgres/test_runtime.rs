@@ -34,6 +34,15 @@ impl DockerRuntime for PausedRemoval {
             self.restore_release.notified().await;
         }
         if let (Request::Restore { .. }, Some(log)) = (request, &self.restore_failure) {
+            use std::os::unix::process::ExitStatusExt;
+            crate::command_log::record(
+                &["exec", "-i", "fixture", "pg_restore", "--verbose"],
+                &std::process::Output {
+                    status: std::process::ExitStatus::from_raw(1 << 8),
+                    stdout: Vec::new(),
+                    stderr: log.as_bytes().to_vec(),
+                },
+            );
             return Err(DockerError::Command(
                 "Import did not complete successfully".into(),
                 Box::new(super::runtime::RestoreLog(log.clone())),

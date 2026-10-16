@@ -66,13 +66,8 @@ fn stages(event: &audit::Event) -> Vec<(&str, &str)> {
 
 fn private_output(event: &audit::Event) {
     let body = serde_json::to_string(event).unwrap();
-    for secret in [
-        "admin-fixture-private",
-        "private-fixture",
-        "postgresql://",
-        "CREATE ROLE",
-        "PASSWORD '",
-    ] {
+    // Commands and their output are kept; the passwords in them are not.
+    for secret in ["admin-fixture-private", "private-fixture"] {
         assert!(
             !body.contains(secret),
             "private output was persisted: {secret}"
@@ -221,7 +216,6 @@ async fn failures_end_at_the_actual_stage_without_recording_docker_credentials()
             .unwrap();
         let history = serde_json::to_string(&history).unwrap();
         assert!(!history.contains("private-fixture"));
-        assert!(!history.contains("postgresql://"));
         assert!(
             !serde_json::to_string(
                 &state
@@ -762,7 +756,6 @@ async fn a_regular_consumer_deploy_does_not_persist_managed_credentials_in_any_h
     assert!(!history.is_empty());
     let history = serde_json::to_string(&history).unwrap();
     assert!(!history.contains("private-fixture"));
-    assert!(!history.contains("postgresql://"));
     let app = state
         .store
         .get_application("consumer")
@@ -771,5 +764,4 @@ async fn a_regular_consumer_deploy_does_not_persist_managed_credentials_in_any_h
         .unwrap();
     let error = serde_json::to_string(&app.last_error).unwrap();
     assert!(!error.contains("private-fixture"));
-    assert!(!error.contains("postgresql://"));
 }

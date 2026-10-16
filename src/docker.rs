@@ -1629,6 +1629,7 @@ fn docker(args: &[&str], step: String) -> Result<(), DockerError> {
         .args(args)
         .output()
         .map_err(|e| DockerError::spawn(step.clone(), e))?;
+    crate::command_log::record(args, &output);
     if !output.status.success() {
         return Err(DockerError::refused(step, &output));
     }
@@ -1751,6 +1752,7 @@ fn compose(project: &ComposeProject, verb: &[&str], step: &str) -> Result<(), Do
         .args(&args)
         .output()
         .map_err(|e| DockerError::spawn(step, e))?;
+    crate::command_log::record(&args, &output);
 
     if !output.status.success() {
         return Err(DockerError::refused(step, &output));

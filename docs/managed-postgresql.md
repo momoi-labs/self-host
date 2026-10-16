@@ -141,5 +141,8 @@ login, stopped consumer behavior and credential revocation.
 For the console, create a database, connect a test Application, reveal and hide
 its URL, restart and recreate the database, import into an empty consumer, disconnect, then verify the two data-removal choices. Inspect the
 Summary, Last operation and Logs tabs for readiness and failures. Last operation
-shows the recorded stages, duration and outcome. Events identify the resource
+shows the recorded stages, duration and outcome, and under each stage the
+`docker` commands it ran with their output and exit status. Every password the
+Platform made is cut out, and so is any password in a connection URL, after
+`PASSWORD` in SQL or in a `*PASSWORD=` variable. Events identify the resource
 as a database; older events for existing databases receive the same label.
