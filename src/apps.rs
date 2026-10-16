@@ -2071,9 +2071,17 @@ pub async fn stop_application(
 
     routes.withdraw(&app.id);
     if app.compose.is_some() {
-        docker
-            .compose_stop(&project_for(store, &app).await?)
-            .await?;
+        match project_for(store, &app).await {
+            Ok(project) => docker.compose_stop(&project).await?,
+            // Stopping needs no Variables. A definition that no longer
+            // renders, say a required Variable is unset, can still have
+            // containers from an earlier deploy, so stop them by label.
+            Err(_) => {
+                for name in docker.application_containers(&app.id).await? {
+                    docker.stop_container(&name).await?;
+                }
+            }
+        }
     } else {
         docker.stop_container(&container_name_for(&app.id)).await?;
     }
@@ -4451,6 +4459,40 @@ services:
         assert_eq!(changes[0].from, "none");
         assert_eq!(changes[0].to, "sha256:cccccccccccc");
         assert_eq!(docker.deployed_apps(), [container_name_for(&app.id)]);
+    }
+
+    #[tokio::test]
+    async fn stopping_needs_no_variables_the_definition_requires() {
+        let store = initialized_store().await;
+        let docker = FakeDocker::new();
+        let routes = FakeRoutes::new();
+        let app = deploy_hermes(&store, &docker, &routes).await;
+        let container = format!("sf-app-{}-hermes", app.id);
+        // A required Variable the Operator has not set yet, as a failed first
+        // deploy of a Git Compose Application leaves it.
+        let mut broken = store.get_application(&app.id).await.unwrap().unwrap();
+        broken.compose = Some(broken.compose.unwrap().replacen(
+            "- HERMES_DASHBOARD=1",
+            "- HERMES_DASHBOARD=1\n      - DATABASE_URL=${DATABASE_URL:?set it}",
+            1,
+        ));
+        store.delete_application(&app.id).await.unwrap();
+        store.insert_application(&broken).await.unwrap();
+        assert!(project_for(&store, &broken).await.is_err());
+
+        let stopped = stop_application(&store, &docker, &routes, &app.id)
+            .await
+            .unwrap();
+        assert_eq!(stopped.status, STATUS_STOPPED);
+        assert_eq!(
+            docker
+                .container_state(&container)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "exited"
+        );
     }
 
     #[tokio::test]

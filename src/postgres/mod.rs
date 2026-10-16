@@ -972,19 +972,20 @@ async fn import<S: StateStore>(
         state,
         "consumer",
         "Checking import safety",
-        "Connection is ready and the consumer is stopped.",
+        "Connection is ready.",
         async {
             if c.status != "ready" {
                 return Err(Error::Conflict(
                     "Wait for the connection to become ready before importing".into(),
                 ));
             }
-            let consumer = state
+            // The consumer may be running: what it writes during a restore is
+            // the Operator's to manage, as with any client of the database.
+            state
                 .store
                 .get_application(&c.consumer_application_id)
                 .await?
                 .ok_or(Error::Missing)?;
-            require_stopped_consumer(state, &consumer).await?;
             Ok(())
         },
     )
@@ -1041,7 +1042,7 @@ async fn import<S: StateStore>(
         "Restoring PostgreSQL archive",
         "Archive restored using the consumer's restricted database role.",
         async {
-            state
+            let result = state
                 .docker
                 .postgres(&runtime::Request::Restore {
                     container: container(&c.database_application_id),
@@ -1049,9 +1050,29 @@ async fn import<S: StateStore>(
                     role: c.role.clone(),
                     file: file.into(),
                 })
-                .await
-                .map_err(|e| Error::Runtime(e.to_string()))?;
-            Ok(())
+                .await;
+            // The log goes on the stage either way: on failure it holds the
+            // error pg_restore stopped at.
+            let log = match &result {
+                Ok(log) => Some(log.as_str()),
+                Err(crate::docker::DockerError::Command(_, source)) => source
+                    .downcast_ref::<runtime::RestoreLog>()
+                    .map(|log| log.0.as_str()),
+                Err(_) => None,
+            };
+            if let (Some(log), Some(event)) = (log, audit::event_id()) {
+                state
+                    .audit
+                    .stage_log(&state.store, &event, "restore", log)
+                    .await?;
+            }
+            match result {
+                Ok(_) => Ok(()),
+                Err(_) if log.is_some() => Err(Error::Unavailable(
+                    "pg_restore stopped at an error. Read its log in this stage, fix the archive or the target database, then retry".into(),
+                )),
+                Err(e) => Err(Error::Runtime(e.to_string())),
+            }
         },
     )
     .await?;
@@ -1478,31 +1499,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[tokio::test]
-    async fn import_refuses_a_running_consumer_with_a_stale_stopped_record() {
-        let docker = Arc::new(FakeDocker::new());
-        let (_, state) = fixture_with_docker(docker.clone()).await;
-        let consumer = state
-            .store
-            .get_application("consumer")
-            .await
-            .unwrap()
-            .unwrap();
-        let project = apps::project_for(&state.store, &consumer).await.unwrap();
-        docker.compose_up(&project).await.unwrap();
-        let result = import(
-            &state,
-            &reference("ready"),
-            std::path::Path::new("unused.dump"),
-        )
-        .await;
-        assert!(
-            matches!(result, Err(Error::Conflict(message)) if message.contains("processes to exit"))
-        );
-        docker.compose_stop(&project).await.unwrap();
-        require_stopped_consumer(&state, &consumer).await.unwrap();
     }
 
     #[tokio::test]

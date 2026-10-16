@@ -124,6 +124,9 @@ pub struct Change {
     pub to: String,
 }
 
+/// The most of one command's log a stage keeps: the end, where errors are.
+const STAGE_LOG_LINES: usize = 400;
+
 pub fn event(
     action: impl Into<String>,
     subject: Subject,
@@ -243,6 +246,45 @@ impl Journal {
         store.put_audit_event(&row(&merged)?).await?;
         store.prune_audit_events(&cutoff(retention)).await?;
         Ok(())
+    }
+
+    /// Appends a log to the running stage `id`, keeping its last
+    /// `STAGE_LOG_LINES` lines, each cut to 1024 characters.
+    pub(crate) async fn stage_log<S: StateStore>(
+        &self,
+        store: &S,
+        event_id: &str,
+        id: &str,
+        log: &str,
+    ) -> Result<(), StoreError> {
+        let _guard = self.write.lock().await;
+        let Some(body) = store.get_audit_event(event_id).await? else {
+            return Ok(());
+        };
+        let mut event = parse(&body)?;
+        let Some(stage) = event.progress.as_mut().and_then(|progress| {
+            progress
+                .stages
+                .iter_mut()
+                .rev()
+                .find(|stage| stage.id == id && stage.status == "running")
+        }) else {
+            return Ok(());
+        };
+        let lines: Vec<&str> = log.lines().filter(|line| !line.trim().is_empty()).collect();
+        let skipped = lines.len().saturating_sub(STAGE_LOG_LINES);
+        if skipped > 0 {
+            stage
+                .output
+                .push(format!("… {skipped} earlier lines omitted"));
+        }
+        stage.output.extend(
+            lines[skipped..]
+                .iter()
+                .map(|line| line.chars().take(1024).collect::<String>()),
+        );
+        event.updated_at = Some(timestamp());
+        store.put_audit_event(&row(&event)?).await
     }
 
     /// Changes only a running Task. Stage writes share the outcome lock, so a

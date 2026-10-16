@@ -66,7 +66,6 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
   const active = database?.connections.filter((connection) => connection.status !== "revoked") ?? [];
   const ready = active.filter((connection) => connection.status === "ready");
   const selectedImport = ready.find((connection) => connection.id === importConnection);
-  const importStopped = apps.find((candidate) => candidate.id === selectedImport?.consumer_application_id)?.status === "stopped";
 
   return <>
     <div className="between">
@@ -92,10 +91,13 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
               <SelectContent>{ready.map((connection) => <SelectItem key={connection.id} value={connection.id}>{apps.find((candidate) => candidate.id === connection.consumer_application_id)?.name ?? connection.database}</SelectItem>)}</SelectContent>
             </Select>
             <FormField id="database-import" label="Backup file" type="file" accept=".dump,.backup" onChange={(event) => setFile(event.target.files?.[0] ?? null)} hint="pg_dump custom archive, up to 64 MiB. Target database must be empty." />
-            {selectedImport && !importStopped ? <p className="muted">Stop the selected application to import.</p> : null}
+            <div className="field">
+              <p className="muted">Make the archive with pg_dump{database ? ` ${database.major} or older` : ""}, from the database you are moving:</p>
+              <pre className="setup-command"><code>pg_dump --format=custom --no-owner --no-privileges --file backup.dump "postgresql://user:password@host:5432/database"</code></pre>
+            </div>
             {selectedImport?.imported_objects != null ? <p className="muted">Last import: {selectedImport.imported_objects} objects.</p> : null}
           </div>
-          <FormActions sticky><Button size="sm" type="submit" variant="primary" disabled={!file || file.size > 64 * 1024 * 1024 || !importConnection || !importStopped || busy || taskBusy}>Import data</Button></FormActions>
+          <FormActions sticky><Button size="sm" type="submit" variant="primary" disabled={!file || file.size > 64 * 1024 * 1024 || !importConnection || busy || taskBusy}>Import data</Button></FormActions>
         </Form>
       </TabsContent>
       <TabsContent value="last-operation" className="detail-run"><DatabaseOperation event={acceptedTask} child={currentTask !== acceptedTask ? currentTask : null} error={eventsError} /></TabsContent>

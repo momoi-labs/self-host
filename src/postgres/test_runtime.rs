@@ -18,6 +18,8 @@ pub(super) struct PausedRemoval {
     pub pause_restore: bool,
     pub restore_entered: Notify,
     pub restore_release: Notify,
+    /// What pg_restore prints before it fails, when the restore should fail.
+    pub restore_failure: Option<String>,
 }
 
 #[async_trait]
@@ -30,6 +32,12 @@ impl DockerRuntime for PausedRemoval {
         if self.pause_restore && matches!(request, Request::Restore { .. }) {
             self.restore_entered.notify_one();
             self.restore_release.notified().await;
+        }
+        if let (Request::Restore { .. }, Some(log)) = (request, &self.restore_failure) {
+            return Err(DockerError::Command(
+                "Import did not complete successfully".into(),
+                Box::new(super::runtime::RestoreLog(log.clone())),
+            ));
         }
         if let Request::Sql { sql, .. } = request {
             if sql == "SELECT 1;" {
