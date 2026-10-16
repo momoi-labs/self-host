@@ -1,4 +1,4 @@
-import { FormField, Input, Textarea } from "@momoi-labs/kiso-react";
+import { Checkbox, FormField, Input, Label, Textarea } from "@momoi-labs/kiso-react";
 import type { GitSource } from "../lib/types.js";
 
 export type GitFields = {
@@ -14,6 +14,7 @@ export type GitFields = {
   registryCredentialId: string;
   username: string;
   token: string;
+  strict: boolean;
 };
 
 export function gitFieldsOf(source?: GitSource): GitFields {
@@ -24,7 +25,7 @@ export function gitFieldsOf(source?: GitSource): GitFields {
     dockerfile: source?.dockerfile ?? "Dockerfile", composePath: source?.compose_path ?? "",
     args: lines(source?.build_args), secrets: lines(source?.build_secrets),
     credentialId: source?.credential_id ?? "", registryCredentialId: source?.registry_credential_id ?? "",
-    username: "", token: "",
+    username: "", token: "", strict: source?.strict_build ?? false,
   };
 }
 
@@ -41,6 +42,7 @@ export function gitSourceOf(fields: GitFields): GitSource {
     build_args: pairs(fields.args), build_secrets: pairs(fields.secrets),
     credential_id: fields.credentialId.trim() || undefined,
     registry_credential_id: fields.registryCredentialId.trim() || undefined,
+    strict_build: fields.strict,
   };
 }
 
@@ -50,7 +52,7 @@ export function GitSourceFields({ fields, onChange, includeRepository = true, se
   includeRepository?: boolean;
   section?: "all" | "repository" | "build";
 }) {
-  const set = (key: keyof GitFields, value: string) => onChange({ ...fields, [key]: value });
+  const set = (key: Exclude<keyof GitFields, "strict">, value: string) => onChange({ ...fields, [key]: value });
   return <>
     {section !== "build" ? <>
       {includeRepository ? <FormField id="f-git-repository" label="Repository URL" hint="HTTP or HTTPS URL.">
@@ -65,7 +67,7 @@ export function GitSourceFields({ fields, onChange, includeRepository = true, se
       <FormField id="f-git-compose" label="Compose path" value={fields.composePath} onChange={(event) => set("composePath", event.target.value)} placeholder="compose.yaml" hint="Optional path inside the checkout. Its build and env_file inputs also stay inside the checkout." />
       {!fields.composePath.trim() ? <div className="field-row">
         <FormField id="f-git-context" label="Build context" value={fields.context} onChange={(event) => set("context", event.target.value)} placeholder="." />
-        <FormField id="f-git-dockerfile" label="Dockerfile path" value={fields.dockerfile} onChange={(event) => set("dockerfile", event.target.value)} placeholder="Dockerfile" hint="Relative to the checkout root. Every RUN needs a numeric nonzero USER." />
+        <FormField id="f-git-dockerfile" label="Dockerfile path" value={fields.dockerfile} onChange={(event) => set("dockerfile", event.target.value)} placeholder="Dockerfile" hint="Relative to the checkout root. The final stage needs a numeric nonzero USER." />
       </div> : null}
       <FormField id="f-git-args" label="Build arguments" hint="Ordinary inputs only. One NAME=value per line.">
         <Textarea id="f-git-args" className="mono" rows={3} value={fields.args} onChange={(event) => set("args", event.target.value)} />
@@ -74,6 +76,17 @@ export function GitSourceFields({ fields, onChange, includeRepository = true, se
         <Textarea id="f-git-secrets" className="mono" rows={3} value={fields.secrets} onChange={(event) => set("secrets", event.target.value)} />
       </FormField>
       <FormField id="f-registry-credential" label="Registry credential id" value={fields.registryCredentialId} onChange={(event) => set("registryCredentialId", event.target.value)} hint="Optional saved registry credential for private base images." />
+      <div className="field">
+        <div className="check">
+          <Checkbox id="f-git-strict" checked={fields.strict} aria-describedby="f-git-strict-help"
+            onCheckedChange={(checked) => onChange({ ...fields, strict: checked === true })} />
+          <Label htmlFor="f-git-strict">Strict build</Label>
+        </div>
+        <small className="field-hint" id="f-git-strict-help">
+          For a repository you do not trust. Every RUN goes through the build guard, which refuses root and drops
+          its privileges, and needs a numeric nonzero USER before it. Needs a Linux Host.
+        </small>
+      </div>
     </> : null}
   </>;
 }

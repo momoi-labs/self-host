@@ -46,6 +46,10 @@ pub struct GitSource {
     pub credential_id: Option<String>,
     #[serde(default)]
     pub registry_credential_id: Option<String>,
+    /// Route every `RUN` through the build guard and refuse root build steps.
+    /// Off, the build is a plain `docker build` (ADR-0034).
+    #[serde(default)]
+    pub strict_build: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -700,7 +704,7 @@ pub async fn build(
             ));
         }
         let text = std::fs::read_to_string(&dockerfile)?;
-        let base_images = dockerfile_policy(&text)?;
+        let base_images = dockerfile_policy(&text, source.strict_build)?;
         let request = SourceBuild {
             context,
             dockerfile,
@@ -714,6 +718,7 @@ pub async fn build(
             secret_files,
             registry_config,
             base_images,
+            strict: source.strict_build,
         };
         images.insert("app".into(), docker.build_source(&request).await?);
         None
@@ -815,7 +820,10 @@ pub fn dockerfile_instructions(text: &str) -> Result<Vec<String>, SourceError> {
     Ok(instructions)
 }
 
-pub fn dockerfile_policy(text: &str) -> Result<Vec<String>, SourceError> {
+/// `strict` is the build guard's policy: every `USER` numeric and nonzero,
+/// and one before every `RUN`. Without it a build stage may run as any user;
+/// both modes need the final stage to end on a numeric nonzero `USER`.
+pub fn dockerfile_policy(text: &str, strict: bool) -> Result<Vec<String>, SourceError> {
     let instructions = dockerfile_instructions(text)?;
     let mut stage = false;
     let mut user = false;
@@ -846,18 +854,23 @@ pub fn dockerfile_policy(text: &str) -> Result<Vec<String>, SourceError> {
                 user = false;
             }
             "USER" => {
-                if !stage || !nonroot_user(body.trim()) {
+                if !stage || strict && !nonroot_user(body.trim()) {
                     return Err(invalid(
                         "every USER must be a numeric nonzero uid and optional nonzero gid",
                     ));
                 }
-                user = true;
+                user = nonroot_user(body.trim());
             }
-            "RUN" => {
+            "RUN" if strict => {
                 if !stage || !user || body.contains("--security=insecure") || body.contains("<<") {
                     return Err(invalid(
                         "every RUN needs an explicit nonzero numeric USER in its stage; insecure runs and heredocs are refused",
                     ));
+                }
+            }
+            "RUN" => {
+                if !stage || body.contains("--security=insecure") || body.contains("<<") {
+                    return Err(invalid("insecure runs and heredocs are refused"));
                 }
             }
             "ONBUILD" => return Err(invalid("ONBUILD is not supported")),
@@ -875,6 +888,8 @@ pub fn dockerfile_policy(text: &str) -> Result<Vec<String>, SourceError> {
     }
     images.sort();
     images.dedup();
-    guard::dockerfile(text, "sf_guard_policy", &BTreeMap::new())?;
+    if strict {
+        guard::dockerfile(text, "sf_guard_policy", &BTreeMap::new())?;
+    }
     Ok(images)
 }
