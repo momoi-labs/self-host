@@ -617,9 +617,7 @@ impl DockerRuntime for CliDocker {
 
     async fn volume_sizes(&self) -> Result<std::collections::HashMap<String, u64>, DockerError> {
         let step = "failed to measure volumes";
-        let output = tokio::process::Command::new("docker")
-            .args(["system", "df", "-v", "--format", "{{json .Volumes}}"])
-            .output()
+        let output = docker_output_async(["system", "df", "-v", "--format", "{{json .Volumes}}"])
             .await
             .map_err(|error| DockerError::spawn(step, error))?;
         if !output.status.success() {
@@ -630,9 +628,7 @@ impl DockerRuntime for CliDocker {
 
     async fn container_images(&self) -> Result<Vec<String>, DockerError> {
         let step = "failed to check images used by containers";
-        let output = tokio::process::Command::new("docker")
-            .args(["ps", "-a", "--format", "{{.Image}}"])
-            .output()
+        let output = docker_output_async(["ps", "-a", "--format", "{{.Image}}"])
             .await
             .map_err(|error| DockerError::spawn(step, error))?;
         if !output.status.success() {
@@ -646,18 +642,16 @@ impl DockerRuntime for CliDocker {
 
     async fn remove_image_repository(&self, repository: &str) -> Result<(), DockerError> {
         let step = format!("failed to remove image '{repository}'");
-        let output = tokio::process::Command::new("docker")
-            .args([
-                "image",
-                "ls",
-                "--filter",
-                &format!("reference={repository}:*"),
-                "--format",
-                "{{.Repository}}:{{.Tag}}",
-            ])
-            .output()
-            .await
-            .map_err(|error| DockerError::spawn(&step, error))?;
+        let output = docker_output_async([
+            "image",
+            "ls",
+            "--filter",
+            &format!("reference={repository}:*"),
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+        ])
+        .await
+        .map_err(|error| DockerError::spawn(&step, error))?;
         if !output.status.success() {
             return Err(DockerError::refused(&step, &output));
         }
@@ -679,18 +673,15 @@ impl DockerRuntime for CliDocker {
 
     async fn ping(&self) -> Result<(), DockerError> {
         // Check if docker is available
-        let output = std::process::Command::new("docker")
-            .args(["info"])
-            .output()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    DockerError::Unavailable(
-                        "Docker is not installed. Install Docker and try again.".into(),
-                    )
-                } else {
-                    DockerError::spawn("failed to run 'docker info'", e)
-                }
-            })?;
+        let output = docker_output(["info"]).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                DockerError::Unavailable(
+                    "Docker is not installed. Install Docker and try again.".into(),
+                )
+            } else {
+                DockerError::spawn("failed to run 'docker info'", e)
+            }
+        })?;
 
         if !output.status.success() {
             return Err(DockerError::Unavailable(
@@ -702,9 +693,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn container_running(&self, name: &str) -> Result<bool, DockerError> {
-        let output = std::process::Command::new("docker")
-            .args(["inspect", "-f", "{{.State.Running}}", name])
-            .output()
+        let output = docker_output(["inspect", "-f", "{{.State.Running}}", name])
             .map_err(|e| DockerError::Unavailable(e.to_string()))?;
 
         // A container that is not there at all makes `inspect` exit non-zero,
@@ -713,17 +702,15 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn application_containers(&self, id: &str) -> Result<Vec<String>, DockerError> {
-        let output = std::process::Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("label=sf.app.id={id}"),
-                "--format",
-                "{{.Names}}",
-            ])
-            .output()
-            .map_err(|e| DockerError::spawn("failed to list Application containers", e))?;
+        let output = docker_output([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("label=sf.app.id={id}"),
+            "--format",
+            "{{.Names}}",
+        ])
+        .map_err(|e| DockerError::spawn("failed to list Application containers", e))?;
         if !output.status.success() {
             return Err(DockerError::refused(
                 "failed to list Application containers",
@@ -743,9 +730,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn restart_count(&self, name: &str) -> Result<Option<u32>, DockerError> {
-        let output = std::process::Command::new("docker")
-            .args(["inspect", "-f", "{{.RestartCount}}", name])
-            .output()
+        let output = docker_output(["inspect", "-f", "{{.RestartCount}}", name])
             .map_err(|e| DockerError::Unavailable(e.to_string()))?;
 
         // As with `container_running`, a missing container is an answer.
@@ -756,9 +741,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn image_id(&self, image: &str) -> Result<Option<String>, DockerError> {
-        let output = std::process::Command::new("docker")
-            .args(["image", "inspect", "-f", "{{.Id}}", image])
-            .output()
+        let output = docker_output(["image", "inspect", "-f", "{{.Id}}", image])
             .map_err(|e| DockerError::spawn(format!("failed to inspect image '{image}'"), e))?;
 
         // An image the Host does not have yet is an answer, not a failure.
@@ -770,18 +753,14 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
-        let output = std::process::Command::new("docker")
-            .args(["network", "inspect", name])
-            .output()
+        let output = docker_output(["network", "inspect", name])
             .map_err(|e| DockerError::spawn("failed to inspect the Docker network", e))?;
 
         if output.status.success() {
             return Ok(());
         }
 
-        let create = std::process::Command::new("docker")
-            .args(["network", "create", name])
-            .output()
+        let create = docker_output(["network", "create", name])
             .map_err(|e| DockerError::spawn("failed to create the Docker network", e))?;
 
         // Deploys run side by side, and each makes sure every Application's
@@ -797,9 +776,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn ensure_private_network(&self, name: &str) -> Result<(), DockerError> {
-        let inspect = std::process::Command::new("docker")
-            .args(["network", "inspect", "--format", "{{.Internal}}", name])
-            .output()
+        let inspect = docker_output(["network", "inspect", "--format", "{{.Internal}}", name])
             .map_err(|error| DockerError::spawn("failed to inspect private network", error))?;
         if inspect.status.success() {
             return if String::from_utf8_lossy(&inspect.stdout).trim() == "true" {
@@ -810,16 +787,12 @@ impl DockerRuntime for CliDocker {
                 )))
             };
         }
-        let create = std::process::Command::new("docker")
-            .args(["network", "create", "--internal", name])
-            .output()
+        let create = docker_output(["network", "create", "--internal", name])
             .map_err(|error| DockerError::spawn("failed to create private network", error))?;
         // As for ensure_network: a deploy running beside this one may have
         // just created it. It must still be internal.
         if !create.status.success() {
-            let internal = std::process::Command::new("docker")
-                .args(["network", "inspect", "--format", "{{.Internal}}", name])
-                .output()
+            let internal = docker_output(["network", "inspect", "--format", "{{.Internal}}", name])
                 .is_ok_and(|output| {
                     output.status.success()
                         && String::from_utf8_lossy(&output.stdout).trim() == "true"
@@ -840,26 +813,19 @@ impl DockerRuntime for CliDocker {
         networks: &[String],
     ) -> Result<(), DockerError> {
         private_networks::reconcile(container, networks, |args, step| {
-            std::process::Command::new("docker")
-                .args(args)
-                .output()
-                .map_err(|error| DockerError::spawn(step, error))
+            docker_output(args).map_err(|error| DockerError::spawn(step, error))
         })
     }
 
     async fn remove_network_if_exists(&self, name: &str) -> Result<bool, DockerError> {
-        let inspect = std::process::Command::new("docker")
-            .args(["network", "inspect", name])
-            .output()
+        let inspect = docker_output(["network", "inspect", name])
             .map_err(|e| DockerError::spawn("failed to inspect the Docker network", e))?;
 
         if !inspect.status.success() {
             return Ok(false);
         }
 
-        let remove = std::process::Command::new("docker")
-            .args(["network", "rm", name])
-            .output()
+        let remove = docker_output(["network", "rm", name])
             .map_err(|e| DockerError::spawn("failed to remove the Docker network", e))?;
 
         if !remove.status.success() {
@@ -876,9 +842,7 @@ impl DockerRuntime for CliDocker {
         if built_on_host(image) {
             let step =
                 format!("custom image '{image}' is not available on this Host; build it again");
-            let output = std::process::Command::new("docker")
-                .args(["image", "inspect", image])
-                .output()
+            let output = docker_output(["image", "inspect", image])
                 .map_err(|error| DockerError::spawn(step.clone(), error))?;
             return if output.status.success() {
                 Ok(())
@@ -886,9 +850,7 @@ impl DockerRuntime for CliDocker {
                 Err(DockerError::refused(step, &output))
             };
         }
-        let output = std::process::Command::new("docker")
-            .args(["pull", image])
-            .output()
+        let output = docker_output(["pull", image])
             .map_err(|e| DockerError::spawn(format!("failed to pull image '{image}'"), e))?;
 
         if !output.status.success() {
@@ -972,9 +934,7 @@ impl DockerRuntime for CliDocker {
 
     async fn run_application(&self, config: ApplicationContainer) -> Result<(), DockerError> {
         // Remove any previous container with the same name (recreate path).
-        let _ = std::process::Command::new("docker")
-            .args(["rm", "-f", &config.name])
-            .output();
+        let _ = docker_output(["rm", "-f", &config.name]);
 
         let mut args = vec![
             "run".to_string(),
@@ -1025,15 +985,12 @@ impl DockerRuntime for CliDocker {
 
         args.push(config.image.clone());
 
-        let output = std::process::Command::new("docker")
-            .args(&args)
-            .output()
-            .map_err(|e| {
-                DockerError::spawn(
-                    format!("failed to start Application container '{}'", config.name),
-                    e,
-                )
-            })?;
+        let output = docker_output(&args).map_err(|e| {
+            DockerError::spawn(
+                format!("failed to start Application container '{}'", config.name),
+                e,
+            )
+        })?;
 
         if !output.status.success() {
             return Err(DockerError::refused(
@@ -1046,9 +1003,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn remove_container(&self, name: &str) -> Result<(), DockerError> {
-        let output = std::process::Command::new("docker")
-            .args(["rm", "-f", name])
-            .output()
+        let output = docker_output(["rm", "-f", name])
             .map_err(|e| DockerError::spawn(format!("failed to remove container '{name}'"), e))?;
 
         if !output.status.success() {
@@ -1135,6 +1090,15 @@ impl DockerRuntime for CliDocker {
             .output()
             .await
             .map_err(|e| DockerError::spawn(format!("failed to inspect container '{name}'"), e))?;
+        crate::command_log::record(
+            &[
+                "inspect",
+                "-f",
+                "{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{end}}",
+                name,
+            ],
+            &output,
+        );
 
         // No such container is an answer, not an error.
         if !output.status.success() {
@@ -1173,9 +1137,7 @@ impl DockerRuntime for CliDocker {
     async fn container_stats(&self) -> Result<Vec<ContainerStats>, DockerError> {
         // Two calls, not one: `docker stats` does not print labels, and the
         // join key is the container name both outputs share.
-        let stats = std::process::Command::new("docker")
-            .args(["stats", "--no-stream", "--format", "{{json .}}"])
-            .output()
+        let stats = docker_output(["stats", "--no-stream", "--format", "{{json .}}"])
             .map_err(|e| DockerError::spawn("failed to sample Application stats", e))?;
         if !stats.status.success() {
             return Err(DockerError::refused(
@@ -1183,16 +1145,14 @@ impl DockerRuntime for CliDocker {
                 &stats,
             ));
         }
-        let owners = std::process::Command::new("docker")
-            .args([
-                "ps",
-                "--filter",
-                "label=sf.app.id",
-                "--format",
-                "{{.Names}}\t{{.Label \"sf.app.id\"}}",
-            ])
-            .output()
-            .map_err(|e| DockerError::spawn("failed to list Application containers", e))?;
+        let owners = docker_output([
+            "ps",
+            "--filter",
+            "label=sf.app.id",
+            "--format",
+            "{{.Names}}\t{{.Label \"sf.app.id\"}}",
+        ])
+        .map_err(|e| DockerError::spawn("failed to list Application containers", e))?;
         if !owners.status.success() {
             return Err(DockerError::refused(
                 "failed to list Application containers",
@@ -1230,9 +1190,7 @@ impl DockerRuntime for CliDocker {
         name: &str,
     ) -> Result<Vec<crate::processes::Process>, DockerError> {
         let step = format!("failed to list the processes of container '{name}'");
-        let output = std::process::Command::new("docker")
-            .args(["top", name, "-eo", "pid,ppid,user,pcpu,rss,args"])
-            .output()
+        let output = docker_output(["top", name, "-eo", "pid,ppid,user,pcpu,rss,args"])
             .map_err(|e| DockerError::spawn(&step, e))?;
         if !output.status.success() {
             return Err(DockerError::refused(&step, &output));
@@ -1324,9 +1282,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn remove_image(&self, reference: &str) -> Result<bool, DockerError> {
-        let output = tokio::process::Command::new("docker")
-            .args(["image", "rm", reference])
-            .output()
+        let output = docker_output_async(["image", "rm", reference])
             .await
             .map_err(|e| DockerError::spawn(format!("failed to remove image '{reference}'"), e))?;
         Ok(output.status.success())
@@ -1334,16 +1290,14 @@ impl DockerRuntime for CliDocker {
 
     async fn image_references(&self) -> Result<Vec<(String, String, u64)>, DockerError> {
         let step = "failed to list images";
-        let listed = tokio::process::Command::new("docker")
-            .args([
-                "image",
-                "ls",
-                "--format",
-                "{{.Repository}}:{{.Tag}} {{.ID}}",
-            ])
-            .output()
-            .await
-            .map_err(|e| DockerError::spawn(step, e))?;
+        let listed = docker_output_async([
+            "image",
+            "ls",
+            "--format",
+            "{{.Repository}}:{{.Tag}} {{.ID}}",
+        ])
+        .await
+        .map_err(|e| DockerError::spawn(step, e))?;
         if !listed.status.success() {
             return Err(DockerError::refused(step, &listed));
         }
@@ -1387,9 +1341,7 @@ impl DockerRuntime for CliDocker {
     }
 
     async fn remove_volume(&self, name: &str) -> Result<bool, DockerError> {
-        let output = tokio::process::Command::new("docker")
-            .args(["volume", "rm", name])
-            .output()
+        let output = docker_output_async(["volume", "rm", name])
             .await
             .map_err(|e| DockerError::spawn(format!("failed to remove volume '{name}'"), e))?;
         Ok(output.status.success())
@@ -1397,9 +1349,7 @@ impl DockerRuntime for CliDocker {
 
     async fn container_names(&self) -> Result<Vec<String>, DockerError> {
         let step = "failed to list containers";
-        let output = tokio::process::Command::new("docker")
-            .args(["ps", "-a", "--format", "{{.Names}}"])
-            .output()
+        let output = docker_output_async(["ps", "-a", "--format", "{{.Names}}"])
             .await
             .map_err(|error| DockerError::spawn(step, error))?;
         if !output.status.success() {
@@ -1504,10 +1454,7 @@ fn already_exists(create: &std::process::Output) -> bool {
 /// network is there now.
 fn created_meanwhile(name: &str, create: &std::process::Output) -> bool {
     already_exists(create)
-        && std::process::Command::new("docker")
-            .args(["network", "inspect", name])
-            .output()
-            .is_ok_and(|output| output.status.success())
+        && docker_output(["network", "inspect", name]).is_ok_and(|output| output.status.success())
 }
 
 pub fn built_on_host(image: &str) -> bool {
@@ -1624,12 +1571,47 @@ fn source_image_id(info: &serde_json::Value) -> Result<String, DockerError> {
         .ok_or_else(|| source_refusal("Docker did not report an immutable image id"))
 }
 
-fn docker(args: &[&str], step: String) -> Result<(), DockerError> {
-    let output = std::process::Command::new("docker")
-        .args(args)
+/// Runs `docker` with `args`, keeping the command and its output for the
+/// stage that ran it (see `command_log`).
+fn docker_output<I, S>(args: I) -> std::io::Result<std::process::Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
+    let output = std::process::Command::new("docker").args(&args).output()?;
+    crate::command_log::record(
+        &args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        &output,
+    );
+    Ok(output)
+}
+
+async fn docker_output_async<I, S>(args: I) -> std::io::Result<std::process::Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
+    let output = tokio::process::Command::new("docker")
+        .args(&args)
         .output()
-        .map_err(|e| DockerError::spawn(step.clone(), e))?;
-    crate::command_log::record(args, &output);
+        .await?;
+    crate::command_log::record(
+        &args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        &output,
+    );
+    Ok(output)
+}
+
+fn docker(args: &[&str], step: String) -> Result<(), DockerError> {
+    let output = docker_output(args).map_err(|e| DockerError::spawn(step.clone(), e))?;
     if !output.status.success() {
         return Err(DockerError::refused(step, &output));
     }
@@ -1748,11 +1730,7 @@ fn compose(project: &ComposeProject, verb: &[&str], step: &str) -> Result<(), Do
     let mut args = compose_args(project, &file);
     args.extend(verb.iter().map(|s| s.to_string()));
 
-    let output = std::process::Command::new("docker")
-        .args(&args)
-        .output()
-        .map_err(|e| DockerError::spawn(step, e))?;
-    crate::command_log::record(&args, &output);
+    let output = docker_output(&args).map_err(|e| DockerError::spawn(step, e))?;
 
     if !output.status.success() {
         return Err(DockerError::refused(step, &output));
