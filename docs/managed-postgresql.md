@@ -62,10 +62,20 @@ create scheduled backups.
 
 ## Logical import
 
-Stop the consumer Application, then use the database's Import tab to upload a
-`pg_dump --format=custom` archive of at most 64 MiB. The Platform checks the
-source server and dump-tool major versions against the selected target major.
-It refuses newer archives and nonempty target databases.
+Use the database's Import tab to upload a custom-format archive of at most
+64 MiB, made with a `pg_dump` no newer than the target's major version:
+
+```sh
+pg_dump --format=custom --no-owner --no-privileges --file backup.dump \
+  "postgresql://user:password@host:5432/database"
+```
+
+The Platform checks the source server and dump-tool major versions against the
+selected target major. It refuses newer archives and nonempty target databases.
+The consumer Application may keep running. What it writes during the restore
+is yours to manage, as with any client of the database; an Application that
+creates its tables when it starts leaves the target nonempty, so import before
+its first start or stop it first.
 
 The restore runs as the consumer's database role, with `--no-owner`,
 `--no-privileges`, `--single-transaction` and `--exit-on-error`. Dumps needing
@@ -73,6 +83,9 @@ privileged extensions are refused. A SQL failure rolls back the transaction.
 After success, the Task checks the database's non-system relations and records
 the object count. Query application-specific data before using the result.
 These options follow PostgreSQL's [pg_restore documentation](https://www.postgresql.org/docs/18/app-pgrestore.html).
+The restore runs with `--verbose`, and its log, including the error it stopped
+at, appears under the restore stage in Last operation, which opens when the
+import starts. The last 400 lines are kept.
 
 Import occupies the consumer Task queue and the provider operation lock.
 Consumer start and provider stop, restart, disconnect or removal cannot run
@@ -122,8 +135,7 @@ the dedicated non-root identity, loopback transport, restricted database
 login, stopped consumer behavior and credential revocation.
 
 For the console, create a database, connect a test Application, reveal and hide
-its URL, restart and recreate the database, import into a stopped empty
-consumer, disconnect, then verify the two data-removal choices. Inspect the
+its URL, restart and recreate the database, import into an empty consumer, disconnect, then verify the two data-removal choices. Inspect the
 Summary, Last operation and Logs tabs for readiness and failures. Last operation
 shows the recorded stages, duration and outcome. Events identify the resource
 as a database; older events for existing databases receive the same label.

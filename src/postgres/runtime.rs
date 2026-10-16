@@ -87,6 +87,7 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
                 "--kill-after=5s",
                 "840s",
                 "pg_restore",
+                "--verbose",
                 "--no-password",
                 "--format=custom",
                 "--no-owner",
@@ -151,6 +152,20 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
     if let Some(writer) = writer {
         let _ = writer.await;
     }
+    if let Request::Restore { .. } = request {
+        // pg_restore reports progress and errors on stderr. The Operator
+        // imports their own archive and needs that log to fix it; the role
+        // signs in over the local socket, so no password appears in it.
+        let log = String::from_utf8_lossy(&output.stderr).into_owned();
+        return if output.status.success() {
+            Ok(log)
+        } else {
+            Err(DockerError::Command(
+                "Import did not complete successfully. Read the pg_restore log above, fix the archive or the target database, then retry".into(),
+                Box::new(RestoreLog(log)),
+            ))
+        };
+    }
     if !output.status.success() {
         // PostgreSQL repeats SQL, credentials and source data in error output.
         // Return a fixed diagnosis instead of recording stderr in the Task.
@@ -166,6 +181,18 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
+
+/// What pg_restore wrote before it failed.
+#[derive(Debug)]
+pub struct RestoreLog(pub String);
+
+impl std::fmt::Display for RestoreLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("pg_restore failed")
+    }
+}
+
+impl std::error::Error for RestoreLog {}
 
 fn unavailable(message: &str) -> DockerError {
     DockerError::Unavailable(message.into())

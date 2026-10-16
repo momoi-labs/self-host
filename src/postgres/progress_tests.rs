@@ -380,6 +380,104 @@ async fn connect_and_revoke_record_parent_stages_and_separate_consumer_work() {
 }
 
 #[tokio::test]
+async fn a_failed_restore_shows_the_pg_restore_log() {
+    let docker = Arc::new(test_runtime::PausedRemoval {
+        postgres_ready: true,
+        restore_failure: Some(
+            "pg_restore: processing data for table \"public.cuts\"\npg_restore: error: could not execute query: ERROR:  relation \"cuts\" already exists\n".into(),
+        ),
+        ..Default::default()
+    });
+    let state = fixture(docker.clone()).await;
+    operation(
+        &state,
+        Operation::Provision {
+            id: "provider".into(),
+            recreate: false,
+        },
+    )
+    .await;
+    let connection = tests::reference("ready");
+    CONNECTIONS.upsert(&state.store, &connection).await.unwrap();
+    let import = operation(
+        &state,
+        Operation::Import {
+            connection_id: connection.id,
+            upload_id: secret(),
+        },
+    )
+    .await;
+    assert_eq!(import.status, "failed");
+    let restore = import
+        .progress
+        .as_ref()
+        .unwrap()
+        .stages
+        .iter()
+        .find(|stage| stage.id == "restore")
+        .unwrap();
+    assert_eq!(restore.status, "failed");
+    assert!(
+        restore
+            .error
+            .as_ref()
+            .is_some_and(|error| error.error.contains("Read its log")),
+        "{:?}",
+        restore.error
+    );
+    assert!(
+        restore
+            .output
+            .iter()
+            .any(|line| line.contains("relation \"cuts\" already exists")),
+        "{:?}",
+        restore.output
+    );
+}
+
+#[tokio::test]
+async fn import_restores_while_the_consumer_runs() {
+    let docker = Arc::new(test_runtime::PausedRemoval {
+        postgres_ready: true,
+        pause_restore: true,
+        ..Default::default()
+    });
+    let state = fixture(docker.clone()).await;
+    operation(
+        &state,
+        Operation::Provision {
+            id: "provider".into(),
+            recreate: false,
+        },
+    )
+    .await;
+    state
+        .store
+        .set_application_outcome("consumer", crate::apps::STATUS_RUNNING, None)
+        .await
+        .unwrap();
+    let connection = tests::reference("ready");
+    CONNECTIONS.upsert(&state.store, &connection).await.unwrap();
+    tasks::enqueue(
+        &state,
+        "configure",
+        audit::Subject::new("database", "provider", "fixture"),
+        tasks::Work::Postgres {
+            operation: Operation::Import {
+                connection_id: connection.id,
+                upload_id: secret(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    // Reaching the restore means the running consumer did not stop it.
+    tokio::time::timeout(Duration::from_secs(5), docker.restore_entered.notified())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn import_progress_belongs_to_database_and_blocks_consumer_start_until_restore_finishes() {
     let docker = Arc::new(test_runtime::PausedRemoval {
         postgres_ready: true,
