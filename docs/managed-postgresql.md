@@ -88,6 +88,8 @@ at, appears under the restore stage in Last operation, which opens when the
 import starts. The last 400 lines are kept. The Task history keeps that log, so
 the statement pg_restore repeats after `Command was:` and the row a failing
 `COPY` stopped at are left out: both can hold secrets the archive carries.
+PostgreSQL's own error lines stay, and some quote the value that failed, such
+as `DETAIL:  Failing row contains (...)`; they are kept because they say why.
 
 Import occupies the consumer Task queue and the provider operation lock.
 Consumer start and provider stop, restart, disconnect or removal cannot run
