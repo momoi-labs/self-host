@@ -223,14 +223,78 @@ pub(crate) async fn runtime_report(
         )
     }
     .await;
-    if matches!(managed, Ok(false)) {
-        report
-    } else {
-        // A failed metadata read must not expose a possibly managed password.
-        ErrorReport::plain(
-            "The database runtime operation failed. Check PostgreSQL and Application logs, then retry",
-        )
+    let secrets = match (managed, secrets(store).await) {
+        (Ok(false), _) => return report,
+        (Ok(true), Ok(secrets)) => secrets,
+        // Without the secrets nothing can be cut out, so nothing is shown.
+        _ => {
+            return ErrorReport::plain(
+                "The database runtime operation failed. Check PostgreSQL and Application logs, then retry",
+            );
+        }
+    };
+    // Docker and PostgreSQL output can repeat a rendered password; the rest of
+    // it is what tells the Operator what went wrong.
+    ErrorReport {
+        error: redact(&report.error, &secrets),
+        caused_by: report
+            .caused_by
+            .iter()
+            .map(|cause| redact(cause, &secrets))
+            .collect(),
     }
+}
+
+/// Every password the Platform made for a managed database: each database's
+/// own and each connection's. Longest first, so one never hides part of
+/// another.
+pub(crate) async fn secrets(store: &impl StateStore) -> Result<Vec<String>, StoreError> {
+    let mut secrets: Vec<String> = CONNECTIONS
+        .list(store)
+        .await?
+        .into_iter()
+        .map(|connection| connection.password)
+        .collect();
+    for database in DATABASES.list(store).await? {
+        if let Some(password) = store.get_env(&database.application_id, PASSWORD).await? {
+            secrets.push(password);
+        }
+    }
+    secrets.retain(|secret| secret.len() >= 8);
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    Ok(secrets)
+}
+
+/// Cuts every managed password out of `text`, and any password written where
+/// PostgreSQL and Docker write them: in a connection URL, after `PASSWORD`
+/// in SQL, and in a `*PASSWORD=` variable.
+pub(crate) fn redact(text: &str, secrets: &[String]) -> String {
+    static PATTERNS: std::sync::LazyLock<[(regex::Regex, &str); 3]> =
+        std::sync::LazyLock::new(|| {
+            [
+                (
+                    regex::Regex::new(r"(?i)(postgres(?:ql)?://[^:/@\s]+):[^@\s]+@").unwrap(),
+                    "$1:***@",
+                ),
+                (
+                    regex::Regex::new(r"(?i)(\bPASSWORD\s+)'(?:[^']|'')*'").unwrap(),
+                    "$1'***'",
+                ),
+                (
+                    regex::Regex::new(
+                        r#"(?i)(\b[A-Z_]*PASSWORD)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)"#,
+                    )
+                    .unwrap(),
+                    "$1$2***",
+                ),
+            ]
+        });
+    let text = secrets
+        .iter()
+        .fold(text.to_owned(), |text, secret| text.replace(secret, "***"));
+    PATTERNS.iter().fold(text, |text, (pattern, with)| {
+        pattern.replace_all(&text, *with).into_owned()
+    })
 }
 
 pub async fn active_reference(store: &impl StateStore, id: &str) -> Result<bool, StoreError> {
@@ -1051,24 +1115,13 @@ async fn import<S: StateStore>(
                     file: file.into(),
                 })
                 .await;
-            // The log goes on the stage either way: on failure it holds the
-            // error pg_restore stopped at.
-            let log = match &result {
-                Ok(log) => Some(log.as_str()),
-                Err(crate::docker::DockerError::Command(_, source)) => source
-                    .downcast_ref::<runtime::RestoreLog>()
-                    .map(|log| log.0.as_str()),
-                Err(_) => None,
-            };
-            if let (Some(log), Some(event)) = (log, audit::event_id()) {
-                state
-                    .audit
-                    .stage_log(&state.store, &event, "restore", &restore_log(log))
-                    .await?;
-            }
+            // The stage already shows pg_restore's command and log; the
+            // failure points there instead of repeating it.
+            let stopped = matches!(&result, Err(crate::docker::DockerError::Command(_, source))
+                if source.downcast_ref::<runtime::RestoreLog>().is_some());
             match result {
                 Ok(_) => Ok(()),
-                Err(_) if log.is_some() => Err(Error::Unavailable(
+                Err(_) if stopped => Err(Error::Unavailable(
                     "pg_restore stopped at an error. Read its log in this stage, fix the archive or the target database, then retry".into(),
                 )),
                 Err(e) => Err(Error::Runtime(e.to_string())),
@@ -1193,26 +1246,26 @@ pub(crate) fn import_path(id: &str) -> Result<PathBuf, Error> {
 }
 
 fn validate_archive_version(manifest: &str, target: u16) -> Result<(), Error> {
-    for prefix in [
-        "Dumped from database version:",
-        "Dumped by pg_dump version:",
+    for (prefix, tool) in [
+        ("Dumped from database version:", "a PostgreSQL"),
+        ("Dumped by pg_dump version:", "pg_dump"),
     ] {
-        let major = manifest
+        let version = manifest
             .lines()
             .filter_map(|line| line.trim().strip_prefix(';'))
             .find_map(|line| line.trim_start().strip_prefix(prefix))
-            .and_then(|version| {
-                version
-                    .trim_start()
-                    .split(|c: char| !c.is_ascii_digit())
-                    .next()
-            })
+            .map(str::trim);
+        let major = version
+            .and_then(|version| version.split(|c: char| !c.is_ascii_digit()).next())
             .and_then(|major| major.parse::<u16>().ok())
             .ok_or_else(|| {
                 Error::Invalid("The import archive does not declare its PostgreSQL version".into())
             })?;
         if major > target {
-            return Err(Error::Invalid("The archive was produced by a newer PostgreSQL major version. No data was imported".into()));
+            let version = version.unwrap_or_default();
+            return Err(Error::Invalid(format!(
+                "The archive was made by {tool} {version}, newer than this database's PostgreSQL {target}. Dump again with pg_dump {target} or older, or import into a PostgreSQL {major} database. No data was imported"
+            )));
         }
     }
     Ok(())
@@ -1864,7 +1917,13 @@ mod tests {
     fn archives_from_newer_servers_or_dump_tools_are_refused() {
         let manifest = ";\n;     Dump Version: 1.16-0\n;     Dumped from database version: 16.4\n;     Dumped by pg_dump version: 17.2\n;";
         assert!(validate_archive_version(manifest, 17).is_ok());
-        assert!(validate_archive_version(manifest, 16).is_err());
+        let refused = validate_archive_version(manifest, 16)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("pg_dump 17.2") && refused.contains("PostgreSQL 16"),
+            "{refused}"
+        );
         assert!(
             validate_archive_version(
                 ";     Dumped from database version: 18.1\n;     Dumped by pg_dump version: 17.2",
@@ -1893,6 +1952,30 @@ mod tests {
                 assert!(validate_archive_version(&manifest, 17).is_err());
             }
         }
+    }
+
+    #[test]
+    fn redaction_cuts_managed_passwords_and_passwords_where_postgres_writes_them() {
+        let secrets = vec!["s3cret-managed-password".to_owned()];
+        let text = "env SF_POSTGRES_PASSWORD=s3cret-managed-password\nDATABASE_URL=postgresql://role_x:other-pass@db:5432/db_x\nCREATE ROLE role_x LOGIN PASSWORD 'it''s-secret'\nPOSTGRES_PASSWORD: \"quoted\"\nfailed to create network: all predefined address pools have been fully subnetted";
+        let cut = redact(text, &secrets);
+        for secret in [
+            "s3cret-managed-password",
+            "other-pass",
+            "it''s-secret",
+            "quoted",
+        ] {
+            assert!(!cut.contains(secret), "{cut}");
+        }
+        assert!(
+            cut.contains("postgresql://role_x:***@db:5432/db_x"),
+            "{cut}"
+        );
+        assert!(
+            cut.contains("CREATE ROLE role_x LOGIN PASSWORD '***'"),
+            "{cut}"
+        );
+        assert!(cut.contains("all predefined address pools have been fully subnetted"));
     }
 
     #[test]

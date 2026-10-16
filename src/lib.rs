@@ -21,6 +21,7 @@ pub mod audit;
 pub mod bootstrap;
 pub mod certificates;
 pub mod collection;
+pub mod command_log;
 pub mod compose_app;
 pub mod config;
 pub mod connectivity;
