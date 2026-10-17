@@ -1,5 +1,9 @@
 import { useRef, useState, type FormEvent } from "react";
 import {
+  Alert,
+  AlertContent,
+  AlertDescription,
+  AlertTitle,
   Button,
   FileDropzone,
   Form,
@@ -48,7 +52,7 @@ const FORMATS: { value: ArchiveFormat; label: string; command: string }[] = [
  * the one selected. The import runs as a Task in the daemon, so the list and
  * its logs read the same whether or not this screen was open while it ran.
  */
-export function DatabaseImports({ apps, connections, imports, loading, failure, busy, onImport }: {
+export function DatabaseImports({ apps, connections, imports, loading, failure, busy, onImport, onOpenConnections }: {
   apps: App[];
   /** Connections ready to take an import. */
   connections: DatabaseConnection[];
@@ -57,6 +61,8 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   /** Why the list could not be read; the last list read stays shown. */
   failure: Report | null;
   busy: boolean;
+  /** Opens the Connections tab, where an Application is connected. */
+  onOpenConnections: () => void;
   /** Starts the import and answers with its Task id, or null. */
   onImport: (connectionId: string, source: ImportSource, format: ArchiveFormat) => Promise<string | null>;
 }) {
@@ -128,10 +134,21 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
 
     {failure ? <Failure failure={failure} /> : null}
 
+    {formOpen && !connections.length ? <Alert variant="warning">
+      <Icon name="info" size="md" />
+      <AlertContent>
+        <AlertTitle>No Application is connected to this database</AlertTitle>
+        <AlertDescription>
+          An import fills a connected Application's database. Connect one first, then come back here.
+          {" "}<Button size="sm" variant="ghost" type="button" onClick={onOpenConnections}>Open Connections</Button>
+        </AlertDescription>
+      </AlertContent>
+    </Alert> : null}
+
     {formOpen ? <Form className="import-form" onSubmit={(event: FormEvent) => void submit(event)}>
       <div className="form-body">
         <Select value={connection} onValueChange={setConnection} disabled={busy || !connections.length}>
-          <FormField id="import-connection" label="Consumer database" hint={connections.length ? undefined : "Connect an Application first, on the Connections tab; the import fills its database."}><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
+          <FormField id="import-connection" label="Consumer database"><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
           <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
         </Select>
         <RadioGroup label="Dump" variant="segmented" value={from} disabled={busy} onValueChange={(next) => { generation.current += 1; setFrom(next as "upload" | "path"); setFormat(""); setDetection(null); }}>
