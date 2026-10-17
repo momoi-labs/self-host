@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, Card, Checkbox, FormField, Label, Lifecycle, PageHeader, PageHeaderTitle, StatusBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@momoi-labs/kiso-react";
 
@@ -19,6 +19,7 @@ import { DatabaseSummary } from "../components/DatabaseSummary.js";
 export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenApp }: { app: App; apps: App[]; metrics: Metrics | null; reload: () => Promise<App[]>; onRemoved: () => void; onOpenApp: (id: string) => void }) {
   const detail = useQuery({ ...databaseQuery(app.id), refetchInterval: 3000 });
   const imports = useQuery({ ...databaseImportsQuery(app.id), refetchInterval: 3000 });
+  const refetchImports = useCallback(() => { void imports.refetch(); }, [imports.refetch]);
   const database = detail.data ?? null;
   const loadFailure = detail.error ? asReport(detail.error) : null;
   const { refetch: load } = detail;
@@ -41,18 +42,18 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
 
   useEffect(() => { if (!taskId || !currentTask || taskBusy || handledTasks.current.has(currentTask.id)) return; handledTasks.current.add(currentTask.id); void reload().then((next) => { if (!next.some((candidate) => candidate.id === app.id)) onRemoved(); }); }, [currentTask, taskId, taskBusy, app.id, reload, onRemoved]);
 
-  async function operation(path: string, method: string, body?: object | File, extraHeaders?: Record<string, string>): Promise<string | false> {
+  async function operation(path: string, method: string, body?: object | File): Promise<string | false> {
     if (busy || taskBusy) return false;
     setBusy(true); setFailure(null);
     try {
-      const response = await api(path, { method, body: body instanceof File ? body : body ? JSON.stringify(body) : undefined, headers: body instanceof File ? { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(body.name), ...extraHeaders } : undefined });
+      const response = await api(path, { method, body: body instanceof File ? body : body ? JSON.stringify(body) : undefined, headers: body instanceof File ? { "Content-Type": "application/octet-stream" } : undefined });
       if (!response.ok) throw await failureOf(response);
       const accepted = await response.json() as { task_id: string; connection_id?: string };
       const connectionId = accepted.connection_id ?? (method === "DELETE" ? path.split("/connections/")[1] : undefined);
       setConnectionOperation(connectionId ? { id: connectionId, previousTask: database?.connections.find((connection) => connection.id === connectionId)?.task_id ?? null } : null);
-      setOperationLabel(path.endsWith("/import") || path.endsWith("/import-path") ? "Importing" : path.includes("/connections") ? method === "DELETE" ? "Disconnecting" : "Connecting" : path.endsWith("/stop") ? "Stopping" : path.endsWith("/start") ? "Starting" : path.endsWith("/restart") ? "Restarting" : path.endsWith("/redeploy") ? "Recreating" : "Removing");
+      setOperationLabel(path.endsWith("/import") ? "Importing" : path.includes("/connections") ? method === "DELETE" ? "Disconnecting" : "Connecting" : path.endsWith("/stop") ? "Stopping" : path.endsWith("/start") ? "Starting" : path.endsWith("/restart") ? "Restarting" : path.endsWith("/redeploy") ? "Recreating" : "Removing");
       // An import's steps show on the Imports tab, next to the list it joins.
-      setTaskId(accepted.task_id); if (!path.endsWith("/import") && !path.endsWith("/import-path")) setTab("last-operation"); reloadEvents();
+      setTaskId(accepted.task_id); setTab("last-operation"); reloadEvents();
       await load(); await reload();
       return accepted.task_id;
     } catch (error) { setFailure(asReport(error)); return false; }
@@ -80,13 +81,17 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
         <DatabaseConnections app={app} apps={apps} connections={active} loading={database === null} busy={busy || taskBusy} failure={failure} onOperation={async (path, method, body) => Boolean(await operation(path, method, body))} />
       </TabsContent>
       <TabsContent value="imports">
-        <DatabaseImports apps={apps} onOpenConnections={() => setTab("connections")} connections={ready} imports={imports.data ?? []} loading={imports.isPending && !imports.error} failure={imports.error ? asReport(imports.error) : null} busy={busy || taskBusy}
-          onImport={async (connectionId, source, format) => {
-            const accepted = "file" in source
-              ? await operation(`/databases/${app.id}/connections/${connectionId}/import`, "POST", source.file, { "X-Import-Format": format })
-              : await operation(`/databases/${app.id}/connections/${connectionId}/import-path`, "POST", { path: source.path, format });
-            await imports.refetch();
-            return accepted || null;
+        {/* An import only waits its turn behind other database work, so a running Task does not hold the form back. */}
+        <DatabaseImports databaseId={app.id} apps={apps} onOpenConnections={() => setTab("connections")} connections={ready} imports={imports.data ?? []} loading={imports.isPending && !imports.error} failure={imports.error ? asReport(imports.error) : null} busy={busy}
+          onImported={refetchImports}
+          onImport={async (connectionId, path, format) => {
+            try {
+              const response = await api(`/databases/${app.id}/connections/${connectionId}/import-path`, { method: "POST", body: JSON.stringify({ path, format }) });
+              if (!response.ok) throw await failureOf(response);
+              const accepted = await response.json() as { task_id: string };
+              await imports.refetch();
+              return accepted.task_id;
+            } catch (error) { setFailure(asReport(error)); return null; }
           }} />
       </TabsContent>
       <TabsContent value="last-operation" className="detail-run"><DatabaseOperation event={acceptedTask} child={currentTask !== acceptedTask ? currentTask : null} error={eventsError} /></TabsContent>

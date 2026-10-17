@@ -347,6 +347,10 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
   background: var(--color-secondary); color: var(--color-secondary-foreground);
   font-size: var(--type-size-label); font-weight: var(--type-weight-medium);
 }
+.form-steps > li[data-done] > .t-caps::before {
+  content: "✓";
+  background: var(--color-primary); color: var(--color-primary-foreground);
+}
 /* The way out of the builder, and the way back into it. A dashed box reads
    as an escape hatch rather than one more field. */
 .custom-image-takeover { display: flex; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); }
