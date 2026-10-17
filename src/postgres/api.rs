@@ -183,7 +183,7 @@ async fn import_from_path<S: StateStore>(
                 Some(task_id.clone()),
                 tasks::enqueue(
                     &state,
-                    "configure",
+                    "import",
                     audit::Subject::new("database", app.id.clone(), app.name.clone()),
                     tasks::Work::Postgres {
                         operation: Operation::Import {
@@ -717,7 +717,7 @@ async fn upload<S: StateStore>(
                 Some(task_id.clone()),
                 tasks::enqueue(
                     &state,
-                    "configure",
+                    "import",
                     audit::Subject::new("database", app.id.clone(), app.name.clone()),
                     tasks::Work::Postgres {
                         operation: Operation::Import {

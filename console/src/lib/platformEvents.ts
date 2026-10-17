@@ -3,7 +3,7 @@ import type { Report } from "./types.js";
 /** One task, as the Events page shows it. The id is the task's id. */
 export type PlatformEvent = {
   id: string;
-  action: "create" | "delete" | "stop" | "start" | "restart" | "configure" | "prune";
+  action: "create" | "delete" | "stop" | "start" | "restart" | "configure" | "import" | "prune";
   status: "pending" | "running" | "completed" | "failed";
   occurredAt: string;
   startedAt?: string | null;
@@ -59,7 +59,7 @@ export function filterEvents(events: readonly PlatformEvent[], query: string, st
 export function eventActionLabel(event: PlatformEvent): string {
   // Work on the Platform itself reads as what it does, not as a verb on a resource.
   if (event.action === "prune") return "Remove unused data";
-  const actions: Record<string, string> = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure" };
+  const actions: Record<string, string> = { create: "Create", delete: "Delete", stop: "Stop", start: "Start", restart: "Restart", configure: "Configure", import: "Import into" };
   const resources: Record<string, string> = { application: "application", database: "database", "virtual-machine": "virtual machine", "custom-image": "custom image", "api-key": "API key", "dns-record": "DNS record", settings: "settings", platform: "Platform" };
   // An action or kind this console does not know yet still reads as words, never as "undefined".
   const action = actions[event.action] ?? event.action.charAt(0).toUpperCase() + event.action.slice(1);
