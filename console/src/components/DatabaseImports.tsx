@@ -130,8 +130,8 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
 
     {formOpen ? <Form className="import-form" onSubmit={(event: FormEvent) => void submit(event)}>
       <div className="form-body">
-        <Select value={connection} onValueChange={setConnection} disabled={busy}>
-          <FormField id="import-connection" label="Consumer database" hint={connections.length ? undefined : "Connect an Application first; the import fills its database."}><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
+        <Select value={connection} onValueChange={setConnection} disabled={busy || !connections.length}>
+          <FormField id="import-connection" label="Consumer database" hint={connections.length ? undefined : "Connect an Application first, on the Connections tab; the import fills its database."}><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
           <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
         </Select>
         <RadioGroup label="Dump" variant="segmented" value={from} disabled={busy} onValueChange={(next) => { generation.current += 1; setFrom(next as "upload" | "path"); setFormat(""); setDetection(null); }}>
