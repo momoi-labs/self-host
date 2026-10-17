@@ -1,34 +1,30 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, Card, Checkbox, Form, FormActions, FormField, Label, Lifecycle, PageHeader, PageHeaderTitle, StatusBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@momoi-labs/kiso-react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, Card, Checkbox, FormField, Label, Lifecycle, PageHeader, PageHeaderTitle, StatusBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@momoi-labs/kiso-react";
 
 import { api, asReport, failureOf } from "../lib/api.js";
-import { databaseQuery } from "../lib/queries.js";
+import { databaseImportsQuery, databaseQuery } from "../lib/queries.js";
 import type { App, Metrics, Report } from "../lib/types.js";
 import { Glance } from "../components/Glance.js";
 import { seriesFor } from "../lib/useMetrics.js";
-import { useMediaQuery } from "../lib/useMediaQuery.js";
-import { eventActionLabel, type OperationStage, type PlatformEvent } from "../lib/platformEvents.js";
-import { formatSeconds, seconds } from "../lib/runSteps.js";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@momoi-labs/kiso-react";
 import { useEvents } from "../lib/useEvents.js";
 import { Failure } from "../components/Failure.js";
 import { AppLogPane } from "../components/LogPane.js";
-import { Pane, Split, Splitter, LogView, LogViewLine, StepList } from "@momoi-labs/kiso-react";
 
 import { DatabaseConnections } from "../components/DatabaseConnections.js";
+import { DatabaseImports } from "../components/DatabaseImports.js";
+import { DatabaseOperation } from "../components/DatabaseOperation.js";
 import { DatabaseSummary } from "../components/DatabaseSummary.js";
 
 export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenApp }: { app: App; apps: App[]; metrics: Metrics | null; reload: () => Promise<App[]>; onRemoved: () => void; onOpenApp: (id: string) => void }) {
   const detail = useQuery({ ...databaseQuery(app.id), refetchInterval: 3000 });
+  const imports = useQuery({ ...databaseImportsQuery(app.id), refetchInterval: 3000 });
   const database = detail.data ?? null;
   const loadFailure = detail.error ? asReport(detail.error) : null;
   const { refetch: load } = detail;
   const [failure, setFailure] = useState<Report | null>(null);
   const [tab, setTab] = useState(app.status === "pending" ? "last-operation" : "summary");
   const [busy, setBusy] = useState(false);
-  const [importConnection, setImportConnection] = useState("");
-  const [file, setFile] = useState<File | null>(null);
   const [connectionOperation, setConnectionOperation] = useState<{ id: string; previousTask: string | null } | null>(null);
   const [operationLabel, setOperationLabel] = useState(app.status === "pending" ? "Provisioning" : "Operation");
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -45,19 +41,20 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
 
   useEffect(() => { if (!taskId || !currentTask || taskBusy || handledTasks.current.has(currentTask.id)) return; handledTasks.current.add(currentTask.id); void reload().then((next) => { if (!next.some((candidate) => candidate.id === app.id)) onRemoved(); }); }, [currentTask, taskId, taskBusy, app.id, reload, onRemoved]);
 
-  async function operation(path: string, method: string, body?: object | File) {
+  async function operation(path: string, method: string, body?: object | File): Promise<string | false> {
     if (busy || taskBusy) return false;
     setBusy(true); setFailure(null);
     try {
-      const response = await api(path, { method, body: body instanceof File ? body : body ? JSON.stringify(body) : undefined, headers: body instanceof File ? { "Content-Type": "application/octet-stream" } : undefined });
+      const response = await api(path, { method, body: body instanceof File ? body : body ? JSON.stringify(body) : undefined, headers: body instanceof File ? { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(body.name) } : undefined });
       if (!response.ok) throw await failureOf(response);
       const accepted = await response.json() as { task_id: string; connection_id?: string };
       const connectionId = accepted.connection_id ?? (method === "DELETE" ? path.split("/connections/")[1] : undefined);
       setConnectionOperation(connectionId ? { id: connectionId, previousTask: database?.connections.find((connection) => connection.id === connectionId)?.task_id ?? null } : null);
       setOperationLabel(path.endsWith("/import") ? "Importing" : path.includes("/connections") ? method === "DELETE" ? "Disconnecting" : "Connecting" : path.endsWith("/stop") ? "Stopping" : path.endsWith("/start") ? "Starting" : path.endsWith("/restart") ? "Restarting" : path.endsWith("/redeploy") ? "Recreating" : "Removing");
-      setTaskId(accepted.task_id); setTab("last-operation"); reloadEvents();
+      // An import's steps show on the Imports tab, next to the list it joins.
+      setTaskId(accepted.task_id); if (!path.endsWith("/import")) setTab("last-operation"); reloadEvents();
       await load(); await reload();
-      return true;
+      return accepted.task_id;
     } catch (error) { setFailure(asReport(error)); return false; }
     finally { setBusy(false); }
   }
@@ -65,7 +62,6 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
   const samples = seriesFor(metrics, app.id);
   const active = database?.connections.filter((connection) => connection.status !== "revoked") ?? [];
   const ready = active.filter((connection) => connection.status === "ready");
-  const selectedImport = ready.find((connection) => connection.id === importConnection);
 
   return <>
     <div className="between">
@@ -78,63 +74,22 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
     {loadFailure ? <Failure failure={loadFailure} /> : null}
     {app.last_error ? <Failure failure={app.last_error} /> : null}
     <Card className="detail-tabs"><Tabs sections value={tab} onValueChange={setTab}>
-      <TabsList aria-label="Database details"><TabsTrigger value="summary">Summary</TabsTrigger><TabsTrigger value="connections">Connections</TabsTrigger><TabsTrigger value="import">Import</TabsTrigger><TabsTrigger value="last-operation">Last operation</TabsTrigger><TabsTrigger value="logs">Logs</TabsTrigger></TabsList>
+      <TabsList aria-label="Database details"><TabsTrigger value="summary">Summary</TabsTrigger><TabsTrigger value="connections">Connections</TabsTrigger><TabsTrigger value="imports">Imports</TabsTrigger><TabsTrigger value="last-operation">Last operation</TabsTrigger><TabsTrigger value="logs">Logs</TabsTrigger></TabsList>
       <TabsContent value="summary"><DatabaseSummary app={app} apps={apps} database={database} onOpenApp={onOpenApp} onOpenConnections={() => setTab("connections")} /></TabsContent>
       <TabsContent value="connections">
-        <DatabaseConnections app={app} apps={apps} connections={active} loading={database === null} busy={busy || taskBusy} failure={failure} onOperation={operation} />
+        <DatabaseConnections app={app} apps={apps} connections={active} loading={database === null} busy={busy || taskBusy} failure={failure} onOperation={async (path, method, body) => Boolean(await operation(path, method, body))} />
       </TabsContent>
-      <TabsContent value="import">
-        <Form onSubmit={(event: FormEvent) => { event.preventDefault(); if (file) void operation(`/databases/${app.id}/connections/${importConnection}/import`, "POST", file); }}>
-          <div className="form-body">
-            <Select value={importConnection} onValueChange={setImportConnection} disabled={busy || taskBusy}>
-              <FormField id="import-connection" label="Consumer database"><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
-              <SelectContent>{ready.map((connection) => <SelectItem key={connection.id} value={connection.id}>{apps.find((candidate) => candidate.id === connection.consumer_application_id)?.name ?? connection.database}</SelectItem>)}</SelectContent>
-            </Select>
-            <FormField id="database-import" label="Backup file" type="file" accept=".dump,.backup" onChange={(event) => setFile(event.target.files?.[0] ?? null)} hint="pg_dump custom archive, up to 64 MiB. Target database must be empty." />
-            <div className="field">
-              <p className="muted">Make the archive with pg_dump{database ? ` ${database.major} or older` : ""}, from the database you are moving:</p>
-              <pre className="setup-command"><code>pg_dump --format=custom --no-owner --no-privileges --file backup.dump "postgresql://user:password@host:5432/database"</code></pre>
-            </div>
-            {selectedImport?.imported_objects != null ? <p className="muted">Last import: {selectedImport.imported_objects} objects.</p> : null}
-          </div>
-          <FormActions sticky><Button size="sm" type="submit" variant="primary" disabled={!file || file.size > 64 * 1024 * 1024 || !importConnection || busy || taskBusy}>Import data</Button></FormActions>
-        </Form>
+      <TabsContent value="imports">
+        <DatabaseImports major={database?.major ?? null} apps={apps} connections={ready} imports={imports.data ?? []} loading={imports.isPending} busy={busy || taskBusy}
+          onImport={async (connectionId, upload) => {
+            const accepted = await operation(`/databases/${app.id}/connections/${connectionId}/import`, "POST", upload);
+            await imports.refetch();
+            return accepted || null;
+          }} />
       </TabsContent>
       <TabsContent value="last-operation" className="detail-run"><DatabaseOperation event={acceptedTask} child={currentTask !== acceptedTask ? currentTask : null} error={eventsError} /></TabsContent>
       <TabsContent value="logs" className="detail-logs"><div className="detail-log-pane"><AppLogPane id={app.id} /></div></TabsContent>
     </Tabs></Card>
     <AlertDialog open={removing} onOpenChange={setRemoving}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Remove database</AlertDialogTitle></AlertDialogHeader><div className="dialog-body stack"><AlertDialogDescription>{active.length ? "Disconnect all consumers before removing this database." : "The container will be removed. Keep its data unless you explicitly choose deletion below."}</AlertDialogDescription><FormField id="confirm-database-name" label="Type the database name" value={confirmName} onChange={(event) => setConfirmName(event.target.value)} /><div className="check"><Checkbox id="delete-database-data" checked={deleteData} onCheckedChange={(checked) => setDeleteData(checked === true)} /><Label htmlFor="delete-database-data">Permanently delete the stored database data</Label></div></div><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction className="btn-danger" disabled={active.length > 0 || confirmName !== app.name || busy} onClick={() => { setRemoving(false); void operation(`/databases/${app.id}`, "DELETE", { confirm_name: confirmName, delete_data: deleteData }); }}>Remove database</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </>;
-}
-
-
-function DatabaseOperation({ event, child, error }: { event: PlatformEvent | null; child: PlatformEvent | null; error: string | null }) {
-  const wide = useMediaQuery("(min-width: 1024px)");
-  const [chosen, setChosen] = useState<string | null>(null);
-  useEffect(() => setChosen(null), [event?.id]);
-  if (!event) return <p className="muted run-empty">{error ?? "Waiting for operation details."}</p>;
-  const stages: (Omit<OperationStage, "status"> & { status: PlatformEvent["status"] })[] = event.progress?.stages.length ? [...event.progress.stages] : [{
-    id: event.id, label: eventActionLabel(event), status: event.status,
-    startedAt: event.startedAt ?? event.occurredAt, finishedAt: event.finishedAt,
-    output: [event.description], error: event.error,
-  }];
-  if (child) stages.push({ id: child.id, label: "Apply application variable", status: child.status, startedAt: child.startedAt ?? child.occurredAt, finishedAt: child.finishedAt, output: [child.description], error: child.error });
-  const active = stages.find((stage) => stage.status === "failed") ?? stages.find((stage) => stage.status === "running");
-  const shown = stages.find((stage) => stage.id === chosen) ?? active ?? stages[stages.length - 1];
-  const output = <LogView aria-label={`${shown.label} result`} follow={shown.status === "running"}>
-    <LogViewLine className="log-time">Started {new Date(shown.startedAt).toLocaleString()}</LogViewLine>
-    {shown.output.map((line, index) => <LogViewLine key={index}>{line}</LogViewLine>)}
-    {shown.error ? <><LogViewLine className="log-error">{shown.error.error}</LogViewLine>{shown.error.caused_by.map((cause, index) => <LogViewLine key={index} className="log-error">{cause}</LogViewLine>)}</> : null}
-  </LogView>;
-  const list = <StepList label="Database operation" selected={shown.id} onSelect={setChosen} steps={stages.map((stage) => ({
-    key: stage.id, label: stage.label,
-    state: stage.status === "completed" ? "done" : stage.status === "failed" ? "failed" : stage.status === "running" ? "running" : "pending",
-    meta: stage.finishedAt ? formatSeconds(seconds(stage.startedAt, stage.finishedAt)) : undefined,
-    detail: !wide && stage.id === shown.id ? output : undefined,
-  }))} />;
-  return <div className="run">
-    <div className="run-head"><p className="run-title">{eventActionLabel(event)} <StatusBadge tone={(child ?? event).status === "failed" ? "danger" : ["completed", "running"].includes((child ?? event).status) ? "success" : "neutral"} pulse={(child ?? event).status === "running"}>{(child ?? event).status === "running" ? active?.label ?? "Running" : (child ?? event).status}</StatusBadge></p></div>
-    {error ? <p className="muted">{error}</p> : null}
-    {wide ? <Split className="run-split"><Pane className="run-steps">{list}</Pane><Splitter defaultSize={36} aria-label="Resize the steps and output panes" /><Pane className="grow run-output">{output}</Pane></Split> : <div className="run-list">{list}</div>}
-  </div>;
 }

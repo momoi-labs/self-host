@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 
 import { api, failureOf, readJson } from "./api.js";
-import type { App, BootstrapStatus, CustomImage, DatabaseDetail, HostStatus, Settings } from "./types.js";
+import type { App, BootstrapStatus, CustomImage, DatabaseDetail, DatabaseImport, HostStatus, Settings } from "./types.js";
 
 /*
  * The reads more than one screen shares. A screen that polls one of these
@@ -33,6 +33,11 @@ export const hostQuery = queryOptions({
 export const databaseQuery = (id: string) => queryOptions({
   queryKey: ["databases", id],
   queryFn: ({ signal }) => readJson<DatabaseDetail>(`/databases/${id}`, signal),
+});
+
+export const databaseImportsQuery = (id: string) => queryOptions({
+  queryKey: ["databases", id, "imports"],
+  queryFn: ({ signal }) => readJson<DatabaseImport[]>(`/databases/${id}/imports`, signal),
 });
 
 export const customImagesQuery = queryOptions({
