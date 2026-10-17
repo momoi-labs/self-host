@@ -101,6 +101,13 @@ fn host_path(path: &std::path::Path) -> Result<(), Error> {
             path.display()
         )));
     }
+    // A pipe or device would block whoever opens it; a dump is neither.
+    if !path.is_file() && !path.is_dir() {
+        return Err(Error::Invalid(format!(
+            "{} is not a regular file or a directory",
+            path.display()
+        )));
+    }
     Ok(())
 }
 
