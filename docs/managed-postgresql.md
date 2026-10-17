@@ -71,11 +71,11 @@ pg_dump --format=custom --no-owner --no-privileges --file backup.dump \
 ```
 
 The Platform checks the source server and dump-tool major versions against the
-selected target major. It refuses newer archives and nonempty target databases.
-The consumer Application may keep running. What it writes during the restore
-is yours to manage, as with any client of the database; an Application that
-creates its tables when it starts leaves the target nonempty, so import before
-its first start or stop it first.
+selected target major and refuses newer archives. Nothing else holds an import
+back: the consumer Application may keep running and the target may already
+hold data. What clashes with existing objects or rows fails the restore, which
+rolls back and shows pg_restore's error; restoring into a database that already
+has the same data can duplicate rows the schema does not keep unique.
 
 The restore runs as the consumer's database role, with `--no-owner`,
 `--no-privileges`, `--single-transaction` and `--exit-on-error`. Dumps needing
@@ -102,8 +102,8 @@ termination grace period; the Host waits at most 15 minutes for Docker.
 
 An interrupted client or lost Docker connection does not prove whether the
 last transaction committed. The Task reports failure without claiming rollback.
-Check the target before retrying. The empty-database guard prevents overwriting
-an import that committed. Private upload files are removed when the import
+Check the target before retrying, since a retry imports again on top of an
+import that may have committed. Private upload files are removed when the import
 worker finishes; an abrupt daemon shutdown can leave a private file for manual
 cleanup under `state/postgres-imports`.
 
@@ -143,7 +143,7 @@ the dedicated non-root identity, loopback transport, restricted database
 login, stopped consumer behavior and credential revocation.
 
 For the console, create a database, connect a test Application, reveal and hide
-its URL, restart and recreate the database, import into an empty consumer, disconnect, then verify the two data-removal choices. Inspect the
+its URL, restart and recreate the database, import into a consumer, disconnect, then verify the two data-removal choices. Inspect the
 Summary, Last operation and Logs tabs for readiness and failures. Last operation
 shows the recorded stages, duration and outcome, and under each stage the
 `docker` commands it ran with their output and exit status. Every password the
