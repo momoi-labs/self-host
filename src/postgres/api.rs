@@ -31,6 +31,106 @@ pub(crate) fn router<S: StateStore>() -> Router<AppState<S>> {
             "/databases/{id}/connections/{connection}/import",
             post(upload::<S>).layer(DefaultBodyLimit::max(MAX_IMPORT_BYTES)),
         )
+        .route("/databases/{id}/imports", get(imports::<S>))
+}
+
+/// The file name the console sends with an upload, as something safe to show:
+/// percent-decoded, without a path, control characters or more than 200
+/// characters.
+fn upload_name(headers: &axum::http::HeaderMap) -> String {
+    let raw = headers
+        .get("x-upload-name")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let hex = |at: usize| bytes.get(at).and_then(|b| (*b as char).to_digit(16));
+        match (bytes[index], hex(index + 1), hex(index + 2)) {
+            (b'%', Some(high), Some(low)) => {
+                decoded.push((high * 16 + low) as u8);
+                index += 3;
+            }
+            (byte, _, _) => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    let name: String = String::from_utf8_lossy(&decoded)
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect();
+    if name.trim().is_empty() {
+        "archive".into()
+    } else {
+        name
+    }
+}
+
+#[derive(Serialize)]
+struct ImportView {
+    task_id: String,
+    connection_id: String,
+    consumer_application_id: String,
+    consumer_name: Option<String>,
+    file_name: String,
+    file_bytes: u64,
+    created_at: String,
+    imported_objects: Option<u64>,
+    /// The Task, with its status, stages and log; null once history lost it.
+    task: Option<serde_json::Value>,
+}
+
+async fn imports<S: StateStore>(
+    State(state): State<AppState<S>>,
+    Path(id): Path<String>,
+) -> Response {
+    let result = async {
+        database(&state.store, &id).await?;
+        let mut imports: Vec<Import> = IMPORTS
+            .list(&state.store)
+            .await?
+            .into_iter()
+            .filter(|import| import.database_application_id == id)
+            .collect();
+        imports.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let mut views = Vec::with_capacity(imports.len());
+        for import in imports {
+            let consumer_name = state
+                .store
+                .get_application(&import.consumer_application_id)
+                .await?
+                .map(|app| app.name);
+            let task = state
+                .store
+                .get_audit_event(&import.task_id)
+                .await?
+                .and_then(|body| serde_json::from_str(&body).ok());
+            views.push(ImportView {
+                task_id: import.task_id,
+                connection_id: import.connection_id,
+                consumer_application_id: import.consumer_application_id,
+                consumer_name,
+                file_name: import.file_name,
+                file_bytes: import.file_bytes,
+                created_at: import.created_at,
+                imported_objects: import.imported_objects,
+                task,
+            });
+        }
+        Ok::<_, Error>(Json(views))
+    }
+    .await;
+    match result {
+        Ok(value) => value.into_response(),
+        Err(error) => failure(error),
+    }
 }
 
 async fn redeploy<S: StateStore>(
@@ -350,6 +450,7 @@ async fn disconnect<S: StateStore>(
 async fn upload<S: StateStore>(
     State(state): State<AppState<S>>,
     Path((id, connection_id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
     let result = async {
@@ -389,12 +490,28 @@ async fn upload<S: StateStore>(
             audit::Subject::new("database", app.id.clone(), app.name.clone()),
             tasks::Work::Postgres {
                 operation: Operation::Import {
-                    connection_id,
+                    connection_id: connection_id.clone(),
                     upload_id,
                 },
             },
         )
         .await;
+        if let Ok(task_id) = &queued {
+            remember_import(
+                &state.store,
+                &Import {
+                    task_id: task_id.clone(),
+                    database_application_id: app.id.clone(),
+                    connection_id,
+                    consumer_application_id: c.consumer_application_id.clone(),
+                    file_name: upload_name(&headers),
+                    file_bytes: body.len() as u64,
+                    created_at: audit::timestamp(),
+                    imported_objects: None,
+                },
+            )
+            .await?;
+        }
         match queued {
             Ok(task_id) => Ok((
                 StatusCode::ACCEPTED,

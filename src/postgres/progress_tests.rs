@@ -430,6 +430,68 @@ async fn a_failed_restore_shows_the_pg_restore_log() {
 }
 
 #[tokio::test]
+async fn a_finished_import_records_its_object_count() {
+    let docker = Arc::new(test_runtime::PausedRemoval {
+        postgres_ready: true,
+        pause_restore: true,
+        ..Default::default()
+    });
+    let state = fixture(docker.clone()).await;
+    operation(
+        &state,
+        Operation::Provision {
+            id: "provider".into(),
+            recreate: false,
+        },
+    )
+    .await;
+    let connection = tests::reference("ready");
+    CONNECTIONS.upsert(&state.store, &connection).await.unwrap();
+    let task = tasks::enqueue(
+        &state,
+        "configure",
+        audit::Subject::new("database", "provider", "fixture"),
+        tasks::Work::Postgres {
+            operation: Operation::Import {
+                connection_id: connection.id.clone(),
+                upload_id: secret(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), docker.restore_entered.notified())
+        .await
+        .unwrap();
+    remember_import(
+        &state.store,
+        &Import {
+            task_id: task.clone(),
+            database_application_id: "provider".into(),
+            connection_id: connection.id,
+            consumer_application_id: "consumer".into(),
+            file_name: "a.dump".into(),
+            file_bytes: 1,
+            created_at: "2026-10-16T10:00:00Z".into(),
+            imported_objects: None,
+        },
+    )
+    .await
+    .unwrap();
+    docker.restore_release.notify_one();
+    assert_eq!(finished(&state, &task).await.status, "completed");
+    assert_eq!(
+        IMPORTS
+            .get(&state.store, &task)
+            .await
+            .unwrap()
+            .unwrap()
+            .imported_objects,
+        Some(3)
+    );
+}
+
+#[tokio::test]
 async fn import_restores_while_the_consumer_runs() {
     let docker = Arc::new(test_runtime::PausedRemoval {
         postgres_ready: true,

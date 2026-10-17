@@ -62,8 +62,8 @@ create scheduled backups.
 
 ## Logical import
 
-Use the database's Import tab to upload a custom-format archive of at most
-64 MiB, made with a `pg_dump` no newer than the target's major version:
+Use the database's Imports tab, **New import**, to upload a custom-format
+archive of at most 64 MiB, made with a `pg_dump` no newer than the target's major version:
 
 ```sh
 pg_dump --format=custom --no-owner --no-privileges --file backup.dump \
@@ -84,8 +84,11 @@ After success, the Task checks the database's non-system relations and records
 the object count. Query application-specific data before using the result.
 These options follow PostgreSQL's [pg_restore documentation](https://www.postgresql.org/docs/18/app-pgrestore.html).
 The restore runs with `--verbose`, and its log, including the error it stopped
-at, appears under the restore stage in Last operation, which opens when the
-import starts. The last 400 lines are kept. The Task history keeps that log, so
+at, appears under the restore stage. The Imports tab lists every import into
+the database, newest first, with its Application, file, result and imported
+object count, and shows the steps and log of the one selected. The import is a
+Task in the daemon, so closing the console does not stop it and the list shows
+how it ended. A database keeps its last 50 imports. The last 400 lines are kept. The Task history keeps that log, so
 the statement pg_restore repeats after `Command was:` and the row a failing
 `COPY` stopped at are left out: both can hold secrets the archive carries.
 PostgreSQL's own error lines stay, and some quote the value that failed, such
@@ -116,7 +119,8 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 | `POST /databases/{id}/connections` | `{ "consumer_application_id": "...", "variable": "DATABASE_URL" }` |
 | `POST /databases/{id}/connections/{connection}/reveal` | Private URL for a ready connection |
 | `DELETE /databases/{id}/connections/{connection}` | Revoke access and preserve the consumer database |
-| `POST /databases/{id}/connections/{connection}/import` | Custom archive bytes, `application/octet-stream` |
+| `POST /databases/{id}/connections/{connection}/import` | Custom archive bytes, `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name |
+| `GET /databases/{id}/imports` | None; answers the last 50 imports, newest first, each with its Task |
 | `DELETE /databases/{id}` | `{ "confirm_name": "database", "delete_data": false }` |
 
 The Application response adds optional `managed_postgres` metadata. Older

@@ -34,6 +34,9 @@ const PASSWORD: &str = "SF_POSTGRES_PASSWORD";
 pub(crate) static DATABASES: Collection<Database> = Collection::new("managed-postgres");
 pub(crate) static CONNECTIONS: Collection<Connection> = Collection::new("postgres-connection");
 pub(crate) static CONNECTION_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static IMPORTS: Collection<Import> = Collection::new("postgres-import");
+/// The most imports a database remembers; older ones are forgotten.
+const IMPORTS_KEPT: usize = 50;
 
 /// How long a measurement of the volumes answers for.
 const VOLUME_SIZES_MAX_AGE: Duration = Duration::from_secs(60);
@@ -148,6 +151,46 @@ impl Keyed for Connection {
     fn key(&self) -> String {
         self.id.clone()
     }
+}
+
+/// One import into a database, kept after it ends so the database can list
+/// what was imported, from which file and how it went. Its steps and log are
+/// the Task's, found by `task_id`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Import {
+    pub task_id: String,
+    pub database_application_id: String,
+    pub connection_id: String,
+    pub consumer_application_id: String,
+    pub file_name: String,
+    pub file_bytes: u64,
+    pub created_at: String,
+    #[serde(default)]
+    pub imported_objects: Option<u64>,
+}
+impl Keyed for Import {
+    fn key(&self) -> String {
+        self.task_id.clone()
+    }
+}
+
+/// Records an accepted import and forgets the oldest past `IMPORTS_KEPT`.
+pub(crate) async fn remember_import<S: StateStore>(
+    store: &S,
+    import: &Import,
+) -> Result<(), StoreError> {
+    IMPORTS.upsert(store, import).await?;
+    let mut imports: Vec<Import> = IMPORTS
+        .list(store)
+        .await?
+        .into_iter()
+        .filter(|other| other.database_application_id == import.database_application_id)
+        .collect();
+    imports.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    for old in imports.into_iter().skip(IMPORTS_KEPT) {
+        IMPORTS.remove(store, &old.task_id).await?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -898,6 +941,14 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
                     {
                         CONNECTIONS.remove(store, &c.id).await?;
                     }
+                    for import in IMPORTS
+                        .list(store)
+                        .await?
+                        .into_iter()
+                        .filter(|import| import.database_application_id == id)
+                    {
+                        IMPORTS.remove(store, &import.task_id).await?;
+                    }
                     Ok(())
                 },
             )
@@ -1152,6 +1203,12 @@ async fn import<S: StateStore>(
                 Error::Runtime("Import completed but object validation failed".into())
             })?);
             CONNECTIONS.upsert(&state.store, &current).await?;
+            if let Some(task) = audit::event_id()
+                && let Some(mut import) = IMPORTS.get(&state.store, &task).await?
+            {
+                import.imported_objects = current.imported_tables;
+                IMPORTS.upsert(&state.store, &import).await?;
+            }
             Ok(())
         },
     )
@@ -1798,6 +1855,79 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap())
                 .unwrap();
         assert_eq!(body["volume_bytes"], 50_331_648);
+    }
+
+    #[tokio::test]
+    async fn an_upload_is_listed_with_its_file_consumer_and_task() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let (router, state) = fixture().await;
+        CONNECTIONS
+            .upsert(&state.store, &reference("ready"))
+            .await
+            .unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/databases/provider/connections/reference/import")
+            .header("authorization", "Bearer fixture-key")
+            .header("x-upload-name", "%2Fhome%2Fseba%2Fmochi%20cut%0A.dump")
+            .body(Body::from(&b"PGDMP archive bytes"[..]))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        let request = Request::builder()
+            .uri("/databases/provider/imports")
+            .header("authorization", "Bearer fixture-key")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        let import = &listed[0];
+        assert_eq!(import["task_id"], accepted["task_id"]);
+        assert_eq!(
+            import["file_name"], "mochi cut.dump",
+            "no path, no control characters"
+        );
+        assert_eq!(import["file_bytes"], 19);
+        assert_eq!(import["consumer_application_id"], "consumer");
+        assert_eq!(import["task"]["id"], accepted["task_id"]);
+    }
+
+    #[tokio::test]
+    async fn a_database_remembers_its_last_fifty_imports() {
+        let (_, state) = fixture().await;
+        for n in 0..52 {
+            remember_import(
+                &state.store,
+                &Import {
+                    task_id: format!("task-{n:02}"),
+                    database_application_id: "provider".into(),
+                    connection_id: "reference".into(),
+                    consumer_application_id: "consumer".into(),
+                    file_name: "a.dump".into(),
+                    file_bytes: 1,
+                    created_at: format!("2026-10-16T10:{n:02}:00Z"),
+                    imported_objects: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let kept = IMPORTS.list(&state.store).await.unwrap();
+        assert_eq!(kept.len(), IMPORTS_KEPT);
+        assert!(
+            kept.iter()
+                .all(|import| import.task_id != "task-00" && import.task_id != "task-01")
+        );
     }
 
     #[tokio::test]

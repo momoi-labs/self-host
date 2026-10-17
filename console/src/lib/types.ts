@@ -147,6 +147,15 @@ export type DatabaseConnection = {
   role: string; status: string; task_id: string | null; imported_objects: number | null;
 };
 
+/** One import into a database, as `GET /databases/{id}/imports` lists it. The
+ * Task carries its status, stages and log; null once history dropped it. */
+export type DatabaseImport = {
+  task_id: string; connection_id: string; consumer_application_id: string;
+  consumer_name: string | null; file_name: string; file_bytes: number;
+  created_at: string; imported_objects: number | null;
+  task: import("./platformEvents.js").PlatformEvent | null;
+};
+
 /** A managed database as `GET /databases/{id}` reads it. Its connections are
  * the only record of which Applications use it. */
 export type DatabaseDetail = {
