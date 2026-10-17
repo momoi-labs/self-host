@@ -19,10 +19,6 @@ pub enum Request {
         role: String,
         file: PathBuf,
     },
-    InspectArchive {
-        container: String,
-        file: PathBuf,
-    },
     RemoveVolume {
         name: String,
     },
@@ -74,18 +70,13 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
             role,
             file,
         } => {
+            // An import takes as long as its archive needs; nothing times it.
             command.args([
                 "exec",
                 "--user",
                 "postgres",
-                "--env",
-                "PGOPTIONS=-c statement_timeout=600000 -c lock_timeout=30000",
-                "-i",
+                "--interactive",
                 container,
-                "timeout",
-                "--signal=TERM",
-                "--kill-after=5s",
-                "840s",
                 "pg_restore",
                 "--verbose",
                 "--no-password",
@@ -98,29 +89,6 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
                 database,
                 "--username",
                 role,
-            ]);
-            Some(
-                tokio::fs::read(file)
-                    .await
-                    .map_err(|_| unavailable("Could not read the private import file"))?,
-            )
-        }
-        Request::InspectArchive { container, file } => {
-            command.args([
-                "exec",
-                "--user",
-                "postgres",
-                "--env",
-                "PGOPTIONS=-c statement_timeout=600000 -c lock_timeout=30000",
-                "-i",
-                container,
-                "timeout",
-                "--signal=TERM",
-                "--kill-after=5s",
-                "840s",
-                "pg_restore",
-                "--format=custom",
-                "--list",
             ]);
             Some(
                 tokio::fs::read(file)
@@ -145,10 +113,14 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
         let mut stdin = child.stdin.take().expect("piped stdin");
         tokio::spawn(async move { stdin.write_all(&input).await })
     });
-    let output = tokio::time::timeout(Duration::from_secs(900), child.wait_with_output())
-        .await
-        .map_err(|_| unavailable("The database operation timed out"))?
-        .map_err(|_| unavailable("Could not complete the database operation"))?;
+    let output = if matches!(request, Request::Restore { .. }) {
+        child.wait_with_output().await
+    } else {
+        tokio::time::timeout(Duration::from_secs(900), child.wait_with_output())
+            .await
+            .map_err(|_| unavailable("The database operation timed out"))?
+    }
+    .map_err(|_| unavailable("Could not complete the database operation"))?;
     if let Some(writer) = writer {
         let _ = writer.await;
     }
@@ -166,8 +138,17 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
         return if output.status.success() {
             Ok(log)
         } else {
+            // The line pg_restore stopped at, so the failure says why.
+            let last = log
+                .lines()
+                .rev()
+                .find(|line| line.contains("error:"))
+                .or_else(|| log.lines().rev().find(|line| !line.trim().is_empty()))
+                .unwrap_or("it printed nothing")
+                .trim()
+                .to_owned();
             Err(DockerError::Command(
-                "Import did not complete successfully. Read the pg_restore log above, fix the archive or the target database, then retry".into(),
+                format!("pg_restore failed: {last}"),
                 Box::new(RestoreLog(log)),
             ))
         };
@@ -176,7 +157,7 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
         // PostgreSQL repeats SQL, credentials and source data in error output.
         // Return a fixed diagnosis instead of recording stderr in the Task.
         return Err(unavailable(match request {
-            Request::Restore { .. } | Request::InspectArchive { .. } => {
+            Request::Restore { .. } => {
                 "Import did not complete successfully. Check compatibility, required extensions and the target database before retrying"
             }
             Request::RemoveVolume { .. } => {

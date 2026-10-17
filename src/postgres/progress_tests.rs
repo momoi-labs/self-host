@@ -415,7 +415,8 @@ async fn a_failed_restore_shows_the_pg_restore_log() {
         restore
             .error
             .as_ref()
-            .is_some_and(|error| error.error.contains("Read its log")),
+            .is_some_and(|error| error.error
+                .contains("pg_restore failed: pg_restore: error: could not execute query: ERROR:  relation \"cuts\" already exists")),
         "{:?}",
         restore.error
     );
@@ -534,7 +535,7 @@ async fn import_restores_while_the_consumer_runs() {
 }
 
 #[tokio::test]
-async fn import_progress_belongs_to_database_and_blocks_consumer_start_until_restore_finishes() {
+async fn import_progress_belongs_to_database_and_leaves_the_consumer_free() {
     let docker = Arc::new(test_runtime::PausedRemoval {
         postgres_ready: true,
         pause_restore: true,
@@ -586,19 +587,8 @@ async fn import_progress_belongs_to_database_and_blocks_consumer_start_until_res
     )
     .await
     .unwrap();
-    let pending: audit::Event =
-        serde_json::from_str(&state.store.get_audit_event(&start).await.unwrap().unwrap()).unwrap();
-    assert_eq!(pending.status, "pending");
-    assert_eq!(
-        state
-            .store
-            .get_application("consumer")
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        "stopped"
-    );
+    // The consumer starts while the restore is still running.
+    assert_eq!(finished(&state, &start).await.status, "completed");
     docker.restore_release.notify_one();
     let imported = finished(&state, &import).await;
     assert_eq!(imported.status, "completed", "{:?}", imported.error);
@@ -607,12 +597,10 @@ async fn import_progress_belongs_to_database_and_blocks_consumer_start_until_res
         [
             ("consumer", "completed"),
             ("ready", "completed"),
-            ("archive", "completed"),
             ("restore", "completed"),
             ("validate", "completed")
         ]
     );
-    assert_eq!(finished(&state, &start).await.status, "completed");
     assert_eq!(
         CONNECTIONS
             .get(&state.store, "reference")

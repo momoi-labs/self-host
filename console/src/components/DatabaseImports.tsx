@@ -34,8 +34,7 @@ const MAX_BYTES = 64 * 1024 * 1024;
  * the one selected. The import runs as a Task in the daemon, so the list and
  * its logs read the same whether or not this screen was open while it ran.
  */
-export function DatabaseImports({ major, apps, connections, imports, loading, failure, busy, onImport }: {
-  major: number | null;
+export function DatabaseImports({ apps, connections, imports, loading, failure, busy, onImport }: {
   apps: App[];
   /** Connections ready to take an import. */
   connections: DatabaseConnection[];
@@ -84,7 +83,7 @@ export function DatabaseImports({ major, apps, connections, imports, loading, fa
         </Select>
         <FormField id="database-import" label="Backup file" type="file" accept=".dump,.backup" onChange={(event) => setFile(event.target.files?.[0] ?? null)} hint="pg_dump custom archive, up to 64 MiB." />
         <div className="field">
-          <p className="muted">Make the archive with pg_dump{major ? ` ${major} or older` : ""}, from the database you are moving:</p>
+          <p className="muted">Make the archive with pg_dump, from the database you are moving:</p>
           <pre className="setup-command"><code>pg_dump --format=custom --no-owner --no-privileges --file backup.dump "postgresql://user:password@host:5432/database"</code></pre>
         </div>
       </div>

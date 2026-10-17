@@ -182,17 +182,9 @@ fn key(subject: &Subject) -> Key {
     )
 }
 
-async fn queue_key<S: StateStore>(state: &AppState<S>, task: &Task) -> Result<Key, StoreError> {
-    if let Work::Postgres {
-        operation: crate::postgres::Operation::Import { connection_id, .. },
-    } = &task.work
-        && let Some(connection) = crate::postgres::CONNECTIONS
-            .get(&state.store, connection_id)
-            .await?
-    {
-        // Import changes database data, but must exclude consumer starts.
-        return Ok(("application".into(), connection.consumer_application_id));
-    }
+/// An import waits its turn on its database's queue like any other database
+/// operation; it holds back nothing of the consumer Application's.
+async fn queue_key<S: StateStore>(_state: &AppState<S>, task: &Task) -> Result<Key, StoreError> {
     Ok(key(&task.subject))
 }
 
