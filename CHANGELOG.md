@@ -1,5 +1,15 @@
 # self-host
 
+## 0.13.0
+
+### Minor Changes
+
+- d22f90d: A database's Imports tab lists every import into it, newest first, with its Application, file, size, result and imported object count, and shows the steps and pg_restore log of the one you select. The import runs in the daemon, so the list shows how it ended even if the console was closed. `GET /databases/{id}/imports` returns the same list. A database keeps its last 50 imports. An import no longer needs an empty target database: what clashes with existing data fails the restore and shows pg_restore's error. The import also stops checking the archive's PostgreSQL version and stops timing the restore, waits on its database's queue instead of holding the consumer Application back, shows pg_restore's output unfiltered except for the Platform's passwords, and fails with pg_restore's last error line. New import takes any pg_dump format (custom, tar, directory or plain SQL, read from the file and preselected, or chosen when it cannot be told), either uploaded with no size limit or read from a path on the Host. New import opens in a dialog with numbered steps that turn into checks as they are filled, and an upload runs in the background with its progress in the list and a Retry when it fails.
+
+### Patch Changes
+
+- 7c59ebb: A database import no longer waits for the consumer Application to be stopped, so an Application that failed its first deploy can take its data. The restore now shows pg_restore's log, error included, under Last operation, and the Import tab gives the `pg_dump` command that makes a compatible archive. Stopping a Compose Application whose definition needs a Variable that is not set, such as a Git Application whose first deploy failed for it, stops it instead of failing with "The database runtime operation failed". Every database stage in Last operation now lists the commands it ran with their output and exit status, passwords cut out, instead of "Check PostgreSQL and Docker logs", and an archive from a newer PostgreSQL names both versions.
+
 ## 0.12.0
 
 ### Minor Changes
