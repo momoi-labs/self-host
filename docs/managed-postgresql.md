@@ -114,7 +114,10 @@ docker exec --user postgres --interactive <database container> \
 ```
 
 and plain SQL runs `psql --no-psqlrc --no-password --echo-errors --set
-ON_ERROR_STOP=1 --single-transaction --dbname ... --username ... --file -`. A gzip-compressed SQL dump is unpacked
+ON_ERROR_STOP=1 --dbname ... --username ... --file -`, fed `BEGIN;`, the dump
+and `COMMIT;`. The `COMMIT;` is sent only once the whole dump was read, so a
+dump cut short rolls back instead of keeping its first half. Each output
+stream keeps its last MiB. A gzip-compressed SQL dump is unpacked
 in the container on the way in (`gzip --decompress --stdout | psql ...`); its
 type cannot be read from the file, so choose Plain SQL. A Host path is read on
 the machine that runs self-host, not the one with the browser.

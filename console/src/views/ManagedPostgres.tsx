@@ -90,8 +90,8 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
               if (!response.ok) throw await failureOf(response);
               const accepted = await response.json() as { task_id: string };
               await imports.refetch();
-              return accepted.task_id;
-            } catch (error) { setFailure(asReport(error)); return null; }
+              return { taskId: accepted.task_id };
+            } catch (error) { return { failure: asReport(error) }; }
           }} />
       </TabsContent>
       <TabsContent value="last-operation" className="detail-run"><DatabaseOperation event={acceptedTask} child={currentTask !== acceptedTask ? currentTask : null} error={eventsError} /></TabsContent>

@@ -207,7 +207,6 @@ async fn restore_from(
                 "--echo-errors".into(),
                 "--set".into(),
                 "ON_ERROR_STOP=1".into(),
-                "--single-transaction".into(),
                 "--dbname".into(),
                 database.into(),
                 "--username".into(),
@@ -261,7 +260,11 @@ async fn restore_from(
                 "gzip".into(),
                 "--test".into(),
             ],
-            Some(file),
+            Some(Input {
+                path: file,
+                before: "",
+                after: "",
+            }),
         )
         .await?;
         if !tested.status.success() {
@@ -272,12 +275,27 @@ async fn restore_from(
         command.extend([
             "sh".into(),
             "-c".into(),
-            "gzip --decompress --stdout | \"$@\"".into(),
+            "{ printf 'BEGIN;\\n' && gzip --decompress --stdout && printf '\\nCOMMIT;\\n'; } | \"$@\"".into(),
             "sh".into(),
         ]);
     }
     command.extend(args);
-    let output = run(&command, streamed.then_some(file)).await;
+    // psql's transaction is a BEGIN and a COMMIT around the stream, so a
+    // dump cut short never commits. A gzip dump gets them from the shell;
+    // pg_restore runs its own single transaction.
+    let input = streamed.then_some(match (format, gzipped(file)) {
+        (ArchiveFormat::Sql, false) => Input {
+            path: file,
+            before: "BEGIN;\n",
+            after: "\nCOMMIT;\n",
+        },
+        _ => Input {
+            path: file,
+            before: "",
+            after: "",
+        },
+    });
+    let output = run(&command, input).await;
     let output = output?;
     let log = format!(
         "{}{}",
@@ -301,11 +319,49 @@ fn gzipped(file: &std::path::Path) -> bool {
         && magic == [0x1f, 0x8b]
 }
 
+/// What a restore command reads on stdin: a file, with text before and
+/// after it. `after` is written only when the whole file was read, so a dump
+/// cut short never reaches the COMMIT that would keep its first half.
+struct Input<'a> {
+    path: &'a std::path::Path,
+    before: &'static str,
+    after: &'static str,
+}
+
+/// The most of each output stream a command keeps: the end, where errors are.
+/// A dump restored with one INSERT per row prints a line per row.
+const OUTPUT_KEPT: usize = 1024 * 1024;
+
+/// Reads a stream to its end, keeping only its last `OUTPUT_KEPT` bytes.
+async fn tail(mut stream: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut kept: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+    let mut dropped = 0usize;
+    let mut chunk = vec![0u8; 64 * 1024];
+    while let Ok(read) = stream.read(&mut chunk).await {
+        if read == 0 {
+            break;
+        }
+        kept.extend(&chunk[..read]);
+        if kept.len() > OUTPUT_KEPT {
+            let excess = kept.len() - OUTPUT_KEPT;
+            kept.drain(..excess);
+            dropped += excess;
+        }
+    }
+    let mut out = Vec::with_capacity(kept.len() + 64);
+    if dropped > 0 {
+        out.extend(format!("[{dropped} earlier bytes of output not kept]\n").bytes());
+    }
+    out.extend(kept);
+    out
+}
+
 /// Runs one docker command, its stdin fed from `input` when there is one,
-/// and records it for the stage.
+/// and records it for the stage. Output is kept bounded.
 async fn run(
     args: &[String],
-    input: Option<&std::path::Path>,
+    input: Option<Input<'_>>,
 ) -> Result<std::process::Output, DockerError> {
     let mut command = tokio::process::Command::new("docker");
     command
@@ -321,25 +377,39 @@ async fn run(
     let mut child = command
         .spawn()
         .map_err(|_| unavailable("Could not start Docker for the database operation"))?;
+    let stdout = tokio::spawn(tail(child.stdout.take().expect("piped stdout")));
+    let stderr = tokio::spawn(tail(child.stderr.take().expect("piped stderr")));
     let writer = match input {
-        Some(path) => {
+        Some(Input {
+            path,
+            before,
+            after,
+        }) => {
             let mut file = tokio::fs::File::open(path)
                 .await
                 .map_err(|e| unavailable(&format!("Could not read {}: {e}", path.display())))?;
             let mut stdin = child.stdin.take().expect("piped stdin");
             Some(tokio::spawn(async move {
-                tokio::io::copy(&mut file, &mut stdin).await
+                use tokio::io::AsyncWriteExt;
+                stdin.write_all(before.as_bytes()).await?;
+                tokio::io::copy(&mut file, &mut stdin).await?;
+                stdin.write_all(after.as_bytes()).await?;
+                stdin.shutdown().await
             }))
         }
         None => None,
     };
-    let output = child
-        .wait_with_output()
+    let status = child
+        .wait()
         .await
         .map_err(|_| unavailable("Could not complete the database operation"))?;
+    let output = std::process::Output {
+        status,
+        stdout: stdout.await.unwrap_or_default(),
+        stderr: stderr.await.unwrap_or_default(),
+    };
     crate::command_log::record(args, &output);
-    // A dump that could not be read to its end must not pass as restored:
-    // psql takes a closed stdin for the end of the script.
+    // A dump that could not be read to its end must not pass as restored.
     if let Some(writer) = writer {
         let copied = writer
             .await
