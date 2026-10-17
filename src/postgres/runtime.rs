@@ -317,19 +317,18 @@ async fn restore_from(
             after: "",
         },
     });
-    let output = run(
+    let (output, errors) = run_counted(
         &command,
         input,
         (format == ArchiveFormat::Sql).then_some(sandbox.password),
     )
-    .await;
-    let output = output?;
+    .await?;
     let log = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    if !all_or_nothing && let Some(error) = went_past_errors(tool, &output) {
+    if !all_or_nothing && let Some(error) = went_past_errors(tool, &output, &errors) {
         return Err(error);
     }
     if output.status.success() {
@@ -399,27 +398,62 @@ fn tool_args(
     ("pg_restore", args)
 }
 
-/// The error lines pg_restore or psql printed for statements that failed.
-fn error_lines(log: &str) -> Vec<&str> {
-    log.lines()
-        .map(str::trim)
-        .filter(|line| {
-            line.starts_with("pg_restore: error:")
-                || (line.starts_with("psql:") && line.contains("ERROR:"))
-        })
-        .collect()
+/// Whether a line is pg_restore's or psql's report of a statement or
+/// meta-command that failed: a server `ERROR:` or psql's own `error:`.
+fn is_error(line: &str) -> bool {
+    line.starts_with("pg_restore: error:")
+        || (line.starts_with("psql:") && (line.contains("ERROR:") || line.contains("error:")))
+}
+
+/// The most error lines a restore keeps to list; all of them are counted.
+const ERRORS_KEPT: usize = 100;
+/// The most of one line looked at for an error; the rest is not kept.
+const LINE_KEPT: usize = 4096;
+
+/// The error lines a command printed, counted over its whole output, not
+/// only the end that is kept, so an early error cannot scroll away.
+#[derive(Default)]
+struct Errors {
+    count: usize,
+    last: std::collections::VecDeque<String>,
+}
+
+impl Errors {
+    fn see(&mut self, line: &[u8]) {
+        let line = String::from_utf8_lossy(line);
+        let line = line.trim();
+        if is_error(line) {
+            self.count += 1;
+            self.last.push_back(line.to_owned());
+            if self.last.len() > ERRORS_KEPT {
+                self.last.pop_front();
+            }
+        }
+    }
+
+    fn join(mut self, other: Errors) -> Errors {
+        self.count += other.count;
+        self.last.extend(other.last);
+        while self.last.len() > ERRORS_KEPT {
+            self.last.pop_front();
+        }
+        self
+    }
 }
 
 /// A restore that went on past errors to its end, so the rest is restored.
 /// The stage log ends with the errors, and the failure names how many and
 /// the last. None when it met none, or stopped for another reason.
-fn went_past_errors(tool: &str, output: &std::process::Output) -> Option<DockerError> {
+fn went_past_errors(
+    tool: &str,
+    output: &std::process::Output,
+    errors: &Errors,
+) -> Option<DockerError> {
     let log = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let errors = error_lines(&log);
     // pg_restore counts what it went past and exits 1; psql exits 0.
     let counted = log.lines().rev().find_map(|line| {
         line.trim()
@@ -428,7 +462,7 @@ fn went_past_errors(tool: &str, output: &std::process::Output) -> Option<DockerE
     });
     let count = match (tool, counted) {
         ("pg_restore", Some(count)) => count,
-        ("psql", _) if output.status.success() && !errors.is_empty() => errors.len(),
+        ("psql", _) if output.status.success() && errors.count > 0 => errors.count,
         _ => return None,
     };
     let statements = if count == 1 {
@@ -436,10 +470,16 @@ fn went_past_errors(tool: &str, output: &std::process::Output) -> Option<DockerE
     } else {
         "statements"
     };
-    let last = errors.last().copied().unwrap_or("it printed none");
+    let last = errors.last.back().map_or("it printed none", String::as_str);
+    let listed: Vec<&str> = errors.last.iter().map(String::as_str).collect();
+    let earlier = if errors.count > listed.len() {
+        format!(" (the last {} of {})", listed.len(), errors.count)
+    } else {
+        String::new()
+    };
     crate::command_log::note(&format!(
-        "{count} {statements} failed; the restore went on past them:\n{}",
-        errors.join("\n")
+        "{count} {statements} failed; the restore went on past them{earlier}:\n{}",
+        listed.join("\n")
     ));
     Some(DockerError::Command(
         format!("{tool} restored the rest, but {count} {statements} failed. The last: {last}"),
@@ -470,15 +510,26 @@ struct Input<'a> {
 /// A dump restored with one INSERT per row prints a line per row.
 const OUTPUT_KEPT: usize = 1024 * 1024;
 
-/// Reads a stream to its end, keeping only its last `OUTPUT_KEPT` bytes.
-async fn tail(mut stream: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+/// Reads a stream to its end, keeping only its last `OUTPUT_KEPT` bytes,
+/// and counts every error line in all of it.
+async fn tail(mut stream: impl tokio::io::AsyncRead + Unpin) -> (Vec<u8>, Errors) {
     use tokio::io::AsyncReadExt;
     let mut kept: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
     let mut dropped = 0usize;
+    let mut errors = Errors::default();
+    let mut line: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
     while let Ok(read) = stream.read(&mut chunk).await {
         if read == 0 {
             break;
+        }
+        for &byte in &chunk[..read] {
+            if byte == b'\n' {
+                errors.see(&line);
+                line.clear();
+            } else if line.len() < LINE_KEPT {
+                line.push(byte);
+            }
         }
         kept.extend(&chunk[..read]);
         if kept.len() > OUTPUT_KEPT {
@@ -492,7 +543,8 @@ async fn tail(mut stream: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
         out.extend(format!("[{dropped} earlier bytes of output not kept]\n").bytes());
     }
     out.extend(kept);
-    out
+    errors.see(&line);
+    (out, errors)
 }
 
 /// Runs one docker command, its stdin fed from `input` when there is one,
@@ -502,6 +554,15 @@ async fn run(
     input: Option<Input<'_>>,
     password: Option<&str>,
 ) -> Result<std::process::Output, DockerError> {
+    Ok(run_counted(args, input, password).await?.0)
+}
+
+/// `run`, also answering the error lines counted over all the output.
+async fn run_counted(
+    args: &[String],
+    input: Option<Input<'_>>,
+    password: Option<&str>,
+) -> Result<(std::process::Output, Errors), DockerError> {
     let mut command = tokio::process::Command::new("docker");
     // The password reaches `docker run --env PGPASSWORD` from this process's
     // environment, never from its arguments.
@@ -547,11 +608,14 @@ async fn run(
         .wait()
         .await
         .map_err(|_| unavailable("Could not complete the database operation"))?;
+    let (stdout, stdout_errors) = stdout.await.unwrap_or_default();
+    let (stderr, stderr_errors) = stderr.await.unwrap_or_default();
     let output = std::process::Output {
         status,
-        stdout: stdout.await.unwrap_or_default(),
-        stderr: stderr.await.unwrap_or_default(),
+        stdout,
+        stderr,
     };
+    let errors = stdout_errors.join(stderr_errors);
     crate::command_log::record(args, &output);
     // A dump that could not be read to its end must not pass as restored.
     if let Some(writer) = writer {
@@ -566,7 +630,7 @@ async fn run(
             ));
         }
     }
-    Ok(output)
+    Ok((output, errors))
 }
 
 /// A failed restore command, named by the last error line it printed.
@@ -641,7 +705,8 @@ mod tests {
             Command was: CREATE TABLE public.u (id integer);\n\
             pg_restore: warning: errors ignored on restore: 1\n";
         let (error, log) = crate::command_log::scope(async {
-            went_past_errors("pg_restore", &output(1, printed))
+            let (_, errors) = tail(printed.as_bytes()).await;
+            went_past_errors("pg_restore", &output(1, printed), &errors)
         })
         .await;
         let error = error.expect("errors were ignored").to_string();
@@ -651,17 +716,32 @@ mod tests {
             log.last().unwrap(),
             "pg_restore: error: could not execute query: ERROR:  relation \"u\" already exists"
         );
-        // psql exits 0 past errors; a fatal stop is a plain failure.
-        let psql = "psql:<stdin>:4: ERROR:  relation \"u\" already exists\n";
-        assert!(went_past_errors("psql", &output(0, psql)).is_some());
-        assert!(went_past_errors("psql", &output(0, "CREATE TABLE\n")).is_none());
+        // psql exits 0 past errors, its own included; a fatal stop is a
+        // plain failure.
+        let psql = |printed: &'static str| async move {
+            let (_, errors) = tail(printed.as_bytes()).await;
+            went_past_errors("psql", &output(0, printed), &errors).map(|e| e.to_string())
+        };
         assert!(
-            went_past_errors(
-                "pg_restore",
-                &output(1, "pg_restore: error: connection failed\n")
-            )
-            .is_none()
+            psql("psql:<stdin>:4: ERROR:  relation \"u\" already exists\n")
+                .await
+                .is_some()
         );
+        assert!(
+            psql("psql:<stdin>:9: error: /missing.csv: No such file or directory\n")
+                .await
+                .is_some_and(|error| error.contains("/missing.csv"))
+        );
+        assert!(psql("CREATE TABLE\n").await.is_none());
+        let fatal = "pg_restore: error: connection failed\n";
+        let (_, errors) = tail(fatal.as_bytes()).await;
+        assert!(went_past_errors("pg_restore", &output(1, fatal), &errors).is_none());
+        // An early error stays counted after more output than is kept.
+        let mut long = b"psql:<stdin>:1: ERROR:  relation \"u\" already exists\n".to_vec();
+        long.extend(b"NOTICE:  something harmless\n".repeat(OUTPUT_KEPT / 10));
+        let (kept, errors) = tail(&long[..]).await;
+        assert!(kept.len() < long.len());
+        assert_eq!(errors.count, 1);
     }
 
     /// Runs docker and answers its stdout, failing the test when it fails.
