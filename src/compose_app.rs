@@ -37,6 +37,7 @@ const SERVICE_KEYS: &[&str] = &[
     "ports",
     "volumes",
     "extra_hosts",
+    "dns",
     "restart",
     "depends_on",
     "deploy",
@@ -946,6 +947,29 @@ fn parse_service(
         Some(_) => return Err(invalid("extra_hosts must be a list".into())),
     }
 
+    // A service may choose its own resolvers instead of the Platform's.
+    match body.get("dns") {
+        None | Some(Value::Null) => {}
+        Some(value) => {
+            let entries: Vec<&Value> = match value {
+                Value::Sequence(items) => items.iter().collect(),
+                single => vec![single],
+            };
+            for entry in entries {
+                let Value::String(address) = entry else {
+                    return Err(invalid(
+                        "dns must be an IP address or a list of them".into(),
+                    ));
+                };
+                if address.trim().parse::<std::net::IpAddr>().is_err() {
+                    return Err(invalid(format!(
+                        "dns entry '{address}' is not an IP address"
+                    )));
+                }
+            }
+        }
+    }
+
     // A bare entry names a Variable without giving it a value. Compose reads
     // it from the process environment and drops it when unset; here the
     // Application's Variables are that environment.
@@ -1382,6 +1406,25 @@ impl<'a> Interpolator<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_service_may_choose_its_own_resolvers() {
+        let chosen = ComposeDefinition::parse(
+            "services:\n  web:\n    image: nginx\n    dns: [1.1.1.1, \"9.9.9.9\"]\n",
+        )
+        .unwrap();
+        assert!(chosen.services[0].body.contains_key("dns"));
+        assert!(
+            ComposeDefinition::parse("services:\n  web:\n    image: nginx\n    dns: 1.1.1.1\n")
+                .is_ok()
+        );
+        assert!(
+            ComposeDefinition::parse(
+                "services:\n  web:\n    image: nginx\n    dns: [resolver.local]\n"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn services_resolve_through_the_platform_unless_they_chose_their_own() {

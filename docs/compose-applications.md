@@ -17,7 +17,7 @@ For an Application with id `k3n8qz4v2x1p` and a service called `hermes`:
 | Networks | New Applications use their own network. Existing Applications keep `sf-apps` until the Operator changes their network policy. See private connectivity below. |
 | Labels | `sf.app.id`, `sf.app.name` and `sf.app.service` on every container. |
 | Restart policy | `unless-stopped` when the service has none, so the Application returns after a reboot. |
-| DNS | When the Platform serves DNS, `dns` points at it (the Host address it listens on) unless the service sets its own, so names under the DNS Suffix, such as another Application's Hostname, resolve inside the container. Other names are forwarded upstream, and service names on the project's networks still resolve. Single-container Applications get the same through `docker run --dns`. With `serve --no-dns`, nothing is added. |
+| DNS | When the Platform serves DNS, `dns` points at it (the Host address it listens on) unless the service sets its own, so names under the DNS Suffix, such as another Application's Hostname, resolve inside the container. Other names are forwarded upstream, and service names on the project's networks still resolve. Single-container Applications get the same through `docker run --dns`. On a Mac the address follows the Host's when it changes; running containers keep the one they started with until they are recreated. With `serve --no-dns`, nothing is added. |
 | Environment | Application Variables fill the file's `${VAR}` references. Applications created before this get every Variable on every service instead; see Variables below. |
 | Files | `~/.config/self-host/apps/<id>/compose.yml`, rendered again on every deploy. |
 
@@ -191,7 +191,7 @@ the Application.
 ## Supported service keys
 
 `image` (required), `command`, `entrypoint`, `environment`, `ports`,
-`volumes`, `extra_hosts`, `restart`, `depends_on`, `deploy`, `healthcheck`,
+`volumes`, `extra_hosts`, `dns`, `restart`, `depends_on`, `deploy`, `healthcheck`,
 `labels`, `working_dir`, `user`, `expose`, `stop_grace_period`, `init`.
 `container_name` is accepted and replaced.
 
@@ -202,6 +202,9 @@ container otherwise cannot. A plain `name:address` entry adds no reach:
 it only lets a name resolve to an address the container could already
 open a socket to, which is what a TLS-verified HTTPS call to a LAN
 service needs.
+
+`dns` takes one IP address or a list of them and replaces the Platform's
+resolver for that service.
 
 Top level: `services`, `volumes` (managed or explicitly mapped external volumes),
 `version` (ignored), `name` (ignored).
