@@ -17,6 +17,7 @@ import {
   FormField,
   PageHeader,
   PageHeaderTitle,
+  Progress,
   Select,
   SelectContent,
   SelectItem,
@@ -227,9 +228,10 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
         <TableCell className="muted">Now</TableCell>
         <TableCell>{appName({ consumer_application_id: connections.find((item) => item.id === upload.connectionId)?.consumer_application_id ?? "" })}</TableCell>
         <TableCell><span className="mono">{upload.file.name}</span> <span className="muted">· {formatBytes(upload.file.size)}</span></TableCell>
-        <TableCell>{upload.status === "uploading"
-          ? <StatusBadge tone="success" pulse>Uploading {Math.floor((upload.loaded / Math.max(upload.file.size, 1)) * 100)}% · {formatBytes(upload.loaded)} of {formatBytes(upload.file.size)}</StatusBadge>
-          : <div className="stack-xs"><StatusBadge tone="danger">Upload failed</StatusBadge><span className="muted t-label">{upload.error}</span>
+        <TableCell className="import-upload">{upload.status === "uploading"
+          ? <Progress label="Uploading" value={upload.loaded} max={Math.max(upload.file.size, 1)}
+              valueText={`${Math.floor((upload.loaded / Math.max(upload.file.size, 1)) * 100)}% · ${formatBytes(upload.loaded)} of ${formatBytes(upload.file.size)}`} />
+          : <div className="stack-xs"><span className="field-error">Upload failed: {upload.error}</span>
               <span className="row"><Button size="sm" type="button" onClick={() => retryUpload(upload.key)}>Retry</Button><Button size="sm" variant="ghost" type="button" onClick={() => dismissUpload(upload.key)}>Dismiss</Button></span></div>}</TableCell>
         <TableCell className="col-tight">—</TableCell>
       </TableRow>)}

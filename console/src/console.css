@@ -330,6 +330,9 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .form-steps { max-width: 760px; counter-reset: form-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
 .form-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
 .form-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
+/* An upload's progress bar needs room to read. */
+.import-upload { min-width: 18rem; }
+.import-upload .meter-label { white-space: nowrap; }
 /* The import dialog's steps scroll on a short screen; its buttons stay put. */
 .import-dialog > form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 .import-dialog > form > [data-slot="dialog-body"] { overflow-y: auto; min-height: 0; }
