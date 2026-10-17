@@ -28,13 +28,60 @@ use crate::{
 };
 
 pub const MAJORS: [u16; 3] = [16, 17, 18];
-pub const MAX_IMPORT_BYTES: usize = 64 * 1024 * 1024;
 const ADMIN: &str = "sf_admin";
 const PASSWORD: &str = "SF_POSTGRES_PASSWORD";
 pub(crate) static DATABASES: Collection<Database> = Collection::new("managed-postgres");
 pub(crate) static CONNECTIONS: Collection<Connection> = Collection::new("postgres-connection");
 pub(crate) static CONNECTION_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub(crate) static IMPORTS: Collection<Import> = Collection::new("postgres-import");
+
+/// What a database dump is, as pg_dump writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveFormat {
+    /// `pg_dump --format=custom`.
+    Custom,
+    /// `pg_dump --format=tar`.
+    Tar,
+    /// `pg_dump --format=directory`: a directory with a `toc.dat`.
+    Directory,
+    /// `pg_dump --format=plain`: SQL text, run with psql.
+    Sql,
+}
+
+impl ArchiveFormat {
+    /// What `path` looks like, or None when it is none of them for sure.
+    pub fn detect(path: &std::path::Path) -> Option<Self> {
+        if path.is_dir() {
+            return path.join("toc.dat").is_file().then_some(Self::Directory);
+        }
+        use std::io::Read;
+        let mut head = vec![0u8; 512];
+        let read = std::fs::File::open(path)
+            .and_then(|mut file| file.read(&mut head))
+            .ok()?;
+        Self::detect_bytes(&head[..read])
+    }
+
+    /// The same from a file's first 512 bytes.
+    pub fn detect_bytes(head: &[u8]) -> Option<Self> {
+        if head.starts_with(b"PGDMP") {
+            Some(Self::Custom)
+        } else if head.get(257..262) == Some(b"ustar") {
+            Some(Self::Tar)
+        } else if !head.is_empty()
+            && !head.contains(&0)
+            && std::str::from_utf8(head).is_ok_and(|text| {
+                let text = text.trim_start();
+                text.starts_with("--") || text.starts_with("SET ") || text.starts_with("CREATE ")
+            })
+        {
+            Some(Self::Sql)
+        } else {
+            None
+        }
+    }
+}
 /// The most imports a database remembers; older ones are forgotten.
 const IMPORTS_KEPT: usize = 50;
 
@@ -219,7 +266,14 @@ pub enum Operation {
     },
     Import {
         connection_id: String,
+        /// The uploaded file in private storage; unused with `path`.
         upload_id: String,
+        /// A file or directory on the Host to import instead of an upload.
+        #[serde(default)]
+        path: Option<PathBuf>,
+        /// Tasks queued before formats existed restore a custom archive.
+        #[serde(default)]
+        format: Option<ArchiveFormat>,
     },
     Remove {
         id: String,
@@ -870,15 +924,24 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
         Operation::Import {
             connection_id,
             upload_id,
+            path,
+            format,
         } => {
             let c = CONNECTIONS
                 .get(store, &connection_id)
                 .await?
                 .ok_or(Error::Missing)?;
-            let file = import_path(&upload_id)?;
-            let result = import(state, &c, &file).await;
-            let _ = tokio::fs::remove_file(file).await;
-            result?;
+            let format = format.unwrap_or(ArchiveFormat::Custom);
+            match path {
+                // The Operator's file stays where it is.
+                Some(path) => import(state, &c, &path, format).await?,
+                None => {
+                    let file = import_path(&upload_id)?;
+                    let result = import(state, &c, &file, format).await;
+                    let _ = tokio::fs::remove_file(file).await;
+                    result?;
+                }
+            }
         }
         Operation::Remove { id, delete_data } => {
             // Connect uses this same namespace. Keep the guard through Docker
@@ -1088,6 +1151,7 @@ async fn import<S: StateStore>(
     state: &AppState<S>,
     c: &Connection,
     file: &std::path::Path,
+    format: ArchiveFormat,
 ) -> Result<(), Error> {
     use progress::step;
     step(
@@ -1129,6 +1193,7 @@ async fn import<S: StateStore>(
                     database: c.database.clone(),
                     role: c.role.clone(),
                     file: file.into(),
+                    format,
                 })
                 .await;
             match result {
@@ -1810,6 +1875,128 @@ mod tests {
         assert_eq!(import["file_bytes"], 19);
         assert_eq!(import["consumer_application_id"], "consumer");
         assert_eq!(import["task"]["id"], accepted["task_id"]);
+    }
+
+    #[test]
+    fn dumps_are_told_apart_by_their_first_bytes() {
+        let mut tar = vec![0u8; 512];
+        tar[257..262].copy_from_slice(b"ustar");
+        assert_eq!(
+            ArchiveFormat::detect_bytes(b"PGDMP\x01\x0e"),
+            Some(ArchiveFormat::Custom)
+        );
+        assert_eq!(ArchiveFormat::detect_bytes(&tar), Some(ArchiveFormat::Tar));
+        assert_eq!(
+            ArchiveFormat::detect_bytes(b"--\n-- PostgreSQL database dump\n--\n"),
+            Some(ArchiveFormat::Sql)
+        );
+        assert_eq!(
+            ArchiveFormat::detect_bytes(b"\x1f\x8b\x08gzip"),
+            None,
+            "compressed: the Operator says what it is"
+        );
+        assert_eq!(ArchiveFormat::detect_bytes(b"hello"), None);
+        let directory =
+            std::env::temp_dir().join(format!("sf-dump-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(&directory).unwrap();
+        assert_eq!(
+            ArchiveFormat::detect(&directory),
+            None,
+            "a directory without toc.dat"
+        );
+        std::fs::write(directory.join("toc.dat"), b"PGDMP").unwrap();
+        assert_eq!(
+            ArchiveFormat::detect(&directory),
+            Some(ArchiveFormat::Directory)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_upload_of_unknown_type_needs_the_operator_to_name_it() {
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let (router, state) = fixture().await;
+        CONNECTIONS
+            .upsert(&state.store, &reference("ready"))
+            .await
+            .unwrap();
+        let upload = |format: Option<&str>| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/databases/provider/connections/reference/import")
+                .header("authorization", "Bearer fixture-key");
+            if let Some(format) = format {
+                request = request.header("x-import-format", format);
+            }
+            request
+                .body(Body::from(&b"\x1f\x8b compressed"[..]))
+                .unwrap()
+        };
+        let refused = router.clone().oneshot(upload(None)).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert!(IMPORTS.list(&state.store).await.unwrap().is_empty());
+        let accepted = router.oneshot(upload(Some("sql"))).await.unwrap();
+        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn a_dump_on_the_host_imports_from_its_path() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let (router, state) = fixture().await;
+        CONNECTIONS
+            .upsert(&state.store, &reference("ready"))
+            .await
+            .unwrap();
+        let dump =
+            std::env::temp_dir().join(format!("sf-dump-{:032x}.sql", rand::random::<u128>()));
+        std::fs::write(
+            &dump,
+            b"--\n-- PostgreSQL database dump\nCREATE TABLE t (id int);\n",
+        )
+        .unwrap();
+        let request = |path: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/databases/provider/connections/reference/import-path")
+                .header("authorization", "Bearer fixture-key")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({ "path": path }).to_string()))
+                .unwrap()
+        };
+        let response = router
+            .clone()
+            .oneshot(request(dump.to_str().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        let import = IMPORTS
+            .get(&state.store, accepted["task_id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(import.file_name, dump.display().to_string());
+        assert_eq!(import.file_bytes, std::fs::metadata(&dump).unwrap().len());
+        assert!(dump.exists(), "the Operator's file is never moved");
+        assert_eq!(
+            router
+                .oneshot(request("relative/dump.sql"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        std::fs::remove_file(dump).unwrap();
     }
 
     #[tokio::test]
