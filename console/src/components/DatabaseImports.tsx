@@ -11,8 +11,6 @@ import {
   FormField,
   PageHeader,
   PageHeaderTitle,
-  RadioGroup,
-  RadioGroupItem,
   Select,
   SelectContent,
   SelectItem,
@@ -35,6 +33,7 @@ import { formatBytes } from "../lib/format.js";
 import { DatabaseOperation } from "./DatabaseOperation.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
+import { Step, Steps } from "./Steps.js";
 
 /** Where the dump comes from: a file the browser sends, or a path the daemon reads. */
 export type ImportSource = { file: File } | { path: string };
@@ -147,27 +146,37 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
 
     {formOpen ? <Form className="import-form" onSubmit={(event: FormEvent) => void submit(event)}>
       <div className="form-body">
-        <Select value={connection} onValueChange={setConnection} disabled={busy || !connections.length}>
-          <FormField id="import-connection" label="Consumer database"><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
-          <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
-        </Select>
-        <RadioGroup label="Dump" variant="segmented" value={from} disabled={busy} onValueChange={(next) => { generation.current += 1; setFrom(next as "upload" | "path"); setFormat(""); setDetection(null); }}>
-          <RadioGroupItem value="upload" label="Upload a file" />
-          <RadioGroupItem value="path" label="Path on the Host" />
-        </RadioGroup>
-        {from === "upload"
-          ? <FileDropzone id="database-import" label={file ? file.name : "Drop a dump here, or choose one"} disabled={busy}
-              description={file ? `${formatBytes(file.size)} · saved privately on the Host and removed after the import` : "Any size. It is saved privately on the Host and removed after the import."}
-              onFilesSelected={(files) => void pickFile(files[0] ?? null)} />
-          : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { generation.current += 1; setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is. It is never moved or removed." />}
-        <Select value={format} onValueChange={(next) => { generation.current += 1; setFormat(next as ArchiveFormat); setDetection(null); }} disabled={busy || !source}>
-          <FormField id="import-format" label="Dump type" hint={detection ?? (format ? "Read from the file. Change it if it is wrong." : "Chosen from the file once you pick one.")}><SelectTrigger><SelectValue placeholder="Choose the dump type" /></SelectTrigger></FormField>
-          <SelectContent>{FORMATS.filter((item) => from === "path" || item.value !== "directory").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
-        </Select>
-        <div className="field">
-          <p className="muted">Make the dump with pg_dump, from the database you are moving:</p>
-          <pre className="setup-command"><code>{command} "postgresql://user:password@host:5432/database"</code></pre>
-        </div>
+        <Steps>
+          <Step title="Where the data goes">
+            <Select value={connection} onValueChange={setConnection} disabled={busy || !connections.length}>
+              <FormField id="import-connection" label="Consumer database"><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
+              <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
+            </Select>
+          </Step>
+          <Step title="The dump">
+            <div className="row import-source" role="group" aria-label="Where the dump comes from">
+              {(["upload", "path"] as const).map((value) => <Button key={value} size="sm" type="button" variant={from === value ? "primary" : "default"} aria-pressed={from === value} disabled={busy}
+                onClick={() => { if (from === value) return; generation.current += 1; setFrom(value); setFormat(""); setDetection(null); }}>
+                {value === "upload" ? "Upload" : "Path on the Host"}
+              </Button>)}
+            </div>
+            {from === "upload"
+              ? <FileDropzone id="database-import" label={file ? file.name : "Drop a dump here, or choose one"} disabled={busy}
+                  description={file ? `${formatBytes(file.size)} · saved privately on the Host and removed after the import` : "Any size. It is saved privately on the Host and removed after the import."}
+                  onFilesSelected={(files) => void pickFile(files[0] ?? null)} />
+              : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { generation.current += 1; setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is on the machine that runs self-host. It is never moved or removed." />}
+          </Step>
+          <Step title="What kind of dump">
+            <Select value={format} onValueChange={(next) => { generation.current += 1; setFormat(next as ArchiveFormat); setDetection(null); }} disabled={busy || !source}>
+              <FormField id="import-format" label="Dump type" hint={detection ?? (format ? "Read from the file. Change it if it is wrong." : "Chosen from the file once you pick one.")}><SelectTrigger><SelectValue placeholder="Choose the dump type" /></SelectTrigger></FormField>
+              <SelectContent>{FORMATS.filter((item) => from === "path" || item.value !== "directory").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+            </Select>
+            <details className="import-howto">
+              <summary className="muted">How to make the dump</summary>
+              <pre className="setup-command"><code>{command} "postgresql://user:password@host:5432/database"</code></pre>
+            </details>
+          </Step>
+        </Steps>
       </div>
       <FormActions sticky>
         {imports.length ? <Button size="sm" type="button" onClick={close}>Cancel</Button> : null}
