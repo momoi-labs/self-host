@@ -647,6 +647,10 @@ impl ComposeDefinition {
 /// Points a service at the Platform's DNS, so names under the DNS Suffix
 /// resolve inside it, unless the service chose its own resolvers.
 fn use_platform_resolver(body: &mut Mapping, resolver: Option<std::net::IpAddr>) {
+    // An empty `dns:` is no choice, and Compose refuses it: drop it.
+    if body.get("dns").is_some_and(Value::is_null) {
+        body.remove("dns");
+    }
     if let Some(resolver) = resolver
         && !body.contains_key("dns")
     {
@@ -1442,7 +1446,15 @@ mod tests {
             chosen.get("dns"),
             Some(&Value::Sequence(vec!["1.1.1.1".into()]))
         );
+        let mut empty = Mapping::new();
+        empty.insert("dns".into(), Value::Null);
+        super::use_platform_resolver(&mut empty, Some(resolver));
+        assert_eq!(
+            empty.get("dns"),
+            Some(&Value::Sequence(vec!["192.168.1.100".into()]))
+        );
         let mut unserved = Mapping::new();
+        unserved.insert("dns".into(), Value::Null);
         super::use_platform_resolver(&mut unserved, None);
         assert!(
             unserved.get("dns").is_none(),
