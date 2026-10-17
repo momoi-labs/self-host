@@ -44,7 +44,10 @@ impl DockerRuntime for PausedRemoval {
                 },
             );
             return Err(DockerError::Command(
-                "Import did not complete successfully".into(),
+                format!(
+                    "pg_restore failed: {}",
+                    log.lines().last().unwrap_or_default()
+                ),
                 Box::new(super::runtime::RestoreLog(log.clone())),
             ));
         }
@@ -64,9 +67,6 @@ impl DockerRuntime for PausedRemoval {
         Ok(match request {
             Request::Sql { sql, .. } if sql.starts_with("SELECT count(*)") => {
                 if restored { "3" } else { "0" }.into()
-            }
-            Request::InspectArchive { .. } => {
-                "; Dumped from database version: 17.6\n; Dumped by pg_dump version: 17.6".into()
             }
             _ => String::new(),
         })

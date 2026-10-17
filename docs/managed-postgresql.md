@@ -63,42 +63,43 @@ create scheduled backups.
 ## Logical import
 
 Use the database's Imports tab, **New import**, to upload a custom-format
-archive of at most 64 MiB, made with a `pg_dump` no newer than the target's major version:
+archive of at most 64 MiB:
 
 ```sh
 pg_dump --format=custom --no-owner --no-privileges --file backup.dump \
   "postgresql://user:password@host:5432/database"
 ```
 
-The Platform checks the source server and dump-tool major versions against the
-selected target major and refuses newer archives. Nothing else holds an import
-back: the consumer Application may keep running and the target may already
-hold data. What clashes with existing objects or rows fails the restore, which
-rolls back and shows pg_restore's error; restoring into a database that already
-has the same data can duplicate rows the schema does not keep unique.
+The import goes into a connected Application's database, as that
+connection's role. Nothing else holds it back: the consumer Application may
+keep running, the target may already hold data, and the archive may come from
+any PostgreSQL version. pg_restore decides what it can restore.
 
-The restore runs as the consumer's database role, with `--no-owner`,
-`--no-privileges`, `--single-transaction` and `--exit-on-error`. Dumps needing
-privileged extensions are refused. A SQL failure rolls back the transaction.
-After success, the Task checks the database's non-system relations and records
-the object count. Query application-specific data before using the result.
+The restore runs:
+
+```sh
+docker exec --user postgres --interactive <database container> \
+  pg_restore --verbose --no-password --format=custom --no-owner \
+  --no-privileges --single-transaction --exit-on-error \
+  --dbname <consumer database> --username <consumer role>
+```
+
+The role is not a superuser, so an archive that needs an extension only a
+superuser can create fails. A failure rolls the whole restore back. Nothing
+times the restore: it runs as long as the archive needs. After success, the
+Task counts the database's non-system relations and records the number.
 These options follow PostgreSQL's [pg_restore documentation](https://www.postgresql.org/docs/18/app-pgrestore.html).
-The restore runs with `--verbose`, and its log, including the error it stopped
-at, appears under the restore stage. The Imports tab lists every import into
-the database, newest first, with its Application, file, result and imported
-object count, and shows the steps and log of the one selected. The import is a
-Task in the daemon, so closing the console does not stop it and the list shows
-how it ended. A database keeps its last 50 imports. The last 400 lines are kept. The Task history keeps that log, so
-the statement pg_restore repeats after `Command was:` and the row a failing
-`COPY` stopped at are left out: both can hold secrets the archive carries.
-PostgreSQL's own error lines stay, and some quote the value that failed, such
-as `DETAIL:  Failing row contains (...)`; they are kept because they say why.
 
-Import occupies the consumer Task queue and the provider operation lock.
-Consumer start and provider stop, restart, disconnect or removal cannot run
-through an active import. SQL has statement and lock timeouts. The container
-also bounds each PostgreSQL client process to 14 minutes, with a five-second
-termination grace period; the Host waits at most 15 minutes for Docker.
+The restore stage shows that command and everything pg_restore printed, and
+a failure names the last error line it printed. The Platform's own passwords
+are cut out of both. The Imports tab lists every import into the database,
+newest first, with its Application, file, result and imported object count,
+and shows the steps and log of the one selected. A database keeps its last 50
+imports.
+
+The import is a Task on the database's own queue: an operation on the same
+database queued after it waits its turn, and the consumer Application is not
+held back. Closing the console does not stop it.
 
 An interrupted client or lost Docker connection does not prove whether the
 last transaction committed. The Task reports failure without claiming rollback.

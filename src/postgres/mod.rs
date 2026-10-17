@@ -104,7 +104,6 @@ async fn lock_database(id: &str) -> tokio::sync::OwnedMutexGuard<()> {
 }
 
 /// Provider start/stop/restart and connection/import work share this lock.
-/// Imports also occupy their consumer's task queue.
 pub(crate) async fn lock_if_managed(
     store: &impl StateStore,
     id: &str,
@@ -1106,26 +1105,6 @@ async fn import<S: StateStore>(
     )
     .await?;
     wait_ready(state, &c.database_application_id).await?;
-    step(
-        state,
-        "archive",
-        "Validating PostgreSQL archive",
-        "Archive format and PostgreSQL major version are compatible.",
-        async {
-            let (definition, _) = database(&state.store, &c.database_application_id).await?;
-            let manifest = state
-                .docker
-                .postgres(&runtime::Request::InspectArchive {
-                    container: container(&c.database_application_id),
-                    file: file.into(),
-                })
-                .await
-                .map_err(|e| Error::Runtime(e.to_string()))?;
-            validate_archive_version(&manifest, definition.major)?;
-            Ok(())
-        },
-    )
-    .await?;
     let count_sql = "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f');";
     // A database that already holds data takes the import too: what clashes
     // fails the restore, which rolls back and shows pg_restore's error.
@@ -1144,15 +1123,18 @@ async fn import<S: StateStore>(
                     file: file.into(),
                 })
                 .await;
-            // The stage already shows pg_restore's command and log; the
-            // failure points there instead of repeating it.
-            let stopped = matches!(&result, Err(crate::docker::DockerError::Command(_, source))
-                if source.downcast_ref::<runtime::RestoreLog>().is_some());
             match result {
                 Ok(_) => Ok(()),
-                Err(_) if stopped => Err(Error::Unavailable(
-                    "pg_restore stopped at an error. Read its log in this stage, fix the archive or the target database, then retry".into(),
-                )),
+                // pg_restore's own last error line, passwords cut out; the
+                // stage shows its whole log.
+                Err(crate::docker::DockerError::Command(failure, source))
+                    if source.downcast_ref::<runtime::RestoreLog>().is_some() =>
+                {
+                    Err(Error::Unavailable(redact(
+                        &failure,
+                        &secrets(&state.store).await?,
+                    )))
+                }
                 Err(e) => Err(Error::Runtime(e.to_string())),
             }
         },
@@ -1239,38 +1221,6 @@ async fn require_stopped_consumer<S: StateStore>(
     Ok(())
 }
 
-/// pg_restore's log without the archive's contents. The log is kept in the
-/// Task history, and a failure repeats what the archive held: the whole
-/// statement after `Command was:`, and the row a COPY stopped at. Both can
-/// carry the secrets an Application stored, so they are cut; what failed and
-/// why stays.
-fn restore_log(log: &str) -> String {
-    let mut kept = Vec::new();
-    let mut in_command = false;
-    for line in log.lines() {
-        if line.starts_with("pg_restore:") {
-            in_command = false;
-        }
-        if in_command {
-            continue;
-        }
-        if line.starts_with("Command was:") {
-            kept.push("Command was: (statement omitted)".to_owned());
-            in_command = true;
-            continue;
-        }
-        if let Some(context) = line.strip_prefix("CONTEXT:  COPY ") {
-            // "CONTEXT:  COPY cuts, line 3: \"3\tsecret\"": keep the table
-            // and line, not the row.
-            let place = context.split(": ").next().unwrap_or(context);
-            kept.push(format!("CONTEXT:  COPY {place}"));
-            continue;
-        }
-        kept.push(line.to_owned());
-    }
-    kept.join("\n")
-}
-
 pub(crate) fn import_path(id: &str) -> Result<PathBuf, Error> {
     if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::Invalid("Invalid private import identifier".into()));
@@ -1278,32 +1228,6 @@ pub(crate) fn import_path(id: &str) -> Result<PathBuf, Error> {
     Ok(crate::file_store::state_dir()
         .join("postgres-imports")
         .join(id))
-}
-
-fn validate_archive_version(manifest: &str, target: u16) -> Result<(), Error> {
-    for (prefix, tool) in [
-        ("Dumped from database version:", "a PostgreSQL"),
-        ("Dumped by pg_dump version:", "pg_dump"),
-    ] {
-        let version = manifest
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix(';'))
-            .find_map(|line| line.trim_start().strip_prefix(prefix))
-            .map(str::trim);
-        let major = version
-            .and_then(|version| version.split(|c: char| !c.is_ascii_digit()).next())
-            .and_then(|major| major.parse::<u16>().ok())
-            .ok_or_else(|| {
-                Error::Invalid("The import archive does not declare its PostgreSQL version".into())
-            })?;
-        if major > target {
-            let version = version.unwrap_or_default();
-            return Err(Error::Invalid(format!(
-                "The archive was made by {tool} {version}, newer than this database's PostgreSQL {target}. Dump again with pg_dump {target} or older, or import into a PostgreSQL {major} database. No data was imported"
-            )));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2022,47 +1946,6 @@ mod tests {
         assert!(import_path(&secret()).is_ok());
     }
     #[test]
-    fn archives_from_newer_servers_or_dump_tools_are_refused() {
-        let manifest = ";\n;     Dump Version: 1.16-0\n;     Dumped from database version: 16.4\n;     Dumped by pg_dump version: 17.2\n;";
-        assert!(validate_archive_version(manifest, 17).is_ok());
-        let refused = validate_archive_version(manifest, 16)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            refused.contains("pg_dump 17.2") && refused.contains("PostgreSQL 16"),
-            "{refused}"
-        );
-        assert!(
-            validate_archive_version(
-                ";     Dumped from database version: 18.1\n;     Dumped by pg_dump version: 17.2",
-                17
-            )
-            .is_err()
-        );
-        assert!(validate_archive_version("not an archive", 17).is_err());
-    }
-
-    #[test]
-    fn postgres_18_accepts_compatible_archives_without_allowing_newer_majors() {
-        for (server, tool, accepted) in [
-            (16, 16, true),
-            (17, 17, true),
-            (17, 18, true),
-            (18, 18, true),
-            (18, 19, false),
-            (19, 18, false),
-        ] {
-            let manifest = format!(
-                ";     Dumped from database version: {server}.1\n;     Dumped by pg_dump version: {tool}.1"
-            );
-            assert_eq!(validate_archive_version(&manifest, 18).is_ok(), accepted);
-            if server == 18 || tool == 18 {
-                assert!(validate_archive_version(&manifest, 17).is_err());
-            }
-        }
-    }
-
-    #[test]
     fn redaction_cuts_managed_passwords_and_passwords_where_postgres_writes_them() {
         let secrets = vec!["s3cret-managed-password".to_owned()];
         let text = "env SF_POSTGRES_PASSWORD=s3cret-managed-password\nDATABASE_URL=postgresql://role_x:other-pass@db:5432/db_x\nCREATE ROLE role_x LOGIN PASSWORD 'it''s-secret'\nPOSTGRES_PASSWORD: \"quoted\"\nfailed to create network: all predefined address pools have been fully subnetted";
@@ -2084,34 +1967,5 @@ mod tests {
             "{cut}"
         );
         assert!(cut.contains("all predefined address pools have been fully subnetted"));
-    }
-
-    #[test]
-    fn restore_log_keeps_what_failed_and_drops_what_the_archive_held() {
-        let log = "pg_restore: processing data for table \"public.tokens\"\npg_restore: error: COPY failed for table \"tokens\": ERROR:  value too long for type character varying(4)\nCONTEXT:  COPY tokens, line 1, column name: \"sk-live-secret\"\npg_restore: error: could not execute query: ERROR:  relation \"keys\" already exists\nCommand was: CREATE TABLE public.keys (\n    token text DEFAULT 'sk-live-secret'\n);\npg_restore: warning: errors ignored on restore: 2";
-        let kept = restore_log(log);
-        assert!(!kept.contains("sk-live-secret"), "{kept}");
-        assert!(kept.contains("value too long for type character varying(4)"));
-        assert!(kept.contains("CONTEXT:  COPY tokens, line 1, column name"));
-        assert!(kept.contains("relation \"keys\" already exists"));
-        assert!(kept.contains("Command was: (statement omitted)"));
-        assert!(kept.ends_with("errors ignored on restore: 2"));
-    }
-
-    #[test]
-    fn archive_versions_accept_the_real_pg_restore_header_and_require_both_versions() {
-        let server = ";     Dumped from database version: 17.11 (Debian 17.11-1.pgdg12+2)";
-        let tool = ";     Dumped by pg_dump version: 17.11 (Debian 17.11-1.pgdg12+2)";
-        assert!(validate_archive_version(&format!("{server}\n{tool}"), 17).is_ok());
-        assert!(validate_archive_version(&format!("{server}\n{tool}"), 16).is_err());
-        assert!(validate_archive_version(server, 17).is_err());
-        assert!(validate_archive_version(tool, 17).is_err());
-        assert!(
-            validate_archive_version(
-                &format!("{server}\n;     Dumped by pg_dump version: unknown"),
-                17
-            )
-            .is_err()
-        );
     }
 }
