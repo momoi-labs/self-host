@@ -19,6 +19,10 @@ pub enum Request {
         role: String,
         file: PathBuf,
         format: super::ArchiveFormat,
+        /// The database container's image; plain SQL runs in a copy of it.
+        image: String,
+        /// The connection role's password, for plain SQL over TCP.
+        password: String,
     },
     RemoveVolume {
         name: String,
@@ -32,9 +36,12 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
         role,
         file,
         format,
+        image,
+        password,
     } = request
     {
-        return restore(container, database, role, file, *format).await;
+        let sandbox = Sandbox { image, password };
+        return restore(container, database, role, file, *format, &sandbox).await;
     }
     let mut command = tokio::process::Command::new("docker");
     command
@@ -122,15 +129,25 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
 /// Restores `file` into `database` as `role`. A file streams into the tool's
 /// stdin, so its size never sits in memory; a directory is copied into the
 /// container first and removed after. Nothing times it.
+/// Where plain SQL runs: a throwaway copy of the database image that shares
+/// only its network. A SQL dump can carry psql meta-commands, `\!` for a
+/// shell or `\connect` to another role; there they reach no database files
+/// or trusted local socket, and every connection needs a password.
+struct Sandbox<'a> {
+    image: &'a str,
+    password: &'a str,
+}
+
 async fn restore(
     container: &str,
     database: &str,
     role: &str,
     file: &std::path::Path,
     format: super::ArchiveFormat,
+    sandbox: &Sandbox<'_>,
 ) -> Result<String, DockerError> {
     let staged = format!("/tmp/sf-import-{:032x}", rand::random::<u128>());
-    let result = restore_from(container, database, role, file, format, &staged).await;
+    let result = restore_from(container, database, role, file, format, &staged, sandbox).await;
     // Whatever was staged goes, whichever step stopped.
     if format == super::ArchiveFormat::Directory {
         let _ = run(
@@ -145,6 +162,7 @@ async fn restore(
                 staged,
             ],
             None,
+            None,
         )
         .await;
     }
@@ -158,6 +176,7 @@ async fn restore_from(
     file: &std::path::Path,
     format: super::ArchiveFormat,
     staged: &str,
+    sandbox: &Sandbox<'_>,
 ) -> Result<String, DockerError> {
     use super::ArchiveFormat;
     let staged = staged.to_owned();
@@ -170,6 +189,7 @@ async fn restore_from(
                 file.to_string_lossy().into_owned(),
                 format!("{container}:{staged}"),
             ],
+            None,
             None,
         )
         .await?;
@@ -187,6 +207,7 @@ async fn restore_from(
                 "postgres".into(),
                 staged.clone(),
             ],
+            None,
             None,
         )
         .await?;
@@ -207,6 +228,8 @@ async fn restore_from(
                 "--echo-errors".into(),
                 "--set".into(),
                 "ON_ERROR_STOP=1".into(),
+                "--host".into(),
+                "127.0.0.1".into(),
                 "--dbname".into(),
                 database.into(),
                 "--username".into(),
@@ -244,11 +267,27 @@ async fn restore_from(
         args.push(source.clone());
     }
     let streamed = format != ArchiveFormat::Directory;
-    let mut command: Vec<String> = vec!["exec".into(), "--user".into(), "postgres".into()];
-    if streamed {
-        command.push("--interactive".into());
-    }
-    command.push(container.into());
+    let mut command: Vec<String> = if format == ArchiveFormat::Sql {
+        vec![
+            "run".into(),
+            "--rm".into(),
+            "--interactive".into(),
+            "--network".into(),
+            format!("container:{container}"),
+            "--user".into(),
+            "65534:65534".into(),
+            "--env".into(),
+            "PGPASSWORD".into(),
+            sandbox.image.into(),
+        ]
+    } else {
+        let mut exec: Vec<String> = vec!["exec".into(), "--user".into(), "postgres".into()];
+        if streamed {
+            exec.push("--interactive".into());
+        }
+        exec.push(container.into());
+        exec
+    };
     if format == ArchiveFormat::Sql && gzipped(file) {
         // gzip's failure would not reach psql, which takes the end of what
         // it got for the end of the script: check the whole file first.
@@ -265,6 +304,7 @@ async fn restore_from(
                 before: "",
                 after: "",
             }),
+            None,
         )
         .await?;
         if !tested.status.success() {
@@ -295,7 +335,12 @@ async fn restore_from(
             after: "",
         },
     });
-    let output = run(&command, input).await;
+    let output = run(
+        &command,
+        input,
+        (format == ArchiveFormat::Sql).then_some(sandbox.password),
+    )
+    .await;
     let output = output?;
     let log = format!(
         "{}{}",
@@ -362,8 +407,14 @@ async fn tail(mut stream: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
 async fn run(
     args: &[String],
     input: Option<Input<'_>>,
+    password: Option<&str>,
 ) -> Result<std::process::Output, DockerError> {
     let mut command = tokio::process::Command::new("docker");
+    // The password reaches `docker run --env PGPASSWORD` from this process's
+    // environment, never from its arguments.
+    if let Some(password) = password {
+        command.env("PGPASSWORD", password);
+    }
     command
         .args(args)
         .kill_on_drop(true)

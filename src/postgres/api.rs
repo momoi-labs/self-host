@@ -118,13 +118,20 @@ struct PathImport {
     format: Option<ArchiveFormat>,
 }
 
-/// Bytes under `path`: a file's size, or every file's in a directory.
-fn size_of(path: &std::path::Path) -> u64 {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
-            .map(|entries| entries.flatten().map(|entry| size_of(&entry.path())).sum())
-            .unwrap_or(0),
-        Ok(meta) => meta.len(),
+/// Bytes under `path`: a file's size, or every file's in a directory. Links
+/// inside a directory are not followed, so a link back to it cannot loop.
+pub(super) fn size_of(path: &std::path::Path) -> u64 {
+    fn inside(path: &std::path::Path) -> u64 {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
+                .map(|entries| entries.flatten().map(|entry| inside(&entry.path())).sum())
+                .unwrap_or(0),
+            Ok(meta) if meta.is_file() => meta.len(),
+            _ => 0,
+        }
+    }
+    match std::fs::canonicalize(path) {
+        Ok(target) => inside(&target),
         Err(_) => 0,
     }
 }
