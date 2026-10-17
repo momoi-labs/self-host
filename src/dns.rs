@@ -456,6 +456,11 @@ async fn bind(
         loop {
             timer.tick().await;
             let scanned = scan_addresses(&policy);
+            if let (Ok((primary, _)), true) = (&scanned, cfg!(target_os = "macos")) {
+                // Containers created from now on reach DNS at the new
+                // address; running ones keep theirs until recreated.
+                set_container_resolver(IpAddr::from(*primary));
+            }
             match scanned {
                 Ok((_, current)) if current != published => {
                     zone.publish_addresses(&wildcard, &current).await;
@@ -511,12 +516,20 @@ const BIND_HINT: &str = "Check port 53 conflicts; grant CAP_NET_BIND_SERVICE to 
 /// DNS: the Host address it listens on. Docker's resolver inside a container
 /// forwards to the Docker host's, which on a Mac is Colima's VM and does not
 /// know the DNS Suffix; this one does, and forwards every other name.
-static CONTAINER_RESOLVER: std::sync::OnceLock<IpAddr> = std::sync::OnceLock::new();
+/// On a Mac it follows the Host address, since DNS answers on every
+/// interface there; on Linux DNS stays on the address it bound.
+static CONTAINER_RESOLVER: std::sync::RwLock<Option<IpAddr>> = std::sync::RwLock::new(None);
 
 /// The resolver for Application containers, or None when the Platform does
 /// not serve DNS (`serve --no-dns`).
 pub fn container_resolver() -> Option<IpAddr> {
-    CONTAINER_RESOLVER.get().copied()
+    *CONTAINER_RESOLVER.read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn set_container_resolver(address: IpAddr) {
+    *CONTAINER_RESOLVER
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = Some(address);
 }
 
 /// Serves the Zone, and hands back the handle the Operator's Records are
@@ -549,7 +562,7 @@ pub async fn start(
         {
             Ok((server, address, zone)) => {
                 tracing::info!(%address, ?addresses, suffix = %config.dns_suffix, "DNS listening on UDP and TCP");
-                let _ = CONTAINER_RESOLVER.set(IpAddr::from(primary));
+                set_container_resolver(IpAddr::from(primary));
                 return Ok((server, zone));
             }
             Err(error)
