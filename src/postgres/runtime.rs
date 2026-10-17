@@ -129,9 +129,41 @@ async fn restore(
     file: &std::path::Path,
     format: super::ArchiveFormat,
 ) -> Result<String, DockerError> {
-    use super::ArchiveFormat;
     let staged = format!("/tmp/sf-import-{:032x}", rand::random::<u128>());
+    let result = restore_from(container, database, role, file, format, &staged).await;
+    // Whatever was staged goes, whichever step stopped.
+    if format == super::ArchiveFormat::Directory {
+        let _ = run(
+            &[
+                "exec".into(),
+                "--user".into(),
+                "root".into(),
+                container.into(),
+                "rm".into(),
+                "--recursive".into(),
+                "--force".into(),
+                staged,
+            ],
+            None,
+        )
+        .await;
+    }
+    result
+}
+
+async fn restore_from(
+    container: &str,
+    database: &str,
+    role: &str,
+    file: &std::path::Path,
+    format: super::ArchiveFormat,
+    staged: &str,
+) -> Result<String, DockerError> {
+    use super::ArchiveFormat;
+    let staged = staged.to_owned();
     let source = if format == ArchiveFormat::Directory {
+        // docker cp copies a symlink as a link; the dump is what it points to.
+        let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_owned());
         let copied = run(
             &[
                 "cp".into(),
@@ -219,6 +251,22 @@ async fn restore(
     }
     command.push(container.into());
     if format == ArchiveFormat::Sql && gzipped(file) {
+        // gzip's failure would not reach psql, which takes the end of what
+        // it got for the end of the script: check the whole file first.
+        let tested = run(
+            &[
+                "exec".into(),
+                "--interactive".into(),
+                container.into(),
+                "gzip".into(),
+                "--test".into(),
+            ],
+            Some(file),
+        )
+        .await?;
+        if !tested.status.success() {
+            return Err(failed("gzip", &tested));
+        }
         // psql cannot read compressed input; the container's gzip unpacks it
         // on the way in. The arguments go through "$@" untouched.
         command.extend([
@@ -230,22 +278,6 @@ async fn restore(
     }
     command.extend(args);
     let output = run(&command, streamed.then_some(file)).await;
-    if format == ArchiveFormat::Directory {
-        let _ = run(
-            &[
-                "exec".into(),
-                "--user".into(),
-                "root".into(),
-                container.into(),
-                "rm".into(),
-                "--recursive".into(),
-                "--force".into(),
-                staged,
-            ],
-            None,
-        )
-        .await;
-    }
     let output = output?;
     let log = format!(
         "{}{}",
