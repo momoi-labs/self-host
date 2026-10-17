@@ -41,18 +41,18 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
 
   useEffect(() => { if (!taskId || !currentTask || taskBusy || handledTasks.current.has(currentTask.id)) return; handledTasks.current.add(currentTask.id); void reload().then((next) => { if (!next.some((candidate) => candidate.id === app.id)) onRemoved(); }); }, [currentTask, taskId, taskBusy, app.id, reload, onRemoved]);
 
-  async function operation(path: string, method: string, body?: object | File): Promise<string | false> {
+  async function operation(path: string, method: string, body?: object | File, extraHeaders?: Record<string, string>): Promise<string | false> {
     if (busy || taskBusy) return false;
     setBusy(true); setFailure(null);
     try {
-      const response = await api(path, { method, body: body instanceof File ? body : body ? JSON.stringify(body) : undefined, headers: body instanceof File ? { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(body.name) } : undefined });
+      const response = await api(path, { method, body: body instanceof File ? body : body ? JSON.stringify(body) : undefined, headers: body instanceof File ? { "Content-Type": "application/octet-stream", "X-Upload-Name": encodeURIComponent(body.name), ...extraHeaders } : undefined });
       if (!response.ok) throw await failureOf(response);
       const accepted = await response.json() as { task_id: string; connection_id?: string };
       const connectionId = accepted.connection_id ?? (method === "DELETE" ? path.split("/connections/")[1] : undefined);
       setConnectionOperation(connectionId ? { id: connectionId, previousTask: database?.connections.find((connection) => connection.id === connectionId)?.task_id ?? null } : null);
-      setOperationLabel(path.endsWith("/import") ? "Importing" : path.includes("/connections") ? method === "DELETE" ? "Disconnecting" : "Connecting" : path.endsWith("/stop") ? "Stopping" : path.endsWith("/start") ? "Starting" : path.endsWith("/restart") ? "Restarting" : path.endsWith("/redeploy") ? "Recreating" : "Removing");
+      setOperationLabel(path.endsWith("/import") || path.endsWith("/import-path") ? "Importing" : path.includes("/connections") ? method === "DELETE" ? "Disconnecting" : "Connecting" : path.endsWith("/stop") ? "Stopping" : path.endsWith("/start") ? "Starting" : path.endsWith("/restart") ? "Restarting" : path.endsWith("/redeploy") ? "Recreating" : "Removing");
       // An import's steps show on the Imports tab, next to the list it joins.
-      setTaskId(accepted.task_id); if (!path.endsWith("/import")) setTab("last-operation"); reloadEvents();
+      setTaskId(accepted.task_id); if (!path.endsWith("/import") && !path.endsWith("/import-path")) setTab("last-operation"); reloadEvents();
       await load(); await reload();
       return accepted.task_id;
     } catch (error) { setFailure(asReport(error)); return false; }
@@ -81,8 +81,10 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
       </TabsContent>
       <TabsContent value="imports">
         <DatabaseImports apps={apps} connections={ready} imports={imports.data ?? []} loading={imports.isPending && !imports.error} failure={imports.error ? asReport(imports.error) : null} busy={busy || taskBusy}
-          onImport={async (connectionId, upload) => {
-            const accepted = await operation(`/databases/${app.id}/connections/${connectionId}/import`, "POST", upload);
+          onImport={async (connectionId, source, format) => {
+            const accepted = "file" in source
+              ? await operation(`/databases/${app.id}/connections/${connectionId}/import`, "POST", source.file, { "X-Import-Format": format })
+              : await operation(`/databases/${app.id}/connections/${connectionId}/import-path`, "POST", { path: source.path, format });
             await imports.refetch();
             return accepted || null;
           }} />

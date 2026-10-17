@@ -6,6 +6,8 @@ import {
   FormField,
   PageHeader,
   PageHeaderTitle,
+  RadioGroup,
+  RadioGroupItem,
   Select,
   SelectContent,
   SelectItem,
@@ -22,12 +24,23 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import type { App, DatabaseConnection, DatabaseImport, Report } from "../lib/types.js";
+import { api, failureOf } from "../lib/api.js";
+import { detectFormat, type ArchiveFormat } from "../lib/archiveFormat.js";
 import { formatBytes } from "../lib/format.js";
 import { DatabaseOperation } from "./DatabaseOperation.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
 
-const MAX_BYTES = 64 * 1024 * 1024;
+/** Where the dump comes from: a file the browser sends, or a path the daemon reads. */
+export type ImportSource = { file: File } | { path: string };
+
+const FORMATS: { value: ArchiveFormat; label: string; command: string }[] = [
+  { value: "custom", label: "Custom (pg_dump --format=custom)", command: "pg_dump --format=custom --no-owner --no-privileges --file backup.dump" },
+  { value: "tar", label: "Tar (pg_dump --format=tar)", command: "pg_dump --format=tar --no-owner --no-privileges --file backup.tar" },
+  { value: "directory", label: "Directory (pg_dump --format=directory)", command: "pg_dump --format=directory --no-owner --no-privileges --file backup-dir" },
+  { value: "sql", label: "Plain SQL (pg_dump --format=plain)", command: "pg_dump --format=plain --no-owner --no-privileges --file backup.sql" },
+];
+
 
 /**
  * Every import into this database, newest first, with the steps and log of
@@ -43,25 +56,56 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   /** Why the list could not be read; the last list read stays shown. */
   failure: Report | null;
   busy: boolean;
-  /** Uploads the archive and answers with the import's Task id, or null. */
-  onImport: (connectionId: string, file: File) => Promise<string | null>;
+  /** Starts the import and answers with its Task id, or null. */
+  onImport: (connectionId: string, source: ImportSource, format: ArchiveFormat) => Promise<string | null>;
 }) {
   const [adding, setAdding] = useState(false);
   const [connection, setConnection] = useState("");
+  const [from, setFrom] = useState<"upload" | "path">("upload");
   const [file, setFile] = useState<File | null>(null);
+  const [path, setPath] = useState("");
+  const [format, setFormat] = useState<ArchiveFormat | "">("");
+  const [detection, setDetection] = useState<string | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
   // An unread history is not an empty one: the form opens by itself only when
   // the list was read and has nothing in it.
   const formOpen = adding || (!loading && !failure && !imports.length);
-  const close = () => { setAdding(false); setFile(null); };
+  const close = () => { setAdding(false); setFile(null); setPath(""); setFormat(""); setDetection(null); };
   const selected = imports.find((item) => item.task_id === chosen) ?? imports[0] ?? null;
   const appName = (item: { consumer_application_id: string; consumer_name?: string | null }) =>
     item.consumer_name ?? apps.find((app) => app.id === item.consumer_application_id)?.name ?? item.consumer_application_id;
+  const source: ImportSource | null = from === "upload" ? (file ? { file } : null) : (path.trim() ? { path: path.trim() } : null);
+  const command = FORMATS.find((item) => item.value === format)?.command ?? FORMATS[0].command;
+
+  // The type is read from the file and preselected; when it cannot be told,
+  // nothing is, and Import waits for the Operator to choose.
+  async function pickFile(next: File | null) {
+    setFile(next);
+    if (!next) { setFormat(""); setDetection(null); return; }
+    const detected = detectFormat(new Uint8Array(await next.slice(0, 512).arrayBuffer()));
+    setFormat(detected ?? "");
+    setDetection(detected ? null : "Could not tell what kind of dump this is. Choose its type.");
+  }
+
+  async function detectPath() {
+    const value = path.trim();
+    if (!value) return;
+    try {
+      const response = await api("/databases/import-format", { method: "POST", body: JSON.stringify({ path: value }) });
+      if (!response.ok) throw await failureOf(response);
+      const { format: detected } = await response.json() as { format: ArchiveFormat | null };
+      setFormat(detected ?? "");
+      setDetection(detected ? null : "Could not tell what kind of dump this is. Choose its type.");
+    } catch (error) {
+      setFormat("");
+      setDetection((error as { error?: string }).error ?? "Could not read that path.");
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!file || !connection) return;
-    const task = await onImport(connection, file);
+    if (!source || !connection || !format) return;
+    const task = await onImport(connection, source, format);
     if (task) {
       setChosen(task);
       close();
@@ -81,15 +125,25 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
           <FormField id="import-connection" label="Consumer database" hint={connections.length ? undefined : "Connect an Application first; the import fills its database."}><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
           <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
         </Select>
-        <FormField id="database-import" label="Backup file" type="file" accept=".dump,.backup" onChange={(event) => setFile(event.target.files?.[0] ?? null)} hint="pg_dump custom archive, up to 64 MiB." />
+        <RadioGroup label="Dump" variant="segmented" value={from} disabled={busy} onValueChange={(next) => { setFrom(next as "upload" | "path"); setFormat(""); setDetection(null); }}>
+          <RadioGroupItem value="upload" label="Upload a file" />
+          <RadioGroupItem value="path" label="Path on the Host" />
+        </RadioGroup>
+        {from === "upload"
+          ? <FormField id="database-import" label="Dump file" type="file" onChange={(event) => void pickFile(event.target.files?.[0] ?? null)} hint="Any size. It is saved privately on the Host and removed after the import." />
+          : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is. It is never moved or removed." />}
+        <Select value={format} onValueChange={(next) => { setFormat(next as ArchiveFormat); setDetection(null); }} disabled={busy || !source}>
+          <FormField id="import-format" label="Dump type" hint={detection ?? (format ? "Read from the file. Change it if it is wrong." : "Chosen from the file once you pick one.")}><SelectTrigger><SelectValue placeholder="Choose the dump type" /></SelectTrigger></FormField>
+          <SelectContent>{FORMATS.filter((item) => from === "path" || item.value !== "directory").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
         <div className="field">
-          <p className="muted">Make the archive with pg_dump, from the database you are moving:</p>
-          <pre className="setup-command"><code>pg_dump --format=custom --no-owner --no-privileges --file backup.dump "postgresql://user:password@host:5432/database"</code></pre>
+          <p className="muted">Make the dump with pg_dump, from the database you are moving:</p>
+          <pre className="setup-command"><code>{command} "postgresql://user:password@host:5432/database"</code></pre>
         </div>
       </div>
       <FormActions sticky>
         {imports.length ? <Button size="sm" type="button" onClick={close}>Cancel</Button> : null}
-        <Button size="sm" type="submit" variant="primary" disabled={!file || file.size > MAX_BYTES || !connection || busy}>Import data</Button>
+        <Button size="sm" type="submit" variant="primary" disabled={!source || !format || !connection || busy}>Import data</Button>
       </FormActions>
     </Form> : null}
 

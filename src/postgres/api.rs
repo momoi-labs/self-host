@@ -1,8 +1,5 @@
-use std::os::unix::fs::OpenOptionsExt;
-
 use axum::{
     Json, Router,
-    body::Bytes,
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -29,9 +26,177 @@ pub(crate) fn router<S: StateStore>() -> Router<AppState<S>> {
         )
         .route(
             "/databases/{id}/connections/{connection}/import",
-            post(upload::<S>).layer(DefaultBodyLimit::max(MAX_IMPORT_BYTES)),
+            post(upload::<S>).layer(DefaultBodyLimit::disable()),
         )
+        .route(
+            "/databases/{id}/connections/{connection}/import-path",
+            post(import_from_path::<S>),
+        )
+        .route("/databases/import-format", post(detect_format::<S>))
         .route("/databases/{id}/imports", get(imports::<S>))
+}
+
+const UNKNOWN_FORMAT: &str =
+    "Could not tell what kind of dump this is. Choose its type: custom, tar, directory or sql";
+
+/// The type the Operator chose, from `X-Import-Format`, if any.
+fn chosen_format(headers: &axum::http::HeaderMap) -> Result<Option<ArchiveFormat>, Error> {
+    match headers
+        .get("x-import-format")
+        .and_then(|value| value.to_str().ok())
+    {
+        None | Some("") => Ok(None),
+        Some(value) => serde_json::from_value(serde_json::Value::String(value.into()))
+            .map(Some)
+            .map_err(|_| Error::Invalid(UNKNOWN_FORMAT.into())),
+    }
+}
+
+/// Writes the request body to `path` as it arrives; answers the byte count.
+async fn save_upload(path: &std::path::Path, body: axum::body::Body) -> Result<u64, Error> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .await
+        .map_err(|_| Error::Runtime("Could not create private import file".into()))?;
+    let mut stream = body.into_data_stream();
+    let mut bytes = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| Error::Invalid(format!("The upload stopped: {e}")))?;
+        bytes += chunk.len() as u64;
+        file.write_all(&chunk)
+            .await
+            .map_err(|_| Error::Runtime("Could not save the import".into()))?;
+    }
+    file.sync_all()
+        .await
+        .map_err(|_| Error::Runtime("Could not save the import".into()))?;
+    Ok(bytes)
+}
+
+#[derive(Deserialize)]
+struct PathImport {
+    path: PathBuf,
+    #[serde(default)]
+    format: Option<ArchiveFormat>,
+}
+
+/// Bytes under `path`: a file's size, or every file's in a directory.
+fn size_of(path: &std::path::Path) -> u64 {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
+            .map(|entries| entries.flatten().map(|entry| size_of(&entry.path())).sum())
+            .unwrap_or(0),
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
+    }
+}
+
+/// Imports a dump that already sits on the Host. The daemon reads it where it
+/// is and never removes it.
+async fn import_from_path<S: StateStore>(
+    State(state): State<AppState<S>>,
+    Path((id, connection_id)): Path<(String, String)>,
+    Json(request): Json<PathImport>,
+) -> Response {
+    let result = async {
+        let (_, app) = database(&state.store, &id).await?;
+        let c = connection(&state.store, &id, &connection_id).await?;
+        if c.status != "ready" {
+            return Err(Error::Conflict(
+                "Wait for the connection to become ready before importing".into(),
+            ));
+        }
+        if !request.path.is_absolute() || !request.path.exists() {
+            return Err(Error::Invalid(format!(
+                "{} is not an absolute path to a file or directory on the Host",
+                request.path.display()
+            )));
+        }
+        let format = request
+            .format
+            .or_else(|| ArchiveFormat::detect(&request.path))
+            .ok_or_else(|| Error::Invalid(UNKNOWN_FORMAT.into()))?;
+        if request.path.is_dir() != (format == ArchiveFormat::Directory) {
+            return Err(Error::Invalid(if request.path.is_dir() {
+                "A directory imports as a directory dump".into()
+            } else {
+                "A directory dump is a directory, not a file".into()
+            }));
+        }
+        let task_id = format!("event-{:032x}", rand::random::<u128>());
+        remember_import(
+            &state.store,
+            &Import {
+                task_id: task_id.clone(),
+                database_application_id: app.id.clone(),
+                connection_id: connection_id.clone(),
+                consumer_application_id: c.consumer_application_id.clone(),
+                file_name: request.path.display().to_string(),
+                file_bytes: size_of(&request.path),
+                created_at: audit::timestamp(),
+                imported_objects: None,
+            },
+        )
+        .await?;
+        let queued = audit::EVENT_ID
+            .scope(
+                Some(task_id.clone()),
+                tasks::enqueue(
+                    &state,
+                    "configure",
+                    audit::Subject::new("database", app.id.clone(), app.name.clone()),
+                    tasks::Work::Postgres {
+                        operation: Operation::Import {
+                            connection_id,
+                            upload_id: String::new(),
+                            path: Some(request.path),
+                            format: Some(format),
+                        },
+                    },
+                ),
+            )
+            .await;
+        match queued {
+            Ok(task_id) => Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({"task_id":task_id,"database_application_id":app.id})),
+            )),
+            Err(error) => {
+                let _ = IMPORTS.remove(&state.store, &task_id).await;
+                Err(Error::Store(error))
+            }
+        }
+    }
+    .await;
+    match result {
+        Ok(value) => value.into_response(),
+        Err(error) => failure(error),
+    }
+}
+
+#[derive(Deserialize)]
+struct FormatQuery {
+    path: PathBuf,
+}
+
+/// What kind of dump sits at a Host path, for the console to preselect;
+/// `format` is null when it cannot tell.
+async fn detect_format<S: StateStore>(
+    State(_state): State<AppState<S>>,
+    Json(request): Json<FormatQuery>,
+) -> Response {
+    if !request.path.is_absolute() || !request.path.exists() {
+        return failure(Error::Invalid(format!(
+            "{} is not an absolute path to a file or directory on the Host",
+            request.path.display()
+        )));
+    }
+    Json(serde_json::json!({ "format": ArchiveFormat::detect(&request.path) })).into_response()
 }
 
 /// The file name the console sends with an upload, as something safe to show:
@@ -451,7 +616,7 @@ async fn upload<S: StateStore>(
     State(state): State<AppState<S>>,
     Path((id, connection_id)): Path<(String, String)>,
     headers: axum::http::HeaderMap,
-    body: Bytes,
+    body: axum::body::Body,
 ) -> Response {
     let result = async {
         let (_, app) = database(&state.store, &id).await?;
@@ -461,28 +626,38 @@ async fn upload<S: StateStore>(
                 "Wait for the connection to become ready before importing".into(),
             ));
         }
-        if !body.starts_with(b"PGDMP") {
-            return Err(Error::Invalid(
-                "Upload a pg_dump custom archive created with --format=custom".into(),
-            ));
-        }
+        let chosen = chosen_format(&headers)?;
         let upload_id = secret();
         let path = import_path(&upload_id)?;
         let directory = path.parent().unwrap();
         std::fs::create_dir_all(directory)
             .map_err(|_| Error::Runtime("Could not create private import storage".into()))?;
-        use std::{io::Write, os::unix::fs::PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
             .map_err(|_| Error::Runtime("Could not protect import storage".into()))?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|_| Error::Runtime("Could not create private import file".into()))?;
-        file.write_all(&body)
-            .and_then(|()| file.sync_all())
-            .map_err(|_| Error::Runtime("Could not save the import".into()))?;
+        // The upload streams to private storage, so its size never sits in
+        // memory, and the import reads it from there.
+        let file_bytes = match save_upload(&path, body).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+        };
+        let format = match chosen.or_else(|| ArchiveFormat::detect(&path)) {
+            Some(format) => format,
+            None => {
+                let _ = std::fs::remove_file(&path);
+                return Err(Error::Invalid(UNKNOWN_FORMAT.into()));
+            }
+        };
+        if format == ArchiveFormat::Directory {
+            let _ = std::fs::remove_file(&path);
+            return Err(Error::Invalid(
+                "A directory dump cannot be uploaded; import it from its path on the Host".into(),
+            ));
+        }
+        let file_name = upload_name(&headers);
         // The record exists before the worker can run, so the validation
         // stage finds it to add the object count. The Task takes its id.
         let task_id = format!("event-{:032x}", rand::random::<u128>());
@@ -493,8 +668,8 @@ async fn upload<S: StateStore>(
                 database_application_id: app.id.clone(),
                 connection_id: connection_id.clone(),
                 consumer_application_id: c.consumer_application_id.clone(),
-                file_name: upload_name(&headers),
-                file_bytes: body.len() as u64,
+                file_name,
+                file_bytes,
                 created_at: audit::timestamp(),
                 imported_objects: None,
             },
@@ -516,6 +691,8 @@ async fn upload<S: StateStore>(
                         operation: Operation::Import {
                             connection_id,
                             upload_id,
+                            path: None,
+                            format: Some(format),
                         },
                     },
                 ),

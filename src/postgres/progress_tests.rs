@@ -398,6 +398,8 @@ async fn a_failed_restore_shows_the_pg_restore_log() {
         Operation::Import {
             connection_id: connection.id,
             upload_id: secret(),
+            path: None,
+            format: None,
         },
     )
     .await;
@@ -456,6 +458,8 @@ async fn a_finished_import_records_its_object_count() {
             operation: Operation::Import {
                 connection_id: connection.id.clone(),
                 upload_id: secret(),
+                path: None,
+                format: None,
             },
         },
     )
@@ -523,6 +527,8 @@ async fn import_restores_while_the_consumer_runs() {
             operation: Operation::Import {
                 connection_id: connection.id,
                 upload_id: secret(),
+                path: None,
+                format: None,
             },
         },
     )
@@ -564,6 +570,8 @@ async fn import_progress_belongs_to_database_and_leaves_the_consumer_free() {
             operation: Operation::Import {
                 connection_id: connection.id,
                 upload_id: secret(),
+                path: None,
+                format: None,
             },
         },
     )

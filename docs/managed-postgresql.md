@@ -62,20 +62,44 @@ create scheduled backups.
 
 ## Logical import
 
-Use the database's Imports tab, **New import**, to upload a custom-format
-archive of at most 64 MiB:
+Use the database's Imports tab, **New import**. The dump comes from one of two
+places:
+
+- **Upload a file:** the browser sends it, and the daemon writes it to private
+  storage (`state/postgres-imports`, readable by the daemon only) as it
+  arrives, then removes it when the import ends. There is no size limit.
+- **Path on the Host:** a file, or a directory for a directory dump, that
+  already sits on the Host that runs self-host. The daemon reads it where it
+  is and never moves or removes it.
+
+Any pg_dump format imports:
+
+| Type | Made with | Restored with |
+| --- | --- | --- |
+| Custom | `pg_dump --format=custom` | `pg_restore --format=custom` |
+| Tar | `pg_dump --format=tar` | `pg_restore --format=tar` |
+| Directory | `pg_dump --format=directory` | `pg_restore --format=directory`, Host path only |
+| Plain SQL | `pg_dump --format=plain` | `psql --file` |
 
 ```sh
 pg_dump --format=custom --no-owner --no-privileges --file backup.dump \
   "postgresql://user:password@host:5432/database"
 ```
 
+The form reads the type from the file and preselects it: a custom archive
+starts with `PGDMP`, a tar archive has a tar header, plain SQL is text that
+starts like a pg_dump script, and a directory dump holds a `toc.dat`. When it
+cannot tell, for example for a compressed file, nothing is preselected and
+Import waits for the type to be chosen.
+
 The import goes into a connected Application's database, as that
 connection's role. Nothing else holds it back: the consumer Application may
-keep running, the target may already hold data, and the archive may come from
-any PostgreSQL version. pg_restore decides what it can restore.
+keep running, the target may already hold data, and the dump may come from
+any PostgreSQL version. pg_restore or psql decides what it can restore.
 
-The restore runs:
+A file streams into the tool's standard input, so its size never sits in the
+daemon's memory. A directory is copied into the database container with
+`docker cp`, owned by `postgres`, and removed after. A custom archive runs:
 
 ```sh
 docker exec --user postgres --interactive <database container> \
@@ -83,6 +107,9 @@ docker exec --user postgres --interactive <database container> \
   --no-privileges --single-transaction --exit-on-error \
   --dbname <consumer database> --username <consumer role>
 ```
+
+and plain SQL runs `psql --no-psqlrc --no-password --echo-errors --set
+ON_ERROR_STOP=1 --single-transaction --dbname ... --username ... --file -`.
 
 The role is not a superuser, so an archive that needs an extension only a
 superuser can create fails. A failure rolls the whole restore back. Nothing
@@ -120,7 +147,9 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 | `POST /databases/{id}/connections` | `{ "consumer_application_id": "...", "variable": "DATABASE_URL" }` |
 | `POST /databases/{id}/connections/{connection}/reveal` | Private URL for a ready connection |
 | `DELETE /databases/{id}/connections/{connection}` | Revoke access and preserve the consumer database |
-| `POST /databases/{id}/connections/{connection}/import` | Custom archive bytes, `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name |
+| `POST /databases/{id}/connections/{connection}/import` | Dump bytes, `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name, `X-Import-Format` the type (`custom`, `tar`, `sql`) when it should not be read from the file |
+| `POST /databases/{id}/connections/{connection}/import-path` | `{ "path": "/srv/backups/app.dump", "format": "custom" }`; `format` is optional |
+| `POST /databases/import-format` | `{ "path": "..." }`; answers `{ "format": "custom" }`, or `null` when the type cannot be told |
 | `GET /databases/{id}/imports` | None; answers the last 50 imports, newest first, each with its Task |
 | `DELETE /databases/{id}` | `{ "confirm_name": "database", "delete_data": false }` |
 
