@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import {
   Button,
+  FileDropzone,
   Form,
   FormActions,
   FormField,
@@ -67,6 +68,9 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   const [format, setFormat] = useState<ArchiveFormat | "">("");
   const [detection, setDetection] = useState<string | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
+  // Each change of source takes a number; a detection answers only if its
+  // number is still the latest, so a slow one cannot pick the wrong type.
+  const generation = useRef(0);
   // An unread history is not an empty one: the form opens by itself only when
   // the list was read and has nothing in it.
   const formOpen = adding || (!loading && !failure && !imports.length);
@@ -80,9 +84,11 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   // The type is read from the file and preselected; when it cannot be told,
   // nothing is, and Import waits for the Operator to choose.
   async function pickFile(next: File | null) {
+    const mine = ++generation.current;
     setFile(next);
     if (!next) { setFormat(""); setDetection(null); return; }
     const detected = detectFormat(new Uint8Array(await next.slice(0, 512).arrayBuffer()));
+    if (mine !== generation.current) return;
     setFormat(detected ?? "");
     setDetection(detected ? null : "Could not tell what kind of dump this is. Choose its type.");
   }
@@ -90,13 +96,16 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   async function detectPath() {
     const value = path.trim();
     if (!value) return;
+    const mine = ++generation.current;
     try {
       const response = await api("/databases/import-format", { method: "POST", body: JSON.stringify({ path: value }) });
       if (!response.ok) throw await failureOf(response);
       const { format: detected } = await response.json() as { format: ArchiveFormat | null };
+      if (mine !== generation.current) return;
       setFormat(detected ?? "");
       setDetection(detected ? null : "Could not tell what kind of dump this is. Choose its type.");
     } catch (error) {
+      if (mine !== generation.current) return;
       setFormat("");
       setDetection((error as { error?: string }).error ?? "Could not read that path.");
     }
@@ -125,13 +134,15 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
           <FormField id="import-connection" label="Consumer database" hint={connections.length ? undefined : "Connect an Application first; the import fills its database."}><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
           <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
         </Select>
-        <RadioGroup label="Dump" variant="segmented" value={from} disabled={busy} onValueChange={(next) => { setFrom(next as "upload" | "path"); setFormat(""); setDetection(null); }}>
+        <RadioGroup label="Dump" variant="segmented" value={from} disabled={busy} onValueChange={(next) => { generation.current += 1; setFrom(next as "upload" | "path"); setFormat(""); setDetection(null); }}>
           <RadioGroupItem value="upload" label="Upload a file" />
           <RadioGroupItem value="path" label="Path on the Host" />
         </RadioGroup>
         {from === "upload"
-          ? <FormField id="database-import" label="Dump file" type="file" onChange={(event) => void pickFile(event.target.files?.[0] ?? null)} hint="Any size. It is saved privately on the Host and removed after the import." />
-          : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is. It is never moved or removed." />}
+          ? <FileDropzone id="database-import" label={file ? file.name : "Drop a dump here, or choose one"} disabled={busy}
+              description={file ? `${formatBytes(file.size)} · saved privately on the Host and removed after the import` : "Any size. It is saved privately on the Host and removed after the import."}
+              onFilesSelected={(files) => void pickFile(files[0] ?? null)} />
+          : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { generation.current += 1; setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is. It is never moved or removed." />}
         <Select value={format} onValueChange={(next) => { setFormat(next as ArchiveFormat); setDetection(null); }} disabled={busy || !source}>
           <FormField id="import-format" label="Dump type" hint={detection ?? (format ? "Read from the file. Change it if it is wrong." : "Chosen from the file once you pick one.")}><SelectTrigger><SelectValue placeholder="Choose the dump type" /></SelectTrigger></FormField>
           <SelectContent>{FORMATS.filter((item) => from === "path" || item.value !== "directory").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
