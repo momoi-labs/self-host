@@ -55,6 +55,9 @@ impl ArchiveFormat {
         if path.is_dir() {
             return path.join("toc.dat").is_file().then_some(Self::Directory);
         }
+        if !path.is_file() {
+            return None;
+        }
         use std::io::Read;
         let mut head = vec![0u8; 512];
         let read = std::fs::File::open(path)
