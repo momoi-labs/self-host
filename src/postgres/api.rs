@@ -78,6 +78,32 @@ async fn save_upload(path: &std::path::Path, body: axum::body::Body) -> Result<u
     Ok(bytes)
 }
 
+/// Checks that `path` names something on this Host, saying which Host: the
+/// path is read on the machine that runs self-host, not the browser's.
+fn host_path(path: &std::path::Path) -> Result<(), Error> {
+    if !path.is_absolute() {
+        return Err(Error::Invalid(format!(
+            "{} is not an absolute path; start it with /",
+            path.display()
+        )));
+    }
+    if !path.exists() {
+        let mut name = [0u8; 256];
+        // SAFETY: the buffer outlives the call and its length is passed.
+        let host = if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } == 0 {
+            let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+            String::from_utf8_lossy(&name[..end]).into_owned()
+        } else {
+            "this Host".into()
+        };
+        return Err(Error::Invalid(format!(
+            "Nothing at {} on {host}. The path is read on the machine that runs self-host",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct PathImport {
     path: PathBuf,
@@ -111,12 +137,7 @@ async fn import_from_path<S: StateStore>(
                 "Wait for the connection to become ready before importing".into(),
             ));
         }
-        if !request.path.is_absolute() || !request.path.exists() {
-            return Err(Error::Invalid(format!(
-                "{} is not an absolute path to a file or directory on the Host",
-                request.path.display()
-            )));
-        }
+        host_path(&request.path)?;
         let format = request
             .format
             .or_else(|| ArchiveFormat::detect(&request.path))
@@ -190,11 +211,8 @@ async fn detect_format<S: StateStore>(
     State(_state): State<AppState<S>>,
     Json(request): Json<FormatQuery>,
 ) -> Response {
-    if !request.path.is_absolute() || !request.path.exists() {
-        return failure(Error::Invalid(format!(
-            "{} is not an absolute path to a file or directory on the Host",
-            request.path.display()
-        )));
+    if let Err(error) = host_path(&request.path) {
+        return failure(error);
     }
     Json(serde_json::json!({ "format": ArchiveFormat::detect(&request.path) })).into_response()
 }

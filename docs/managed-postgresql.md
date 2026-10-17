@@ -109,7 +109,10 @@ docker exec --user postgres --interactive <database container> \
 ```
 
 and plain SQL runs `psql --no-psqlrc --no-password --echo-errors --set
-ON_ERROR_STOP=1 --single-transaction --dbname ... --username ... --file -`.
+ON_ERROR_STOP=1 --single-transaction --dbname ... --username ... --file -`. A gzip-compressed SQL dump is unpacked
+in the container on the way in (`gzip --decompress --stdout | psql ...`); its
+type cannot be read from the file, so choose Plain SQL. A Host path is read on
+the machine that runs self-host, not the one with the browser.
 
 The role is not a superuser, so an archive that needs an extension only a
 superuser can create fails. A failure rolls the whole restore back. Nothing

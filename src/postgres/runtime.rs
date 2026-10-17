@@ -218,6 +218,16 @@ async fn restore(
         command.push("--interactive".into());
     }
     command.push(container.into());
+    if format == ArchiveFormat::Sql && gzipped(file) {
+        // psql cannot read compressed input; the container's gzip unpacks it
+        // on the way in. The arguments go through "$@" untouched.
+        command.extend([
+            "sh".into(),
+            "-c".into(),
+            "gzip --decompress --stdout | \"$@\"".into(),
+            "sh".into(),
+        ]);
+    }
     command.extend(args);
     let output = run(&command, streamed.then_some(file)).await;
     if format == ArchiveFormat::Directory {
@@ -247,6 +257,16 @@ async fn restore(
     } else {
         Err(failed(tool, &output))
     }
+}
+
+/// Whether `file` starts with gzip's magic bytes.
+fn gzipped(file: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 2];
+    std::fs::File::open(file)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .is_ok()
+        && magic == [0x1f, 0x8b]
 }
 
 /// Runs one docker command, its stdin fed from `input` when there is one,
@@ -285,10 +305,21 @@ async fn run(
         .wait_with_output()
         .await
         .map_err(|_| unavailable("Could not complete the database operation"))?;
-    if let Some(writer) = writer {
-        let _ = writer.await;
-    }
     crate::command_log::record(args, &output);
+    // A dump that could not be read to its end must not pass as restored:
+    // psql takes a closed stdin for the end of the script.
+    if let Some(writer) = writer {
+        let copied = writer
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|copied| copied.map_err(|e| e.to_string()));
+        if let (Err(error), true) = (copied, output.status.success()) {
+            return Err(DockerError::Command(
+                format!("Reading the dump failed: {error}"),
+                Box::new(RestoreLog(String::new())),
+            ));
+        }
+    }
     Ok(output)
 }
 
