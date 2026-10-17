@@ -143,7 +143,7 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
               description={file ? `${formatBytes(file.size)} · saved privately on the Host and removed after the import` : "Any size. It is saved privately on the Host and removed after the import."}
               onFilesSelected={(files) => void pickFile(files[0] ?? null)} />
           : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { generation.current += 1; setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is. It is never moved or removed." />}
-        <Select value={format} onValueChange={(next) => { setFormat(next as ArchiveFormat); setDetection(null); }} disabled={busy || !source}>
+        <Select value={format} onValueChange={(next) => { generation.current += 1; setFormat(next as ArchiveFormat); setDetection(null); }} disabled={busy || !source}>
           <FormField id="import-format" label="Dump type" hint={detection ?? (format ? "Read from the file. Change it if it is wrong." : "Chosen from the file once you pick one.")}><SelectTrigger><SelectValue placeholder="Choose the dump type" /></SelectTrigger></FormField>
           <SelectContent>{FORMATS.filter((item) => from === "path" || item.value !== "directory").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
         </Select>
