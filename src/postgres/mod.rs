@@ -1127,30 +1127,8 @@ async fn import<S: StateStore>(
     )
     .await?;
     let count_sql = "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f');";
-    step(
-        state,
-        "empty",
-        "Checking target database",
-        "Consumer database is empty and ready for import.",
-        async {
-            let count = sql(
-                state,
-                &c.database_application_id,
-                &c.database,
-                &c.role,
-                count_sql.into(),
-            )
-            .await?;
-            if count.trim() != "0" {
-                return Err(Error::Conflict(
-                    "Import requires an empty consumer database. Existing data was preserved"
-                        .into(),
-                ));
-            }
-            Ok(())
-        },
-    )
-    .await?;
+    // A database that already holds data takes the import too: what clashes
+    // fails the restore, which rolls back and shows pg_restore's error.
     step(
         state,
         "restore",

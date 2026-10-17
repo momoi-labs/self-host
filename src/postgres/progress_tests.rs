@@ -608,7 +608,6 @@ async fn import_progress_belongs_to_database_and_blocks_consumer_start_until_res
             ("consumer", "completed"),
             ("ready", "completed"),
             ("archive", "completed"),
-            ("empty", "completed"),
             ("restore", "completed"),
             ("validate", "completed")
         ]
