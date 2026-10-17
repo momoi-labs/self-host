@@ -179,11 +179,19 @@ pub(crate) async fn remember_import<S: StateStore>(
     import: &Import,
 ) -> Result<(), StoreError> {
     IMPORTS.upsert(store, import).await?;
+    // Forgetting old imports must not cost this one its record or its Task.
+    if let Err(error) = forget_old_imports(store, &import.database_application_id).await {
+        tracing::warn!(%error, "could not forget old imports");
+    }
+    Ok(())
+}
+
+async fn forget_old_imports<S: StateStore>(store: &S, database: &str) -> Result<(), StoreError> {
     let mut imports: Vec<Import> = IMPORTS
         .list(store)
         .await?
         .into_iter()
-        .filter(|other| other.database_application_id == import.database_application_id)
+        .filter(|other| other.database_application_id == database)
         .collect();
     imports.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     for old in imports.into_iter().skip(IMPORTS_KEPT) {
