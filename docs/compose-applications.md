@@ -17,6 +17,7 @@ For an Application with id `k3n8qz4v2x1p` and a service called `hermes`:
 | Networks | New Applications use their own network. Existing Applications keep `sf-apps` until the Operator changes their network policy. See private connectivity below. |
 | Labels | `sf.app.id`, `sf.app.name` and `sf.app.service` on every container. |
 | Restart policy | `unless-stopped` when the service has none, so the Application returns after a reboot. |
+| DNS | When the Platform serves DNS, `dns` points at it (the Host address it listens on) unless the service sets its own, so names under the DNS Suffix, such as another Application's Hostname, resolve inside the container. Other names are forwarded upstream, and service names on the project's networks still resolve. Single-container Applications get the same through `docker run --dns`. With `serve --no-dns`, nothing is added. |
 | Environment | Application Variables fill the file's `${VAR}` references. Applications created before this get every Variable on every service instead; see Variables below. |
 | Files | `~/.config/self-host/apps/<id>/compose.yml`, rendered again on every deploy. |
 

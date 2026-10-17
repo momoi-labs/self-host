@@ -954,6 +954,10 @@ impl DockerRuntime for CliDocker {
         for network in &config.additional_networks {
             args.extend(["--network".into(), network.clone()]);
         }
+        // Names under the DNS Suffix resolve through the Platform's DNS.
+        if let Some(resolver) = crate::dns::container_resolver() {
+            args.extend(["--dns".into(), resolver.to_string()]);
+        }
 
         if config
             .labels
