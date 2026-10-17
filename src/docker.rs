@@ -1727,7 +1727,10 @@ fn write_project(project: &ComposeProject) -> Result<(), DockerError> {
     };
     std::fs::create_dir_all(&project.dir).map_err(|e| io("create project directory", e))?;
     for mount in &project.bind_mounts {
-        mount.prepare().map_err(|e| io("prepare bind source", e))?;
+        mount.prepare().map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => DockerError::Command(mount.missing(), Box::new(e)),
+            _ => io("prepare bind source", e),
+        })?;
     }
     let path = project_file(project);
     std::fs::write(&path, &project.yaml).map_err(|e| io("write compose.yml", e))?;
@@ -2624,6 +2627,48 @@ mod tests {
 
     use super::*;
     use crate::error::ErrorReport;
+
+    /// A missing bind source names itself, where the Platform looked and what
+    /// to do (#236), unless a Variable wrote it.
+    #[test]
+    fn a_missing_bind_source_says_which_where_and_how_to_fix_it() {
+        use crate::compose_app::{ComposeDefinition, Resolution};
+        use crate::store::VariableDelivery;
+        let dir = std::env::temp_dir().join(format!("sf-missing-{}", rand::random::<u64>()));
+        let failure = |source: &str, variables: &[(String, String)]| {
+            let yaml = format!(
+                "services:\n  web:\n    image: nginx\n    volumes:\n      - type: bind\n        source: {source}\n        target: /certs/ca.pem\n        bind:\n          create_host_path: false\n"
+            );
+            let project = ComposeDefinition::parse_with(&yaml, variables, Resolution::Run)
+                .unwrap()
+                .render(
+                    "app",
+                    &dir,
+                    &[],
+                    variables,
+                    VariableDelivery::Referenced,
+                    None,
+                );
+            ErrorReport::new(&write_project(&project).unwrap_err())
+        };
+
+        let report = failure("./lan-ca.pem", &[]);
+        let host = dir.join("data/lan-ca.pem");
+        assert_eq!(
+            report.error,
+            format!(
+                "bind source './lan-ca.pem' does not exist on the Host at '{}'. \
+                 Create it at that path, then deploy again.",
+                host.display()
+            )
+        );
+
+        let secret = [("CERT".to_string(), "s3cr3t-name".to_string())];
+        let report = failure("./${CERT}.pem", &secret);
+        assert!(!report.to_string().contains("s3cr3t-name"), "{report}");
+        assert!(report.error.contains("comes from a Variable"), "{report}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Two deploys may create the same network at once (#217); the one that
     /// loses sees this answer and treats the network as there.

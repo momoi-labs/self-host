@@ -379,6 +379,14 @@ impl ComposeDefinition {
         self.referenced.clone()
     }
 
+    /// Whether a referenced Variable's value shows up in `text`. The file is
+    /// interpolated before it is read, so this is the only way left to tell.
+    fn interpolated(&self, text: &str, variables: &[(String, String)]) -> bool {
+        variables.iter().any(|(name, value)| {
+            !value.is_empty() && self.referenced.contains(name) && text.contains(value.as_str())
+        })
+    }
+
     pub fn service(&self, name: &str) -> Option<&ServiceDefinition> {
         self.services.iter().find(|s| s.name == name)
     }
@@ -574,6 +582,8 @@ impl ComposeDefinition {
                                 create_host_path: mount.create_host_path,
                                 data_root: (mount.kind == MountKind::Data)
                                     .then(|| data_dir.clone()),
+                                declared: (!self.interpolated(&mount.source, variables))
+                                    .then(|| mount.source.clone()),
                             });
                             rendered.insert("type".into(), "bind".into());
                             rendered.insert("source".into(), host.display().to_string().into());

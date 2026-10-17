@@ -9,9 +9,27 @@ pub struct BindMount {
     pub create_host_path: bool,
     /// Relative mounts must stay under this directory, including symlinks.
     pub data_root: Option<PathBuf>,
+    /// The source as the Compose file wrote it, such as `./lan-ca.pem`. None
+    /// when a Variable may have produced it: its value stays out of failures.
+    pub declared: Option<String>,
 }
 
 impl BindMount {
+    /// What the Operator reads when the source is not on the Host: which
+    /// source, where the Platform looked, and what to do about it.
+    pub fn missing(&self) -> String {
+        match &self.declared {
+            Some(declared) => format!(
+                "bind source '{declared}' does not exist on the Host at '{}'. \
+                 Create it at that path, then deploy again.",
+                self.source.display()
+            ),
+            None => "a bind source does not exist on the Host. Its path comes from a \
+                     Variable, so it is not shown. Create it, then deploy again."
+                .into(),
+        }
+    }
+
     pub fn prepare(&self) -> io::Result<()> {
         if let Some(root) = &self.data_root {
             std::fs::create_dir_all(root)?;
@@ -71,6 +89,7 @@ mod tests {
                 source: self.0.join(name),
                 create_host_path: create,
                 data_root: Some(self.0.clone()),
+                declared: Some(format!("./{name}")),
             }
         }
     }
