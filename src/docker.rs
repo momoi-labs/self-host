@@ -2637,7 +2637,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sf-missing-{}", rand::random::<u64>()));
         let failure = |source: &str, variables: &[(String, String)]| {
             let yaml = format!(
-                "services:\n  web:\n    image: nginx\n    volumes:\n      - type: bind\n        source: {source}\n        target: /certs/ca.pem\n        bind:\n          create_host_path: false\n"
+                "services:\n  web:\n    image: nginx\n    environment:\n      - APP_USER\n    volumes:\n      - type: bind\n        source: {source}\n        target: /certs/ca.pem\n        bind:\n          create_host_path: false\n"
             );
             let project = ComposeDefinition::parse_with(&yaml, variables, Resolution::Run)
                 .unwrap()
@@ -2652,7 +2652,9 @@ mod tests {
             ErrorReport::new(&write_project(&project).unwrap_err())
         };
 
-        let report = failure("./lan-ca.pem", &[]);
+        // A Variable that only feeds `environment` leaves the source named.
+        let unrelated = [("APP_USER".to_string(), "lan".to_string())];
+        let report = failure("./lan-ca.pem", &unrelated);
         let host = dir.join("data/lan-ca.pem");
         assert_eq!(
             report.error,

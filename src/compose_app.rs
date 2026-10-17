@@ -239,6 +239,9 @@ pub struct ComposeDefinition {
     pub services: Vec<ServiceDefinition>,
     declared_volumes: IndexMap<String, Value>,
     referenced: BTreeSet<String>,
+    /// Mounts, by service and position, whose source the file wrote with a
+    /// `$`. Their resolved paths may hold a Variable's value.
+    interpolated_mounts: BTreeSet<(String, usize)>,
 }
 
 /// Where the Application answers: one service, one container port.
@@ -330,6 +333,7 @@ impl ComposeDefinition {
             }
         }
 
+        let interpolated_mounts = interpolated_mounts(&top);
         let mut interpolator = Interpolator::new(variables, resolution);
         interpolator.document(&mut top)?;
         let mut referenced = interpolator.referenced;
@@ -370,6 +374,7 @@ impl ComposeDefinition {
             services: parsed,
             declared_volumes,
             referenced,
+            interpolated_mounts,
         })
     }
 
@@ -377,14 +382,6 @@ impl ComposeDefinition {
     /// its forms, `$VAR`, and a bare `VAR` environment entry.
     pub fn referenced_variables(&self) -> BTreeSet<String> {
         self.referenced.clone()
-    }
-
-    /// Whether a referenced Variable's value shows up in `text`. The file is
-    /// interpolated before it is read, so this is the only way left to tell.
-    fn interpolated(&self, text: &str, variables: &[(String, String)]) -> bool {
-        variables.iter().any(|(name, value)| {
-            !value.is_empty() && self.referenced.contains(name) && text.contains(value.as_str())
-        })
     }
 
     pub fn service(&self, name: &str) -> Option<&ServiceDefinition> {
@@ -557,7 +554,7 @@ impl ComposeDefinition {
 
             if !service.mounts.is_empty() {
                 let mut rewritten = Vec::with_capacity(service.mounts.len());
-                for mount in &service.mounts {
+                for (index, mount) in service.mounts.iter().enumerate() {
                     let mut rendered = Mapping::new();
                     rendered.insert("target".into(), mount.target.clone().into());
                     rendered.insert("read_only".into(), mount.read_only.into());
@@ -582,8 +579,10 @@ impl ComposeDefinition {
                                 create_host_path: mount.create_host_path,
                                 data_root: (mount.kind == MountKind::Data)
                                     .then(|| data_dir.clone()),
-                                declared: (!self.interpolated(&mount.source, variables))
-                                    .then(|| mount.source.clone()),
+                                declared: (!self
+                                    .interpolated_mounts
+                                    .contains(&(service.name.clone(), index)))
+                                .then(|| mount.source.clone()),
                             });
                             rendered.insert("type".into(), "bind".into());
                             rendered.insert("source".into(), host.display().to_string().into());
@@ -733,6 +732,33 @@ fn valid_volume_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// Mounts whose source is written with a `$`, read before interpolation.
+/// A short mount counts as a whole, so a `$` anywhere in it counts.
+fn interpolated_mounts(top: &Mapping) -> BTreeSet<(String, usize)> {
+    let mut found = BTreeSet::new();
+    let Some(Value::Mapping(services)) = top.get("services") else {
+        return found;
+    };
+    for (name, body) in services {
+        let Some(Value::Sequence(items)) = body.get("volumes") else {
+            continue;
+        };
+        for (index, item) in items.iter().enumerate() {
+            let source = match item {
+                Value::Mapping(entry) => entry.get("source"),
+                other => Some(other),
+            };
+            if source
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.contains('$'))
+            {
+                found.insert((key_name(name), index));
+            }
+        }
+    }
+    found
 }
 
 fn parse_mount(value: &Value) -> Result<Mount, String> {
