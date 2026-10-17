@@ -331,8 +331,14 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .form-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
 .form-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
 /* An upload's progress bar needs room to read. */
+/* An upload's progress sits on one line, bar then figures, so its row keeps
+   the height of the badge rows around it. The bar still names itself. */
 .import-upload { min-width: 18rem; }
-.import-upload .meter-label { white-space: nowrap; }
+.import-upload .meter { grid-template-columns: minmax(5rem, 1fr) auto; grid-template-areas: "bar figures"; align-items: center; column-gap: var(--spacing-sm); }
+.import-upload .meter-track { grid-area: bar; }
+.import-upload .meter-label { grid-area: figures; white-space: nowrap; }
+.import-upload .meter-label > :first-child { display: none; }
+.import-upload .meter-label > :last-child { max-width: none; }
 /* The import dialog's steps scroll on a short screen; its buttons stay put. */
 .import-dialog > form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 .import-dialog > form > [data-slot="dialog-body"] { overflow-y: auto; min-height: 0; }
