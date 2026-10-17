@@ -222,7 +222,8 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
 
     {!loading && !imports.length && !uploads.length && !failure ? <EmptyState variant="first-run"><EmptyStateTitle>No imports yet</EmptyStateTitle></EmptyState> : null}
 
-    {loading || imports.length || uploads.length ? <div className="table-wrap"><div className="table-scroll"><Table aria-label="Database imports" aria-busy={loading}>
+    {loading || imports.length || uploads.length ? <div className="table-wrap"><div className="table-scroll"><Table aria-label="Database imports" aria-busy={loading} className="imports-table">
+      <colgroup><col className="imports-when" /><col className="imports-app" /><col /><col className="imports-result" /><col className="imports-objects" /></colgroup>
       <TableHeader><TableRow><TableHead>When</TableHead><TableHead>Application</TableHead><TableHead>File</TableHead><TableHead>Result</TableHead><TableHead className="col-tight">Objects</TableHead></TableRow></TableHeader>
       <TableBody>{uploads.map((upload) => <TableRow key={upload.key}>
         <TableCell className="muted">Now</TableCell>
@@ -240,7 +241,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
         return <TableRow key={item.task_id} aria-selected={selected?.task_id === item.task_id}>
           <TableCell title={new Date(item.created_at).toLocaleString()}>{new Date(item.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</TableCell>
           <TableCell>{appName(item)}</TableCell>
-          <TableCell><button type="button" className="btn btn-link" aria-pressed={selected?.task_id === item.task_id} onClick={() => setChosen(item.task_id)}><span className="mono">{item.file_name}</span></button> <span className="muted">· {formatBytes(item.file_bytes)}</span></TableCell>
+          <TableCell title={`${item.file_name} · ${formatBytes(item.file_bytes)}`}><button type="button" className="btn btn-link" aria-pressed={selected?.task_id === item.task_id} onClick={() => setChosen(item.task_id)}><span className="mono">{item.file_name}</span></button> <span className="muted">· {formatBytes(item.file_bytes)}</span></TableCell>
           <TableCell><StatusBadge tone={status === "failed" ? "danger" : status === "completed" || status === "running" ? "success" : "neutral"} pulse={status === "running"}>{status === "completed" ? "Imported" : status === "failed" ? "Failed" : status === "running" ? "Restoring" : status === "pending" ? "Queued" : "Unknown"}</StatusBadge></TableCell>
           <TableCell className="col-tight">{item.imported_objects ?? "—"}</TableCell>
         </TableRow>;

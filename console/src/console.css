@@ -333,7 +333,14 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 /* An upload's progress bar needs room to read. */
 /* An upload's progress sits on one line, bar then figures, so its row keeps
    the height of the badge rows around it. The bar still names itself. */
-.import-upload { min-width: 18rem; }
+/* Fixed columns, so an upload's progress bar coming and going does not move
+   the rest of the table. */
+.imports-table { table-layout: fixed; min-width: 52rem; }
+.imports-table .imports-when { width: 9.5rem; }
+.imports-table .imports-app { width: 9rem; }
+.imports-table .imports-result { width: 17rem; }
+.imports-table .imports-objects { width: 5.5rem; }
+.imports-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .import-upload .meter { grid-template-columns: minmax(5rem, 1fr) auto; grid-template-areas: "bar figures"; align-items: center; column-gap: var(--spacing-sm); }
 .import-upload .meter-track { grid-area: bar; }
 .import-upload .meter-label { grid-area: figures; white-space: nowrap; }
