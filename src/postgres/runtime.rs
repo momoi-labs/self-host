@@ -19,6 +19,9 @@ pub enum Request {
         role: String,
         file: PathBuf,
         format: super::ArchiveFormat,
+        /// One transaction that stops at the first error; off, the tool goes
+        /// on past errors and they are listed at the end.
+        all_or_nothing: bool,
         /// The database container's image; plain SQL runs in a copy of it.
         image: String,
         /// The connection role's password, for plain SQL over TCP.
@@ -36,12 +39,18 @@ pub async fn execute(request: &Request) -> Result<String, DockerError> {
         role,
         file,
         format,
+        all_or_nothing,
         image,
         password,
     } = request
     {
         let sandbox = Sandbox { image, password };
-        return restore(container, database, role, file, *format, &sandbox).await;
+        let target = Target {
+            container,
+            database,
+            role,
+        };
+        return restore(&target, file, *format, *all_or_nothing, &sandbox).await;
     }
     let mut command = tokio::process::Command::new("docker");
     command
@@ -138,16 +147,23 @@ struct Sandbox<'a> {
     password: &'a str,
 }
 
+/// The database a restore fills, and the role it runs as.
+struct Target<'a> {
+    container: &'a str,
+    database: &'a str,
+    role: &'a str,
+}
+
 async fn restore(
-    container: &str,
-    database: &str,
-    role: &str,
+    target: &Target<'_>,
     file: &std::path::Path,
     format: super::ArchiveFormat,
+    all_or_nothing: bool,
     sandbox: &Sandbox<'_>,
 ) -> Result<String, DockerError> {
+    let container = target.container;
     let staged = format!("/tmp/sf-import-{:032x}", rand::random::<u128>());
-    let result = restore_from(container, database, role, file, format, &staged, sandbox).await;
+    let result = restore_from(target, file, format, all_or_nothing, &staged, sandbox).await;
     // Whatever was staged goes, whichever step stopped.
     if format == super::ArchiveFormat::Directory {
         let _ = run(
@@ -170,15 +186,19 @@ async fn restore(
 }
 
 async fn restore_from(
-    container: &str,
-    database: &str,
-    role: &str,
+    target: &Target<'_>,
     file: &std::path::Path,
     format: super::ArchiveFormat,
+    all_or_nothing: bool,
     staged: &str,
     sandbox: &Sandbox<'_>,
 ) -> Result<String, DockerError> {
     use super::ArchiveFormat;
+    let Target {
+        container,
+        database,
+        role,
+    } = *target;
     let staged = staged.to_owned();
     let source = if format == ArchiveFormat::Directory {
         // docker cp copies a symlink as a link; the dump is what it points to.
@@ -218,51 +238,7 @@ async fn restore_from(
     } else {
         "-".into()
     };
-    let (tool, mut args): (&str, Vec<String>) = match format {
-        ArchiveFormat::Sql => (
-            "psql",
-            vec![
-                "psql".into(),
-                "--no-psqlrc".into(),
-                "--no-password".into(),
-                "--echo-errors".into(),
-                "--set".into(),
-                "ON_ERROR_STOP=1".into(),
-                "--host".into(),
-                "127.0.0.1".into(),
-                "--dbname".into(),
-                database.into(),
-                "--username".into(),
-                role.into(),
-                "--file".into(),
-                source.clone(),
-            ],
-        ),
-        other => (
-            "pg_restore",
-            vec![
-                "pg_restore".into(),
-                "--verbose".into(),
-                "--no-password".into(),
-                format!(
-                    "--format={}",
-                    match other {
-                        ArchiveFormat::Tar => "tar",
-                        ArchiveFormat::Directory => "directory",
-                        _ => "custom",
-                    }
-                ),
-                "--no-owner".into(),
-                "--no-privileges".into(),
-                "--single-transaction".into(),
-                "--exit-on-error".into(),
-                "--dbname".into(),
-                database.into(),
-                "--username".into(),
-                role.into(),
-            ],
-        ),
-    };
+    let (tool, mut args) = tool_args(format, database, role, &source, all_or_nothing);
     if format == ArchiveFormat::Directory {
         args.push(source.clone());
     }
@@ -315,16 +291,22 @@ async fn restore_from(
         command.extend([
             "sh".into(),
             "-c".into(),
-            "{ printf 'BEGIN;\\n' && gzip --decompress --stdout && printf '\\nCOMMIT;\\n'; } | \"$@\"".into(),
+            if all_or_nothing {
+                "{ printf 'BEGIN;\\n' && gzip --decompress --stdout && printf '\\nCOMMIT;\\n'; } | \"$@\""
+            } else {
+                "gzip --decompress --stdout | \"$@\""
+            }
+            .into(),
             "sh".into(),
         ]);
     }
     command.extend(args);
     // psql's transaction is a BEGIN and a COMMIT around the stream, so a
     // dump cut short never commits. A gzip dump gets them from the shell;
-    // pg_restore runs its own single transaction.
+    // pg_restore runs its own single transaction. Without all or nothing
+    // there is no transaction to wrap.
     let input = streamed.then_some(match (format, gzipped(file)) {
-        (ArchiveFormat::Sql, false) => Input {
+        (ArchiveFormat::Sql, false) if all_or_nothing => Input {
             path: file,
             before: "BEGIN;\n",
             after: "\nCOMMIT;\n",
@@ -347,11 +329,122 @@ async fn restore_from(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    if !all_or_nothing && let Some(error) = went_past_errors(tool, &output) {
+        return Err(error);
+    }
     if output.status.success() {
         Ok(log)
     } else {
         Err(failed(tool, &output))
     }
+}
+
+/// The tool and its arguments, all in long form. All or nothing is one
+/// transaction that stops at the first error; without it, pg_restore and
+/// psql go on past errors as they do by default.
+fn tool_args(
+    format: super::ArchiveFormat,
+    database: &str,
+    role: &str,
+    source: &str,
+    all_or_nothing: bool,
+) -> (&'static str, Vec<String>) {
+    use super::ArchiveFormat;
+    if format == ArchiveFormat::Sql {
+        let mut args: Vec<String> = vec![
+            "psql".into(),
+            "--no-psqlrc".into(),
+            "--no-password".into(),
+            "--echo-errors".into(),
+        ];
+        if all_or_nothing {
+            args.extend(["--set".into(), "ON_ERROR_STOP=1".into()]);
+        }
+        args.extend([
+            "--host".into(),
+            "127.0.0.1".into(),
+            "--dbname".into(),
+            database.into(),
+            "--username".into(),
+            role.into(),
+            "--file".into(),
+            source.into(),
+        ]);
+        return ("psql", args);
+    }
+    let mut args: Vec<String> = vec![
+        "pg_restore".into(),
+        "--verbose".into(),
+        "--no-password".into(),
+        format!(
+            "--format={}",
+            match format {
+                ArchiveFormat::Tar => "tar",
+                ArchiveFormat::Directory => "directory",
+                _ => "custom",
+            }
+        ),
+        "--no-owner".into(),
+        "--no-privileges".into(),
+    ];
+    if all_or_nothing {
+        args.extend(["--single-transaction".into(), "--exit-on-error".into()]);
+    }
+    args.extend([
+        "--dbname".into(),
+        database.into(),
+        "--username".into(),
+        role.into(),
+    ]);
+    ("pg_restore", args)
+}
+
+/// The error lines pg_restore or psql printed for statements that failed.
+fn error_lines(log: &str) -> Vec<&str> {
+    log.lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("pg_restore: error:")
+                || (line.starts_with("psql:") && line.contains("ERROR:"))
+        })
+        .collect()
+}
+
+/// A restore that went on past errors to its end, so the rest is restored.
+/// The stage log ends with the errors, and the failure names how many and
+/// the last. None when it met none, or stopped for another reason.
+fn went_past_errors(tool: &str, output: &std::process::Output) -> Option<DockerError> {
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let errors = error_lines(&log);
+    // pg_restore counts what it went past and exits 1; psql exits 0.
+    let counted = log.lines().rev().find_map(|line| {
+        line.trim()
+            .strip_prefix("pg_restore: warning: errors ignored on restore: ")
+            .and_then(|count| count.trim().parse::<usize>().ok())
+    });
+    let count = match (tool, counted) {
+        ("pg_restore", Some(count)) => count,
+        ("psql", _) if output.status.success() && !errors.is_empty() => errors.len(),
+        _ => return None,
+    };
+    let statements = if count == 1 {
+        "statement"
+    } else {
+        "statements"
+    };
+    let last = errors.last().copied().unwrap_or("it printed none");
+    crate::command_log::note(&format!(
+        "{count} {statements} failed; the restore went on past them:\n{}",
+        errors.join("\n")
+    ));
+    Some(DockerError::Command(
+        format!("{tool} restored the rest, but {count} {statements} failed. The last: {last}"),
+        Box::new(RestoreLog(log)),
+    ))
 }
 
 /// Whether `file` starts with gzip's magic bytes.
@@ -508,4 +601,267 @@ impl std::error::Error for RestoreLog {}
 
 fn unavailable(message: &str) -> DockerError {
     DockerError::Unavailable(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::postgres::ArchiveFormat;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn output(code: i32, stderr: &str) -> std::process::Output {
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn all_or_nothing_is_one_transaction_that_stops_at_the_first_error() {
+        let (_, on) = tool_args(ArchiveFormat::Tar, "db", "role", "-", true);
+        assert!(on.contains(&"--single-transaction".into()));
+        assert!(on.contains(&"--exit-on-error".into()));
+        assert!(on.contains(&"--verbose".into()));
+        assert!(on.contains(&"--format=tar".into()));
+        let (_, off) = tool_args(ArchiveFormat::Tar, "db", "role", "-", false);
+        assert!(!off.contains(&"--single-transaction".into()));
+        assert!(!off.contains(&"--exit-on-error".into()));
+        let (tool, on) = tool_args(ArchiveFormat::Sql, "db", "role", "-", true);
+        assert_eq!(tool, "psql");
+        assert!(on.contains(&"ON_ERROR_STOP=1".into()));
+        let (_, off) = tool_args(ArchiveFormat::Sql, "db", "role", "-", false);
+        assert!(!off.contains(&"ON_ERROR_STOP=1".into()));
+    }
+
+    #[tokio::test]
+    async fn a_restore_past_errors_lists_them_at_the_end_and_names_the_last() {
+        let printed = "pg_restore: creating TABLE \"public.t\"\n\
+            pg_restore: error: could not execute query: ERROR:  relation \"u\" already exists\n\
+            Command was: CREATE TABLE public.u (id integer);\n\
+            pg_restore: warning: errors ignored on restore: 1\n";
+        let (error, log) = crate::command_log::scope(async {
+            went_past_errors("pg_restore", &output(1, printed))
+        })
+        .await;
+        let error = error.expect("errors were ignored").to_string();
+        assert!(error.contains("pg_restore restored the rest, but 1 statement failed"));
+        assert!(error.ends_with("relation \"u\" already exists"), "{error}");
+        assert_eq!(
+            log.last().unwrap(),
+            "pg_restore: error: could not execute query: ERROR:  relation \"u\" already exists"
+        );
+        // psql exits 0 past errors; a fatal stop is a plain failure.
+        let psql = "psql:<stdin>:4: ERROR:  relation \"u\" already exists\n";
+        assert!(went_past_errors("psql", &output(0, psql)).is_some());
+        assert!(went_past_errors("psql", &output(0, "CREATE TABLE\n")).is_none());
+        assert!(
+            went_past_errors(
+                "pg_restore",
+                &output(1, "pg_restore: error: connection failed\n")
+            )
+            .is_none()
+        );
+    }
+
+    /// Runs docker and answers its stdout, failing the test when it fails.
+    fn docker(args: &[&str]) -> String {
+        let output = std::process::Command::new("docker")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "docker {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn peak_memory_kib() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+            .unwrap()
+    }
+
+    /// Every archive type restores for real, a large Host file streams, and
+    /// a restore that is not all or nothing keeps what did not fail.
+    #[tokio::test]
+    #[ignore = "needs Docker and the postgres:18-bookworm image"]
+    async fn every_dump_type_restores_into_a_real_database() {
+        let image = "postgres:18-bookworm";
+        let name = format!("sf-restore-test-{:08x}", rand::random::<u32>());
+        let host = std::env::temp_dir().join(&name);
+        std::fs::create_dir_all(&host).unwrap();
+        docker(&[
+            "run",
+            "--detach",
+            "--name",
+            &name,
+            "--env",
+            "POSTGRES_PASSWORD=admin",
+            image,
+        ]);
+        let sql = |database: &str, sql: &str| {
+            docker(&[
+                "exec",
+                "--user",
+                "postgres",
+                &name,
+                "psql",
+                "--no-psqlrc",
+                "--tuples-only",
+                "--no-align",
+                "--dbname",
+                database,
+                "--command",
+                sql,
+            ])
+        };
+        // The image restarts its server once after initdb; TCP comes last.
+        for _ in 0..120 {
+            let ready = std::process::Command::new("docker")
+                .args([
+                    "exec",
+                    "--user",
+                    "postgres",
+                    &name,
+                    "psql",
+                    "--host",
+                    "127.0.0.1",
+                    "--command",
+                    "SELECT 1",
+                ])
+                .output()
+                .unwrap();
+            if ready.status.success() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        sql("postgres", "CREATE ROLE importer LOGIN PASSWORD 'secret'");
+        sql("postgres", "CREATE DATABASE source");
+        sql(
+            "source",
+            "CREATE TABLE t (id int PRIMARY KEY); INSERT INTO t SELECT generate_series(1, 5); CREATE TABLE u (id int);",
+        );
+        let restore = |database: &str, file: &std::path::Path, format, all_or_nothing| {
+            let request = Request::Restore {
+                container: name.clone(),
+                database: database.into(),
+                role: "importer".into(),
+                file: file.into(),
+                format,
+                all_or_nothing,
+                image: image.into(),
+                password: "secret".into(),
+            };
+            async move { execute(&request).await }
+        };
+        let fresh = |database: &str| {
+            sql(
+                "postgres",
+                &format!("CREATE DATABASE {database} OWNER importer"),
+            );
+        };
+        for (format, flag, file) in [
+            (ArchiveFormat::Custom, "--format=custom", "dump.custom"),
+            (ArchiveFormat::Tar, "--format=tar", "dump.tar"),
+            (ArchiveFormat::Directory, "--format=directory", "dump.dir"),
+            (ArchiveFormat::Sql, "--format=plain", "dump.sql"),
+        ] {
+            let inside = format!("/tmp/{file}");
+            docker(&[
+                "exec",
+                "--user",
+                "postgres",
+                &name,
+                "pg_dump",
+                flag,
+                "--no-owner",
+                "--no-privileges",
+                "--file",
+                &inside,
+                "--dbname",
+                "source",
+            ]);
+            docker(&["cp", &format!("{name}:{inside}"), host.to_str().unwrap()]);
+            let path = host.join(file);
+            assert_eq!(
+                ArchiveFormat::detect(&path),
+                Some(format),
+                "{file} is told from its bytes"
+            );
+            let target = format!("{format:?}").to_lowercase();
+            fresh(&target);
+            let log = restore(&target, &path, format, true).await.unwrap();
+            if format != ArchiveFormat::Sql {
+                assert!(log.contains("pg_restore: creating TABLE"), "{log}");
+            }
+            assert_eq!(sql(&target, "SELECT count(*) FROM t"), "5", "{file}");
+
+            // A table already there makes one statement fail.
+            for (all_or_nothing, rows) in [(true, "0"), (false, "5")] {
+                let target = format!("{target}_clash_{all_or_nothing}");
+                fresh(&target);
+                sql(
+                    &target,
+                    "CREATE TABLE u (id int); ALTER TABLE u OWNER TO importer",
+                );
+                let error = restore(&target, &path, format, all_or_nothing)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("\"u\" already exists"), "{file}: {error}");
+                if !all_or_nothing {
+                    assert!(
+                        error.contains("restored the rest, but 1 statement failed"),
+                        "{file}: {error}"
+                    );
+                }
+                let kept = if sql(
+                    &target,
+                    "SELECT count(*) FROM pg_tables WHERE tablename = 't'",
+                ) == "1"
+                {
+                    sql(&target, "SELECT count(*) FROM t")
+                } else {
+                    "0".into()
+                };
+                assert_eq!(kept, rows, "{file} all or nothing {all_or_nothing}");
+            }
+        }
+
+        // A Host file past the old 64 MiB cap streams; it is never held whole.
+        let big = host.join("big.sql");
+        {
+            use std::io::Write;
+            let mut file = std::io::BufWriter::new(std::fs::File::create(&big).unwrap());
+            writeln!(
+                file,
+                "--\n-- PostgreSQL database dump\n--\nCREATE TABLE big (line text);\nCOPY big (line) FROM stdin;"
+            )
+            .unwrap();
+            let row = "x".repeat(1000);
+            for _ in 0..80_000 {
+                writeln!(file, "{row}").unwrap();
+            }
+            writeln!(file, "\\.").unwrap();
+        }
+        assert!(std::fs::metadata(&big).unwrap().len() > 64 * 1024 * 1024);
+        fresh("big");
+        let before = peak_memory_kib();
+        restore("big", &big, ArchiveFormat::Sql, true)
+            .await
+            .unwrap();
+        let grown = peak_memory_kib() - before;
+        assert_eq!(sql("big", "SELECT count(*) FROM big"), "80000");
+        assert!(grown < 16 * 1024, "peak memory grew by {grown} KiB");
+
+        docker(&["rm", "--force", &name]);
+        std::fs::remove_dir_all(host).unwrap();
+    }
 }

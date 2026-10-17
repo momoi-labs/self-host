@@ -5,6 +5,7 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
+  Checkbox,
   Dialog,
   DialogBody,
   DialogContent,
@@ -15,6 +16,7 @@ import {
   EmptyStateTitle,
   FileDropzone,
   FormField,
+  Label,
   PageHeader,
   PageHeaderTitle,
   Progress,
@@ -72,7 +74,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   /** Opens the Connections tab, where an Application is connected. */
   onOpenConnections: () => void;
   /** Imports from a Host path: its Task id, or why it was refused. */
-  onImport: (connectionId: string, path: string, format: ArchiveFormat) => Promise<{ taskId: string } | { failure: Report }>;
+  onImport: (connectionId: string, path: string, format: ArchiveFormat, allOrNothing: boolean) => Promise<{ taskId: string } | { failure: Report }>;
   /** An upload became an import: read the list again. */
   onImported: () => void;
 }) {
@@ -82,6 +84,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   const [file, setFile] = useState<File | null>(null);
   const [path, setPath] = useState("");
   const [format, setFormat] = useState<ArchiveFormat | "">("");
+  const [allOrNothing, setAllOrNothing] = useState(true);
   const [detection, setDetection] = useState<string | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -90,7 +93,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   // number is still the latest, so a slow one cannot pick the wrong type.
   const generation = useRef(0);
   const uploads = useImportUploads(databaseId);
-  const close = () => { setAdding(false); setFile(null); setPath(""); setFormat(""); setDetection(null); setRefusal(null); };
+  const close = () => { setAdding(false); setFile(null); setPath(""); setFormat(""); setAllOrNothing(true); setDetection(null); setRefusal(null); };
   // A finished upload is an import now: select it as the list shows it.
   useEffect(() => onUploadFinished((finished) => {
     if (finished.databaseId !== databaseId) return;
@@ -139,14 +142,14 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
     event.preventDefault();
     if (!source || !connection || !format) return;
     if ("file" in source) {
-      startUpload(databaseId, connection, source.file, format);
+      startUpload(databaseId, connection, source.file, format, allOrNothing);
       close();
       return;
     }
     if (submitting) return;
     setSubmitting(true);
     setRefusal(null);
-    const result = await onImport(connection, source.path, format);
+    const result = await onImport(connection, source.path, format, allOrNothing);
     setSubmitting(false);
     if ("taskId" in result) {
       setChosen(result.taskId);
@@ -208,6 +211,20 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
               <summary className="muted">How to make the dump</summary>
               <pre className="setup-command"><code>{command} "postgresql://user:password@host:5432/database"</code></pre>
             </details>
+          </Step>
+          <Step title="How it restores" done={Boolean(source && format)}>
+            <div className="field">
+              <div className="check">
+                <Checkbox id="import-all-or-nothing" checked={allOrNothing} disabled={busy} aria-describedby="import-all-or-nothing-help"
+                  onCheckedChange={(checked) => setAllOrNothing(checked === true)} />
+                <Label htmlFor="import-all-or-nothing">All or nothing</Label>
+              </div>
+              <small className="field-hint" id="import-all-or-nothing-help">
+                {allOrNothing
+                  ? "One transaction: the first error stops the restore and rolls all of it back."
+                  : "The restore goes on past errors and keeps what worked. The import still fails, and its log lists every error at the end."}
+              </small>
+            </div>
           </Step>
         </Steps>
             {refusal ? <Failure failure={refusal} /> : null}
