@@ -499,8 +499,12 @@ async fn upload<S: StateStore>(
                 imported_objects: None,
             },
         )
-        .await?;
-        // The scheduler keeps this database operation on the consumer queue.
+        .await
+        .inspect_err(|_| {
+            // No Task will own the upload, so it goes now.
+            let _ = std::fs::remove_file(&path);
+        })?;
+        // The Task waits its turn on the database's queue.
         let queued = audit::EVENT_ID
             .scope(
                 Some(task_id.clone()),
@@ -518,7 +522,8 @@ async fn upload<S: StateStore>(
             )
             .await;
         if queued.is_err() {
-            IMPORTS.remove(&state.store, &task_id).await?;
+            // The upload is removed below either way.
+            let _ = IMPORTS.remove(&state.store, &task_id).await;
         }
         match queued {
             Ok(task_id) => Ok((
