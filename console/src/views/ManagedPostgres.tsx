@@ -84,9 +84,9 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
         {/* An import only waits its turn behind other database work, so a running Task does not hold the form back. */}
         <DatabaseImports databaseId={app.id} apps={apps} onOpenConnections={() => setTab("connections")} connections={ready} imports={imports.data ?? []} loading={imports.isPending && !imports.error} failure={imports.error ? asReport(imports.error) : null} busy={busy}
           onImported={refetchImports}
-          onImport={async (connectionId, path, format) => {
+          onImport={async (connectionId, path, format, allOrNothing) => {
             try {
-              const response = await api(`/databases/${app.id}/connections/${connectionId}/import-path`, { method: "POST", body: JSON.stringify({ path, format }) });
+              const response = await api(`/databases/${app.id}/connections/${connectionId}/import-path`, { method: "POST", body: JSON.stringify({ path, format, all_or_nothing: allOrNothing }) });
               if (!response.ok) throw await failureOf(response);
               const accepted = await response.json() as { task_id: string };
               await imports.refetch();

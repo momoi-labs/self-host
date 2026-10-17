@@ -128,8 +128,19 @@ in the container on the way in (`gzip --decompress --stdout | psql ...`); its
 type cannot be read from the file, so choose Plain SQL. A Host path is read on
 the machine that runs self-host, not the one with the browser.
 
+**All or nothing** is on by default: pg_restore runs with
+`--single-transaction --exit-on-error`, and psql with `ON_ERROR_STOP=1`
+inside the `BEGIN;` and `COMMIT;`. The first error stops the restore and rolls
+all of it back. Turn it off in the New import form, or send
+`X-Import-All-Or-Nothing: false` or `"all_or_nothing": false` to the API, and
+the restore goes on past errors as pg_restore and psql do without those
+options: what works stays, statement by statement. The stage log then ends
+with every error the tool printed, and the import still fails, naming how many
+statements failed and the last error, so an import with errors never reads as
+a clean one. The object count is not recorded for it.
+
 The role is not a superuser, so an archive that needs an extension only a
-superuser can create fails. A failure rolls the whole restore back. Nothing
+superuser can create fails. Nothing
 times the restore: it runs as long as the archive needs. After success, the
 Task counts the database's non-system relations and records the number.
 These options follow PostgreSQL's [pg_restore documentation](https://www.postgresql.org/docs/18/app-pgrestore.html).
@@ -164,8 +175,8 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 | `POST /databases/{id}/connections` | `{ "consumer_application_id": "...", "variable": "DATABASE_URL" }` |
 | `POST /databases/{id}/connections/{connection}/reveal` | Private URL for a ready connection |
 | `DELETE /databases/{id}/connections/{connection}` | Revoke access and preserve the consumer database |
-| `POST /databases/{id}/connections/{connection}/import` | Dump bytes, `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name, `X-Import-Format` the type (`custom`, `tar`, `sql`) when it should not be read from the file |
-| `POST /databases/{id}/connections/{connection}/import-path` | `{ "path": "/srv/backups/app.dump", "format": "custom" }`; `format` is optional |
+| `POST /databases/{id}/connections/{connection}/import` | Dump bytes, `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name, `X-Import-Format` the type (`custom`, `tar`, `sql`) when it should not be read from the file; `X-Import-All-Or-Nothing: false` restores past errors |
+| `POST /databases/{id}/connections/{connection}/import-path` | `{ "path": "/srv/backups/app.dump", "format": "custom", "all_or_nothing": true }`; `format` and `all_or_nothing` are optional, and `all_or_nothing` defaults to true |
 | `POST /databases/import-format` | `{ "path": "..." }`; answers `{ "format": "custom" }`, or `null` when the type cannot be told |
 | `GET /databases/{id}/imports` | None; answers the last 50 imports, newest first, each with its Task |
 | `DELETE /databases/{id}` | `{ "confirm_name": "database", "delete_data": false }` |

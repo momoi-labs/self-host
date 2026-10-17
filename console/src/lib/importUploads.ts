@@ -14,6 +14,8 @@ export type ImportUpload = {
   connectionId: string;
   file: File;
   format: ArchiveFormat;
+  /** One transaction that stops at the first error. */
+  allOrNothing: boolean;
   loaded: number;
   status: "uploading" | "failed";
   error: string | null;
@@ -42,6 +44,7 @@ function send(upload: ImportUpload) {
   request.setRequestHeader("Content-Type", "application/octet-stream");
   request.setRequestHeader("X-Upload-Name", encodeURIComponent(upload.file.name));
   request.setRequestHeader("X-Import-Format", upload.format);
+  request.setRequestHeader("X-Import-All-Or-Nothing", String(upload.allOrNothing));
   request.upload.onprogress = (event) => update(upload.key, { loaded: event.loaded });
   request.onload = () => {
     if (request.status >= 200 && request.status < 300) {
@@ -61,10 +64,10 @@ function send(upload: ImportUpload) {
 }
 
 /** Starts sending `file` and answers its key; progress shows in `useImportUploads`. */
-export function startUpload(databaseId: string, connectionId: string, file: File, format: ArchiveFormat): string {
+export function startUpload(databaseId: string, connectionId: string, file: File, format: ArchiveFormat, allOrNothing: boolean): string {
   const upload: ImportUpload = {
     key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    databaseId, connectionId, file, format, loaded: 0, status: "uploading", error: null,
+    databaseId, connectionId, file, format, allOrNothing, loaded: 0, status: "uploading", error: null,
   };
   publish([...uploads, upload]);
   send(upload);
