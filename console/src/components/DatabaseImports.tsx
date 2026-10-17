@@ -70,8 +70,8 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   busy: boolean;
   /** Opens the Connections tab, where an Application is connected. */
   onOpenConnections: () => void;
-  /** Imports from a Host path and answers with its Task id, or null. */
-  onImport: (connectionId: string, path: string, format: ArchiveFormat) => Promise<string | null>;
+  /** Imports from a Host path: its Task id, or why it was refused. */
+  onImport: (connectionId: string, path: string, format: ArchiveFormat) => Promise<{ taskId: string } | { failure: Report }>;
   /** An upload became an import: read the list again. */
   onImported: () => void;
 }) {
@@ -83,11 +83,13 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   const [format, setFormat] = useState<ArchiveFormat | "">("");
   const [detection, setDetection] = useState<string | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [refusal, setRefusal] = useState<Report | null>(null);
   // Each change of source takes a number; a detection answers only if its
   // number is still the latest, so a slow one cannot pick the wrong type.
   const generation = useRef(0);
   const uploads = useImportUploads(databaseId);
-  const close = () => { setAdding(false); setFile(null); setPath(""); setFormat(""); setDetection(null); };
+  const close = () => { setAdding(false); setFile(null); setPath(""); setFormat(""); setDetection(null); setRefusal(null); };
   // A finished upload is an import now: select it as the list shows it.
   useEffect(() => onUploadFinished((finished) => {
     if (finished.databaseId !== databaseId) return;
@@ -140,10 +142,16 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
       close();
       return;
     }
-    const task = await onImport(connection, source.path, format);
-    if (task) {
-      setChosen(task);
+    if (submitting) return;
+    setSubmitting(true);
+    setRefusal(null);
+    const result = await onImport(connection, source.path, format);
+    setSubmitting(false);
+    if ("taskId" in result) {
+      setChosen(result.taskId);
       close();
+    } else {
+      setRefusal(result.failure);
     }
   }
 
@@ -201,10 +209,11 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
             </details>
           </Step>
         </Steps>
+            {refusal ? <Failure failure={refusal} /> : null}
           </DialogBody>
           <DialogFooter>
             <Button size="sm" type="button" onClick={close}>Cancel</Button>
-            <Button size="sm" type="submit" variant="primary" disabled={!source || !format || !connection || busy}>Import data</Button>
+            <Button size="sm" type="submit" variant="primary" disabled={!source || !format || !connection || busy || submitting}>{submitting ? "Queuing…" : "Import data"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
