@@ -21,9 +21,10 @@ import {
   TableRow,
 } from "@momoi-labs/kiso-react";
 
-import type { App, DatabaseConnection, DatabaseImport } from "../lib/types.js";
+import type { App, DatabaseConnection, DatabaseImport, Report } from "../lib/types.js";
 import { formatBytes } from "../lib/format.js";
 import { DatabaseOperation } from "./DatabaseOperation.js";
+import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
 
 const MAX_BYTES = 64 * 1024 * 1024;
@@ -33,13 +34,15 @@ const MAX_BYTES = 64 * 1024 * 1024;
  * the one selected. The import runs as a Task in the daemon, so the list and
  * its logs read the same whether or not this screen was open while it ran.
  */
-export function DatabaseImports({ major, apps, connections, imports, loading, busy, onImport }: {
+export function DatabaseImports({ major, apps, connections, imports, loading, failure, busy, onImport }: {
   major: number | null;
   apps: App[];
   /** Connections ready to take an import. */
   connections: DatabaseConnection[];
   imports: DatabaseImport[];
   loading: boolean;
+  /** Why the list could not be read; the last list read stays shown. */
+  failure: Report | null;
   busy: boolean;
   /** Uploads the archive and answers with the import's Task id, or null. */
   onImport: (connectionId: string, file: File) => Promise<string | null>;
@@ -48,7 +51,10 @@ export function DatabaseImports({ major, apps, connections, imports, loading, bu
   const [connection, setConnection] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
-  const formOpen = adding || (!loading && !imports.length);
+  // An unread history is not an empty one: the form opens by itself only when
+  // the list was read and has nothing in it.
+  const formOpen = adding || (!loading && !failure && !imports.length);
+  const close = () => { setAdding(false); setFile(null); };
   const selected = imports.find((item) => item.task_id === chosen) ?? imports[0] ?? null;
   const appName = (item: { consumer_application_id: string; consumer_name?: string | null }) =>
     item.consumer_name ?? apps.find((app) => app.id === item.consumer_application_id)?.name ?? item.consumer_application_id;
@@ -59,8 +65,7 @@ export function DatabaseImports({ major, apps, connections, imports, loading, bu
     const task = await onImport(connection, file);
     if (task) {
       setChosen(task);
-      setAdding(false);
-      setFile(null);
+      close();
     }
   }
 
@@ -68,6 +73,8 @@ export function DatabaseImports({ major, apps, connections, imports, loading, bu
     <PageHeader actions={formOpen ? undefined : <Button size="sm" variant="primary" disabled={busy || !connections.length} onClick={() => setAdding(true)}><Icon name="plus" />New import</Button>}>
       <PageHeaderTitle asChild><h2 className="t-h2">Imports</h2></PageHeaderTitle>
     </PageHeader>
+
+    {failure ? <Failure failure={failure} /> : null}
 
     {formOpen ? <Form className="import-form" onSubmit={(event: FormEvent) => void submit(event)}>
       <div className="form-body">
@@ -82,7 +89,7 @@ export function DatabaseImports({ major, apps, connections, imports, loading, bu
         </div>
       </div>
       <FormActions sticky>
-        {imports.length ? <Button size="sm" type="button" onClick={() => setAdding(false)}>Cancel</Button> : null}
+        {imports.length ? <Button size="sm" type="button" onClick={close}>Cancel</Button> : null}
         <Button size="sm" type="submit" variant="primary" disabled={!file || file.size > MAX_BYTES || !connection || busy}>Import data</Button>
       </FormActions>
     </Form> : null}
