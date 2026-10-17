@@ -1912,6 +1912,15 @@ mod tests {
             ArchiveFormat::detect(&directory),
             Some(ArchiveFormat::Directory)
         );
+        let fifo = directory.join("pipe");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(ArchiveFormat::detect(&fifo), None, "a pipe is never opened");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
