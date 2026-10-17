@@ -1575,6 +1575,19 @@ fn source_image_id(info: &serde_json::Value) -> Result<String, DockerError> {
         .ok_or_else(|| source_refusal("Docker did not report an immutable image id"))
 }
 
+/// Runs a blocking call without holding up the async runtime. A `docker
+/// compose up` can wait minutes for health checks, and those containers may
+/// resolve names through the Platform's DNS, which runs on the same runtime:
+/// on a one-CPU Host a blocked worker would stop the DNS they wait on.
+fn off_the_executor<T>(call: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(call)
+        }
+        _ => call(),
+    }
+}
+
 /// Runs `docker` with `args`, keeping the command and its output for the
 /// stage that ran it (see `command_log`).
 fn docker_output<I, S>(args: I) -> std::io::Result<std::process::Output>
@@ -1583,7 +1596,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let args: Vec<std::ffi::OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
-    let output = std::process::Command::new("docker").args(&args).output()?;
+    let output = off_the_executor(|| std::process::Command::new("docker").args(&args).output())?;
     crate::command_log::record(
         &args
             .iter()
@@ -2593,6 +2606,22 @@ fn decimal_size(text: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_blocking_docker_call_leaves_the_runtime_running() {
+        // DNS answers on the same runtime a `compose up` blocks in.
+        let answered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let other = answered.clone();
+        let task =
+            tokio::spawn(async move { other.store(true, std::sync::atomic::Ordering::SeqCst) });
+        super::off_the_executor(|| std::thread::sleep(std::time::Duration::from_millis(300)));
+        assert!(
+            answered.load(std::sync::atomic::Ordering::SeqCst),
+            "another task ran during the blocking call"
+        );
+        task.await.unwrap();
+    }
+
     use super::*;
     use crate::error::ErrorReport;
 
