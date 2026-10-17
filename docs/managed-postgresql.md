@@ -67,7 +67,12 @@ places:
 
 - **Upload a file:** the browser sends it, and the daemon writes it to private
   storage (`state/postgres-imports`, readable by the daemon only) as it
-  arrives, then removes it when the import ends. There is no size limit.
+  arrives, then removes it when the import ends. There is no size limit. The
+  upload runs in the background: the New import dialog closes at once, the
+  Imports list shows its progress, and it goes on while you use other console
+  screens. Refreshing or closing the page stops it, and the console asks
+  first. A failed upload can be retried from the list, from the start, while
+  the page that holds the file stays open.
 - **Path on the Host:** a file, or a directory for a directory dump, that
   already sits on the Host that runs self-host. The daemon reads it where it
   is and never moves or removes it.

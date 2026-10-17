@@ -1,13 +1,19 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Alert,
   AlertContent,
   AlertDescription,
   AlertTitle,
   Button,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  EmptyState,
+  EmptyStateTitle,
   FileDropzone,
-  Form,
-  FormActions,
   FormField,
   PageHeader,
   PageHeaderTitle,
@@ -30,6 +36,7 @@ import type { App, DatabaseConnection, DatabaseImport, Report } from "../lib/typ
 import { api, failureOf } from "../lib/api.js";
 import { detectFormat, type ArchiveFormat } from "../lib/archiveFormat.js";
 import { formatBytes } from "../lib/format.js";
+import { dismissUpload, onUploadFinished, retryUpload, startUpload, useImportUploads } from "../lib/importUploads.js";
 import { DatabaseOperation } from "./DatabaseOperation.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
@@ -51,7 +58,8 @@ const FORMATS: { value: ArchiveFormat; label: string; command: string }[] = [
  * the one selected. The import runs as a Task in the daemon, so the list and
  * its logs read the same whether or not this screen was open while it ran.
  */
-export function DatabaseImports({ apps, connections, imports, loading, failure, busy, onImport, onOpenConnections }: {
+export function DatabaseImports({ databaseId, apps, connections, imports, loading, failure, busy, onImport, onImported, onOpenConnections }: {
+  databaseId: string;
   apps: App[];
   /** Connections ready to take an import. */
   connections: DatabaseConnection[];
@@ -62,8 +70,10 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   busy: boolean;
   /** Opens the Connections tab, where an Application is connected. */
   onOpenConnections: () => void;
-  /** Starts the import and answers with its Task id, or null. */
-  onImport: (connectionId: string, source: ImportSource, format: ArchiveFormat) => Promise<string | null>;
+  /** Imports from a Host path and answers with its Task id, or null. */
+  onImport: (connectionId: string, path: string, format: ArchiveFormat) => Promise<string | null>;
+  /** An upload became an import: read the list again. */
+  onImported: () => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [connection, setConnection] = useState("");
@@ -76,10 +86,14 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   // Each change of source takes a number; a detection answers only if its
   // number is still the latest, so a slow one cannot pick the wrong type.
   const generation = useRef(0);
-  // An unread history is not an empty one: the form opens by itself only when
-  // the list was read and has nothing in it.
-  const formOpen = adding || (!loading && !failure && !imports.length);
+  const uploads = useImportUploads(databaseId);
   const close = () => { setAdding(false); setFile(null); setPath(""); setFormat(""); setDetection(null); };
+  // A finished upload is an import now: select it as the list shows it.
+  useEffect(() => onUploadFinished((finished) => {
+    if (finished.databaseId !== databaseId) return;
+    setChosen(finished.taskId);
+    onImported();
+  }), [databaseId, onImported]);
   const selected = imports.find((item) => item.task_id === chosen) ?? imports[0] ?? null;
   const appName = (item: { consumer_application_id: string; consumer_name?: string | null }) =>
     item.consumer_name ?? apps.find((app) => app.id === item.consumer_application_id)?.name ?? item.consumer_application_id;
@@ -116,10 +130,17 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
     }
   }
 
+  // An upload runs in the background, outside this dialog, so the dialog
+  // closes at once; a Host path is queued before it closes.
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!source || !connection || !format) return;
-    const task = await onImport(connection, source, format);
+    if ("file" in source) {
+      startUpload(databaseId, connection, source.file, format);
+      close();
+      return;
+    }
+    const task = await onImport(connection, source.path, format);
     if (task) {
       setChosen(task);
       close();
@@ -127,13 +148,13 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
   }
 
   return <div className="stack">
-    <PageHeader actions={formOpen ? undefined : <Button size="sm" variant="primary" disabled={busy || !connections.length} onClick={() => setAdding(true)}><Icon name="plus" />New import</Button>}>
+    <PageHeader actions={<Button size="sm" variant="primary" disabled={busy || !connections.length} onClick={() => setAdding(true)}><Icon name="plus" />New import</Button>}>
       <PageHeaderTitle asChild><h2 className="t-h2">Imports</h2></PageHeaderTitle>
     </PageHeader>
 
     {failure ? <Failure failure={failure} /> : null}
 
-    {formOpen && !connections.length ? <Alert variant="warning">
+    {!connections.length ? <Alert variant="warning">
       <Icon name="info" size="md" />
       <AlertContent>
         <AlertTitle>No Application is connected to this database</AlertTitle>
@@ -144,16 +165,19 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
       </AlertContent>
     </Alert> : null}
 
-    {formOpen ? <Form className="import-form" onSubmit={(event: FormEvent) => void submit(event)}>
-      <div className="form-body">
+    <Dialog open={adding} onOpenChange={(open) => { if (!open) close(); }}>
+      <DialogContent className="import-dialog">
+        <DialogHeader><DialogTitle>New import</DialogTitle></DialogHeader>
+        <form onSubmit={(event: FormEvent) => void submit(event)}>
+          <DialogBody>
         <Steps>
-          <Step title="Where the data goes">
+          <Step title="Where the data goes" done={Boolean(connection)}>
             <Select value={connection} onValueChange={setConnection} disabled={busy || !connections.length}>
               <FormField id="import-connection" label="Consumer database"><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
               <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
             </Select>
           </Step>
-          <Step title="The dump">
+          <Step title="The dump" done={Boolean(source)}>
             <div className="row import-source" role="group" aria-label="Where the dump comes from">
               {(["upload", "path"] as const).map((value) => <Button key={value} size="sm" type="button" variant={from === value ? "primary" : "default"} aria-pressed={from === value} disabled={busy}
                 onClick={() => { if (from === value) return; generation.current += 1; setFrom(value); setFormat(""); setDetection(null); }}>
@@ -166,7 +190,7 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
                   onFilesSelected={(files) => void pickFile(files[0] ?? null)} />
               : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { generation.current += 1; setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is on the machine that runs self-host. It is never moved or removed." />}
           </Step>
-          <Step title="What kind of dump">
+          <Step title="What kind of dump" done={Boolean(source && format)}>
             <Select value={format} onValueChange={(next) => { generation.current += 1; setFormat(next as ArchiveFormat); setDetection(null); }} disabled={busy || !source}>
               <FormField id="import-format" label="Dump type" hint={detection ?? (format ? "Read from the file. Change it if it is wrong." : "Chosen from the file once you pick one.")}><SelectTrigger><SelectValue placeholder="Choose the dump type" /></SelectTrigger></FormField>
               <SelectContent>{FORMATS.filter((item) => from === "path" || item.value !== "directory").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
@@ -177,16 +201,30 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
             </details>
           </Step>
         </Steps>
-      </div>
-      <FormActions sticky>
-        {imports.length ? <Button size="sm" type="button" onClick={close}>Cancel</Button> : null}
-        <Button size="sm" type="submit" variant="primary" disabled={!source || !format || !connection || busy}>Import data</Button>
-      </FormActions>
-    </Form> : null}
+          </DialogBody>
+          <DialogFooter>
+            <Button size="sm" type="button" onClick={close}>Cancel</Button>
+            <Button size="sm" type="submit" variant="primary" disabled={!source || !format || !connection || busy}>Import data</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
 
-    {loading || imports.length ? <div className="table-wrap"><div className="table-scroll"><Table aria-label="Database imports" aria-busy={loading}>
+    {!loading && !imports.length && !uploads.length && !failure ? <EmptyState variant="first-run"><EmptyStateTitle>No imports yet</EmptyStateTitle></EmptyState> : null}
+
+    {loading || imports.length || uploads.length ? <div className="table-wrap"><div className="table-scroll"><Table aria-label="Database imports" aria-busy={loading}>
       <TableHeader><TableRow><TableHead>When</TableHead><TableHead>Application</TableHead><TableHead>File</TableHead><TableHead>Result</TableHead><TableHead className="col-tight">Objects</TableHead></TableRow></TableHeader>
-      <TableBody>{loading ? <TableRow>{[0, 1, 2, 3, 4].map((cell) => <TableCell key={cell}><Skeleton /></TableCell>)}</TableRow> : imports.map((item) => {
+      <TableBody>{uploads.map((upload) => <TableRow key={upload.key}>
+        <TableCell className="muted">Now</TableCell>
+        <TableCell>{appName({ consumer_application_id: connections.find((item) => item.id === upload.connectionId)?.consumer_application_id ?? "" })}</TableCell>
+        <TableCell><span className="mono">{upload.file.name}</span> <span className="muted">· {formatBytes(upload.file.size)}</span></TableCell>
+        <TableCell>{upload.status === "uploading"
+          ? <StatusBadge tone="success" pulse>Uploading {Math.floor((upload.loaded / Math.max(upload.file.size, 1)) * 100)}% · {formatBytes(upload.loaded)} of {formatBytes(upload.file.size)}</StatusBadge>
+          : <div className="stack-xs"><StatusBadge tone="danger">Upload failed</StatusBadge><span className="muted t-label">{upload.error}</span>
+              <span className="row"><Button size="sm" type="button" onClick={() => retryUpload(upload.key)}>Retry</Button><Button size="sm" variant="ghost" type="button" onClick={() => dismissUpload(upload.key)}>Dismiss</Button></span></div>}</TableCell>
+        <TableCell className="col-tight">—</TableCell>
+      </TableRow>)}
+      {loading ? <TableRow>{[0, 1, 2, 3, 4].map((cell) => <TableCell key={cell}><Skeleton /></TableCell>)}</TableRow> : imports.map((item) => {
         const status = item.task?.status ?? "unknown";
         return <TableRow key={item.task_id} aria-selected={selected?.task_id === item.task_id}>
           <TableCell>{new Date(item.created_at).toLocaleString()}</TableCell>
@@ -196,7 +234,7 @@ export function DatabaseImports({ apps, connections, imports, loading, failure, 
           <TableCell className="col-tight">{item.imported_objects ?? "—"}</TableCell>
         </TableRow>;
       })}</TableBody>
-    </Table></div><p className="table-footer"><span>{imports.length} {imports.length === 1 ? "import" : "imports"}</span></p></div>
+    </Table></div><p className="table-footer"><span>{imports.length} {imports.length === 1 ? "import" : "imports"}{uploads.length ? `, ${uploads.length} uploading` : ""}</span></p></div>
       : null}
 
     {selected ? <div className="detail-run import-run">

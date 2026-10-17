@@ -11,13 +11,16 @@ export function Steps({ children }: { children: ReactNode }) {
 
 export function Step({
   title,
+  done = false,
   children,
 }: {
   title: string;
+  /** Filled in: the number turns into a check in the primary colour. */
+  done?: boolean;
   children: ReactNode;
 }) {
   return (
-    <li>
+    <li data-done={done || undefined}>
       <p className="t-caps">{title}</p>
       {children}
     </li>
