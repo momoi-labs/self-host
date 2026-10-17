@@ -80,7 +80,7 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
         <DatabaseConnections app={app} apps={apps} connections={active} loading={database === null} busy={busy || taskBusy} failure={failure} onOperation={async (path, method, body) => Boolean(await operation(path, method, body))} />
       </TabsContent>
       <TabsContent value="imports">
-        <DatabaseImports major={database?.major ?? null} apps={apps} connections={ready} imports={imports.data ?? []} loading={imports.isPending} busy={busy || taskBusy}
+        <DatabaseImports major={database?.major ?? null} apps={apps} connections={ready} imports={imports.data ?? []} loading={imports.isPending && !imports.error} failure={imports.error ? asReport(imports.error) : null} busy={busy || taskBusy}
           onImport={async (connectionId, upload) => {
             const accepted = await operation(`/databases/${app.id}/connections/${connectionId}/import`, "POST", upload);
             await imports.refetch();

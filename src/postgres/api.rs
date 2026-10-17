@@ -483,34 +483,42 @@ async fn upload<S: StateStore>(
         file.write_all(&body)
             .and_then(|()| file.sync_all())
             .map_err(|_| Error::Runtime("Could not save the import".into()))?;
-        // The scheduler keeps this database operation on the consumer queue.
-        let queued = tasks::enqueue(
-            &state,
-            "configure",
-            audit::Subject::new("database", app.id.clone(), app.name.clone()),
-            tasks::Work::Postgres {
-                operation: Operation::Import {
-                    connection_id: connection_id.clone(),
-                    upload_id,
-                },
+        // The record exists before the worker can run, so the validation
+        // stage finds it to add the object count. The Task takes its id.
+        let task_id = format!("event-{:032x}", rand::random::<u128>());
+        remember_import(
+            &state.store,
+            &Import {
+                task_id: task_id.clone(),
+                database_application_id: app.id.clone(),
+                connection_id: connection_id.clone(),
+                consumer_application_id: c.consumer_application_id.clone(),
+                file_name: upload_name(&headers),
+                file_bytes: body.len() as u64,
+                created_at: audit::timestamp(),
+                imported_objects: None,
             },
         )
-        .await;
-        if let Ok(task_id) = &queued {
-            remember_import(
-                &state.store,
-                &Import {
-                    task_id: task_id.clone(),
-                    database_application_id: app.id.clone(),
-                    connection_id,
-                    consumer_application_id: c.consumer_application_id.clone(),
-                    file_name: upload_name(&headers),
-                    file_bytes: body.len() as u64,
-                    created_at: audit::timestamp(),
-                    imported_objects: None,
-                },
+        .await?;
+        // The scheduler keeps this database operation on the consumer queue.
+        let queued = audit::EVENT_ID
+            .scope(
+                Some(task_id.clone()),
+                tasks::enqueue(
+                    &state,
+                    "configure",
+                    audit::Subject::new("database", app.id.clone(), app.name.clone()),
+                    tasks::Work::Postgres {
+                        operation: Operation::Import {
+                            connection_id,
+                            upload_id,
+                        },
+                    },
+                ),
             )
-            .await?;
+            .await;
+        if queued.is_err() {
+            IMPORTS.remove(&state.store, &task_id).await?;
         }
         match queued {
             Ok(task_id) => Ok((
