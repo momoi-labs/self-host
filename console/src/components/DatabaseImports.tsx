@@ -238,7 +238,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
       {loading ? <TableRow>{[0, 1, 2, 3, 4].map((cell) => <TableCell key={cell}><Skeleton /></TableCell>)}</TableRow> : imports.map((item) => {
         const status = item.task?.status ?? "unknown";
         return <TableRow key={item.task_id} aria-selected={selected?.task_id === item.task_id}>
-          <TableCell>{new Date(item.created_at).toLocaleString()}</TableCell>
+          <TableCell title={new Date(item.created_at).toLocaleString()}>{new Date(item.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</TableCell>
           <TableCell>{appName(item)}</TableCell>
           <TableCell><button type="button" className="btn btn-link" aria-pressed={selected?.task_id === item.task_id} onClick={() => setChosen(item.task_id)}><span className="mono">{item.file_name}</span></button> <span className="muted">· {formatBytes(item.file_bytes)}</span></TableCell>
           <TableCell><StatusBadge tone={status === "failed" ? "danger" : status === "completed" || status === "running" ? "success" : "neutral"} pulse={status === "running"}>{status === "completed" ? "Imported" : status === "failed" ? "Failed" : status === "running" ? "Restoring" : status === "pending" ? "Queued" : "Unknown"}</StatusBadge></TableCell>

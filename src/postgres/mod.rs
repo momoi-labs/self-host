@@ -1189,6 +1189,7 @@ async fn import<S: StateStore>(
         "Restoring PostgreSQL archive",
         "Archive restored using the consumer's restricted database role.",
         async {
+            let (definition, _) = database(&state.store, &c.database_application_id).await?;
             let result = state
                 .docker
                 .postgres(&runtime::Request::Restore {
@@ -1197,6 +1198,8 @@ async fn import<S: StateStore>(
                     role: c.role.clone(),
                     file: file.into(),
                     format,
+                    image: format!("postgres:{}-bookworm", definition.major),
+                    password: c.password.clone(),
                 })
                 .await;
             match result {
@@ -2000,6 +2003,14 @@ mod tests {
         assert_eq!(import.file_name, dump.display().to_string());
         assert_eq!(import.file_bytes, std::fs::metadata(&dump).unwrap().len());
         assert!(dump.exists(), "the Operator's file is never moved");
+        // A directory that links back to itself is sized without looping.
+        let looped = std::env::temp_dir().join(format!("sf-dump-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(&looped).unwrap();
+        std::fs::write(looped.join("toc.dat"), b"PGDMP").unwrap();
+        std::os::unix::fs::symlink(&looped, looped.join("a")).unwrap();
+        std::os::unix::fs::symlink(&looped, looped.join("b")).unwrap();
+        assert_eq!(super::api::size_of(&looped), 5);
+        std::fs::remove_dir_all(looped).unwrap();
         assert_eq!(
             router
                 .oneshot(request("relative/dump.sql"))

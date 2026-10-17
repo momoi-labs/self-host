@@ -114,8 +114,14 @@ docker exec --user postgres --interactive <database container> \
 ```
 
 and plain SQL runs `psql --no-psqlrc --no-password --echo-errors --set
-ON_ERROR_STOP=1 --dbname ... --username ... --file -`, fed `BEGIN;`, the dump
-and `COMMIT;`. The `COMMIT;` is sent only once the whole dump was read, so a
+ON_ERROR_STOP=1 --host 127.0.0.1 --dbname ... --username ... --file -`, fed
+`BEGIN;`, the dump and `COMMIT;`. psql runs in a throwaway copy of the
+database image (`docker run --rm --network container:<database>`, as user
+65534) and connects over TCP with the connection role's password. A SQL dump
+can carry psql meta-commands such as `\!` (a shell) or `\connect`; there a
+shell reaches no database files or trusted local socket, and every
+connection needs a password. The throwaway container still shares the
+database's network. The `COMMIT;` is sent only once the whole dump was read, so a
 dump cut short rolls back instead of keeping its first half. Each output
 stream keeps its last MiB. A gzip-compressed SQL dump is unpacked
 in the container on the way in (`gzip --decompress --stdout | psql ...`); its
