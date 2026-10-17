@@ -507,6 +507,18 @@ const BIND_HINT: &str = "Find what already holds port 53 with 'lsof -nP -iTCP:53
 #[cfg(not(target_os = "macos"))]
 const BIND_HINT: &str = "Check port 53 conflicts; grant CAP_NET_BIND_SERVICE to the Platform";
 
+/// Where Application containers send DNS queries once the Platform serves
+/// DNS: the Host address it listens on. Docker's resolver inside a container
+/// forwards to the Docker host's, which on a Mac is Colima's VM and does not
+/// know the DNS Suffix; this one does, and forwards every other name.
+static CONTAINER_RESOLVER: std::sync::OnceLock<IpAddr> = std::sync::OnceLock::new();
+
+/// The resolver for Application containers, or None when the Platform does
+/// not serve DNS (`serve --no-dns`).
+pub fn container_resolver() -> Option<IpAddr> {
+    CONTAINER_RESOLVER.get().copied()
+}
+
 /// Serves the Zone, and hands back the handle the Operator's Records are
 /// published through once the state is open.
 pub async fn start(
@@ -537,6 +549,7 @@ pub async fn start(
         {
             Ok((server, address, zone)) => {
                 tracing::info!(%address, ?addresses, suffix = %config.dns_suffix, "DNS listening on UDP and TCP");
+                let _ = CONTAINER_RESOLVER.set(IpAddr::from(primary));
                 return Ok((server, zone));
             }
             Err(error)

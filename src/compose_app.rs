@@ -495,6 +495,7 @@ impl ComposeDefinition {
             if !body.contains_key("restart") {
                 body.insert("restart".into(), "unless-stopped".into());
             }
+            use_platform_resolver(&mut body, crate::dns::container_resolver());
             let mut attachments = match &overrides.network_plan {
                 Some(plan) if plan.provider => {
                     let mut attachments = vec![plan.primary_network.clone().into()];
@@ -639,6 +640,19 @@ impl ComposeDefinition {
             bind_mounts,
             containers,
         }
+    }
+}
+
+/// Points a service at the Platform's DNS, so names under the DNS Suffix
+/// resolve inside it, unless the service chose its own resolvers.
+fn use_platform_resolver(body: &mut Mapping, resolver: Option<std::net::IpAddr>) {
+    if let Some(resolver) = resolver
+        && !body.contains_key("dns")
+    {
+        body.insert(
+            "dns".into(),
+            Value::Sequence(vec![resolver.to_string().into()]),
+        );
     }
 }
 
@@ -1368,6 +1382,31 @@ impl<'a> Interpolator<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn services_resolve_through_the_platform_unless_they_chose_their_own() {
+        let resolver: std::net::IpAddr = "192.168.1.100".parse().unwrap();
+        let mut plain = Mapping::new();
+        super::use_platform_resolver(&mut plain, Some(resolver));
+        assert_eq!(
+            plain.get("dns"),
+            Some(&Value::Sequence(vec!["192.168.1.100".into()]))
+        );
+        let mut chosen = Mapping::new();
+        chosen.insert("dns".into(), Value::Sequence(vec!["1.1.1.1".into()]));
+        super::use_platform_resolver(&mut chosen, Some(resolver));
+        assert_eq!(
+            chosen.get("dns"),
+            Some(&Value::Sequence(vec!["1.1.1.1".into()]))
+        );
+        let mut unserved = Mapping::new();
+        super::use_platform_resolver(&mut unserved, None);
+        assert!(
+            unserved.get("dns").is_none(),
+            "serve --no-dns leaves resolvers alone"
+        );
+    }
+
     use super::*;
 
     /// The official Hermes example, as the Operator would paste it.
