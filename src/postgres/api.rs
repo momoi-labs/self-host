@@ -52,6 +52,21 @@ fn chosen_format(headers: &axum::http::HeaderMap) -> Result<Option<ArchiveFormat
     }
 }
 
+/// Whether the restore is all or nothing, from `X-Import-All-Or-Nothing`.
+/// It is unless the header says `false`.
+fn chosen_all_or_nothing(headers: &axum::http::HeaderMap) -> Result<bool, Error> {
+    match headers
+        .get("x-import-all-or-nothing")
+        .and_then(|value| value.to_str().ok())
+    {
+        None | Some("") | Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(_) => Err(Error::Invalid(
+            "X-Import-All-Or-Nothing is true or false".into(),
+        )),
+    }
+}
+
 /// Writes the request body to `path` as it arrives; answers the byte count.
 async fn save_upload(path: &std::path::Path, body: axum::body::Body) -> Result<u64, Error> {
     use futures_util::StreamExt;
@@ -116,6 +131,8 @@ struct PathImport {
     path: PathBuf,
     #[serde(default)]
     format: Option<ArchiveFormat>,
+    #[serde(default = "super::all_or_nothing_default")]
+    all_or_nothing: bool,
 }
 
 /// Bytes under `path`: a file's size, or every file's in a directory. Links
@@ -191,6 +208,7 @@ async fn import_from_path<S: StateStore>(
                             upload_id: String::new(),
                             path: Some(request.path),
                             format: Some(format),
+                            all_or_nothing: request.all_or_nothing,
                         },
                     },
                 ),
@@ -659,6 +677,7 @@ async fn upload<S: StateStore>(
             ));
         }
         let chosen = chosen_format(&headers)?;
+        let all_or_nothing = chosen_all_or_nothing(&headers)?;
         let upload_id = secret();
         let path = import_path(&upload_id)?;
         let directory = path.parent().unwrap();
@@ -725,6 +744,7 @@ async fn upload<S: StateStore>(
                             upload_id,
                             path: None,
                             format: Some(format),
+                            all_or_nothing,
                         },
                     },
                 ),

@@ -277,11 +277,20 @@ pub enum Operation {
         /// Tasks queued before formats existed restore a custom archive.
         #[serde(default)]
         format: Option<ArchiveFormat>,
+        /// One transaction that stops at the first error. Off, the restore
+        /// goes on past errors and lists them at the end. Tasks queued
+        /// before the choice existed keep it on.
+        #[serde(default = "all_or_nothing_default")]
+        all_or_nothing: bool,
     },
     Remove {
         id: String,
         delete_data: bool,
     },
+}
+
+fn all_or_nothing_default() -> bool {
+    true
 }
 
 #[derive(Debug)]
@@ -929,6 +938,7 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
             upload_id,
             path,
             format,
+            all_or_nothing,
         } => {
             let c = CONNECTIONS
                 .get(store, &connection_id)
@@ -937,10 +947,10 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
             let format = format.unwrap_or(ArchiveFormat::Custom);
             match path {
                 // The Operator's file stays where it is.
-                Some(path) => import(state, &c, &path, format).await?,
+                Some(path) => import(state, &c, &path, format, all_or_nothing).await?,
                 None => {
                     let file = import_path(&upload_id)?;
-                    let result = import(state, &c, &file, format).await;
+                    let result = import(state, &c, &file, format, all_or_nothing).await;
                     let _ = tokio::fs::remove_file(file).await;
                     result?;
                 }
@@ -1155,6 +1165,7 @@ async fn import<S: StateStore>(
     c: &Connection,
     file: &std::path::Path,
     format: ArchiveFormat,
+    all_or_nothing: bool,
 ) -> Result<(), Error> {
     use progress::step;
     step(
@@ -1182,7 +1193,9 @@ async fn import<S: StateStore>(
     wait_ready(state, &c.database_application_id).await?;
     let count_sql = "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f');";
     // A database that already holds data takes the import too: what clashes
-    // fails the restore, which rolls back and shows pg_restore's error.
+    // fails the restore and shows the tool's error. All or nothing rolls the
+    // whole restore back; without it the rest stays and the stage still
+    // fails, so an import with errors never reads as a clean one.
     step(
         state,
         "restore",
@@ -1198,6 +1211,7 @@ async fn import<S: StateStore>(
                     role: c.role.clone(),
                     file: file.into(),
                     format,
+                    all_or_nothing,
                     image: format!("postgres:{}-bookworm", definition.major),
                     password: c.password.clone(),
                 })

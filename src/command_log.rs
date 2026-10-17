@@ -71,6 +71,19 @@ pub fn record(args: &[impl AsRef<str>], output: &std::process::Output) {
     });
 }
 
+/// Adds a line of the Platform's own after the commands, such as a summary
+/// of what they printed.
+pub fn note(text: &str) {
+    let _ = LOG.try_with(|log| {
+        if let Ok(mut entries) = log.lock() {
+            entries.push(Entry {
+                text: text.to_owned(),
+                repeats: 1,
+            });
+        }
+    });
+}
+
 /// The arguments as recorded: an environment value given with `-e` or `--env`
 /// can be any Application's secret, so only its name is kept.
 fn shown(args: &[impl AsRef<str>]) -> Vec<String> {

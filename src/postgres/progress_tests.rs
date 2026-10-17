@@ -2,7 +2,13 @@ use super::*;
 use crate::{docker::FakeDocker, store::FakeStateStore};
 
 async fn fixture(docker: Arc<test_runtime::PausedRemoval>) -> AppState<FakeStateStore> {
-    let (_, state) = tests::fixture_with_docker(docker.clone()).await;
+    fixture_with_router(docker).await.1
+}
+
+async fn fixture_with_router(
+    docker: Arc<test_runtime::PausedRemoval>,
+) -> (axum::Router, AppState<FakeStateStore>) {
+    let (router, state) = tests::fixture_with_docker(docker.clone()).await;
     let mut app = state
         .store
         .get_application("provider")
@@ -22,7 +28,7 @@ async fn fixture(docker: Arc<test_runtime::PausedRemoval>) -> AppState<FakeState
         .lock()
         .unwrap()
         .insert(container("provider"), "healthy".into());
-    state
+    (router, state)
 }
 
 async fn finished(state: &AppState<FakeStateStore>, id: &str) -> audit::Event {
@@ -400,6 +406,7 @@ async fn a_failed_restore_shows_the_pg_restore_log() {
             upload_id: secret(),
             path: None,
             format: None,
+            all_or_nothing: true,
         },
     )
     .await;
@@ -460,6 +467,7 @@ async fn a_finished_import_records_its_object_count() {
                 upload_id: secret(),
                 path: None,
                 format: None,
+                all_or_nothing: true,
             },
         },
     )
@@ -529,6 +537,7 @@ async fn import_restores_while_the_consumer_runs() {
                 upload_id: secret(),
                 path: None,
                 format: None,
+                all_or_nothing: true,
             },
         },
     )
@@ -572,6 +581,7 @@ async fn import_progress_belongs_to_database_and_leaves_the_consumer_free() {
                 upload_id: secret(),
                 path: None,
                 format: None,
+                all_or_nothing: true,
             },
         },
     )
@@ -821,4 +831,91 @@ async fn a_regular_consumer_deploy_does_not_persist_managed_credentials_in_any_h
         .unwrap();
     let error = serde_json::to_string(&app.last_error).unwrap();
     assert!(!error.contains("private-fixture"));
+}
+
+#[tokio::test]
+async fn all_or_nothing_is_on_unless_the_import_turns_it_off() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let docker = Arc::new(test_runtime::PausedRemoval {
+        postgres_ready: true,
+        ..Default::default()
+    });
+    let (router, state) = fixture_with_router(docker.clone()).await;
+    operation(
+        &state,
+        Operation::Provision {
+            id: "provider".into(),
+            recreate: false,
+        },
+    )
+    .await;
+    CONNECTIONS
+        .upsert(&state.store, &tests::reference("ready"))
+        .await
+        .unwrap();
+    let dump = std::env::temp_dir().join(format!("sf-dump-{:032x}", rand::random::<u128>()));
+    std::fs::write(&dump, b"PGDMP fixture").unwrap();
+    let requests = [
+        ("/import", None, Body::from(&b"PGDMP fixture"[..])),
+        ("/import", Some("false"), Body::from(&b"PGDMP fixture"[..])),
+        (
+            "/import-path",
+            None,
+            Body::from(serde_json::json!({ "path": dump }).to_string()),
+        ),
+        (
+            "/import-path",
+            None,
+            Body::from(serde_json::json!({ "path": dump, "all_or_nothing": false }).to_string()),
+        ),
+    ];
+    let mut chosen = Vec::new();
+    for (route, header, body) in requests {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/databases/provider/connections/reference{route}"))
+            .header("authorization", "Bearer fixture-key")
+            .header("content-type", "application/json");
+        if let Some(value) = header {
+            request = request.header("x-import-all-or-nothing", value);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        let accepted: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        finished(&state, accepted["task_id"].as_str().unwrap()).await;
+        let last = docker
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                runtime::Request::Restore { all_or_nothing, .. } => Some(*all_or_nothing),
+                _ => None,
+            });
+        chosen.push(last.unwrap());
+    }
+    assert_eq!(chosen, [true, false, true, false]);
+    // A Task queued before the choice existed stays all or nothing.
+    let queued: Operation = serde_json::from_value(serde_json::json!({
+        "operation": "import", "connection_id": "reference", "upload_id": ""
+    }))
+    .unwrap();
+    assert!(matches!(
+        queued,
+        Operation::Import {
+            all_or_nothing: true,
+            ..
+        }
+    ));
+    std::fs::remove_file(dump).unwrap();
 }
