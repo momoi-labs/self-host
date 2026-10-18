@@ -400,9 +400,26 @@ fn tool_args(
 
 /// Whether a line is pg_restore's or psql's report of a statement or
 /// meta-command that failed: a server `ERROR:` or psql's own `error:`.
+/// For psql it reads the severity after the `psql:<file>:<line>:` prefix,
+/// so a NOTICE or WARNING whose text says "error:" is not one.
 fn is_error(line: &str) -> bool {
-    line.starts_with("pg_restore: error:")
-        || (line.starts_with("psql:") && (line.contains("ERROR:") || line.contains("error:")))
+    if line.starts_with("pg_restore: error:") {
+        return true;
+    }
+    let Some(rest) = line.strip_prefix("psql:") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    // psql's own errors before any input have no location: `psql: error:`.
+    let severity = if rest.starts_with("error:") {
+        rest
+    } else {
+        match rest.split_once(": ") {
+            Some((_, severity)) => severity,
+            None => return false,
+        }
+    };
+    severity.starts_with("ERROR:") || severity.starts_with("error:")
 }
 
 /// The most error lines a restore keeps to list; all of them are counted.
@@ -733,6 +750,16 @@ mod tests {
                 .is_some_and(|error| error.contains("/missing.csv"))
         );
         assert!(psql("CREATE TABLE\n").await.is_none());
+        assert!(
+            psql("psql:<stdin>:12: NOTICE:  previous error: handled\n")
+                .await
+                .is_none()
+        );
+        assert!(
+            psql("psql:<stdin>:12: WARNING:  value has an ERROR: marker\n")
+                .await
+                .is_none()
+        );
         let fatal = "pg_restore: error: connection failed\n";
         let (_, errors) = tail(fatal.as_bytes()).await;
         assert!(went_past_errors("pg_restore", &output(1, fatal), &errors).is_none());
