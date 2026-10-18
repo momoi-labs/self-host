@@ -603,8 +603,8 @@ async fn cancel<S: StateStore>(
     }
 }
 
-/// Removes a session's record and its bytes, but leaves the bytes to an
-/// import it queued that is still waiting or running. The caller holds the
+/// Removes a session's record and its bytes, but leaves both to an import
+/// it queued that is still waiting or running. The caller holds the
 /// session's lock.
 async fn remove_unless_queued<S: StateStore>(state: &AppState<S>, id: &str) -> Result<(), Error> {
     let record = std::fs::read(record_path(id))
@@ -617,7 +617,8 @@ async fn remove_unless_queued<S: StateStore>(state: &AppState<S>, id: &str) -> R
         if let Some(task_id) = &session.task_id
             && tasks::is_queued(&state.store, task_id).await?
         {
-            let _ = std::fs::remove_file(record_path(id));
+            // The receipt stays with the file, so a later sweep finds it
+            // once the Task ends, even one a restart cut short.
             return Ok(());
         }
     }
