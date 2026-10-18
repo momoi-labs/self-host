@@ -350,6 +350,13 @@ async fn mark_database_made(
     let _write = CONNECTION_WRITE.lock().await;
     let mut c = CONNECTIONS.get(store, id).await?.ok_or(Error::Missing)?;
     c.database_made = Some(true);
+    // A standalone database an import never made named it first; the name
+    // is this connection's now, and the record would offer a database its
+    // role cannot reach.
+    let key = standalone_key(&c.database_application_id, &c.database);
+    if owner.is_none() && STANDALONE.get(store, &key).await?.is_some_and(|d| !d.made) {
+        STANDALONE.remove(store, &key).await?;
+    }
     c.owner = owner;
     CONNECTIONS.upsert(store, &c).await?;
     Ok(())
@@ -443,26 +450,27 @@ async fn grant_existing<S: StateStore>(
             ),
         )
         .await?;
-        sql(
-            state,
-            provider,
-            &c.database,
-            ADMIN,
-            format!("REASSIGN OWNED BY {login} TO {group};"),
-        )
-        .await?;
-        // Its open sessions still act as the login; they reconnect as the
-        // owner, so what they create next is shared too.
+        // Its open sessions still act as the login. They end, and wait to be
+        // gone, before the hand-over: one that reconnects acts as the owner,
+        // so nothing it creates stays the login's alone.
         sql(
             state,
             provider,
             "postgres",
             ADMIN,
             format!(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = {} AND datname = {} AND pid <> pg_backend_pid();",
+                "SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity WHERE usename = {} AND datname = {} AND pid <> pg_backend_pid();",
                 literal(&login),
                 literal(&c.database)
             ),
+        )
+        .await?;
+        sql(
+            state,
+            provider,
+            &c.database,
+            ADMIN,
+            format!("REASSIGN OWNED BY {login} TO {group};"),
         )
         .await?;
         group
