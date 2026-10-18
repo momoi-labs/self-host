@@ -222,8 +222,9 @@ async fn consumer_databases<S: StateStore>(
             views.push(DatabaseView {
                 name: name.into(),
                 standalone: STANDALONE
-                    .exists(&state.store, &standalone_key(&id, name))
-                    .await?,
+                    .get(&state.store, &standalone_key(&id, name))
+                    .await?
+                    .is_some_and(|d| d.made),
                 consumers: connections
                     .iter()
                     .filter(|c| {
