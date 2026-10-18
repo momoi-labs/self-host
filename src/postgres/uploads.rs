@@ -227,10 +227,25 @@ async fn start<S: StateStore>(
         };
         let found = {
             let _starts = STARTS.lock().await;
-            // A finished session is not resumed: the same file picked again
-            // is a new import.
-            let open = sessions().into_iter().filter(|s| s.task_id.is_none());
-            match open.into_iter().find(matches) {
+            // A queued session is not resumed: the same file picked again is
+            // a new import. One whose Task never got queued is open again.
+            let mut open = None;
+            for mut session in sessions().into_iter().filter(matches) {
+                if session.task_id.is_some() {
+                    let lock = session_lock(&session.id);
+                    let _writing = lock.lock().await;
+                    let Ok(mut current) = read_session(&id, &session.id) else {
+                        continue;
+                    };
+                    reclaim(&state, &mut current).await?;
+                    session = current;
+                }
+                if session.task_id.is_none() {
+                    open = Some(session);
+                    break;
+                }
+            }
+            match open {
                 Some(session) => session,
                 None => {
                     let session = Session {
@@ -446,27 +461,12 @@ async fn finish<S: StateStore>(
         let lock = session_lock(&session.id);
         let _writing = lock.lock().await;
         let mut session = read_session(&id, &session.id)?;
-        if let Some(task_id) = session.task_id.clone() {
-            if state.store.get_audit_event(&task_id).await?.is_some() {
-                return Ok((
-                    StatusCode::ACCEPTED,
-                    Json(serde_json::json!({"task_id":task_id,"database_application_id":id})),
-                ));
-            }
-            // The daemon stopped between the receipt and the Task: the file
-            // comes back to the session and is queued now.
-            if let Some(path) = session
-                .upload_id
-                .as_deref()
-                .and_then(|u| import_path(u).ok())
-                && path.exists()
-            {
-                let _ = std::fs::rename(&path, bytes_path(&session.id));
-            }
-            let _ = IMPORTS.remove(&state.store, &task_id).await;
-            session.task_id = None;
-            session.upload_id = None;
-            write_session(&session)?;
+        reclaim(&state, &mut session).await?;
+        if let Some(task_id) = &session.task_id {
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({"task_id":task_id,"database_application_id":id})),
+            ));
         }
         let (_, app) = database(&state.store, &id).await?;
         let c = connection(&state.store, &id, &session.connection_id).await?;
@@ -563,6 +563,44 @@ async fn finish<S: StateStore>(
         Ok(value) => value.into_response(),
         Err(error) => failure(error),
     }
+}
+
+/// Opens a session again when its receipt names a Task that never got
+/// queued, because the daemon stopped in between: the file comes back to the
+/// session. A Task that is queued, running or ended keeps the receipt.
+/// The caller holds the session's lock.
+async fn reclaim<S: StateStore>(state: &AppState<S>, session: &mut Session) -> Result<(), Error> {
+    let Some(task_id) = session.task_id.clone() else {
+        return Ok(());
+    };
+    let event = state
+        .store
+        .get_audit_event(&task_id)
+        .await?
+        .and_then(|body| serde_json::from_str::<audit::Event>(&body).ok());
+    let handed = match event {
+        Some(event) if event.status != "pending" => true,
+        Some(_) => tasks::is_queued(&state.store, &task_id).await?,
+        None => false,
+    };
+    if handed {
+        return Ok(());
+    }
+    if let Some(path) = session
+        .upload_id
+        .as_deref()
+        .and_then(|u| import_path(u).ok())
+        && path.exists()
+    {
+        let _ = std::fs::rename(&path, bytes_path(&session.id));
+    }
+    let _ = IMPORTS.remove(&state.store, &task_id).await;
+    session.task_id = None;
+    session.upload_id = None;
+    if !bytes_path(&session.id).exists() {
+        create_bytes(&session.id)?;
+    }
+    write_session(session)
 }
 
 /// Removes a session the Operator gave up on, file included.

@@ -658,6 +658,11 @@ async fn load<S: StateStore>(store: &S) -> Result<Vec<Task>, StoreError> {
     TASKS.list(store).await
 }
 
+/// Whether the Task `id` waits in the queue or runs.
+pub(crate) async fn is_queued<S: StateStore>(store: &S, id: &str) -> Result<bool, StoreError> {
+    Ok(TASKS.get(store, id).await?.is_some())
+}
+
 impl Keyed for Task {
     fn key(&self) -> String {
         self.id.clone()
