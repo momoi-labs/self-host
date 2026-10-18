@@ -198,10 +198,10 @@ pub(crate) struct Connection {
     pub native: bool,
     pub task_id: Option<String>,
     pub imported_tables: Option<u64>,
-    /// The role that owns `database` when this connection was given an
-    /// existing one: its own role becomes a member of that owner. None means
-    /// its own role created and owns the database, as every connection did
-    /// before the choice existed.
+    /// The NOLOGIN role that owns `database` when this connection was given
+    /// an existing one; its own role is a member. Empty until the Connect
+    /// Task reads it from the server. None means its own role created and
+    /// owns the database, as every connection did before the choice existed.
     #[serde(default)]
     pub owner: Option<String>,
     /// Whether the connection made or joined its database on the server.
@@ -274,52 +274,70 @@ fn literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
-/// The roles the Platform made on `provider`: each connection's and each
-/// standalone database's. Only a database one of them owns can be chosen,
-/// so a connection never joins the administrator or another login.
+/// The roles the Platform made on `provider`.
+#[derive(Default)]
+struct PlatformRoles {
+    /// Each connection's and each standalone database's login.
+    logins: BTreeSet<String>,
+    /// The NOLOGIN roles that own a database two connections share.
+    owners: BTreeSet<String>,
+}
+
+impl PlatformRoles {
+    fn contains(&self, role: &str) -> bool {
+        self.logins.contains(role) || self.owners.contains(role)
+    }
+}
+
+/// The roles the Platform made on `provider`. Only a database one of them
+/// owns can be chosen, so a connection never joins the administrator or a
+/// role made by hand.
 async fn platform_roles(
     store: &impl StateStore,
     provider: &str,
-) -> Result<BTreeSet<String>, StoreError> {
-    let mut roles: BTreeSet<String> = CONNECTIONS
-        .list(store)
-        .await?
-        .into_iter()
-        .filter(|c| c.database_application_id == provider)
-        .map(|c| c.role)
-        .collect();
-    roles.extend(
-        STANDALONE
-            .list(store)
-            .await?
-            .into_iter()
-            .filter(|d| d.database_application_id == provider)
-            .map(|d| d.role),
-    );
+) -> Result<PlatformRoles, StoreError> {
+    let mut roles = PlatformRoles::default();
+    for c in CONNECTIONS.list(store).await? {
+        if c.database_application_id == provider {
+            roles.logins.insert(c.role);
+            roles
+                .owners
+                .extend(c.owner.filter(|owner| !owner.is_empty()));
+        }
+    }
+    for d in STANDALONE.list(store).await? {
+        if d.database_application_id == provider {
+            roles.logins.insert(d.role);
+        }
+    }
     Ok(roles)
 }
 
-/// The role that owns the consumer database `name` on `provider`, as the
-/// Platform recorded it, or None when the Platform did not make it. The
-/// Connect Task checks the owner on the server again before it grants.
-pub(crate) async fn recorded_owner(
+/// Whether the Platform recorded a consumer database `name` on `provider`.
+/// The Connect Task checks the server before it grants anything.
+pub(crate) async fn known_database(
     store: &impl StateStore,
     provider: &str,
     name: &str,
-) -> Result<Option<String>, StoreError> {
-    if let Some(standalone) = STANDALONE
-        .get(store, &standalone_key(provider, name))
+) -> Result<bool, StoreError> {
+    Ok(STANDALONE
+        .exists(store, &standalone_key(provider, name))
         .await?
-        .filter(|d| d.made)
-    {
-        return Ok(Some(standalone.role));
-    }
-    Ok(CONNECTIONS
-        .list(store)
-        .await?
-        .into_iter()
-        .find(|c| c.database_application_id == provider && c.database == name && c.has_database())
-        .map(|c| c.owner.unwrap_or(c.role)))
+        || CONNECTIONS
+            .list(store)
+            .await?
+            .iter()
+            .any(|c| c.database_application_id == provider && c.database == name))
+}
+
+/// Records the role that owns the connection's database, before the Task
+/// hands the database to it, so the role is known even if a later step fails.
+async fn record_owner(store: &impl StateStore, id: &str, owner: &str) -> Result<(), Error> {
+    let _write = CONNECTION_WRITE.lock().await;
+    let mut c = CONNECTIONS.get(store, id).await?.ok_or(Error::Missing)?;
+    c.owner = Some(owner.into());
+    CONNECTIONS.upsert(store, &c).await?;
+    Ok(())
 }
 
 /// Records that the connection made or joined its database, and the owner
@@ -378,11 +396,13 @@ async fn create_role<S: StateStore>(
     Ok(())
 }
 
-/// Gives the connection's new login the owner's access to an existing
-/// database, and answers that owner. Its sessions there act as the owner, so
-/// what one connection creates every other one can use, and disabling one
-/// login on Disconnect leaves the others and the data as they are. The owner
-/// is read from the server and must be a role the Platform made.
+/// Gives the connection's new login access to an existing database through
+/// a NOLOGIN role that owns it, and answers that role. Sessions of every
+/// login there act as that owner, so what one connection creates every other
+/// one can use. No login is a member of another login: one cannot take over
+/// another's password, and disabling one on Disconnect leaves the others and
+/// the data as they are. The owner is read from the server and must be a
+/// role the Platform made.
 async fn grant_existing<S: StateStore>(
     state: &AppState<S>,
     provider: &str,
@@ -396,26 +416,66 @@ async fn grant_existing<S: StateStore>(
                 c.database
             ))
         })?;
-    if owner == c.role
-        || !platform_roles(&state.store, provider)
-            .await?
-            .contains(&owner)
-    {
+    let roles = platform_roles(&state.store, provider).await?;
+    if owner == c.role || !roles.contains(&owner) {
         return Err(Error::Conflict(format!(
             "The database {} is owned by a role the Platform did not make. Its access was not changed",
             c.database
         )));
     }
+    let db = ident(&c.database);
+    let owner = if roles.owners.contains(&owner) {
+        owner
+    } else {
+        // The first time a database is shared, its login hands it to a new
+        // NOLOGIN owner and becomes a member, like the logins joining it.
+        let login = owner;
+        let group = format!("owner_{:024x}", rand::random::<u128>());
+        record_owner(&state.store, &c.id, &group).await?;
+        sql(
+            state,
+            provider,
+            "postgres",
+            ADMIN,
+            format!(
+                "CREATE ROLE {group} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION; GRANT {group} TO {login}; ALTER ROLE {login} IN DATABASE {db} SET role = {};",
+                literal(&group)
+            ),
+        )
+        .await?;
+        sql(
+            state,
+            provider,
+            &c.database,
+            ADMIN,
+            format!("REASSIGN OWNED BY {login} TO {group};"),
+        )
+        .await?;
+        // Its open sessions still act as the login; they reconnect as the
+        // owner, so what they create next is shared too.
+        sql(
+            state,
+            provider,
+            "postgres",
+            ADMIN,
+            format!(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = {} AND datname = {} AND pid <> pg_backend_pid();",
+                literal(&login),
+                literal(&c.database)
+            ),
+        )
+        .await?;
+        group
+    };
     create_role(state, provider, &c.role, &c.password).await?;
-    let (db, role) = (ident(&c.database), &c.role);
+    let role = &c.role;
     sql(
         state,
         provider,
         "postgres",
         ADMIN,
         format!(
-            "GRANT {} TO {role}; ALTER ROLE {role} IN DATABASE {db} SET role = {}; GRANT CONNECT ON DATABASE {db} TO {role};",
-            ident(&owner),
+            "GRANT {owner} TO {role}; ALTER ROLE {role} IN DATABASE {db} SET role = {}; GRANT CONNECT ON DATABASE {db} TO {role};",
             literal(&owner)
         ),
     )
@@ -1545,6 +1605,14 @@ async fn prepare_standalone<S: StateStore>(
                     create_role(state, provider, &d.role, &d.password).await?;
                     restrict_database(state, provider, &d.name, &d.role).await?;
                 }
+                // A connection shares it now: its login is a member of the
+                // shared owner and restores as that owner.
+                Some(owner)
+                    if d.made
+                        && platform_roles(&state.store, provider)
+                            .await?
+                            .owners
+                            .contains(&owner) => {}
                 Some(_) => {
                     return Err(Error::Conflict(format!(
                         "A database named {} already exists on this server and belongs to another role",

@@ -1091,12 +1091,25 @@ async fn applications_connect_to_a_named_database_and_share_an_existing_one() {
     )
     .await;
     assert_eq!(second.database, "mochi_cut");
-    assert_eq!(second.owner.as_deref(), Some(first.role.as_str()));
-    assert!(sql_sent(&docker).iter().any(|sql| sql == &format!(
-        "GRANT \"{owner}\" TO {role}; ALTER ROLE {role} IN DATABASE \"mochi_cut\" SET role = '{owner}'; GRANT CONNECT ON DATABASE \"mochi_cut\" TO {role};",
-        owner = first.role,
+    // The first login hands the database to a NOLOGIN owner both join, so
+    // neither login is a member of the other.
+    let owner = second.owner.clone().unwrap();
+    assert!(owner.starts_with("owner_"), "{owner}");
+    let sent = sql_sent(&docker);
+    assert!(sent.iter().any(|sql| sql.starts_with(&format!(
+        "CREATE ROLE {owner} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION; GRANT {owner} TO {};",
+        first.role
+    ))));
+    assert!(sent.contains(&format!("REASSIGN OWNED BY {} TO {owner};", first.role)));
+    assert!(sent.iter().any(|sql| sql == &format!(
+        "GRANT {owner} TO {role}; ALTER ROLE {role} IN DATABASE \"mochi_cut\" SET role = '{owner}'; GRANT CONNECT ON DATABASE \"mochi_cut\" TO {role};",
         role = second.role
     )));
+    assert!(
+        !sent
+            .iter()
+            .any(|sql| sql.contains(&format!("GRANT {} TO", first.role)))
+    );
     assert!(
         state
             .store
@@ -1117,10 +1130,17 @@ async fn applications_connect_to_a_named_database_and_share_an_existing_one() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     finished(&state, accepted["task_id"].as_str().unwrap()).await;
+    // Revocation ends with the Variable cleanup it queued.
+    let cleanup = CONNECTIONS
+        .get(&state.store, &first.id)
+        .await
+        .unwrap()
+        .unwrap();
+    finished(&state, cleanup.task_id.as_deref().unwrap()).await;
     assert!(!sql_sent(&docker).iter().any(|sql| sql.contains("DROP")));
     docker.answers.lock().unwrap().push((
         "SELECT d.datname, r.rolname".into(),
-        format!("mochi_cut|{}\nmade_by_hand|someone_else", first.role),
+        format!("mochi_cut|{owner}\nmade_by_hand|someone_else"),
     ));
     let (status, listed) = call(&router, "GET", "/databases/provider/databases", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -1213,7 +1233,28 @@ async fn an_import_makes_a_new_database_with_no_application_connected() {
         serde_json::json!({"existing": "legacy"}),
     )
     .await;
-    assert_eq!(c.owner.as_deref(), Some(standalone.role.as_str()));
+    let owner = c.owner.unwrap();
+    assert!(sql_sent(&docker).contains(&format!(
+        "REASSIGN OWNED BY {} TO {owner};",
+        standalone.role
+    )));
+
+    // The shared database still takes imports without a connection.
+    *docker.answers.lock().unwrap() =
+        vec![("SELECT r.rolname, r.rolsuper".into(), format!("{owner}|f"))];
+    let dump = std::env::temp_dir().join(format!("sf-dump-{:032x}", rand::random::<u128>()));
+    std::fs::write(&dump, b"PGDMP fixture").unwrap();
+    let (status, accepted) = call(
+        &router,
+        "POST",
+        "/databases/provider/databases/legacy/import-path",
+        Some(serde_json::json!({ "path": dump })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let again = finished(&state, accepted["task_id"].as_str().unwrap()).await;
+    assert_eq!(again.status, "completed", "{:?}", again.error);
+    std::fs::remove_file(dump).unwrap();
 }
 
 #[test]
@@ -1255,10 +1296,4 @@ async fn a_connection_that_never_made_its_database_holds_no_name() {
     )
     .await;
     assert_eq!(c.database_made, Some(true));
-    assert_eq!(
-        recorded_owner(&state.store, "provider", "mochi_cut")
-            .await
-            .unwrap(),
-        Some(c.role)
-    );
 }
