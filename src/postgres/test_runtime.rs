@@ -20,6 +20,8 @@ pub(super) struct PausedRemoval {
     pub restore_release: Notify,
     /// What pg_restore prints before it fails, when the restore should fail.
     pub restore_failure: Option<String>,
+    /// What a SQL statement starting with the first text answers.
+    pub answers: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 #[async_trait]
@@ -64,6 +66,19 @@ impl DockerRuntime for PausedRemoval {
             .iter()
             .any(|request| matches!(request, Request::Restore { .. }));
         requests.push(request.clone());
+        let answer = match request {
+            Request::Sql { sql, .. } => self
+                .answers
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(start, _)| sql.starts_with(start.as_str()))
+                .map(|(_, answer)| answer.clone()),
+            _ => None,
+        };
+        if let Some(answer) = answer {
+            return Ok(answer);
+        }
         Ok(match request {
             Request::Sql { sql, .. } if sql.starts_with("SELECT count(*)") => {
                 if restored { "3" } else { "0" }.into()

@@ -35,6 +35,209 @@ pub(crate) fn router<S: StateStore>() -> Router<AppState<S>> {
         .route("/databases/import-format", post(detect_format::<S>))
         .route("/databases/{id}/imports", get(imports::<S>))
         .merge(super::uploads::router())
+        .route("/databases/{id}/databases", get(consumer_databases::<S>))
+        .route(
+            "/databases/{id}/databases/{name}/import",
+            post(upload_standalone::<S>).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/databases/{id}/databases/{name}/import-path",
+            post(import_standalone_from_path::<S>),
+        )
+}
+
+const NAME_RULE: &str = "Name the database with lowercase letters, digits and underscores, starting with a letter or underscore, in at most 63 characters. It cannot start with pg_ or be postgres, template0 or template1";
+
+/// Where an import goes, as its route or upload session names it.
+pub(super) enum Destination {
+    Connection(String),
+    /// A standalone database's name. The import makes it when it is new.
+    Standalone(String),
+}
+
+/// What an accepted import records about where it goes.
+pub(super) struct Checked {
+    pub connection_id: String,
+    pub consumer_application_id: String,
+    pub database: String,
+}
+
+impl Destination {
+    pub(super) async fn check(
+        &self,
+        store: &impl StateStore,
+        provider: &str,
+    ) -> Result<Checked, Error> {
+        match self {
+            Self::Connection(id) => {
+                let c = connection(store, provider, id).await?;
+                if c.status != "ready" {
+                    return Err(Error::Conflict(
+                        "Wait for the connection to become ready before importing".into(),
+                    ));
+                }
+                Ok(Checked {
+                    connection_id: c.id,
+                    consumer_application_id: c.consumer_application_id,
+                    database: c.database,
+                })
+            }
+            Self::Standalone(name) => {
+                standalone_free(store, provider, name).await?;
+                Ok(Checked {
+                    connection_id: String::new(),
+                    consumer_application_id: String::new(),
+                    database: name.clone(),
+                })
+            }
+        }
+    }
+
+    /// The import's Task. A standalone database is recorded from here on.
+    pub(super) async fn operation(
+        &self,
+        store: &impl StateStore,
+        provider: &str,
+        upload_id: String,
+        path: Option<PathBuf>,
+        format: ArchiveFormat,
+        all_or_nothing: bool,
+    ) -> Result<Operation, Error> {
+        Ok(match self {
+            Self::Connection(id) => Operation::Import {
+                connection_id: id.clone(),
+                upload_id,
+                path,
+                format: Some(format),
+                all_or_nothing,
+            },
+            Self::Standalone(name) => Operation::ImportDatabase {
+                database: keep_standalone(store, provider, name).await?.key(),
+                upload_id,
+                path,
+                format,
+                all_or_nothing,
+            },
+        })
+    }
+}
+
+/// Whether `name` can take an import without a connection: it is a
+/// standalone database already, or a valid name no connection uses.
+async fn standalone_free(store: &impl StateStore, provider: &str, name: &str) -> Result<(), Error> {
+    if STANDALONE
+        .exists(store, &standalone_key(provider, name))
+        .await?
+    {
+        return Ok(());
+    }
+    if !valid_database_name(name) {
+        return Err(Error::Invalid(NAME_RULE.into()));
+    }
+    if database_in_use(store, provider, name).await? {
+        return Err(Error::Conflict(format!(
+            "{name} is a connection's database. Import into it through a connected Application"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether a connection that did not fail uses `name` on `provider`.
+async fn database_in_use(
+    store: &impl StateStore,
+    provider: &str,
+    name: &str,
+) -> Result<bool, StoreError> {
+    Ok(CONNECTIONS.list(store).await?.iter().any(|c| {
+        c.database_application_id == provider && c.database == name && c.status != "failed"
+    }))
+}
+
+/// The standalone database `name`, recorded with a new role when it is new.
+async fn keep_standalone(
+    store: &impl StateStore,
+    provider: &str,
+    name: &str,
+) -> Result<StandaloneDatabase, Error> {
+    let _write = CONNECTION_WRITE.lock().await;
+    if let Some(existing) = STANDALONE
+        .get(store, &standalone_key(provider, name))
+        .await?
+    {
+        return Ok(existing);
+    }
+    standalone_free(store, provider, name).await?;
+    let standalone = StandaloneDatabase {
+        database_application_id: provider.into(),
+        name: name.into(),
+        role: format!("role_{:024x}", rand::random::<u128>()),
+        password: secret(),
+    };
+    STANDALONE.upsert(store, &standalone).await?;
+    Ok(standalone)
+}
+
+#[derive(Serialize)]
+struct DatabaseView {
+    name: String,
+    /// An import made it with no Application connected.
+    standalone: bool,
+    /// The Applications connected to it now.
+    consumers: Vec<String>,
+}
+
+/// The consumer databases on this server the Platform made, live from
+/// PostgreSQL: a connection can choose one of them. A database the
+/// Platform did not make is not listed.
+async fn consumer_databases<S: StateStore>(
+    State(state): State<AppState<S>>,
+    Path(id): Path<String>,
+) -> Response {
+    let result = async {
+        let (_, provider) = database(&state.store, &id).await?;
+        if provider.status != "running" {
+            return Err(Error::Conflict(
+                "Start PostgreSQL to list its databases".into(),
+            ));
+        }
+        let roles = platform_roles(&state.store, &id).await?;
+        let connections = CONNECTIONS.list(&state.store).await?;
+        let listed = sql(
+            &state,
+            &id,
+            "postgres",
+            ADMIN,
+            "SELECT d.datname, r.rolname FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba WHERE NOT d.datistemplate AND NOT r.rolsuper ORDER BY d.datname;".into(),
+        )
+        .await?;
+        let mut views = Vec::new();
+        for (name, owner) in listed.lines().filter_map(|line| line.split_once('|')) {
+            if !roles.contains(owner) {
+                continue;
+            }
+            views.push(DatabaseView {
+                name: name.into(),
+                standalone: STANDALONE
+                    .exists(&state.store, &standalone_key(&id, name))
+                    .await?,
+                consumers: connections
+                    .iter()
+                    .filter(|c| {
+                        c.database_application_id == id
+                            && c.database == name
+                            && !matches!(c.status.as_str(), "revoked" | "failed")
+                    })
+                    .map(|c| c.consumer_application_id.clone())
+                    .collect(),
+            });
+        }
+        Ok(Json(views))
+    }
+    .await;
+    match result {
+        Ok(value) => crate::no_store(value.into_response()),
+        Err(error) => failure(error),
+    }
 }
 
 pub(super) const UNKNOWN_FORMAT: &str =
@@ -161,14 +364,27 @@ async fn import_from_path<S: StateStore>(
     Path((id, connection_id)): Path<(String, String)>,
     Json(request): Json<PathImport>,
 ) -> Response {
+    import_path_into(state, id, Destination::Connection(connection_id), request).await
+}
+
+/// Imports a Host path into a standalone database, made first when new.
+async fn import_standalone_from_path<S: StateStore>(
+    State(state): State<AppState<S>>,
+    Path((id, name)): Path<(String, String)>,
+    Json(request): Json<PathImport>,
+) -> Response {
+    import_path_into(state, id, Destination::Standalone(name), request).await
+}
+
+async fn import_path_into<S: StateStore>(
+    state: AppState<S>,
+    id: String,
+    destination: Destination,
+    request: PathImport,
+) -> Response {
     let result = async {
         let (_, app) = database(&state.store, &id).await?;
-        let c = connection(&state.store, &id, &connection_id).await?;
-        if c.status != "ready" {
-            return Err(Error::Conflict(
-                "Wait for the connection to become ready before importing".into(),
-            ));
-        }
+        let checked = destination.check(&state.store, &id).await?;
         host_path(&request.path)?;
         let format = request
             .format
@@ -181,18 +397,29 @@ async fn import_from_path<S: StateStore>(
                 "A directory dump is a directory, not a file".into()
             }));
         }
+        let operation = destination
+            .operation(
+                &state.store,
+                &id,
+                String::new(),
+                Some(request.path.clone()),
+                format,
+                request.all_or_nothing,
+            )
+            .await?;
         let task_id = format!("event-{:032x}", rand::random::<u128>());
         remember_import(
             &state.store,
             &Import {
                 task_id: task_id.clone(),
                 database_application_id: app.id.clone(),
-                connection_id: connection_id.clone(),
-                consumer_application_id: c.consumer_application_id.clone(),
+                connection_id: checked.connection_id,
+                consumer_application_id: checked.consumer_application_id,
                 file_name: request.path.display().to_string(),
                 file_bytes: size_of(&request.path),
                 created_at: audit::timestamp(),
                 imported_objects: None,
+                database: Some(checked.database),
             },
         )
         .await?;
@@ -203,15 +430,7 @@ async fn import_from_path<S: StateStore>(
                     &state,
                     "import",
                     audit::Subject::new("database", app.id.clone(), app.name.clone()),
-                    tasks::Work::Postgres {
-                        operation: Operation::Import {
-                            connection_id,
-                            upload_id: String::new(),
-                            path: Some(request.path),
-                            format: Some(format),
-                            all_or_nothing: request.all_or_nothing,
-                        },
-                    },
+                    tasks::Work::Postgres { operation },
                 ),
             )
             .await;
@@ -301,6 +520,8 @@ struct ImportView {
     connection_id: String,
     consumer_application_id: String,
     consumer_name: Option<String>,
+    /// The consumer database it went into.
+    database: Option<String>,
     file_name: String,
     file_bytes: u64,
     created_at: String,
@@ -334,11 +555,21 @@ async fn imports<S: StateStore>(
                 .get_audit_event(&import.task_id)
                 .await?
                 .and_then(|body| serde_json::from_str(&body).ok());
+            // Imports recorded before the database was find it through
+            // their connection.
+            let database = match import.database {
+                Some(database) => Some(database),
+                None => CONNECTIONS
+                    .get(&state.store, &import.connection_id)
+                    .await?
+                    .map(|c| c.database),
+            };
             views.push(ImportView {
                 task_id: import.task_id,
                 connection_id: import.connection_id,
                 consumer_application_id: import.consumer_application_id,
                 consumer_name,
+                database,
                 file_name: import.file_name,
                 file_bytes: import.file_bytes,
                 created_at: import.created_at,
@@ -508,6 +739,20 @@ async fn detail<S: StateStore>(
 struct Connect {
     consumer_application_id: String,
     variable: String,
+    /// Which database the connection uses. Without it the connection gets a
+    /// new database with a generated name, as before the choice existed.
+    #[serde(default)]
+    database: Option<DatabaseChoice>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum DatabaseChoice {
+    /// A new database with this name, owned by the connection's role.
+    New(String),
+    /// A database the Platform made on this server; the connection's role
+    /// gets its owner's access.
+    Existing(String),
 }
 
 fn valid_variable(variable: &str) -> bool {
@@ -578,12 +823,40 @@ async fn connect<S: StateStore>(
             .map_err(|e| Error::Invalid(e.to_string()))?;
         }
         let token = format!("{:024x}", rand::random::<u128>());
+        let (database_name, owner) = match request.database {
+            None => (format!("db_{token}"), None),
+            Some(DatabaseChoice::New(name)) => {
+                if !valid_database_name(&name) {
+                    return Err(Error::Invalid(NAME_RULE.into()));
+                }
+                if database_in_use(&state.store, &id, &name).await?
+                    || STANDALONE
+                        .exists(&state.store, &standalone_key(&id, &name))
+                        .await?
+                {
+                    return Err(Error::Conflict(format!(
+                        "A database named {name} already exists. Choose it as an existing database, or name another"
+                    )));
+                }
+                (name, None)
+            }
+            Some(DatabaseChoice::Existing(name)) => {
+                let owner = recorded_owner(&state.store, &id, &name)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "{name} is not a database the Platform made on this server"
+                        ))
+                    })?;
+                (name, Some(owner))
+            }
+        };
         let c = Connection {
             id: token.clone(),
             database_application_id: id.clone(),
             consumer_application_id: consumer.id,
             variable: request.variable,
-            database: format!("db_{token}"),
+            database: database_name,
             role: format!("role_{token}"),
             password: secret(),
             status: "connecting".into(),
@@ -591,6 +864,7 @@ async fn connect<S: StateStore>(
             native,
             task_id: None,
             imported_tables: None,
+            owner,
         };
         CONNECTIONS.upsert(&state.store, &c).await?;
         let task_id = tasks::enqueue(
@@ -675,14 +949,36 @@ async fn upload<S: StateStore>(
     headers: axum::http::HeaderMap,
     body: axum::body::Body,
 ) -> Response {
+    receive_upload(
+        state,
+        id,
+        Destination::Connection(connection_id),
+        headers,
+        body,
+    )
+    .await
+}
+
+/// An upload into a standalone database, made first when new.
+async fn upload_standalone<S: StateStore>(
+    State(state): State<AppState<S>>,
+    Path((id, name)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Response {
+    receive_upload(state, id, Destination::Standalone(name), headers, body).await
+}
+
+async fn receive_upload<S: StateStore>(
+    state: AppState<S>,
+    id: String,
+    destination: Destination,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Response {
     let result = async {
         let (_, app) = database(&state.store, &id).await?;
-        let c = connection(&state.store, &id, &connection_id).await?;
-        if c.status != "ready" {
-            return Err(Error::Conflict(
-                "Wait for the connection to become ready before importing".into(),
-            ));
-        }
+        let checked = destination.check(&state.store, &id).await?;
         let chosen = chosen_format(&headers)?;
         let all_or_nothing = chosen_all_or_nothing(&headers)?;
         let upload_id = secret();
@@ -719,21 +1015,29 @@ async fn upload<S: StateStore>(
         // The record exists before the worker can run, so the validation
         // stage finds it to add the object count. The Task takes its id.
         let task_id = format!("event-{:032x}", rand::random::<u128>());
-        remember_import(
-            &state.store,
-            &Import {
-                task_id: task_id.clone(),
-                database_application_id: app.id.clone(),
-                connection_id: connection_id.clone(),
-                consumer_application_id: c.consumer_application_id.clone(),
-                file_name,
-                file_bytes,
-                created_at: audit::timestamp(),
-                imported_objects: None,
-            },
-        )
-        .await
-        .inspect_err(|_| {
+        let accepted = async {
+            let operation = destination
+                .operation(&state.store, &id, upload_id, None, format, all_or_nothing)
+                .await?;
+            remember_import(
+                &state.store,
+                &Import {
+                    task_id: task_id.clone(),
+                    database_application_id: app.id.clone(),
+                    connection_id: checked.connection_id,
+                    consumer_application_id: checked.consumer_application_id,
+                    file_name,
+                    file_bytes,
+                    created_at: audit::timestamp(),
+                    imported_objects: None,
+                    database: Some(checked.database),
+                },
+            )
+            .await?;
+            Ok::<_, Error>(operation)
+        }
+        .await;
+        let operation = accepted.inspect_err(|_| {
             // No Task will own the upload, so it goes now.
             let _ = std::fs::remove_file(&path);
         })?;
@@ -745,15 +1049,7 @@ async fn upload<S: StateStore>(
                     &state,
                     "import",
                     audit::Subject::new("database", app.id.clone(), app.name.clone()),
-                    tasks::Work::Postgres {
-                        operation: Operation::Import {
-                            connection_id,
-                            upload_id,
-                            path: None,
-                            format: Some(format),
-                            all_or_nothing,
-                        },
-                    },
+                    tasks::Work::Postgres { operation },
                 ),
             )
             .await;
@@ -845,6 +1141,7 @@ mod tests {
             native: false,
             task_id: None,
             imported_tables: None,
+            owner: None,
         };
         let output = serde_json::to_string(&ConnectionView::from(c)).unwrap();
         assert!(!output.contains("password"));

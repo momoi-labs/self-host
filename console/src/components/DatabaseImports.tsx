@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Alert,
   AlertContent,
@@ -36,10 +37,12 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import type { App, DatabaseConnection, DatabaseImport, Report } from "../lib/types.js";
-import { api, failureOf } from "../lib/api.js";
+import { api, asReport, failureOf } from "../lib/api.js";
 import { detectFormat, type ArchiveFormat } from "../lib/archiveFormat.js";
+import { validDatabaseName } from "../lib/databaseName.js";
 import { formatBytes } from "../lib/format.js";
-import { dismissUpload, onUploadFinished, retryUpload, startUpload, useImportUploads } from "../lib/importUploads.js";
+import { dismissUpload, onUploadFinished, retryUpload, startUpload, useImportUploads, type ImportTarget } from "../lib/importUploads.js";
+import { consumerDatabasesQuery } from "../lib/queries.js";
 import { DatabaseOperation } from "./DatabaseOperation.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
@@ -74,12 +77,14 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   /** Opens the Connections tab, where an Application is connected. */
   onOpenConnections: () => void;
   /** Imports from a Host path: its Task id, or why it was refused. */
-  onImport: (connectionId: string, path: string, format: ArchiveFormat, allOrNothing: boolean) => Promise<{ taskId: string } | { failure: Report }>;
+  onImport: (target: ImportTarget, path: string, format: ArchiveFormat, allOrNothing: boolean) => Promise<{ taskId: string } | { failure: Report }>;
   /** An upload became an import: read the list again. */
   onImported: () => void;
 }) {
   const [adding, setAdding] = useState(false);
-  const [connection, setConnection] = useState("");
+  // `connection:<id>`, `database:<name>` for a database with no connection, or `new`.
+  const [destination, setDestination] = useState("");
+  const [newName, setNewName] = useState("");
   const [from, setFrom] = useState<"upload" | "path">("upload");
   const [file, setFile] = useState<File | null>(null);
   const [path, setPath] = useState("");
@@ -93,7 +98,16 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   // number is still the latest, so a slow one cannot pick the wrong type.
   const generation = useRef(0);
   const uploads = useImportUploads(databaseId);
-  const close = () => { setAdding(false); setFile(null); setPath(""); setFormat(""); setAllOrNothing(true); setDetection(null); setRefusal(null); };
+  const databases = useQuery({ ...consumerDatabasesQuery(databaseId), enabled: adding });
+  // A standalone database an Application connected to later takes imports through that connection.
+  const standalone = (databases.data ?? []).filter((database) => database.standalone && !connections.some((item) => item.database === database.name));
+  const nameError = destination === "new" && newName && !validDatabaseName(newName)
+    ? "Use lowercase letters, digits and underscores, starting with a letter or underscore. It cannot start with pg_ or be postgres, template0 or template1."
+    : destination === "new" && databases.data?.some((database) => database.name === newName) ? `${newName} already exists on this server. Choose it above, or name another.` : undefined;
+  const target: ImportTarget | null = destination.startsWith("connection:") ? { connectionId: destination.slice("connection:".length) }
+    : destination.startsWith("database:") ? { database: destination.slice("database:".length) }
+    : destination === "new" && newName && !nameError ? { database: newName } : null;
+  const close = () => { setAdding(false); setDestination(""); setNewName(""); setFile(null); setPath(""); setFormat(""); setAllOrNothing(true); setDetection(null); setRefusal(null); };
   // A finished upload is an import now: select it as the list shows it.
   useEffect(() => onUploadFinished((finished) => {
     if (finished.databaseId !== databaseId) return;
@@ -102,7 +116,10 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   }), [databaseId, onImported]);
   const selected = imports.find((item) => item.task_id === chosen) ?? imports[0] ?? null;
   const appName = (item: { consumer_application_id: string; consumer_name?: string | null }) =>
-    item.consumer_name ?? apps.find((app) => app.id === item.consumer_application_id)?.name ?? item.consumer_application_id;
+    item.consumer_name ?? apps.find((app) => app.id === item.consumer_application_id)?.name ?? (item.consumer_application_id || "No application");
+  const uploadTarget = (target: ImportTarget) => "connectionId" in target
+    ? appName({ consumer_application_id: connections.find((item) => item.id === target.connectionId)?.consumer_application_id ?? "" })
+    : target.database;
   const source: ImportSource | null = from === "upload" ? (file ? { file } : null) : (path.trim() ? { path: path.trim() } : null);
   const command = FORMATS.find((item) => item.value === format)?.command ?? FORMATS[0].command;
 
@@ -140,16 +157,16 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   // closes at once; a Host path is queued before it closes.
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!source || !connection || !format) return;
+    if (!source || !target || !format) return;
     if ("file" in source) {
-      startUpload(databaseId, connection, source.file, format, allOrNothing);
+      startUpload(databaseId, target, source.file, format, allOrNothing);
       close();
       return;
     }
     if (submitting) return;
     setSubmitting(true);
     setRefusal(null);
-    const result = await onImport(connection, source.path, format, allOrNothing);
+    const result = await onImport(target, source.path, format, allOrNothing);
     setSubmitting(false);
     if ("taskId" in result) {
       setChosen(result.taskId);
@@ -160,18 +177,18 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
   }
 
   return <div className="stack">
-    <PageHeader actions={<Button size="sm" variant="primary" disabled={busy || !connections.length} onClick={() => setAdding(true)}><Icon name="plus" />New import</Button>}>
+    <PageHeader actions={<Button size="sm" variant="primary" disabled={busy} onClick={() => setAdding(true)}><Icon name="plus" />New import</Button>}>
       <PageHeaderTitle asChild><h2 className="t-h2">Imports</h2></PageHeaderTitle>
     </PageHeader>
 
     {failure ? <Failure failure={failure} /> : null}
 
-    {!connections.length ? <Alert variant="warning">
+    {!connections.length ? <Alert variant="info">
       <Icon name="info" size="md" />
       <AlertContent>
         <AlertTitle>No Application is connected to this database</AlertTitle>
         <AlertDescription>
-          An import fills a connected Application's database. Connect one first, then come back here.
+          An import can fill a new database now, and an Application can connect to it later.
           {" "}<Button size="sm" variant="ghost" type="button" onClick={onOpenConnections}>Open Connections</Button>
         </AlertDescription>
       </AlertContent>
@@ -183,11 +200,17 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
         <form onSubmit={(event: FormEvent) => void submit(event)}>
           <DialogBody>
         <Steps>
-          <Step title="Where the data goes" done={Boolean(connection)}>
-            <Select value={connection} onValueChange={setConnection} disabled={busy || !connections.length}>
-              <FormField id="import-connection" label="Consumer database"><SelectTrigger><SelectValue placeholder="Choose a connection" /></SelectTrigger></FormField>
-              <SelectContent>{connections.map((item) => <SelectItem key={item.id} value={item.id}>{appName(item)}</SelectItem>)}</SelectContent>
+          <Step title="Where the data goes" done={Boolean(target)}>
+            <Select value={destination} onValueChange={setDestination} disabled={busy}>
+              <FormField id="import-connection" label="Consumer database" hint={databases.error ? asReport(databases.error).error : undefined}><SelectTrigger><SelectValue placeholder="Choose a database" /></SelectTrigger></FormField>
+              <SelectContent>
+                {connections.map((item) => <SelectItem key={item.id} value={`connection:${item.id}`}>{`${item.database} (${appName(item)})`}</SelectItem>)}
+                {standalone.map((database) => <SelectItem key={database.name} value={`database:${database.name}`}>{`${database.name} (no application connected)`}</SelectItem>)}
+                <SelectItem value="new">A new database</SelectItem>
+              </SelectContent>
             </Select>
+            {destination === "new" ? <FormField id="import-database-name" label="Database name" className="mono" value={newName} required disabled={busy} error={nameError}
+              hint="Created on this server with its own login. Connect an Application to it later as an existing database." onChange={(event) => setNewName(event.target.value)} /> : null}
           </Step>
           <Step title="The dump" done={Boolean(source)}>
             <div className="row import-source" role="group" aria-label="Where the dump comes from">
@@ -231,7 +254,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
           </DialogBody>
           <DialogFooter>
             <Button size="sm" type="button" onClick={close}>Cancel</Button>
-            <Button size="sm" type="submit" variant="primary" disabled={!source || !format || !connection || busy || submitting}>{submitting ? "Queuing…" : "Import data"}</Button>
+            <Button size="sm" type="submit" variant="primary" disabled={!source || !format || !target || busy || submitting}>{submitting ? "Queuing…" : "Import data"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -244,7 +267,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
       <TableHeader><TableRow><TableHead>When</TableHead><TableHead>Application</TableHead><TableHead>File</TableHead><TableHead>Result</TableHead><TableHead className="col-tight">Objects</TableHead></TableRow></TableHeader>
       <TableBody>{uploads.map((upload) => <TableRow key={upload.key}>
         <TableCell className="muted">Now</TableCell>
-        <TableCell>{appName({ consumer_application_id: connections.find((item) => item.id === upload.connectionId)?.consumer_application_id ?? "" })}</TableCell>
+        <TableCell>{uploadTarget(upload.target)}</TableCell>
         <TableCell><span className="mono">{upload.file.name}</span> <span className="muted">· {formatBytes(upload.file.size)}</span></TableCell>
         <TableCell className="import-upload">{upload.status === "uploading"
           ? <Progress label="Uploading" value={upload.loaded} max={Math.max(upload.file.size, 1)}
@@ -257,7 +280,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
         const status = item.task?.status ?? "unknown";
         return <TableRow key={item.task_id} aria-selected={selected?.task_id === item.task_id}>
           <TableCell title={new Date(item.created_at).toLocaleString()}>{new Date(item.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</TableCell>
-          <TableCell>{appName(item)}</TableCell>
+          <TableCell><div className="stack-xs"><span>{appName(item)}</span>{item.database ? <span className="muted mono">{item.database}</span> : null}</div></TableCell>
           <TableCell title={`${item.file_name} · ${formatBytes(item.file_bytes)}`}><button type="button" className="btn btn-link" aria-pressed={selected?.task_id === item.task_id} onClick={() => setChosen(item.task_id)}><span className="mono">{item.file_name}</span></button> <span className="muted">· {formatBytes(item.file_bytes)}</span></TableCell>
           <TableCell><StatusBadge tone={status === "failed" ? "danger" : status === "completed" || status === "running" ? "success" : "neutral"} pulse={status === "running"}>{status === "completed" ? "Imported" : status === "failed" ? "Failed" : status === "running" ? "Restoring" : status === "pending" ? "Queued" : "Unknown"}</StatusBadge></TableCell>
           <TableCell className="col-tight">{item.imported_objects ?? "—"}</TableCell>

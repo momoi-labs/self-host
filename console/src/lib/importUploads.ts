@@ -4,6 +4,17 @@ import { apiKey } from "./api.js";
 import type { ArchiveFormat } from "./archiveFormat.js";
 import { fileFingerprint } from "./fileFingerprint.js";
 
+/** Where an import goes: a connection's database, or a database with no
+ * connection, which the import makes when it is new. */
+export type ImportTarget = { connectionId: string } | { database: string };
+
+/** The route a Host path import into `target` is sent to, without its last part. */
+export function importRoute(databaseId: string, target: ImportTarget): string {
+  return "connectionId" in target
+    ? `/databases/${databaseId}/connections/${target.connectionId}`
+    : `/databases/${databaseId}/databases/${encodeURIComponent(target.database)}`;
+}
+
 /**
  * Database import uploads, kept outside any screen so closing the import
  * dialog or moving to another console page does not stop one. The browser
@@ -13,7 +24,7 @@ import { fileFingerprint } from "./fileFingerprint.js";
 export type ImportUpload = {
   key: string;
   databaseId: string;
-  connectionId: string;
+  target: ImportTarget;
   file: File;
   format: ArchiveFormat;
   /** One transaction that stops at the first error. */
@@ -81,7 +92,7 @@ async function send(upload: ImportUpload) {
     // imported and only the answer got lost, it answers the same import.
     const known = upload.sessionId ? await call("GET", `${base}/${upload.sessionId}`, null, {}) : null;
     const started = known?.status === 200 ? known : await call("POST", base, JSON.stringify({
-      connection_id: upload.connectionId,
+      ...("connectionId" in upload.target ? { connection_id: upload.target.connectionId } : { database: upload.target.database }),
       name: upload.file.name,
       size: upload.file.size,
       fingerprint: await fileFingerprint(upload.file),
@@ -119,10 +130,10 @@ async function send(upload: ImportUpload) {
 }
 
 /** Starts sending `file` and answers its key; progress shows in `useImportUploads`. */
-export function startUpload(databaseId: string, connectionId: string, file: File, format: ArchiveFormat, allOrNothing: boolean): string {
+export function startUpload(databaseId: string, target: ImportTarget, file: File, format: ArchiveFormat, allOrNothing: boolean): string {
   const upload: ImportUpload = {
     key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    databaseId, connectionId, file, format, allOrNothing, sessionId: null, loaded: 0, status: "uploading", error: null,
+    databaseId, target, file, format, allOrNothing, sessionId: null, loaded: 0, status: "uploading", error: null,
   };
   publish([...uploads, upload]);
   void send(upload);
