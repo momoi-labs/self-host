@@ -56,6 +56,10 @@ struct Session {
     #[serde(default)]
     format: Option<ArchiveFormat>,
     all_or_nothing: bool,
+    /// The import a finished session queued. The record stays a while so a
+    /// retry whose answer was lost gets this Task instead of a second one.
+    #[serde(default)]
+    task_id: Option<String>,
 }
 
 fn sessions_dir() -> PathBuf {
@@ -156,7 +160,11 @@ fn progress(session: &Session) -> Progress {
     Progress {
         id: session.id.clone(),
         size: session.size,
-        received: received(&session.id),
+        received: if session.task_id.is_some() {
+            session.size
+        } else {
+            received(&session.id)
+        },
     }
 }
 
@@ -216,7 +224,10 @@ async fn start<S: StateStore>(
         };
         let found = {
             let _starts = STARTS.lock().await;
-            match sessions().into_iter().find(matches) {
+            // A finished session is not resumed: the same file picked again
+            // is a new import.
+            let open = sessions().into_iter().filter(|s| s.task_id.is_none());
+            match open.into_iter().find(matches) {
                 Some(session) => session,
                 None => {
                     let session = Session {
@@ -228,6 +239,7 @@ async fn start<S: StateStore>(
                         fingerprint: request.fingerprint.clone(),
                         format: request.format,
                         all_or_nothing: request.all_or_nothing,
+                        task_id: None,
                     };
                     create_bytes(&session.id)?;
                     if let Err(error) = write_session(&session) {
@@ -242,9 +254,12 @@ async fn start<S: StateStore>(
         // the one the import takes. A chunk being written finishes first.
         let lock = session_lock(&found.id);
         let _writing = lock.lock().await;
-        let mut session = read_session(&id, &found.id).map_err(|_| {
-            Error::Conflict("This upload just finished or was removed; start it again".into())
-        })?;
+        let mut session = read_session(&id, &found.id)
+            .ok()
+            .filter(|session| session.task_id.is_none())
+            .ok_or_else(|| {
+                Error::Conflict("This upload just finished or was removed; start it again".into())
+            })?;
         session.format = request.format;
         session.all_or_nothing = request.all_or_nothing;
         // A daemon stopped halfway through handing it over leaves no bytes.
@@ -346,6 +361,9 @@ async fn append<S: StateStore>(
     if read_session(&id, &session.id).is_err() {
         return failure(Error::Missing);
     }
+    if session.task_id.is_some() {
+        return out_of_order("This upload is already imported".into(), session.size);
+    }
     let held = received(&session.id);
     if first != held {
         return out_of_order(
@@ -423,7 +441,13 @@ async fn finish<S: StateStore>(
         let session = read_session(&id, &session)?;
         let lock = session_lock(&session.id);
         let _writing = lock.lock().await;
-        let session = read_session(&id, &session.id)?;
+        let mut session = read_session(&id, &session.id)?;
+        if let Some(task_id) = &session.task_id {
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({"task_id":task_id,"database_application_id":id})),
+            ));
+        }
         let (_, app) = database(&state.store, &id).await?;
         let c = connection(&state.store, &id, &session.connection_id).await?;
         if c.status != "ready" {
@@ -494,7 +518,10 @@ async fn finish<S: StateStore>(
             .await;
         match queued {
             Ok(task_id) => {
-                let _ = std::fs::remove_file(record_path(&session.id));
+                session.task_id = Some(task_id.clone());
+                if let Err(error) = write_session(&session) {
+                    tracing::warn!(%error, "could not record the queued upload");
+                }
                 Ok((
                     StatusCode::ACCEPTED,
                     Json(serde_json::json!({"task_id":task_id,"database_application_id":app.id})),
@@ -724,7 +751,19 @@ mod tests {
             progress_tests::finished(&state, task).await.status,
             "completed"
         );
-        assert!(!record_path(&id).exists() && !bytes_path(&id).exists());
+        assert!(!bytes_path(&id).exists(), "the file went to the import");
+        // A retry whose answer was lost gets the same import, not a second.
+        let (status, again) = call(&router, finish()).await;
+        assert_eq!(
+            (status, &again["task_id"]),
+            (StatusCode::ACCEPTED, &accepted["task_id"])
+        );
+        // The same file picked again is a new import.
+        let (_, anew) = call(&router, start_request(&fingerprint, size)).await;
+        assert_ne!(anew["id"], id.as_str());
+        assert_eq!(anew["received"], 0);
+        remove_session(&id);
+        remove_session(anew["id"].as_str().unwrap());
         let import = IMPORTS.get(&state.store, task).await.unwrap().unwrap();
         assert_eq!(
             (import.file_name.as_str(), import.file_bytes),
