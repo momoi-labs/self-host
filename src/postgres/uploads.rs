@@ -120,7 +120,10 @@ fn write_session(session: &Session) -> Result<(), Error> {
             .open(&temporary)?;
         file.write_all(&serde_json::to_vec(session).map_err(std::io::Error::other)?)?;
         file.sync_all()?;
-        std::fs::rename(temporary, record_path(&session.id))
+        std::fs::rename(temporary, record_path(&session.id))?;
+        // The rename lasts through a power loss only once its directory is
+        // on disk too.
+        std::fs::File::open(sessions_dir())?.sync_all()
     };
     save().map_err(|_| Error::Runtime("Could not save the upload session".into()))
 }
@@ -578,11 +581,9 @@ async fn reclaim<S: StateStore>(state: &AppState<S>, session: &mut Session) -> R
         .get_audit_event(&task_id)
         .await?
         .and_then(|body| serde_json::from_str::<audit::Event>(&body).ok());
-    let handed = match event {
-        Some(event) if event.status != "pending" => true,
-        Some(_) => tasks::is_queued(&state.store, &task_id).await?,
-        None => false,
-    };
+    // History may have dropped the event of a Task still waiting its turn.
+    let handed = event.is_some_and(|event| event.status != "pending")
+        || tasks::is_queued(&state.store, &task_id).await?;
     if handed {
         return Ok(());
     }
