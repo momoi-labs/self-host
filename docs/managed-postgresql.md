@@ -184,7 +184,7 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 | `POST /databases/{id}/imports/uploads` | `{ "connection_id": "...", "name": "app.dump", "size": 1048576, "fingerprint": "...", "format": "custom", "all_or_nothing": true }` starts a resumable upload, or finds the one started for the same connection, name, size and fingerprint; answers `{ "id": "...", "size": 1048576, "received": 0 }`. `format` and `all_or_nothing` are optional; a resumed upload takes the latest ones |
 | `GET /databases/{id}/imports/uploads/{upload}` | None; answers `{ "id", "size", "received" }` |
 | `PUT /databases/{id}/imports/uploads/{upload}` | One chunk with `Content-Range: bytes start-end/size`. It must start at `received` and end inside `size`; otherwise 409 answers `received`, or 400. A chunk cut short keeps what arrived. Answers `{ "id", "size", "received" }` |
-| `POST /databases/{id}/imports/uploads/{upload}/import` | None; queues the import of a complete upload and answers its Task id. A refusal keeps the upload |
+| `POST /databases/{id}/imports/uploads/{upload}/import` | None; queues the import of a complete upload and answers its Task id. A refusal keeps the upload. Asked again, a queued upload answers the same Task id; it is not resumed by a new start |
 | `DELETE /databases/{id}/imports/uploads/{upload}` | None; removes the upload and its bytes |
 | `POST /databases/{id}/connections/{connection}/import-path` | `{ "path": "/srv/backups/app.dump", "format": "custom", "all_or_nothing": true }`; `format` and `all_or_nothing` are optional, and `all_or_nothing` defaults to true |
 | `POST /databases/import-format` | `{ "path": "..." }`; answers `{ "format": "custom" }`, or `null` when the type cannot be told |

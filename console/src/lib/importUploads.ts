@@ -77,7 +77,10 @@ async function send(upload: ImportUpload) {
   const fail = (error: string) => update(upload.key, { status: "failed", error });
   try {
     const base = `/databases/${upload.databaseId}/imports/uploads`;
-    const started = await call("POST", base, JSON.stringify({
+    // A retry goes back to its own session: if that one was already
+    // imported and only the answer got lost, it answers the same import.
+    const known = upload.sessionId ? await call("GET", `${base}/${upload.sessionId}`, null, {}) : null;
+    const started = known?.status === 200 ? known : await call("POST", base, JSON.stringify({
       connection_id: upload.connectionId,
       name: upload.file.name,
       size: upload.file.size,
