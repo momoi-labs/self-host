@@ -34,9 +34,10 @@ pub(crate) fn router<S: StateStore>() -> Router<AppState<S>> {
         )
         .route("/databases/import-format", post(detect_format::<S>))
         .route("/databases/{id}/imports", get(imports::<S>))
+        .merge(super::uploads::router())
 }
 
-const UNKNOWN_FORMAT: &str =
+pub(super) const UNKNOWN_FORMAT: &str =
     "Could not tell what kind of dump this is. Choose its type: custom, tar, directory or sql";
 
 /// The type the Operator chose, from `X-Import-Format`, if any.
@@ -273,7 +274,13 @@ fn upload_name(headers: &axum::http::HeaderMap) -> String {
             }
         }
     }
-    let name: String = String::from_utf8_lossy(&decoded)
+    shown_name(&String::from_utf8_lossy(&decoded))
+}
+
+/// A file name as something safe to show: without a path, control characters
+/// or more than 200 characters.
+pub(super) fn shown_name(raw: &str) -> String {
+    let name: String = raw
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or_default()

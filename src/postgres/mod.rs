@@ -7,6 +7,7 @@ mod progress_tests;
 pub mod runtime;
 #[cfg(test)]
 mod test_runtime;
+pub(crate) mod uploads;
 
 use std::{
     collections::{BTreeSet, HashMap},

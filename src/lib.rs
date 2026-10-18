@@ -153,6 +153,7 @@ pub async fn boot_app_with_vm_runtime<S: StateStore>(
     }
     tasks::recover(&state).await;
     schedules::spawn(state);
+    postgres::uploads::spawn_sweep();
     router
 }
 
