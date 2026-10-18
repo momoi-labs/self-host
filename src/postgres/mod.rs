@@ -204,10 +204,28 @@ pub(crate) struct Connection {
     /// before the choice existed.
     #[serde(default)]
     pub owner: Option<String>,
+    /// Whether the connection made or joined its database on the server.
+    /// None for connections recorded before the field: those did unless
+    /// they failed.
+    #[serde(default)]
+    pub database_made: Option<bool>,
 }
 impl Keyed for Connection {
     fn key(&self) -> String {
         self.id.clone()
+    }
+}
+
+impl Connection {
+    /// Whether its database is on the server, as far as the Platform knows.
+    pub(crate) fn has_database(&self) -> bool {
+        self.database_made.unwrap_or(self.status != "failed")
+    }
+
+    /// Whether it holds its database name: the database is there, or the
+    /// connection is still making it.
+    pub(crate) fn holds_name(&self) -> bool {
+        self.has_database() || self.status == "connecting"
     }
 }
 
@@ -220,6 +238,9 @@ pub(crate) struct StandaloneDatabase {
     pub name: String,
     pub role: String,
     pub password: String,
+    /// Whether an import made the database on the server yet.
+    #[serde(default)]
+    pub made: bool,
 }
 impl Keyed for StandaloneDatabase {
     fn key(&self) -> String {
@@ -279,7 +300,8 @@ async fn platform_roles(
 }
 
 /// The role that owns the consumer database `name` on `provider`, as the
-/// Platform recorded it, or None when the Platform did not make it.
+/// Platform recorded it, or None when the Platform did not make it. The
+/// Connect Task checks the owner on the server again before it grants.
 pub(crate) async fn recorded_owner(
     store: &impl StateStore,
     provider: &str,
@@ -288,22 +310,31 @@ pub(crate) async fn recorded_owner(
     if let Some(standalone) = STANDALONE
         .get(store, &standalone_key(provider, name))
         .await?
+        .filter(|d| d.made)
     {
         return Ok(Some(standalone.role));
     }
-    let mut connections: Vec<_> = CONNECTIONS
+    Ok(CONNECTIONS
         .list(store)
         .await?
         .into_iter()
-        .filter(|c| c.database_application_id == provider && c.database == name)
-        .collect();
-    // A failed connection may never have made its database; one that did
-    // not fail names the owner for sure.
-    connections.sort_by_key(|c| c.status == "failed");
-    Ok(connections
-        .into_iter()
-        .next()
+        .find(|c| c.database_application_id == provider && c.database == name && c.has_database())
         .map(|c| c.owner.unwrap_or(c.role)))
+}
+
+/// Records that the connection made or joined its database, and the owner
+/// it found there.
+async fn mark_database_made(
+    store: &impl StateStore,
+    id: &str,
+    owner: Option<String>,
+) -> Result<(), Error> {
+    let _write = CONNECTION_WRITE.lock().await;
+    let mut c = CONNECTIONS.get(store, id).await?.ok_or(Error::Missing)?;
+    c.database_made = Some(true);
+    c.owner = owner;
+    CONNECTIONS.upsert(store, &c).await?;
+    Ok(())
 }
 
 /// The role that owns `name` on the server, or None when no database has
@@ -334,42 +365,46 @@ async fn server_owner<S: StateStore>(
     }
 }
 
-/// Creates the restricted login `role`. The role and password are
-/// generated, never Operator input.
+/// Creates the restricted login `role`, or gives an existing one its login
+/// and password back, so a step that failed after it can be retried. The
+/// role and password are generated, never Operator input.
 async fn create_role<S: StateStore>(
     state: &AppState<S>,
     provider: &str,
     role: &str,
     password: &str,
 ) -> Result<(), Error> {
-    sql(state, provider, "postgres", ADMIN, format!("SET log_statement = 'none'; SET log_min_error_statement = 'panic'; CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '{password}';")).await?;
+    sql(state, provider, "postgres", ADMIN, format!("SET log_statement = 'none'; SET log_min_error_statement = 'panic'; DO $role$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}') THEN ALTER ROLE {role} LOGIN PASSWORD '{password}'; ELSE CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '{password}'; END IF; END $role$;")).await?;
     Ok(())
 }
 
 /// Gives the connection's new login the owner's access to an existing
-/// database. Its sessions there act as the owner, so what one connection
-/// creates every other one can use, and disabling one login on Disconnect
-/// leaves the others and the data as they are.
+/// database, and answers that owner. Its sessions there act as the owner, so
+/// what one connection creates every other one can use, and disabling one
+/// login on Disconnect leaves the others and the data as they are. The owner
+/// is read from the server and must be a role the Platform made.
 async fn grant_existing<S: StateStore>(
     state: &AppState<S>,
     provider: &str,
     c: &Connection,
-    owner: &str,
-) -> Result<(), Error> {
-    match server_owner(state, provider, &c.database).await? {
-        None => {
-            return Err(Error::Conflict(format!(
+) -> Result<String, Error> {
+    let owner = server_owner(state, provider, &c.database)
+        .await?
+        .ok_or_else(|| {
+            Error::Conflict(format!(
                 "The database {} is not on this server. Choose another, or create a new one",
                 c.database
-            )));
-        }
-        Some(found) if found != owner => {
-            return Err(Error::Conflict(format!(
-                "The database {} is owned by another role than the Platform recorded. Its access was not changed",
-                c.database
-            )));
-        }
-        Some(_) => {}
+            ))
+        })?;
+    if owner == c.role
+        || !platform_roles(&state.store, provider)
+            .await?
+            .contains(&owner)
+    {
+        return Err(Error::Conflict(format!(
+            "The database {} is owned by a role the Platform did not make. Its access was not changed",
+            c.database
+        )));
     }
     create_role(state, provider, &c.role, &c.password).await?;
     let (db, role) = (ident(&c.database), &c.role);
@@ -380,12 +415,12 @@ async fn grant_existing<S: StateStore>(
         ADMIN,
         format!(
             "GRANT {} TO {role}; ALTER ROLE {role} IN DATABASE {db} SET role = {}; GRANT CONNECT ON DATABASE {db} TO {role};",
-            ident(owner),
-            literal(owner)
+            ident(&owner),
+            literal(&owner)
         ),
     )
     .await?;
-    Ok(())
+    Ok(owner)
 }
 
 /// Creates `name` owned by a new login `role`, reachable by that role only.
@@ -402,15 +437,28 @@ async fn create_database<S: StateStore>(
         )));
     }
     create_role(state, provider, role, password).await?;
-    let db = ident(name);
     sql(
         state,
         provider,
         "postgres",
         ADMIN,
-        format!("CREATE DATABASE {db} OWNER {role} ALLOW_CONNECTIONS false;"),
+        format!(
+            "CREATE DATABASE {} OWNER {role} ALLOW_CONNECTIONS false;",
+            ident(name)
+        ),
     )
     .await?;
+    restrict_database(state, provider, name, role).await
+}
+
+/// Lets only `role` connect to `name`, then opens it.
+async fn restrict_database<S: StateStore>(
+    state: &AppState<S>,
+    provider: &str,
+    name: &str,
+    role: &str,
+) -> Result<(), Error> {
+    let db = ident(name);
     sql(
         state,
         provider,
@@ -1037,26 +1085,23 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
                 ));
             }
             wait_ready(state, &provider.id).await?;
-            match &c.owner {
-                None => step(
-                    state,
-                    "access",
-                    "Creating restricted database access",
-                    "Consumer database and restricted login role created. Public access revoked.",
-                    create_database(state, &provider.id, &c.database, &c.role, &c.password),
-                )
-                .await?,
-                Some(owner) => {
+            let owner = match &c.owner {
+                None => {
+                    step(state, "access", "Creating restricted database access", "Consumer database and restricted login role created. Public access revoked.", create_database(state, &provider.id, &c.database, &c.role, &c.password)).await?;
+                    None
+                }
+                Some(_) => Some(
                     step(
                         state,
                         "access",
                         "Granting access to the existing database",
                         "Restricted login role created and given the database owner's access.",
-                        grant_existing(state, &provider.id, &c, owner),
+                        grant_existing(state, &provider.id, &c),
                     )
-                    .await?
-                }
-            }
+                    .await?,
+                ),
+            };
+            mark_database_made(store, &connection_id, owner).await?;
             if !mark_applying(store, &connection_id).await? {
                 return Ok(());
             }
@@ -1492,23 +1537,27 @@ async fn prepare_standalone<S: StateStore>(
         "Preparing the database",
         "Consumer database is on the server, owned by its own restricted role.",
         async {
-            match server_owner(state, &d.database_application_id, &d.name).await? {
-                None => {
-                    create_database(
-                        state,
-                        &d.database_application_id,
-                        &d.name,
-                        &d.role,
-                        &d.password,
-                    )
-                    .await
+            let provider = &d.database_application_id;
+            match server_owner(state, provider, &d.name).await? {
+                None => create_database(state, provider, &d.name, &d.role, &d.password).await?,
+                // An earlier try made it: finish what it may have left.
+                Some(owner) if owner == d.role => {
+                    create_role(state, provider, &d.role, &d.password).await?;
+                    restrict_database(state, provider, &d.name, &d.role).await?;
                 }
-                Some(owner) if owner == d.role => Ok(()),
-                Some(_) => Err(Error::Conflict(format!(
-                    "A database named {} already exists on this server and belongs to another role",
-                    d.name
-                ))),
+                Some(_) => {
+                    return Err(Error::Conflict(format!(
+                        "A database named {} already exists on this server and belongs to another role",
+                        d.name
+                    )));
+                }
             }
+            let _write = CONNECTION_WRITE.lock().await;
+            if let Some(mut current) = STANDALONE.get(&state.store, &d.key()).await? {
+                current.made = true;
+                STANDALONE.upsert(&state.store, &current).await?;
+            }
+            Ok(())
         },
     )
     .await
@@ -1708,6 +1757,7 @@ mod tests {
             task_id: None,
             imported_tables: None,
             owner: None,
+            database_made: None,
         }
     }
 
