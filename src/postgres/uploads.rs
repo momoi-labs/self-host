@@ -60,6 +60,9 @@ struct Session {
     /// retry whose answer was lost gets this Task instead of a second one.
     #[serde(default)]
     task_id: Option<String>,
+    /// Where the file went for that import, in private import storage.
+    #[serde(default)]
+    upload_id: Option<String>,
 }
 
 fn sessions_dir() -> PathBuf {
@@ -240,6 +243,7 @@ async fn start<S: StateStore>(
                         format: request.format,
                         all_or_nothing: request.all_or_nothing,
                         task_id: None,
+                        upload_id: None,
                     };
                     create_bytes(&session.id)?;
                     if let Err(error) = write_session(&session) {
@@ -442,11 +446,27 @@ async fn finish<S: StateStore>(
         let lock = session_lock(&session.id);
         let _writing = lock.lock().await;
         let mut session = read_session(&id, &session.id)?;
-        if let Some(task_id) = &session.task_id {
-            return Ok((
-                StatusCode::ACCEPTED,
-                Json(serde_json::json!({"task_id":task_id,"database_application_id":id})),
-            ));
+        if let Some(task_id) = session.task_id.clone() {
+            if state.store.get_audit_event(&task_id).await?.is_some() {
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(serde_json::json!({"task_id":task_id,"database_application_id":id})),
+                ));
+            }
+            // The daemon stopped between the receipt and the Task: the file
+            // comes back to the session and is queued now.
+            if let Some(path) = session
+                .upload_id
+                .as_deref()
+                .and_then(|u| import_path(u).ok())
+                && path.exists()
+            {
+                let _ = std::fs::rename(&path, bytes_path(&session.id));
+            }
+            let _ = IMPORTS.remove(&state.store, &task_id).await;
+            session.task_id = None;
+            session.upload_id = None;
+            write_session(&session)?;
         }
         let (_, app) = database(&state.store, &id).await?;
         let c = connection(&state.store, &id, &session.connection_id).await?;
@@ -472,16 +492,26 @@ async fn finish<S: StateStore>(
                 "A directory dump cannot be uploaded; import it from its path on the Host".into(),
             ));
         }
-        // Once queued the file is the import's: the worker removes it. Until
-        // then a failure hands it back to the session, so nothing is resent.
+        // The receipt is written first, so a retry after any failure or
+        // restart finds either the queued Task or the file to queue again.
+        // Once queued the file is the import's: the worker removes it.
         let upload_id = secret();
         let path = import_path(&upload_id)?;
-        std::fs::rename(&bytes, &path)
-            .map_err(|_| Error::Runtime("Could not hand the upload to the import".into()))?;
+        let task_id = format!("event-{:032x}", rand::random::<u128>());
+        let open = session.clone();
+        session.task_id = Some(task_id.clone());
+        session.upload_id = Some(upload_id.clone());
+        write_session(&session)?;
         let give_back = || {
             let _ = std::fs::rename(&path, &bytes);
+            let _ = write_session(&open);
         };
-        let task_id = format!("event-{:032x}", rand::random::<u128>());
+        if std::fs::rename(&bytes, &path).is_err() {
+            give_back();
+            return Err(Error::Runtime(
+                "Could not hand the upload to the import".into(),
+            ));
+        }
         remember_import(
             &state.store,
             &Import {
@@ -517,16 +547,10 @@ async fn finish<S: StateStore>(
             )
             .await;
         match queued {
-            Ok(task_id) => {
-                session.task_id = Some(task_id.clone());
-                if let Err(error) = write_session(&session) {
-                    tracing::warn!(%error, "could not record the queued upload");
-                }
-                Ok((
-                    StatusCode::ACCEPTED,
-                    Json(serde_json::json!({"task_id":task_id,"database_application_id":app.id})),
-                ))
-            }
+            Ok(task_id) => Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({"task_id":task_id,"database_application_id":app.id})),
+            )),
             Err(error) => {
                 let _ = IMPORTS.remove(&state.store, &task_id).await;
                 give_back();
