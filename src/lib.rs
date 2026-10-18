@@ -152,8 +152,8 @@ pub async fn boot_app_with_vm_runtime<S: StateStore>(
         tracing::warn!(%error, "native reconciliation failed");
     }
     tasks::recover(&state).await;
+    postgres::uploads::spawn_sweep(state.clone());
     schedules::spawn(state);
-    postgres::uploads::spawn_sweep();
     router
 }
 
