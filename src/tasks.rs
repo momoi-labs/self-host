@@ -209,7 +209,8 @@ fn event(task: &Task, status: &str, description: impl Into<String>) -> audit::Ev
             crate::postgres::Operation::Connect { .. } => "Database connection",
             crate::postgres::Operation::Disconnect { .. } => "Database access revocation",
             crate::postgres::Operation::ApplyVariable { .. } => "Database Variable update",
-            crate::postgres::Operation::Import { .. } => "Database import",
+            crate::postgres::Operation::Import { .. }
+            | crate::postgres::Operation::ImportDatabase { .. } => "Database import",
             crate::postgres::Operation::Remove { .. } => "Database removal",
         };
         format!(

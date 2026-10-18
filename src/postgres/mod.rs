@@ -35,6 +35,8 @@ pub(crate) static DATABASES: Collection<Database> = Collection::new("managed-pos
 pub(crate) static CONNECTIONS: Collection<Connection> = Collection::new("postgres-connection");
 pub(crate) static CONNECTION_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub(crate) static IMPORTS: Collection<Import> = Collection::new("postgres-import");
+pub(crate) static STANDALONE: Collection<StandaloneDatabase> =
+    Collection::new("postgres-standalone-database");
 
 /// What a database dump is, as pg_dump writes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,11 +198,230 @@ pub(crate) struct Connection {
     pub native: bool,
     pub task_id: Option<String>,
     pub imported_tables: Option<u64>,
+    /// The role that owns `database` when this connection was given an
+    /// existing one: its own role becomes a member of that owner. None means
+    /// its own role created and owns the database, as every connection did
+    /// before the choice existed.
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 impl Keyed for Connection {
     fn key(&self) -> String {
         self.id.clone()
     }
+}
+
+/// A consumer database an import made with no Application connected. Its
+/// role owns it and restores imports into it, so a connection made later
+/// gets access through that role. Its password is private state.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct StandaloneDatabase {
+    pub database_application_id: String,
+    pub name: String,
+    pub role: String,
+    pub password: String,
+}
+impl Keyed for StandaloneDatabase {
+    fn key(&self) -> String {
+        standalone_key(&self.database_application_id, &self.name)
+    }
+}
+
+pub(crate) fn standalone_key(provider: &str, name: &str) -> String {
+    format!("{provider}:{name}")
+}
+
+/// Whether `name` can name a consumer database the Operator chose: a plain
+/// lowercase PostgreSQL identifier that is not one PostgreSQL keeps.
+pub(crate) fn valid_database_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z' | b'_'))
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && name.len() <= 63
+        && !name.starts_with("pg_")
+        && !matches!(name, "postgres" | "template0" | "template1")
+}
+
+/// `name` as a quoted SQL identifier, so a keyword such as `user` names a
+/// database too.
+fn ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// `text` as a quoted SQL string literal.
+fn literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+/// The roles the Platform made on `provider`: each connection's and each
+/// standalone database's. Only a database one of them owns can be chosen,
+/// so a connection never joins the administrator or another login.
+async fn platform_roles(
+    store: &impl StateStore,
+    provider: &str,
+) -> Result<BTreeSet<String>, StoreError> {
+    let mut roles: BTreeSet<String> = CONNECTIONS
+        .list(store)
+        .await?
+        .into_iter()
+        .filter(|c| c.database_application_id == provider)
+        .map(|c| c.role)
+        .collect();
+    roles.extend(
+        STANDALONE
+            .list(store)
+            .await?
+            .into_iter()
+            .filter(|d| d.database_application_id == provider)
+            .map(|d| d.role),
+    );
+    Ok(roles)
+}
+
+/// The role that owns the consumer database `name` on `provider`, as the
+/// Platform recorded it, or None when the Platform did not make it.
+pub(crate) async fn recorded_owner(
+    store: &impl StateStore,
+    provider: &str,
+    name: &str,
+) -> Result<Option<String>, StoreError> {
+    if let Some(standalone) = STANDALONE
+        .get(store, &standalone_key(provider, name))
+        .await?
+    {
+        return Ok(Some(standalone.role));
+    }
+    let mut connections: Vec<_> = CONNECTIONS
+        .list(store)
+        .await?
+        .into_iter()
+        .filter(|c| c.database_application_id == provider && c.database == name)
+        .collect();
+    // A failed connection may never have made its database; one that did
+    // not fail names the owner for sure.
+    connections.sort_by_key(|c| c.status == "failed");
+    Ok(connections
+        .into_iter()
+        .next()
+        .map(|c| c.owner.unwrap_or(c.role)))
+}
+
+/// The role that owns `name` on the server, or None when no database has
+/// that name. A database a superuser owns is refused: no connection joins
+/// the administrator.
+async fn server_owner<S: StateStore>(
+    state: &AppState<S>,
+    provider: &str,
+    name: &str,
+) -> Result<Option<String>, Error> {
+    let answer = sql(
+        state,
+        provider,
+        "postgres",
+        ADMIN,
+        format!(
+            "SELECT r.rolname, r.rolsuper FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba WHERE d.datname = {};",
+            literal(name)
+        ),
+    )
+    .await?;
+    match answer.trim().split_once('|') {
+        None => Ok(None),
+        Some((owner, "f")) => Ok(Some(owner.to_owned())),
+        Some(_) => Err(Error::Conflict(format!(
+            "The database {name} belongs to the administrator. Choose a database the Platform made"
+        ))),
+    }
+}
+
+/// Creates the restricted login `role`. The role and password are
+/// generated, never Operator input.
+async fn create_role<S: StateStore>(
+    state: &AppState<S>,
+    provider: &str,
+    role: &str,
+    password: &str,
+) -> Result<(), Error> {
+    sql(state, provider, "postgres", ADMIN, format!("SET log_statement = 'none'; SET log_min_error_statement = 'panic'; CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '{password}';")).await?;
+    Ok(())
+}
+
+/// Gives the connection's new login the owner's access to an existing
+/// database. Its sessions there act as the owner, so what one connection
+/// creates every other one can use, and disabling one login on Disconnect
+/// leaves the others and the data as they are.
+async fn grant_existing<S: StateStore>(
+    state: &AppState<S>,
+    provider: &str,
+    c: &Connection,
+    owner: &str,
+) -> Result<(), Error> {
+    match server_owner(state, provider, &c.database).await? {
+        None => {
+            return Err(Error::Conflict(format!(
+                "The database {} is not on this server. Choose another, or create a new one",
+                c.database
+            )));
+        }
+        Some(found) if found != owner => {
+            return Err(Error::Conflict(format!(
+                "The database {} is owned by another role than the Platform recorded. Its access was not changed",
+                c.database
+            )));
+        }
+        Some(_) => {}
+    }
+    create_role(state, provider, &c.role, &c.password).await?;
+    let (db, role) = (ident(&c.database), &c.role);
+    sql(
+        state,
+        provider,
+        "postgres",
+        ADMIN,
+        format!(
+            "GRANT {} TO {role}; ALTER ROLE {role} IN DATABASE {db} SET role = {}; GRANT CONNECT ON DATABASE {db} TO {role};",
+            ident(owner),
+            literal(owner)
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Creates `name` owned by a new login `role`, reachable by that role only.
+async fn create_database<S: StateStore>(
+    state: &AppState<S>,
+    provider: &str,
+    name: &str,
+    role: &str,
+    password: &str,
+) -> Result<(), Error> {
+    if server_owner(state, provider, name).await?.is_some() {
+        return Err(Error::Conflict(format!(
+            "A database named {name} already exists on this server. Choose it as an existing database, or name another"
+        )));
+    }
+    create_role(state, provider, role, password).await?;
+    let db = ident(name);
+    sql(
+        state,
+        provider,
+        "postgres",
+        ADMIN,
+        format!("CREATE DATABASE {db} OWNER {role} ALLOW_CONNECTIONS false;"),
+    )
+    .await?;
+    sql(
+        state,
+        provider,
+        "postgres",
+        ADMIN,
+        format!(
+            "REVOKE ALL ON DATABASE {db} FROM PUBLIC; GRANT CONNECT ON DATABASE {db} TO {role}; ALTER DATABASE {db} ALLOW_CONNECTIONS true;"
+        ),
+    )
+    .await?;
+    Ok(())
 }
 
 /// One import into a database, kept after it ends so the database can list
@@ -217,6 +438,10 @@ pub(crate) struct Import {
     pub created_at: String,
     #[serde(default)]
     pub imported_objects: Option<u64>,
+    /// The consumer database it went into. Imports recorded before it
+    /// existed find it through their connection.
+    #[serde(default)]
+    pub database: Option<String>,
 }
 impl Keyed for Import {
     fn key(&self) -> String {
@@ -282,6 +507,17 @@ pub enum Operation {
         /// goes on past errors and lists them at the end. Tasks queued
         /// before the choice existed keep it on.
         #[serde(default = "all_or_nothing_default")]
+        all_or_nothing: bool,
+    },
+    /// An import into a standalone database, which it makes first when the
+    /// database is not there yet.
+    ImportDatabase {
+        /// The standalone database's record key.
+        database: String,
+        upload_id: String,
+        #[serde(default)]
+        path: Option<PathBuf>,
+        format: ArchiveFormat,
         all_or_nothing: bool,
     },
     Remove {
@@ -372,6 +608,13 @@ pub(crate) async fn secrets(store: &impl StateStore) -> Result<Vec<String>, Stor
         .into_iter()
         .map(|connection| connection.password)
         .collect();
+    secrets.extend(
+        STANDALONE
+            .list(store)
+            .await?
+            .into_iter()
+            .map(|database| database.password),
+    );
     for database in DATABASES.list(store).await? {
         if let Some(password) = store.get_env(&database.application_id, PASSWORD).await? {
             secrets.push(password);
@@ -520,7 +763,8 @@ pub(crate) fn url(connection: &Connection, definition: &Database) -> Result<Stri
     } else {
         format!("{}:5432", container(&definition.application_id))
     };
-    // Every URL component is generated from lowercase hexadecimal identifiers.
+    // The role and password are lowercase hexadecimal, and a database name
+    // is lowercase letters, digits and underscores: none needs escaping.
     Ok(format!(
         "postgresql://{}:{}@{endpoint}/{}",
         connection.role, connection.password, connection.database
@@ -698,6 +942,11 @@ pub(crate) async fn run<S: StateStore>(
             .await
             .map_err(|e| ErrorReport::new(&e))?
             .map(|c| c.database_application_id),
+        Operation::ImportDatabase { database, .. } => STANDALONE
+            .get(&state.store, database)
+            .await
+            .map_err(|e| ErrorReport::new(&e))?
+            .map(|d| d.database_application_id),
         Operation::ApplyVariable { .. } => None,
     };
     let _operation = match provider {
@@ -788,33 +1037,26 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
                 ));
             }
             wait_ready(state, &provider.id).await?;
-            step(state, "access", "Creating restricted database access", "Consumer database and restricted login role created. Public access revoked.", async {
-            // Identifiers/passwords are generated, never interpolated Operator input.
-            sql(state, &provider.id, "postgres", ADMIN, format!("SET log_statement = 'none'; SET log_min_error_statement = 'panic'; CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '{}';", c.role, c.password)).await?;
-            sql(
-                state,
-                &provider.id,
-                "postgres",
-                ADMIN,
-                format!(
-                    "CREATE DATABASE {} OWNER {} ALLOW_CONNECTIONS false;",
-                    c.database, c.role
-                ),
-            )
-            .await?;
-            sql(
-                state,
-                &provider.id,
-                "postgres",
-                ADMIN,
-                format!(
-                    "REVOKE ALL ON DATABASE {} FROM PUBLIC; GRANT CONNECT ON DATABASE {} TO {}; ALTER DATABASE {} ALLOW_CONNECTIONS true;",
-                    c.database, c.database, c.role, c.database
-                ),
-            )
-            .await?;
-            Ok(())
-            }).await?;
+            match &c.owner {
+                None => step(
+                    state,
+                    "access",
+                    "Creating restricted database access",
+                    "Consumer database and restricted login role created. Public access revoked.",
+                    create_database(state, &provider.id, &c.database, &c.role, &c.password),
+                )
+                .await?,
+                Some(owner) => {
+                    step(
+                        state,
+                        "access",
+                        "Granting access to the existing database",
+                        "Restricted login role created and given the database owner's access.",
+                        grant_existing(state, &provider.id, &c, owner),
+                    )
+                    .await?
+                }
+            }
             if !mark_applying(store, &connection_id).await? {
                 return Ok(());
             }
@@ -948,14 +1190,45 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
             let format = format.unwrap_or(ArchiveFormat::Custom);
             match path {
                 // The Operator's file stays where it is.
-                Some(path) => import(state, &c, &path, format, all_or_nothing).await?,
+                Some(path) => {
+                    import(state, Target::Connection(&c), &path, format, all_or_nothing).await?
+                }
                 None => {
                     let file = import_path(&upload_id)?;
-                    let result = import(state, &c, &file, format, all_or_nothing).await;
+                    let result =
+                        import(state, Target::Connection(&c), &file, format, all_or_nothing).await;
                     let _ = tokio::fs::remove_file(file).await;
                     result?;
                 }
             }
+        }
+        Operation::ImportDatabase {
+            database,
+            upload_id,
+            path,
+            format,
+            all_or_nothing,
+        } => {
+            let upload = match path {
+                Some(_) => None,
+                None => Some(import_path(&upload_id)?),
+            };
+            let result = async {
+                let d = STANDALONE
+                    .get(store, &database)
+                    .await?
+                    .ok_or(Error::Missing)?;
+                let file = upload
+                    .as_deref()
+                    .or(path.as_deref())
+                    .ok_or(Error::Missing)?;
+                import(state, Target::Standalone(&d), file, format, all_or_nothing).await
+            }
+            .await;
+            if let Some(upload) = upload {
+                let _ = tokio::fs::remove_file(upload).await;
+            }
+            result?;
         }
         Operation::Remove { id, delete_data } => {
             // Connect uses this same namespace. Keep the guard through Docker
@@ -1032,6 +1305,14 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
                         .filter(|import| import.database_application_id == id)
                     {
                         IMPORTS.remove(store, &import.task_id).await?;
+                    }
+                    for standalone in STANDALONE
+                        .list(store)
+                        .await?
+                        .into_iter()
+                        .filter(|d| d.database_application_id == id)
+                    {
+                        STANDALONE.remove(store, &standalone.key()).await?;
                     }
                     Ok(())
                 },
@@ -1161,37 +1442,114 @@ async fn sync_provider<S: StateStore>(state: &AppState<S>, id: &str) -> Result<(
     Ok(())
 }
 
+/// Where an import restores: a connection's database, as its role, or a
+/// standalone database, as the role that owns it.
+#[derive(Clone, Copy)]
+enum Target<'a> {
+    Connection(&'a Connection),
+    Standalone(&'a StandaloneDatabase),
+}
+
+impl Target<'_> {
+    fn provider(&self) -> &str {
+        match self {
+            Self::Connection(c) => &c.database_application_id,
+            Self::Standalone(d) => &d.database_application_id,
+        }
+    }
+
+    fn database(&self) -> &str {
+        match self {
+            Self::Connection(c) => &c.database,
+            Self::Standalone(d) => &d.name,
+        }
+    }
+
+    fn role(&self) -> &str {
+        match self {
+            Self::Connection(c) => &c.role,
+            Self::Standalone(d) => &d.role,
+        }
+    }
+
+    fn password(&self) -> &str {
+        match self {
+            Self::Connection(c) => &c.password,
+            Self::Standalone(d) => &d.password,
+        }
+    }
+}
+
+/// Makes a standalone database on the server unless it is there already,
+/// owned by its own role.
+async fn prepare_standalone<S: StateStore>(
+    state: &AppState<S>,
+    d: &StandaloneDatabase,
+) -> Result<(), Error> {
+    progress::step(
+        state,
+        "database",
+        "Preparing the database",
+        "Consumer database is on the server, owned by its own restricted role.",
+        async {
+            match server_owner(state, &d.database_application_id, &d.name).await? {
+                None => {
+                    create_database(
+                        state,
+                        &d.database_application_id,
+                        &d.name,
+                        &d.role,
+                        &d.password,
+                    )
+                    .await
+                }
+                Some(owner) if owner == d.role => Ok(()),
+                Some(_) => Err(Error::Conflict(format!(
+                    "A database named {} already exists on this server and belongs to another role",
+                    d.name
+                ))),
+            }
+        },
+    )
+    .await
+}
+
 async fn import<S: StateStore>(
     state: &AppState<S>,
-    c: &Connection,
+    target: Target<'_>,
     file: &std::path::Path,
     format: ArchiveFormat,
     all_or_nothing: bool,
 ) -> Result<(), Error> {
     use progress::step;
-    step(
-        state,
-        "consumer",
-        "Checking import safety",
-        "Connection is ready.",
-        async {
-            if c.status != "ready" {
-                return Err(Error::Conflict(
-                    "Wait for the connection to become ready before importing".into(),
-                ));
-            }
-            // The consumer may be running: what it writes during a restore is
-            // the Operator's to manage, as with any client of the database.
-            state
-                .store
-                .get_application(&c.consumer_application_id)
-                .await?
-                .ok_or(Error::Missing)?;
-            Ok(())
-        },
-    )
-    .await?;
-    wait_ready(state, &c.database_application_id).await?;
+    if let Target::Connection(c) = target {
+        step(
+            state,
+            "consumer",
+            "Checking import safety",
+            "Connection is ready.",
+            async {
+                if c.status != "ready" {
+                    return Err(Error::Conflict(
+                        "Wait for the connection to become ready before importing".into(),
+                    ));
+                }
+                // The consumer may be running: what it writes during a restore is
+                // the Operator's to manage, as with any client of the database.
+                state
+                    .store
+                    .get_application(&c.consumer_application_id)
+                    .await?
+                    .ok_or(Error::Missing)?;
+                Ok(())
+            },
+        )
+        .await?;
+    }
+    wait_ready(state, target.provider()).await?;
+    if let Target::Standalone(d) = target {
+        prepare_standalone(state, d).await?;
+    }
     let count_sql = "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f');";
     // A database that already holds data takes the import too: what clashes
     // fails the restore and shows the tool's error. All or nothing rolls the
@@ -1203,18 +1561,18 @@ async fn import<S: StateStore>(
         "Restoring PostgreSQL archive",
         "Archive restored using the consumer's restricted database role.",
         async {
-            let (definition, _) = database(&state.store, &c.database_application_id).await?;
+            let (definition, _) = database(&state.store, target.provider()).await?;
             let result = state
                 .docker
                 .postgres(&runtime::Request::Restore {
-                    container: container(&c.database_application_id),
-                    database: c.database.clone(),
-                    role: c.role.clone(),
+                    container: container(target.provider()),
+                    database: target.database().into(),
+                    role: target.role().into(),
                     file: file.into(),
                     format,
                     all_or_nothing,
                     image: format!("postgres:{}-bookworm", definition.major),
-                    password: c.password.clone(),
+                    password: target.password().into(),
                 })
                 .await;
             match result {
@@ -1242,25 +1600,28 @@ async fn import<S: StateStore>(
         async {
             let count = sql(
                 state,
-                &c.database_application_id,
-                &c.database,
-                &c.role,
+                target.provider(),
+                target.database(),
+                target.role(),
                 count_sql.into(),
             )
             .await?;
-            let _write = CONNECTION_WRITE.lock().await;
-            let mut current = CONNECTIONS
-                .get(&state.store, &c.id)
-                .await?
-                .ok_or(Error::Missing)?;
-            current.imported_tables = Some(count.parse().map_err(|_| {
+            let count: u64 = count.parse().map_err(|_| {
                 Error::Runtime("Import completed but object validation failed".into())
-            })?);
-            CONNECTIONS.upsert(&state.store, &current).await?;
+            })?;
+            let _write = CONNECTION_WRITE.lock().await;
+            if let Target::Connection(c) = target {
+                let mut current = CONNECTIONS
+                    .get(&state.store, &c.id)
+                    .await?
+                    .ok_or(Error::Missing)?;
+                current.imported_tables = Some(count);
+                CONNECTIONS.upsert(&state.store, &current).await?;
+            }
             if let Some(task) = audit::event_id()
                 && let Some(mut import) = IMPORTS.get(&state.store, &task).await?
             {
-                import.imported_objects = current.imported_tables;
+                import.imported_objects = Some(count);
                 IMPORTS.upsert(&state.store, &import).await?;
             }
             Ok(())
@@ -1346,6 +1707,7 @@ mod tests {
             native: false,
             task_id: None,
             imported_tables: None,
+            owner: None,
         }
     }
 
@@ -2052,6 +2414,7 @@ mod tests {
                     file_bytes: 1,
                     created_at: format!("2026-10-16T10:{n:02}:00Z"),
                     imported_objects: None,
+                    database: None,
                 },
             )
             .await

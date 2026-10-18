@@ -151,9 +151,22 @@ export type DatabaseConnection = {
  * Task carries its status, stages and log; null once history dropped it. */
 export type DatabaseImport = {
   task_id: string; connection_id: string; consumer_application_id: string;
-  consumer_name: string | null; file_name: string; file_bytes: number;
+  consumer_name: string | null;
+  /** The consumer database it went into. An import with no connection has an empty connection and consumer. */
+  database: string | null;
+  file_name: string; file_bytes: number;
   created_at: string; imported_objects: number | null;
   task: import("./platformEvents.js").PlatformEvent | null;
+};
+
+/** A consumer database the Platform made on a server, as
+ * `GET /databases/{id}/databases` lists it: a connection can choose it. */
+export type ConsumerDatabase = {
+  name: string;
+  /** An import made it with no Application connected. */
+  standalone: boolean;
+  /** The Applications connected to it now. */
+  consumers: string[];
 };
 
 /** A managed database as `GET /databases/{id}` reads it. Its connections are

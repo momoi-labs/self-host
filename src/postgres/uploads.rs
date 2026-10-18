@@ -19,7 +19,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{api::failure, *};
+use super::{
+    api::{Destination, failure},
+    *,
+};
 
 /// A session nobody sent a byte to for this long is removed, file included.
 const ABANDONED_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
@@ -48,7 +51,12 @@ pub(crate) fn router<S: StateStore>() -> Router<AppState<S>> {
 struct Session {
     id: String,
     database_application_id: String,
+    /// The connection it imports through; empty for a standalone database.
+    #[serde(default)]
     connection_id: String,
+    /// The standalone database it imports into, made first when new.
+    #[serde(default)]
+    database: Option<String>,
     file_name: String,
     size: u64,
     /// The console's mark for the file, so a resume picks the same one.
@@ -178,7 +186,12 @@ fn progress(session: &Session) -> Progress {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Start {
-    connection_id: String,
+    /// The connection to import through, or else
+    #[serde(default)]
+    connection_id: Option<String>,
+    /// a database with no connection, made when new.
+    #[serde(default)]
+    database: Option<String>,
     name: String,
     size: u64,
     fingerprint: String,
@@ -197,12 +210,17 @@ async fn start<S: StateStore>(
 ) -> Response {
     let result = async {
         database(&state.store, &id).await?;
-        let c = connection(&state.store, &id, &request.connection_id).await?;
-        if c.status != "ready" {
-            return Err(Error::Conflict(
-                "Wait for the connection to become ready before importing".into(),
-            ));
-        }
+        let destination = match (&request.connection_id, &request.database) {
+            (Some(c), None) => Destination::Connection(c.clone()),
+            (None, Some(name)) => Destination::Standalone(name.clone()),
+            _ => {
+                return Err(Error::Invalid(
+                    "Name either a connection_id or a database".into(),
+                ));
+            }
+        };
+        destination.check(&state.store, &id).await?;
+        let connection_id = request.connection_id.clone().unwrap_or_default();
         if request.size == 0 {
             return Err(Error::Invalid("The file is empty".into()));
         }
@@ -224,7 +242,8 @@ async fn start<S: StateStore>(
         let file_name = super::api::shown_name(&request.name);
         let matches = |session: &Session| {
             session.database_application_id == id
-                && session.connection_id == request.connection_id
+                && session.connection_id == connection_id
+                && session.database == request.database
                 && session.file_name == file_name
                 && session.size == request.size
                 && session.fingerprint == request.fingerprint
@@ -255,7 +274,8 @@ async fn start<S: StateStore>(
                     let session = Session {
                         id: secret(),
                         database_application_id: id.clone(),
-                        connection_id: request.connection_id.clone(),
+                        connection_id: connection_id.clone(),
+                        database: request.database.clone(),
                         file_name: file_name.clone(),
                         size: request.size,
                         fingerprint: request.fingerprint.clone(),
@@ -472,12 +492,11 @@ async fn finish<S: StateStore>(
             ));
         }
         let (_, app) = database(&state.store, &id).await?;
-        let c = connection(&state.store, &id, &session.connection_id).await?;
-        if c.status != "ready" {
-            return Err(Error::Conflict(
-                "Wait for the connection to become ready before importing".into(),
-            ));
-        }
+        let destination = match &session.database {
+            Some(name) => Destination::Standalone(name.clone()),
+            None => Destination::Connection(session.connection_id.clone()),
+        };
+        let checked = destination.check(&state.store, &id).await?;
         let held = received(&session.id);
         if held != session.size {
             return Err(Error::Conflict(format!(
@@ -498,6 +517,16 @@ async fn finish<S: StateStore>(
         // The receipt is written first, so a retry after any failure or
         // restart finds the queued Task, or no Task and the file to queue.
         // Once queued the file is the import's: the worker removes it.
+        let operation = destination
+            .operation(
+                &state.store,
+                &id,
+                session.id.clone(),
+                None,
+                format,
+                session.all_or_nothing,
+            )
+            .await?;
         let task_id = format!("event-{:032x}", rand::random::<u128>());
         let open = session.clone();
         session.task_id = Some(task_id.clone());
@@ -510,12 +539,13 @@ async fn finish<S: StateStore>(
             &Import {
                 task_id: task_id.clone(),
                 database_application_id: app.id.clone(),
-                connection_id: session.connection_id.clone(),
-                consumer_application_id: c.consumer_application_id.clone(),
+                connection_id: checked.connection_id,
+                consumer_application_id: checked.consumer_application_id,
                 file_name: session.file_name.clone(),
                 file_bytes: session.size,
                 created_at: audit::timestamp(),
                 imported_objects: None,
+                database: Some(checked.database),
             },
         )
         .await
@@ -527,15 +557,7 @@ async fn finish<S: StateStore>(
                     &state,
                     "import",
                     audit::Subject::new("database", app.id.clone(), app.name.clone()),
-                    tasks::Work::Postgres {
-                        operation: Operation::Import {
-                            connection_id: session.connection_id.clone(),
-                            upload_id: session.id.clone(),
-                            path: None,
-                            format: Some(format),
-                            all_or_nothing: session.all_or_nothing,
-                        },
-                    },
+                    tasks::Work::Postgres { operation },
                 ),
             )
             .await;
@@ -900,5 +922,65 @@ mod tests {
         assert!(!bytes_path(old).exists() && !record_path(old).exists());
         assert!(bytes_path(fresh).exists() && record_path(fresh).exists());
         remove_session(fresh);
+    }
+
+    #[tokio::test]
+    async fn an_upload_fills_a_new_database_with_no_connection() {
+        let docker = Arc::new(test_runtime::PausedRemoval {
+            postgres_ready: true,
+            ..Default::default()
+        });
+        let (router, state) = progress_tests::fixture_with_router(docker.clone()).await;
+        progress_tests::operation(
+            &state,
+            Operation::Provision {
+                id: "provider".into(),
+                recreate: false,
+            },
+        )
+        .await;
+        let dump = b"PGDMP standalone".to_vec();
+        let start = Request::builder()
+            .method("POST")
+            .uri("/databases/provider/imports/uploads")
+            .header("authorization", "Bearer fixture-key")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "database": "legacy", "name": "legacy.dump", "size": dump.len(),
+                    "fingerprint": format!("{:032x}", rand::random::<u128>())
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let (status, started) = call(&router, start).await;
+        assert_eq!(status, StatusCode::OK, "{started}");
+        let id = started["id"].as_str().unwrap().to_string();
+        let size = dump.len();
+        let (status, _) = call(&router, chunk(&id, 0, size - 1, size, Body::from(dump))).await;
+        assert_eq!(status, StatusCode::OK);
+        let finish = Request::builder()
+            .method("POST")
+            .uri(format!("/databases/provider/imports/uploads/{id}/import"))
+            .header("authorization", "Bearer fixture-key")
+            .body(Body::empty())
+            .unwrap();
+        let (status, accepted) = call(&router, finish).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        let task = accepted["task_id"].as_str().unwrap();
+        assert_eq!(
+            progress_tests::finished(&state, task).await.status,
+            "completed"
+        );
+        let import = IMPORTS.get(&state.store, task).await.unwrap().unwrap();
+        assert_eq!(import.database.as_deref(), Some("legacy"));
+        assert!(import.consumer_application_id.is_empty());
+        assert!(
+            STANDALONE
+                .get(&state.store, &standalone_key("provider", "legacy"))
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

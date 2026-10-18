@@ -7,11 +7,29 @@ the creation Task succeeds. The Application has no HTTP publication.
 
 ## Connect an Application
 
-Open **Connections > Connect application**. Choose an Application and a
-Variable name, usually `DATABASE_URL`. The Platform creates a database and a
-login for that connection. The login owns its database and has no superuser,
-role creation, replication or database creation rights. Other consumer
-databases revoke PostgreSQL's default public connection grant.
+Open **Connections > Connect application**. Choose an Application, a
+Variable name, usually `DATABASE_URL`, and a **Database**. Every connection
+gets its own login, with no superuser, role creation, replication or database
+creation rights. The Database choice decides what that login reaches:
+
+- **New database** (the default): the Platform creates a database named after
+  the Application, for example `mochi_cut` for `mochi-cut`. The name can be
+  edited. It uses lowercase letters, digits and underscores, starts with a
+  letter or underscore, has at most 63 characters, and cannot start with
+  `pg_` or be `postgres`, `template0` or `template1`. A name another database
+  on the server already has is refused. The connection's login owns the new
+  database, and the database revokes PostgreSQL's default public connection
+  grant.
+- **Existing database**: one the Platform made on this server, by an earlier
+  connection or by an import. The list shows which Applications use each one.
+  The new login becomes a member of the role that owns the database, and its
+  sessions there act as that owner. The Application reads and writes the data
+  already there, and what it creates the other Applications on the database
+  can use too. A database the Platform did not make, such as `postgres`, is
+  not offered.
+
+Two Applications can connect to the same database this way. The API keeps a
+generated name (`db_<token>`) when a request names no database.
 
 A container consumer joins the provider's private network. Its URL names the
 database container. A Native Application receives a loopback URL only after
@@ -34,10 +52,11 @@ and removes the managed Variable. The connection becomes `revoked` only after
 PostgreSQL confirms revocation and consumer cleanup completes. A stopped or
 unreachable provider leaves it `revoking`, with deletion and Variable ownership
 guards still active. Disconnect preserves the consumer database and its
-contents. An Application with a live connection
+contents, and only disables that connection's login: other Applications on the
+same database keep their access. An Application with a live connection
 cannot be removed. A Variable owned by a connection cannot be edited through
-the generic Variable API. Revoked databases remain in the retained volume;
-creating another connection creates another database.
+the generic Variable API. A disconnected database stays on the server and is
+offered again under **Existing database**.
 
 ## Persistence and removal
 
@@ -103,7 +122,12 @@ cannot tell, for example for a compressed file, nothing is preselected and
 Import waits for the type to be chosen.
 
 The import goes into a connected Application's database, as that
-connection's role. Nothing else holds it back: the consumer Application may
+connection's role, or into a database with no Application connected. For the
+latter, choose **A new database** as the consumer database and name it, with
+the same rules as above. The import creates it first, with its own login that
+owns it, and restores as that login. The Imports tab lists the import with the
+database name. Later imports can choose that database again, and an
+Application connects to it later as an **Existing database**. Nothing else holds it back: the consumer Application may
 keep running, the target may already hold data, and the dump may come from
 any PostgreSQL version. pg_restore or psql decides what it can restore.
 
@@ -177,16 +201,18 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 | `POST /databases` | `{ "name": "database", "major": 18 }` |
 | `GET /databases/{id}` | Version, volume, readiness and connection metadata |
 | `POST /databases/{id}/redeploy` | Recreate the container and check readiness |
-| `POST /databases/{id}/connections` | `{ "consumer_application_id": "...", "variable": "DATABASE_URL" }` |
+| `POST /databases/{id}/connections` | `{ "consumer_application_id": "...", "variable": "DATABASE_URL", "database": { "new": "mochi_cut" } }`; `{ "existing": "mochi_cut" }` joins a database the Platform made; without `database` the name is generated |
+| `GET /databases/{id}/databases` | None; answers the consumer databases the Platform made on the running server, each with `name`, `standalone` (an import made it) and `consumers` |
 | `POST /databases/{id}/connections/{connection}/reveal` | Private URL for a ready connection |
 | `DELETE /databases/{id}/connections/{connection}` | Revoke access and preserve the consumer database |
 | `POST /databases/{id}/connections/{connection}/import` | The whole dump in one request, which cannot resume, as `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name, `X-Import-Format` the type (`custom`, `tar`, `sql`) when it should not be read from the file; `X-Import-All-Or-Nothing: false` restores past errors |
-| `POST /databases/{id}/imports/uploads` | `{ "connection_id": "...", "name": "app.dump", "size": 1048576, "fingerprint": "...", "format": "custom", "all_or_nothing": true }` starts a resumable upload, or finds the one started for the same connection, name, size and fingerprint; answers `{ "id": "...", "size": 1048576, "received": 0 }`. `format` and `all_or_nothing` are optional; a resumed upload takes the latest ones |
+| `POST /databases/{id}/imports/uploads` | `{ "connection_id": "...", "name": "app.dump", "size": 1048576, "fingerprint": "...", "format": "custom", "all_or_nothing": true }` starts a resumable upload, or finds the one started for the same connection, name, size and fingerprint; answers `{ "id": "...", "size": 1048576, "received": 0 }`. `"database": "name"` in place of `connection_id` uploads into a database with no connection, made when new. `format` and `all_or_nothing` are optional; a resumed upload takes the latest ones |
 | `GET /databases/{id}/imports/uploads/{upload}` | None; answers `{ "id", "size", "received" }` |
 | `PUT /databases/{id}/imports/uploads/{upload}` | One chunk with `Content-Range: bytes start-end/size`. It must start at `received` and end inside `size`; otherwise 409 answers `received`, or 400. A chunk cut short keeps what arrived. Answers `{ "id", "size", "received" }` |
 | `POST /databases/{id}/imports/uploads/{upload}/import` | None; queues the import of a complete upload and answers its Task id. A refusal keeps the upload. Asked again, a queued upload answers the same Task id; it is not resumed by a new start |
 | `DELETE /databases/{id}/imports/uploads/{upload}` | None; removes the upload and its bytes |
 | `POST /databases/{id}/connections/{connection}/import-path` | `{ "path": "/srv/backups/app.dump", "format": "custom", "all_or_nothing": true }`; `format` and `all_or_nothing` are optional, and `all_or_nothing` defaults to true |
+| `POST /databases/{id}/databases/{name}/import` and `.../import-path` | The same, into the database `name` with no connection; the import creates it when it is new. A connection's database is refused |
 | `POST /databases/import-format` | `{ "path": "..." }`; answers `{ "format": "custom" }`, or `null` when the type cannot be told |
 | `GET /databases/{id}/imports` | None; answers the last 50 imports, newest first, each with its Task |
 | `DELETE /databases/{id}` | `{ "confirm_name": "database", "delete_data": false }` |
