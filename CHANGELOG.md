@@ -1,5 +1,17 @@
 # self-host
 
+## 0.14.0
+
+### Minor Changes
+
+- 82c6869: Connect application has a Database choice. By default the Platform creates a database named after the Application, such as `mochi_cut`, and the name can be edited. Existing database picks one the Platform already made on the server, so a second Application can share it and an Application can reach data an import or an earlier connection left there. New import can fill a new database with no Application connected, and Disconnect keeps the database for a later connection to pick. Connections made before this release keep their database and access as they were.
+- 39e95e9: New import has an All or nothing choice, on by default. Off, pg_restore or psql goes on past errors and keeps what restored, and the stage log lists every error at the end. The import still shows as failed, with the number of failed statements and the last error.
+- a6f1c05: An uploaded database import now resumes. The console sends the dump in chunks and the Host keeps every byte that arrived, so Retry after a dropped connection sends only the rest. After a page refresh, choose the same file again in New import and the upload goes on from where it stopped; the Imports list shows its progress from the bytes already on the Host. Another file starts over. An upload left unfinished for a day is removed, file included, and Dismiss removes it at once.
+
+### Patch Changes
+
+- 7bb179a: A Compose deploy that fails on a missing bind source now says which source is missing, the Host path it looked for, and to create the file there. It used to say only "prepare bind source" and "No such file or directory". When the source comes from a Variable, the message leaves out the path, so the Variable's value stays out of the failure report.
+
 ## 0.13.1
 
 ### Patch Changes
