@@ -247,6 +247,10 @@ async fn start<S: StateStore>(
         })?;
         session.format = request.format;
         session.all_or_nothing = request.all_or_nothing;
+        // A daemon stopped halfway through handing it over leaves no bytes.
+        if !bytes_path(&session.id).exists() {
+            create_bytes(&session.id)?;
+        }
         write_session(&session)?;
         Ok(Json(progress(&session)))
     }
@@ -444,12 +448,15 @@ async fn finish<S: StateStore>(
                 "A directory dump cannot be uploaded; import it from its path on the Host".into(),
             ));
         }
-        // From here the file is the import's: the worker removes it.
+        // Once queued the file is the import's: the worker removes it. Until
+        // then a failure hands it back to the session, so nothing is resent.
         let upload_id = secret();
         let path = import_path(&upload_id)?;
         std::fs::rename(&bytes, &path)
             .map_err(|_| Error::Runtime("Could not hand the upload to the import".into()))?;
-        let _ = std::fs::remove_file(record_path(&session.id));
+        let give_back = || {
+            let _ = std::fs::rename(&path, &bytes);
+        };
         let task_id = format!("event-{:032x}", rand::random::<u128>());
         remember_import(
             &state.store,
@@ -465,9 +472,7 @@ async fn finish<S: StateStore>(
             },
         )
         .await
-        .inspect_err(|_| {
-            let _ = std::fs::remove_file(&path);
-        })?;
+        .inspect_err(|_| give_back())?;
         let queued = audit::EVENT_ID
             .scope(
                 Some(task_id.clone()),
@@ -477,7 +482,7 @@ async fn finish<S: StateStore>(
                     audit::Subject::new("database", app.id.clone(), app.name.clone()),
                     tasks::Work::Postgres {
                         operation: Operation::Import {
-                            connection_id: session.connection_id,
+                            connection_id: session.connection_id.clone(),
                             upload_id,
                             path: None,
                             format: Some(format),
@@ -488,13 +493,16 @@ async fn finish<S: StateStore>(
             )
             .await;
         match queued {
-            Ok(task_id) => Ok((
-                StatusCode::ACCEPTED,
-                Json(serde_json::json!({"task_id":task_id,"database_application_id":app.id})),
-            )),
+            Ok(task_id) => {
+                let _ = std::fs::remove_file(record_path(&session.id));
+                Ok((
+                    StatusCode::ACCEPTED,
+                    Json(serde_json::json!({"task_id":task_id,"database_application_id":app.id})),
+                ))
+            }
             Err(error) => {
                 let _ = IMPORTS.remove(&state.store, &task_id).await;
-                let _ = std::fs::remove_file(path);
+                give_back();
                 Err(Error::Store(error))
             }
         }
@@ -527,32 +535,31 @@ pub(crate) fn sweep(now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(sessions_dir()) else {
         return;
     };
-    // A session's age is its last chunk's, or its start's before one came.
-    let touched = |path: &FsPath| {
-        std::fs::metadata(path)
-            .and_then(|meta| meta.modified())
-            .ok()
-    };
+    // A session's files: its record, its bytes, a record being written.
+    let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for entry in entries.flatten() {
-        let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         let id = name.split('.').next().unwrap_or_default().to_string();
-        let last = [
-            touched(&bytes_path(&id)),
-            touched(&record_path(&id)),
-            touched(&path),
-        ]
-        .into_iter()
-        .flatten()
-        .max();
+        groups.entry(id).or_default().push(entry.path());
+    }
+    for (id, files) in groups {
+        let lock = session_lock(&id);
+        // A writer holding it is not abandoned; with the lock held, no one
+        // can touch the files between this check and their removal.
+        let Ok(_writing) = lock.try_lock() else {
+            continue;
+        };
+        // A session's age is its last chunk's, or its start's before one came.
+        let last = files
+            .iter()
+            .filter_map(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
+            .max();
         let abandoned = last
             .and_then(|last| now.duration_since(last).ok())
             .is_some_and(|age| age >= ABANDONED_AFTER);
         if abandoned {
-            let lock = session_lock(&id);
-            // A writer holding it is not abandoned.
-            if let Ok(_writing) = lock.try_lock() {
-                let _ = std::fs::remove_file(&path);
+            for path in files {
+                let _ = std::fs::remove_file(path);
             }
         }
     }
