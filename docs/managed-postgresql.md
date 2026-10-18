@@ -22,10 +22,14 @@ creation rights. The Database choice decides what that login reaches:
   grant.
 - **Existing database**: one the Platform made on this server, by an earlier
   connection or by an import. The list shows which Applications use each one.
-  The new login becomes a member of the role that owns the database, and its
-  sessions there act as that owner. The Application reads and writes the data
-  already there, and what it creates the other Applications on the database
-  can use too. A database the Platform did not make, such as `postgres`, is
+  The database is owned by a role that cannot log in, and every login on it is
+  a member whose sessions there act as that owner. The first time a database
+  is shared, its own login hands it and its objects to such an owner role and
+  joins it too; that login's open sessions to the database end once, and
+  reconnect as the owner. The Application reads and writes the data already
+  there, and what it creates the other Applications on the database can use
+  too. No login is a member of another, so one Application cannot take over
+  another's login. A database the Platform did not make, such as `postgres`, is
   not offered.
 
 Two Applications can connect to the same database this way. The API keeps a

@@ -848,14 +848,13 @@ async fn connect<S: StateStore>(
                 (name, None)
             }
             Some(DatabaseChoice::Existing(name)) => {
-                let owner = recorded_owner(&state.store, &id, &name)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::Invalid(format!(
-                            "{name} is not a database the Platform made on this server"
-                        ))
-                    })?;
-                (name, Some(owner))
+                if !known_database(&state.store, &id, &name).await? {
+                    return Err(Error::Invalid(format!(
+                        "{name} is not a database the Platform made on this server"
+                    )));
+                }
+                // The Connect Task reads the owner from the server.
+                (name, Some(String::new()))
             }
         };
         let c = Connection {
