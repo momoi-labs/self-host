@@ -60,9 +60,6 @@ struct Session {
     /// retry whose answer was lost gets this Task instead of a second one.
     #[serde(default)]
     task_id: Option<String>,
-    /// Where the file went for that import, in private import storage.
-    #[serde(default)]
-    upload_id: Option<String>,
 }
 
 fn sessions_dir() -> PathBuf {
@@ -75,8 +72,12 @@ fn valid_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The session's bytes sit where an import reads an upload, under the
+/// session's id, so queueing the import moves nothing.
 fn bytes_path(id: &str) -> PathBuf {
-    sessions_dir().join(id)
+    crate::file_store::state_dir()
+        .join("postgres-imports")
+        .join(id)
 }
 
 fn record_path(id: &str) -> PathBuf {
@@ -261,7 +262,6 @@ async fn start<S: StateStore>(
                         format: request.format,
                         all_or_nothing: request.all_or_nothing,
                         task_id: None,
-                        upload_id: None,
                     };
                     create_bytes(&session.id)?;
                     if let Err(error) = write_session(&session) {
@@ -496,25 +496,15 @@ async fn finish<S: StateStore>(
             ));
         }
         // The receipt is written first, so a retry after any failure or
-        // restart finds either the queued Task or the file to queue again.
+        // restart finds the queued Task, or no Task and the file to queue.
         // Once queued the file is the import's: the worker removes it.
-        let upload_id = secret();
-        let path = import_path(&upload_id)?;
         let task_id = format!("event-{:032x}", rand::random::<u128>());
         let open = session.clone();
         session.task_id = Some(task_id.clone());
-        session.upload_id = Some(upload_id.clone());
         write_session(&session)?;
         let give_back = || {
-            let _ = std::fs::rename(&path, &bytes);
             let _ = write_session(&open);
         };
-        if std::fs::rename(&bytes, &path).is_err() {
-            give_back();
-            return Err(Error::Runtime(
-                "Could not hand the upload to the import".into(),
-            ));
-        }
         remember_import(
             &state.store,
             &Import {
@@ -540,7 +530,7 @@ async fn finish<S: StateStore>(
                     tasks::Work::Postgres {
                         operation: Operation::Import {
                             connection_id: session.connection_id.clone(),
-                            upload_id,
+                            upload_id: session.id.clone(),
                             path: None,
                             format: Some(format),
                             all_or_nothing: session.all_or_nothing,
@@ -569,44 +559,36 @@ async fn finish<S: StateStore>(
 }
 
 /// Opens a session again when its receipt names a Task that never got
-/// queued, because the daemon stopped in between: the file comes back to the
-/// session. A Task that is queued, running or ended keeps the receipt.
-/// The caller holds the session's lock.
+/// queued, because the daemon stopped in between. A Task that is queued,
+/// running or ended keeps the receipt. The caller holds the session's lock.
 async fn reclaim<S: StateStore>(state: &AppState<S>, session: &mut Session) -> Result<(), Error> {
     let Some(task_id) = session.task_id.clone() else {
         return Ok(());
     };
-    let event = state
-        .store
-        .get_audit_event(&task_id)
-        .await?
-        .and_then(|body| serde_json::from_str::<audit::Event>(&body).ok());
-    // History may have dropped the event of a Task still waiting its turn.
-    let handed = event.is_some_and(|event| event.status != "pending")
-        || tasks::is_queued(&state.store, &task_id).await?;
+    // The queue first: a Task leaves it only after its event says it ended,
+    // so reading the event second cannot miss one that just finished.
+    let handed = tasks::is_queued(&state.store, &task_id).await?
+        || state
+            .store
+            .get_audit_event(&task_id)
+            .await?
+            .and_then(|body| serde_json::from_str::<audit::Event>(&body).ok())
+            .is_some_and(|event| event.status != "pending");
     if handed {
         return Ok(());
     }
-    if let Some(path) = session
-        .upload_id
-        .as_deref()
-        .and_then(|u| import_path(u).ok())
-        && path.exists()
-    {
-        let _ = std::fs::rename(&path, bytes_path(&session.id));
-    }
     let _ = IMPORTS.remove(&state.store, &task_id).await;
     session.task_id = None;
-    session.upload_id = None;
     if !bytes_path(&session.id).exists() {
         create_bytes(&session.id)?;
     }
     write_session(session)
 }
 
-/// Removes a session the Operator gave up on, file included.
+/// Removes a session the Operator gave up on, file included, unless an
+/// import it queued owns the file now.
 async fn cancel<S: StateStore>(
-    State(_state): State<AppState<S>>,
+    State(state): State<AppState<S>>,
     Path((id, session)): Path<(String, String)>,
 ) -> Response {
     let session = match read_session(&id, &session) {
@@ -615,30 +597,52 @@ async fn cancel<S: StateStore>(
     };
     let lock = session_lock(&session.id);
     let _writing = lock.lock().await;
-    remove_session(&session.id);
-    StatusCode::NO_CONTENT.into_response()
+    match remove_unless_queued(&state, &session.id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => failure(error),
+    }
+}
+
+/// Removes a session's record and its bytes, but leaves the bytes to an
+/// import it queued. The caller holds the session's lock.
+async fn remove_unless_queued<S: StateStore>(state: &AppState<S>, id: &str) -> Result<(), Error> {
+    let record = std::fs::read(record_path(id))
+        .ok()
+        .and_then(|body| serde_json::from_slice::<Session>(&body).ok());
+    if let Some(mut session) = record {
+        reclaim(state, &mut session).await?;
+        if session.task_id.is_some() {
+            let _ = std::fs::remove_file(record_path(id));
+            return Ok(());
+        }
+    }
+    remove_session(id);
+    Ok(())
 }
 
 /// Removes every session nobody wrote to for `ABANDONED_AFTER`, and any
 /// stray file in session storage as old.
-pub(crate) fn sweep(now: SystemTime) {
+pub(crate) async fn sweep<S: StateStore>(state: &AppState<S>, now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(sessions_dir()) else {
         return;
     };
-    // A session's files: its record, its bytes, a record being written.
+    // A session's files: its record, a record being written, its bytes.
     let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let id = name.split('.').next().unwrap_or_default().to_string();
         groups.entry(id).or_default().push(entry.path());
     }
-    for (id, files) in groups {
+    for (id, mut files) in groups {
         let lock = session_lock(&id);
         // A writer holding it is not abandoned; with the lock held, no one
         // can touch the files between this check and their removal.
         let Ok(_writing) = lock.try_lock() else {
             continue;
         };
+        if valid_id(&id) {
+            files.push(bytes_path(&id));
+        }
         // A session's age is its last chunk's, or its start's before one came.
         let last = files
             .iter()
@@ -647,7 +651,17 @@ pub(crate) fn sweep(now: SystemTime) {
         let abandoned = last
             .and_then(|last| now.duration_since(last).ok())
             .is_some_and(|age| age >= ABANDONED_AFTER);
-        if abandoned {
+        if !abandoned {
+            continue;
+        }
+        if valid_id(&id)
+            && let Err(error) = remove_unless_queued(state, &id).await
+        {
+            tracing::warn!(%error, "could not sweep an import upload");
+            continue;
+        }
+        let _ = std::fs::remove_file(sessions_dir().join(format!("{id}.json.new")));
+        if !valid_id(&id) {
             for path in files {
                 let _ = std::fs::remove_file(path);
             }
@@ -656,15 +670,13 @@ pub(crate) fn sweep(now: SystemTime) {
 }
 
 /// Sweeps abandoned sessions once an hour while the daemon runs.
-pub(crate) fn spawn_sweep() {
-    tokio::spawn(async {
+pub(crate) fn spawn_sweep<S: StateStore>(state: AppState<S>) {
+    tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            tokio::task::spawn_blocking(|| sweep(SystemTime::now()))
-                .await
-                .ok();
+            sweep(&state, SystemTime::now()).await;
         }
     });
 }
@@ -878,7 +890,7 @@ mod tests {
                 .set_modified(day_ago)
                 .unwrap();
         }
-        sweep(SystemTime::now());
+        sweep(&state, SystemTime::now()).await;
         assert!(!bytes_path(old).exists() && !record_path(old).exists());
         assert!(bytes_path(fresh).exists() && record_path(fresh).exists());
         remove_session(fresh);
