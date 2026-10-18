@@ -567,21 +567,21 @@ async fn reclaim<S: StateStore>(state: &AppState<S>, session: &mut Session) -> R
     };
     // The queue first: a Task leaves it only after its event says it ended,
     // so reading the event second cannot miss one that just finished.
+    // A Task that ran took its file with it; when the bytes are gone, the
+    // event only expired from history, and the import stays listed.
     let handed = tasks::is_queued(&state.store, &task_id).await?
         || state
             .store
             .get_audit_event(&task_id)
             .await?
             .and_then(|body| serde_json::from_str::<audit::Event>(&body).ok())
-            .is_some_and(|event| event.status != "pending");
+            .is_some_and(|event| event.status != "pending")
+        || !bytes_path(&session.id).exists();
     if handed {
         return Ok(());
     }
     let _ = IMPORTS.remove(&state.store, &task_id).await;
     session.task_id = None;
-    if !bytes_path(&session.id).exists() {
-        create_bytes(&session.id)?;
-    }
     write_session(session)
 }
 
@@ -604,14 +604,19 @@ async fn cancel<S: StateStore>(
 }
 
 /// Removes a session's record and its bytes, but leaves the bytes to an
-/// import it queued. The caller holds the session's lock.
+/// import it queued that is still waiting or running. The caller holds the
+/// session's lock.
 async fn remove_unless_queued<S: StateStore>(state: &AppState<S>, id: &str) -> Result<(), Error> {
     let record = std::fs::read(record_path(id))
         .ok()
         .and_then(|body| serde_json::from_slice::<Session>(&body).ok());
     if let Some(mut session) = record {
         reclaim(state, &mut session).await?;
-        if session.task_id.is_some() {
+        // A Task that ended without removing the file, as one a restart
+        // interrupted, leaves it here to remove.
+        if let Some(task_id) = &session.task_id
+            && tasks::is_queued(&state.store, task_id).await?
+        {
             let _ = std::fs::remove_file(record_path(id));
             return Ok(());
         }
