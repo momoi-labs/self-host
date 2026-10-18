@@ -198,7 +198,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
             </div>
             {from === "upload"
               ? <FileDropzone id="database-import" label={file ? file.name : "Drop a dump here, or choose one"} disabled={busy}
-                  description={file ? `${formatBytes(file.size)} · saved privately on the Host and removed after the import` : "Any size. It is saved privately on the Host and removed after the import."}
+                  description={file ? `${formatBytes(file.size)} · saved privately on the Host and removed after the import` : "Any size. It is saved privately on the Host and removed after the import. An interrupted upload goes on when you choose the same file again."}
                   onFilesSelected={(files) => void pickFile(files[0] ?? null)} />
               : <FormField id="database-import-path" label="Path on the Host" className="mono" placeholder="/srv/backups/app.dump" value={path} onChange={(event) => { generation.current += 1; setPath(event.target.value); setFormat(""); setDetection(null); }} onBlur={() => void detectPath()} hint="A file, or a directory for a directory dump, read where it is on the machine that runs self-host. It is never moved or removed." />}
           </Step>

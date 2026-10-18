@@ -5,7 +5,7 @@ async fn fixture(docker: Arc<test_runtime::PausedRemoval>) -> AppState<FakeState
     fixture_with_router(docker).await.1
 }
 
-async fn fixture_with_router(
+pub(super) async fn fixture_with_router(
     docker: Arc<test_runtime::PausedRemoval>,
 ) -> (axum::Router, AppState<FakeStateStore>) {
     let (router, state) = tests::fixture_with_docker(docker.clone()).await;
@@ -31,7 +31,7 @@ async fn fixture_with_router(
     (router, state)
 }
 
-async fn finished(state: &AppState<FakeStateStore>, id: &str) -> audit::Event {
+pub(super) async fn finished(state: &AppState<FakeStateStore>, id: &str) -> audit::Event {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event: audit::Event =
@@ -47,7 +47,10 @@ async fn finished(state: &AppState<FakeStateStore>, id: &str) -> audit::Event {
     .expect("task finishes")
 }
 
-async fn operation(state: &AppState<FakeStateStore>, operation: Operation) -> audit::Event {
+pub(super) async fn operation(
+    state: &AppState<FakeStateStore>,
+    operation: Operation,
+) -> audit::Event {
     let id = tasks::enqueue(
         state,
         "configure",

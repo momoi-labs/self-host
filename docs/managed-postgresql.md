@@ -71,8 +71,13 @@ places:
   upload runs in the background: the New import dialog closes at once, the
   Imports list shows its progress, and it goes on while you use other console
   screens. Refreshing or closing the page stops it, and the console asks
-  first. A failed upload can be retried from the list, from the start, while
-  the page that holds the file stays open.
+  first. The file goes in 8 MiB chunks, and the daemon keeps every byte that
+  arrived. **Retry** in the list sends only the rest. After a refresh, choose
+  the same file again in New import and the upload goes on from the bytes
+  the Host holds; the list shows its progress from there. Another file
+  starts over. A file counts as the same when its name, size, modification
+  time and the hash of its first and last MiB match. An upload nobody sent a
+  byte to for a day is removed, file included. **Dismiss** removes it at once.
 - **Path on the Host:** a file, or a directory for a directory dump, that
   already sits on the Host that runs self-host. The daemon reads it where it
   is and never moves or removes it.
@@ -175,7 +180,12 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 | `POST /databases/{id}/connections` | `{ "consumer_application_id": "...", "variable": "DATABASE_URL" }` |
 | `POST /databases/{id}/connections/{connection}/reveal` | Private URL for a ready connection |
 | `DELETE /databases/{id}/connections/{connection}` | Revoke access and preserve the consumer database |
-| `POST /databases/{id}/connections/{connection}/import` | Dump bytes, `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name, `X-Import-Format` the type (`custom`, `tar`, `sql`) when it should not be read from the file; `X-Import-All-Or-Nothing: false` restores past errors |
+| `POST /databases/{id}/connections/{connection}/import` | The whole dump in one request, which cannot resume, as `application/octet-stream`; `X-Upload-Name` carries the percent-encoded file name, `X-Import-Format` the type (`custom`, `tar`, `sql`) when it should not be read from the file; `X-Import-All-Or-Nothing: false` restores past errors |
+| `POST /databases/{id}/imports/uploads` | `{ "connection_id": "...", "name": "app.dump", "size": 1048576, "fingerprint": "...", "format": "custom", "all_or_nothing": true }` starts a resumable upload, or finds the one started for the same connection, name, size and fingerprint; answers `{ "id": "...", "size": 1048576, "received": 0 }`. `format` and `all_or_nothing` are optional; a resumed upload takes the latest ones |
+| `GET /databases/{id}/imports/uploads/{upload}` | None; answers `{ "id", "size", "received" }` |
+| `PUT /databases/{id}/imports/uploads/{upload}` | One chunk with `Content-Range: bytes start-end/size`. It must start at `received` and end inside `size`; otherwise 409 answers `received`, or 400. A chunk cut short keeps what arrived. Answers `{ "id", "size", "received" }` |
+| `POST /databases/{id}/imports/uploads/{upload}/import` | None; queues the import of a complete upload and answers its Task id. A refusal keeps the upload |
+| `DELETE /databases/{id}/imports/uploads/{upload}` | None; removes the upload and its bytes |
 | `POST /databases/{id}/connections/{connection}/import-path` | `{ "path": "/srv/backups/app.dump", "format": "custom", "all_or_nothing": true }`; `format` and `all_or_nothing` are optional, and `all_or_nothing` defaults to true |
 | `POST /databases/import-format` | `{ "path": "..." }`; answers `{ "format": "custom" }`, or `null` when the type cannot be told |
 | `GET /databases/{id}/imports` | None; answers the last 50 imports, newest first, each with its Task |
