@@ -24,6 +24,9 @@ use super::{api::failure, *};
 /// A session nobody sent a byte to for this long is removed, file included.
 const ABANDONED_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// A chunk that sends nothing for this long ends, keeping what arrived.
+const IDLE: Duration = Duration::from_secs(60);
+
 pub(crate) fn router<S: StateStore>() -> Router<AppState<S>> {
     Router::new()
         .route("/databases/{id}/imports/uploads", post(start::<S>))
@@ -204,52 +207,47 @@ async fn start<S: StateStore>(
         }
         private_storage()?;
         let file_name = super::api::shown_name(&request.name);
-        let _starts = STARTS.lock().await;
-        let found = sessions().into_iter().find(|session| {
+        let matches = |session: &Session| {
             session.database_application_id == id
                 && session.connection_id == request.connection_id
                 && session.file_name == file_name
                 && session.size == request.size
                 && session.fingerprint == request.fingerprint
-        });
-        // A session being finished or removed meanwhile is not resumed.
-        let lock = found.as_ref().map(|session| session_lock(&session.id));
-        let _writing = match &lock {
-            Some(lock) => Some(lock.lock().await),
-            None => None,
         };
-        let found = found.filter(|session| read_session(&id, &session.id).is_ok());
-        let session = match found {
-            // The Operator may choose differently this time; the last choice
-            // is the one the import takes.
-            Some(mut session) => {
-                session.format = request.format;
-                session.all_or_nothing = request.all_or_nothing;
-                if !bytes_path(&session.id).exists() {
+        let found = {
+            let _starts = STARTS.lock().await;
+            match sessions().into_iter().find(matches) {
+                Some(session) => session,
+                None => {
+                    let session = Session {
+                        id: secret(),
+                        database_application_id: id.clone(),
+                        connection_id: request.connection_id.clone(),
+                        file_name: file_name.clone(),
+                        size: request.size,
+                        fingerprint: request.fingerprint.clone(),
+                        format: request.format,
+                        all_or_nothing: request.all_or_nothing,
+                    };
                     create_bytes(&session.id)?;
+                    if let Err(error) = write_session(&session) {
+                        remove_session(&session.id);
+                        return Err(error);
+                    }
+                    return Ok(Json(progress(&session)));
                 }
-                write_session(&session)?;
-                session
-            }
-            None => {
-                let session = Session {
-                    id: secret(),
-                    database_application_id: id,
-                    connection_id: request.connection_id,
-                    file_name,
-                    size: request.size,
-                    fingerprint: request.fingerprint,
-                    format: request.format,
-                    all_or_nothing: request.all_or_nothing,
-                };
-                create_bytes(&session.id)?;
-                if let Err(error) = write_session(&session) {
-                    remove_session(&session.id);
-                    return Err(error);
-                }
-                session
             }
         };
+        // The Operator may choose differently this time; the last choice is
+        // the one the import takes. A chunk being written finishes first.
+        let lock = session_lock(&found.id);
+        let _writing = lock.lock().await;
+        let mut session = read_session(&id, &found.id).map_err(|_| {
+            Error::Conflict("This upload just finished or was removed; start it again".into())
+        })?;
+        session.format = request.format;
+        session.all_or_nothing = request.all_or_nothing;
+        write_session(&session)?;
         Ok(Json(progress(&session)))
     }
     .await;
@@ -369,11 +367,20 @@ async fn write_chunk(path: &FsPath, body: axum::body::Body, expected: u64) -> Re
     let mut stream = body.into_data_stream();
     let mut written = 0u64;
     let mut outcome = Ok(());
-    while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(error) => {
+    loop {
+        // A connection that went quiet holds the session's lock; it lets go
+        // so a resumed upload is not kept waiting on it.
+        let chunk = match tokio::time::timeout(IDLE, stream.next()).await {
+            Ok(None) => break,
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(Some(Err(error))) => {
                 outcome = Err(Error::Invalid(format!("The upload stopped: {error}")));
+                break;
+            }
+            Err(_) => {
+                outcome = Err(Error::Invalid(
+                    "The upload stopped: nothing arrived for a minute".into(),
+                ));
                 break;
             }
         };
