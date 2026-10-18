@@ -142,15 +142,18 @@ async fn standalone_free(store: &impl StateStore, provider: &str, name: &str) ->
     Ok(())
 }
 
-/// Whether a connection that did not fail uses `name` on `provider`.
+/// Whether a connection holds `name` on `provider`: its database is there,
+/// or it is still making it.
 async fn database_in_use(
     store: &impl StateStore,
     provider: &str,
     name: &str,
 ) -> Result<bool, StoreError> {
-    Ok(CONNECTIONS.list(store).await?.iter().any(|c| {
-        c.database_application_id == provider && c.database == name && c.status != "failed"
-    }))
+    Ok(CONNECTIONS
+        .list(store)
+        .await?
+        .iter()
+        .any(|c| c.database_application_id == provider && c.database == name && c.holds_name()))
 }
 
 /// The standalone database `name`, recorded with a new role when it is new.
@@ -172,6 +175,7 @@ async fn keep_standalone(
         name: name.into(),
         role: format!("role_{:024x}", rand::random::<u128>()),
         password: secret(),
+        made: false,
     };
     STANDALONE.upsert(store, &standalone).await?;
     Ok(standalone)
@@ -829,10 +833,13 @@ async fn connect<S: StateStore>(
                 if !valid_database_name(&name) {
                     return Err(Error::Invalid(NAME_RULE.into()));
                 }
+                // A standalone database an import has not made yet holds no
+                // name; the Task checks the server before it creates anything.
                 if database_in_use(&state.store, &id, &name).await?
                     || STANDALONE
-                        .exists(&state.store, &standalone_key(&id, &name))
+                        .get(&state.store, &standalone_key(&id, &name))
                         .await?
+                        .is_some_and(|d| d.made)
                 {
                     return Err(Error::Conflict(format!(
                         "A database named {name} already exists. Choose it as an existing database, or name another"
@@ -865,6 +872,7 @@ async fn connect<S: StateStore>(
             task_id: None,
             imported_tables: None,
             owner,
+            database_made: Some(false),
         };
         CONNECTIONS.upsert(&state.store, &c).await?;
         let task_id = tasks::enqueue(
@@ -1142,6 +1150,7 @@ mod tests {
             task_id: None,
             imported_tables: None,
             owner: None,
+            database_made: None,
         };
         let output = serde_json::to_string(&ConnectionView::from(c)).unwrap();
         assert!(!output.contains("password"));

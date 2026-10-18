@@ -1226,3 +1226,39 @@ fn connections_recorded_before_the_choice_own_their_database() {
     .unwrap();
     assert_eq!(old.owner, None);
 }
+
+#[tokio::test]
+async fn a_connection_that_never_made_its_database_holds_no_name() {
+    let docker = Arc::new(test_runtime::PausedRemoval {
+        postgres_ready: true,
+        ..Default::default()
+    });
+    let (router, state) = fixture_with_router(docker.clone()).await;
+    operation(
+        &state,
+        Operation::Provision {
+            id: "provider".into(),
+            recreate: false,
+        },
+    )
+    .await;
+    let mut stale = tests::reference("revoked");
+    stale.database = "mochi_cut".into();
+    stale.variable = "OLD_URL".into();
+    stale.database_made = Some(false);
+    CONNECTIONS.upsert(&state.store, &stale).await.unwrap();
+    let c = connect(
+        &router,
+        &state,
+        "consumer",
+        serde_json::json!({"new": "mochi_cut"}),
+    )
+    .await;
+    assert_eq!(c.database_made, Some(true));
+    assert_eq!(
+        recorded_owner(&state.store, "provider", "mochi_cut")
+            .await
+            .unwrap(),
+        Some(c.role)
+    );
+}
