@@ -88,6 +88,8 @@ async function send(upload: ImportUpload) {
     if (started.status !== 200) return fail(refusal(started));
     const session = JSON.parse(started.responseText) as Held;
     let offset = session.received;
+    // An older failed row for the same session is this upload now.
+    publish(uploads.filter((item) => item.key === upload.key || item.sessionId !== session.id || item.status === "uploading"));
     update(upload.key, { sessionId: session.id, loaded: offset });
     while (offset < upload.file.size) {
       const from = offset;
@@ -137,7 +139,9 @@ export function retryUpload(key: string) {
 export function dismissUpload(key: string) {
   const upload = uploads.find((item) => item.key === key);
   if (!upload || upload.status === "uploading") return;
-  if (upload.sessionId) void call("DELETE", `/databases/${upload.databaseId}/imports/uploads/${upload.sessionId}`, null, {}).catch(() => undefined);
+  // Another row may have found the same session; it keeps the bytes.
+  const shared = uploads.some((item) => item.key !== key && item.sessionId === upload.sessionId);
+  if (upload.sessionId && !shared) void call("DELETE", `/databases/${upload.databaseId}/imports/uploads/${upload.sessionId}`, null, {}).catch(() => undefined);
   publish(uploads.filter((item) => item.key !== key));
 }
 
