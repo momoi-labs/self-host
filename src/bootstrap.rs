@@ -30,7 +30,7 @@ pub struct BootstrapResult {
     pub host_ip: String,
     /// Every address the Platform publishes, as the interfaces had them at
     /// `init` time. `serve` keeps scanning and may publish more or fewer.
-    pub host_addresses: Vec<std::net::Ipv4Addr>,
+    pub host_addresses: Vec<std::net::IpAddr>,
     /// Why the Platform Infra could not be started, when Docker was missing or
     /// unreachable. Configuration and Platform state are complete either way;
     /// only Application execution and HTTPS have to wait for Docker.
@@ -72,7 +72,7 @@ pub async fn run_bootstrap(
     // names its Wi-Fi no longer serves that address from an unattended boot.
     let pinned = match pinned {
         Some(ip) => Some(
-            ip.parse::<std::net::Ipv4Addr>()
+            ip.parse::<std::net::IpAddr>()
                 .map_err(|_| BootstrapError::InvalidHostIp(ip.to_string()))?,
         ),
         None => None,
@@ -81,17 +81,28 @@ pub async fn run_bootstrap(
         include: pinned.into_iter().collect(),
         exclude: Vec::new(),
     };
-    // Detection picks the interface the default route leaves through, which
-    // is the LAN one. It anchors the subnet the policy publishes and stays
-    // the address Host-local consumers use.
-    let primary = match pinned {
-        Some(address) => address,
-        None => crate::host_addresses::default_source()
-            .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?,
-    };
+    // Detection picks, per family, the interface the default route leaves
+    // through, which is the LAN one. It anchors the subnet the policy
+    // publishes. Host-local consumers use a published address of the first
+    // family, IPv4 when the Host has it. A pinned address takes the place of
+    // its family's source and is that address when it is published; a pinned
+    // privacy address is not, so a stable one of its family is saved
+    // instead. A pin that is not up yet is saved as it was before IPv6.
+    let mut sources = crate::host_addresses::default_sources();
+    if let Some(address) = pinned {
+        sources.retain(|source| source.is_ipv4() != address.is_ipv4());
+        sources.insert(0, address);
+    }
     let interfaces = crate::host_addresses::interfaces()
         .map_err(|e| BootstrapError::HostIpDetection(e.to_string()))?;
-    let host_addresses = crate::host_addresses::select(&policy, primary, &interfaces);
+    let host_addresses = crate::host_addresses::select(&policy, &sources, &interfaces);
+    let primary = crate::host_addresses::primary(&sources, &host_addresses)
+        .or(pinned)
+        .ok_or_else(|| {
+            BootstrapError::HostIpDetection(
+                "the Host has no LAN address; connect it to the LAN".into(),
+            )
+        })?;
 
     let dns_config = crate::dns::Config::new(dns_suffix, policy.include)
         .map_err(|e| BootstrapError::ConfigWrite(e.to_string()))?;
@@ -180,11 +191,15 @@ pub async fn persist_bootstrap_state(
         return Err(BootstrapError::AlreadyInitialized);
     }
 
-    let address = result
+    let address: std::net::IpAddr = result
         .host_ip
         .parse()
         .map_err(|_| BootstrapError::InvalidHostIp(result.host_ip.clone()))?;
-    crate::dns_records::initialize_admin(store, address).await?;
+    // An IPv6-only Host has no A Record to give `admin`; the wildcard
+    // answers for it, AAAA included.
+    if let std::net::IpAddr::V4(address) = address {
+        crate::dns_records::initialize_admin(store, address).await?;
+    }
     store.store_state("api_key", &result.api_key).await?;
     store.store_state("dns_suffix", &result.dns_suffix).await?;
     store.store_state("host_ip", &result.host_ip).await?;
@@ -361,7 +376,7 @@ impl std::fmt::Display for BootstrapError {
             BootstrapError::Store(e) => write!(f, "{e}"),
             BootstrapError::InvalidDnsSuffix(msg) => write!(f, "invalid DNS suffix: {msg}"),
             BootstrapError::InvalidHostIp(ip) => {
-                write!(f, "'{ip}' is not an IPv4 address")
+                write!(f, "'{ip}' is not an IP address")
             }
             BootstrapError::AlreadyInitialized => {
                 write!(

@@ -23,7 +23,9 @@ const steps = (hostIp: string): Record<string, string[]> => ({
   ],
   Windows: [
     "Open Network Connections and the active adapter's properties.",
-    "Open Internet Protocol Version 4 (TCP/IPv4).",
+    hostIp.includes(":")
+      ? "Open Internet Protocol Version 6 (TCP/IPv6)."
+      : "Open Internet Protocol Version 4 (TCP/IPv4).",
     `Use ${hostIp} as the preferred DNS server and save.`,
   ],
 });

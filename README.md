@@ -48,7 +48,7 @@ native Applications, and Lima for virtual machines on macOS.
 flowchart LR
   operator(["Operator<br/>console or CLI"])
   consumer(["Consumer<br/>any device on the LAN"])
-  upstream["Upstream DNS<br/>1.1.1.1 and 1.0.0.1"]
+  upstream["Upstream DNS<br/>Cloudflare, IPv4 and IPv6"]
 
   subgraph host["Host"]
     subgraph daemon["self-host serve"]
@@ -218,8 +218,11 @@ workflow is in [docs/hermes.md](docs/hermes.md).
 `serve` starts DNS before Docker is ready. It answers on port 53, over UDP and
 TCP. On Linux it listens at the saved Host IP. On macOS it listens on every
 interface, because that is the only privileged bind the Operator gets there
-([ADR-0017](docs/adr/0017-host-native-dns.md)). Names under the DNS Suffix
-resolve locally. Other names go to Cloudflare (`1.1.1.1` and `1.0.0.1`). The
+([ADR-0017](docs/adr/0017-host-native-dns.md)). On both, it also listens on
+IPv6, and a Host with IPv6 gets AAAA records next to its A records
+([ADR-0035](docs/adr/0035-the-platform-serves-both-address-families.md)).
+Names under the DNS Suffix resolve locally. Other names go to Cloudflare
+(`1.1.1.1`, `1.0.0.1`, `2606:4700:4700::1111` and `2606:4700:4700::1001`). The
 configuration is in `~/.config/self-host/dns.json`. Restart `serve` after you
 change it, and keep the Host IP fixed.
 
