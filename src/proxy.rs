@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, RwLock};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -22,8 +24,10 @@ use hyper::header::{self, HeaderValue};
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::net::TcpListener;
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Notify;
+use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
@@ -44,6 +48,139 @@ fn text_body(text: impl Into<Bytes>) -> ProxyBody {
     Full::new(text.into())
         .map_err(BoxError::from)
         .boxed_unsync()
+}
+
+/// How long client connections may stay open. Without these, an idle
+/// keep-alive connection or a peer that went away held its file descriptor
+/// forever, and a CDN in front of the Host filled the open file limit.
+#[derive(Clone, Copy, Debug)]
+struct ConnectionLimits {
+    /// A connection with no request in flight for this long is shut down
+    /// gracefully. Above Cloudflare's 900 s origin reuse limit, so Cloudflare
+    /// always closes its pooled connection first and never sends a request
+    /// into one we are closing.
+    idle: Duration,
+    tls_handshake: Duration,
+    h2_keep_alive_interval: Duration,
+    h2_keep_alive_timeout: Duration,
+    /// Pause after a failed accept, so a full descriptor table does not turn
+    /// the accept loop into a busy loop that floods the log.
+    accept_backoff: Duration,
+}
+
+impl Default for ConnectionLimits {
+    fn default() -> Self {
+        Self {
+            idle: Duration::from_secs(960),
+            tls_handshake: Duration::from_secs(10),
+            h2_keep_alive_interval: Duration::from_secs(30),
+            h2_keep_alive_timeout: Duration::from_secs(20),
+            accept_backoff: Duration::from_millis(100),
+        }
+    }
+}
+
+/// Counts the requests in flight on one connection, from arrival until the
+/// response body is done, and when the connection last went quiet.
+struct Activity {
+    state: Mutex<(usize, Instant)>,
+    changed: Notify,
+}
+
+impl Activity {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((0, Instant::now())),
+            changed: Notify::new(),
+        })
+    }
+
+    fn begin(self: &Arc<Self>) -> ActivityGuard {
+        self.state.lock().unwrap().0 += 1;
+        ActivityGuard(self.clone())
+    }
+
+    /// Returns once no request has been in flight for `idle`.
+    async fn idle_for(&self, idle: Duration) {
+        loop {
+            let (active, since) = *self.state.lock().unwrap();
+            if active > 0 {
+                self.changed.notified().await;
+                continue;
+            }
+            let deadline = since + idle;
+            if Instant::now() >= deadline {
+                return;
+            }
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => {}
+                () = self.changed.notified() => {}
+            }
+        }
+    }
+}
+
+struct ActivityGuard(Arc<Activity>);
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().unwrap();
+        state.0 -= 1;
+        if state.0 == 0 {
+            state.1 = Instant::now();
+        }
+        drop(state);
+        self.0.changed.notify_one();
+    }
+}
+
+/// A response body that keeps its request counted as in flight until hyper
+/// has sent it and dropped it, so a long download or an event stream is not
+/// mistaken for an idle connection.
+struct TrackedBody {
+    inner: ProxyBody,
+    _guard: ActivityGuard,
+}
+
+impl hyper::body::Body for TrackedBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, BoxError>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+fn tracked(response: Response<ProxyBody>, guard: ActivityGuard) -> Response<ProxyBody> {
+    response.map(|inner| {
+        TrackedBody {
+            inner,
+            _guard: guard,
+        }
+        .boxed_unsync()
+    })
+}
+
+/// TCP keepalive finds peers that vanished without closing, including on
+/// upgraded connections the idle deadline no longer covers.
+fn set_keepalive(stream: &TcpStream) {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(15));
+    if let Err(error) = socket2::SockRef::from(stream).set_tcp_keepalive(&keepalive) {
+        tracing::debug!("could not set TCP keepalive: {error}");
+    }
 }
 
 /// Every Hostname an Application answers on, and where it currently resolves.
@@ -342,6 +479,7 @@ pub struct Bound {
     acceptor: TlsAcceptor,
     ctx: Arc<Context>,
     http_setup_router: Router,
+    limits: ConnectionLimits,
 }
 
 pub async fn bind(
@@ -377,6 +515,7 @@ pub async fn bind(
         http_listener,
         acceptor,
         http_setup_router,
+        limits: ConnectionLimits::default(),
         ctx: Arc::new(Context {
             admin_hostname: config.admin_hostname,
             admin_router,
@@ -413,6 +552,12 @@ impl Bound {
         self
     }
 
+    #[cfg(test)]
+    fn with_connection_limits(mut self, limits: ConnectionLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
     /// Serves both listeners forever.
     pub async fn run(self) -> anyhow::Result<()> {
         tracing::info!(https = %self.https_addr, http = %self.http_addr, "proxy listening");
@@ -420,8 +565,9 @@ impl Bound {
             self.http_listener,
             self.http_setup_router,
             self.ctx.challenge_router.clone(),
+            self.limits,
         ));
-        serve_https(self.https_listener, self.acceptor, self.ctx).await
+        serve_https(self.https_listener, self.acceptor, self.ctx, self.limits).await
     }
 }
 
@@ -442,59 +588,103 @@ async fn serve_https(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     ctx: Arc<Context>,
+    limits: ConnectionLimits,
 ) -> anyhow::Result<()> {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(error) => {
                 tracing::warn!("proxy accept failed: {error}");
+                tokio::time::sleep(limits.accept_backoff).await;
                 continue;
             }
         };
+        set_keepalive(&stream);
+        let activity = Activity::new();
         let acceptor = acceptor.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(stream).await {
-                Ok(stream) => stream,
-                Err(error) => {
-                    tracing::debug!(%peer, "TLS handshake failed: {error}");
-                    return;
-                }
-            };
+            let tls_stream =
+                match tokio::time::timeout(limits.tls_handshake, acceptor.accept(stream)).await {
+                    Ok(Ok(stream)) => stream,
+                    Ok(Err(error)) => {
+                        tracing::debug!(%peer, "TLS handshake failed: {error}");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::debug!(%peer, "TLS handshake timed out");
+                        return;
+                    }
+                };
             let io = TokioIo::new(tls_stream);
+            let tracker = activity.clone();
             let service = hyper::service::service_fn(move |req| {
                 let ctx = ctx.clone();
-                async move { Ok::<_, Infallible>(handle(req, ctx, peer.ip()).await) }
+                let guard = tracker.begin();
+                async move {
+                    let response = handle(req, ctx, peer.ip()).await;
+                    Ok::<_, Infallible>(tracked(response, guard))
+                }
             });
             // HTTP/2 or HTTP/1.1, whichever the client negotiated over ALPN.
             // Upgrades stay available on the HTTP/1.1 side, which is where a
             // browser opens a WebSocket anyway.
-            if let Err(error) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-                .serve_connection_with_upgrades(io, service)
-                .await
-            {
+            let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+            // hyper runs this timer while it waits for the next request too,
+            // so it must not be shorter than the idle deadline.
+            builder
+                .http1()
+                .timer(TokioTimer::new())
+                .header_read_timeout(limits.idle);
+            builder
+                .http2()
+                .timer(TokioTimer::new())
+                .keep_alive_interval(limits.h2_keep_alive_interval)
+                .keep_alive_timeout(limits.h2_keep_alive_timeout);
+            let conn = builder.serve_connection_with_upgrades(io, service);
+            tokio::pin!(conn);
+            // Shutting down gracefully lets a response in flight finish, and
+            // an upgraded connection has already left `conn` by then.
+            let result = tokio::select! {
+                result = conn.as_mut() => result,
+                () = activity.idle_for(limits.idle) => {
+                    conn.as_mut().graceful_shutdown();
+                    conn.await
+                }
+            };
+            if let Err(error) = result {
                 tracing::debug!(%peer, "proxy connection error: {error}");
             }
         });
     }
 }
 
-async fn serve_http(listener: TcpListener, setup_router: Router, challenge_router: Router) {
+async fn serve_http(
+    listener: TcpListener,
+    setup_router: Router,
+    challenge_router: Router,
+    limits: ConnectionLimits,
+) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(error) => {
                 tracing::warn!("HTTP listener accept failed: {error}");
+                tokio::time::sleep(limits.accept_backoff).await;
                 continue;
             }
         };
+        set_keepalive(&stream);
+        let activity = Activity::new();
         let setup_router = setup_router.clone();
         let challenge_router = challenge_router.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
+            let tracker = activity.clone();
             let service = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let setup_router = setup_router.clone();
                 let challenge_router = challenge_router.clone();
+                let guard = tracker.begin();
                 async move {
                     let path = req.uri().path();
                     let is_setup = path == "/setup"
@@ -507,13 +697,22 @@ async fn serve_http(listener: TcpListener, setup_router: Router, challenge_route
                     } else {
                         redirect_to_https(&req)
                     };
-                    Ok::<_, Infallible>(response)
+                    Ok::<_, Infallible>(tracked(response, guard))
                 }
             });
-            if let Err(error) = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, service)
-                .await
-            {
+            let conn = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(limits.idle)
+                .serve_connection(io, service);
+            tokio::pin!(conn);
+            let result = tokio::select! {
+                result = conn.as_mut() => result,
+                () = activity.idle_for(limits.idle) => {
+                    conn.as_mut().graceful_shutdown();
+                    conn.await
+                }
+            };
+            if let Err(error) = result {
                 tracing::debug!(%peer, "HTTP connection error: {error}");
             }
         });
@@ -1253,6 +1452,26 @@ mod integration {
         rustls::pki_types::CertificateDer<'static>,
         crate::metrics::Metrics,
     ) {
+        spawn_proxy_with_limits(
+            admin_router,
+            table,
+            challenge_router,
+            ConnectionLimits::default(),
+        )
+        .await
+    }
+
+    async fn spawn_proxy_with_limits(
+        admin_router: Router,
+        table: RouteTable,
+        challenge_router: Router,
+        limits: ConnectionLimits,
+    ) -> (
+        SocketAddr,
+        SocketAddr,
+        rustls::pki_types::CertificateDer<'static>,
+        crate::metrics::Metrics,
+    ) {
         let dir = std::env::temp_dir().join(format!(
             "self-host-proxy-test-{}-{}",
             std::process::id(),
@@ -1278,7 +1497,9 @@ mod integration {
         )
         .await
         .unwrap();
-        let bound = bound.with_challenge_router(challenge_router);
+        let bound = bound
+            .with_challenge_router(challenge_router)
+            .with_connection_limits(limits);
         let (https_addr, http_addr) = (bound.https_addr, bound.http_addr);
         tokio::spawn(bound.run());
         (https_addr, http_addr, cert_der, metrics)
@@ -2337,5 +2558,299 @@ mod integration {
             body, b"console",
             "management dispatch is never overridden by an Application"
         );
+    }
+
+    const IDLE: Duration = Duration::from_millis(400);
+
+    fn short_limits() -> ConnectionLimits {
+        ConnectionLimits {
+            idle: IDLE,
+            tls_handshake: Duration::from_millis(300),
+            // Pings every 100 ms, so the HTTP/2 client stays responsive and
+            // only the idle deadline can close it.
+            h2_keep_alive_interval: Duration::from_millis(100),
+            h2_keep_alive_timeout: Duration::from_secs(5),
+            accept_backoff: Duration::from_millis(10),
+        }
+    }
+
+    /// An admin router with a response that takes `delay` to start and one
+    /// that streams a chunk every `IDLE / 2` for `chunks` chunks.
+    fn slow_admin(delay: Duration, chunks: usize) -> Router {
+        Router::new()
+            .route("/", axum::routing::get(|| async { "fast" }))
+            .route(
+                "/slow",
+                axum::routing::get(move || async move {
+                    tokio::time::sleep(delay).await;
+                    "slow"
+                }),
+            )
+            .route(
+                "/stream",
+                axum::routing::get(move || async move {
+                    let stream = futures_util::stream::unfold(0, move |sent| async move {
+                        if sent == chunks {
+                            return None;
+                        }
+                        tokio::time::sleep(IDLE / 2).await;
+                        Some((Ok::<_, Infallible>(Bytes::from("x")), sent + 1))
+                    });
+                    AxumBody::from_stream(stream)
+                }),
+            )
+    }
+
+    async fn tls_connect(
+        addr: SocketAddr,
+        config: Arc<rustls::ClientConfig>,
+    ) -> tokio_rustls::client::TlsStream<TcpStream> {
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        tokio_rustls::TlsConnector::from(config)
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+            .unwrap()
+    }
+
+    async fn get(
+        sender: &mut client_http1::SendRequest<Full<Bytes>>,
+        host: &str,
+        path: &str,
+    ) -> Vec<u8> {
+        let req = Request::builder()
+            .uri(path)
+            .header(header::HOST, host)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
+    }
+
+    /// Whether the server closes the connection within `within`. The client
+    /// connection task ends when the server closes its side.
+    async fn closed_within(task: &mut tokio::task::JoinHandle<()>, within: Duration) -> bool {
+        tokio::time::timeout(within, task).await.is_ok()
+    }
+
+    async fn http1_over_tls(
+        addr: SocketAddr,
+        cert: rustls::pki_types::CertificateDer<'static>,
+    ) -> (
+        client_http1::SendRequest<Full<Bytes>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let tls = tls_connect(addr, client_config(cert)).await;
+        let (sender, conn) = client_http1::handshake(TokioIo::new(tls)).await.unwrap();
+        let task = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        (sender, task)
+    }
+
+    #[tokio::test]
+    async fn an_idle_http_keep_alive_connection_is_closed() {
+        let (_, http, _, _) = spawn_proxy_with_limits(
+            Router::new(),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let tcp = TcpStream::connect(http).await.unwrap();
+        let (mut sender, conn) = client_http1::handshake(TokioIo::new(tcp)).await.unwrap();
+        let mut task = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let req = Request::builder()
+            .uri("/")
+            .header(header::HOST, "blog.home.lan")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(req).await.unwrap();
+        assert!(response.status().is_redirection());
+        assert!(
+            !closed_within(&mut task, IDLE / 2).await,
+            "closed too early"
+        );
+        assert!(
+            closed_within(&mut task, IDLE * 3).await,
+            "idle connection stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_https_http1_connection_is_closed() {
+        let (https, _, cert, _) = spawn_proxy_with_limits(
+            slow_admin(IDLE, 0),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let (mut sender, mut task) = http1_over_tls(https, cert).await;
+        assert_eq!(get(&mut sender, "admin.home.lan", "/").await, b"fast");
+        assert!(
+            !closed_within(&mut task, IDLE / 2).await,
+            "closed too early"
+        );
+        assert!(
+            closed_within(&mut task, IDLE * 3).await,
+            "idle connection stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_https_http2_connection_that_answers_pings_is_closed() {
+        let (https, _, cert, _) = spawn_proxy_with_limits(
+            slow_admin(IDLE, 0),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let tls = tls_connect(https, client_config_for(cert, b"h2")).await;
+        let (mut sender, conn) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .unwrap();
+        let mut task = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let req = Request::builder()
+            .uri("https://admin.home.lan/")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(req).await.unwrap();
+        assert_eq!(response.version(), hyper::Version::HTTP_2);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"fast");
+        assert!(
+            !closed_within(&mut task, IDLE / 2).await,
+            "closed too early"
+        );
+        assert!(
+            closed_within(&mut task, IDLE * 3).await,
+            "idle connection stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_finishes_the_tls_handshake_is_dropped() {
+        let (https, _, _, _) = spawn_proxy_with_limits(
+            Router::new(),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let mut tcp = TcpStream::connect(https).await.unwrap();
+        let mut buf = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(2), tcp.read(&mut buf))
+            .await
+            .expect("silent client was not dropped");
+        assert!(matches!(read, Ok(0) | Err(_)));
+    }
+
+    #[tokio::test]
+    async fn a_client_that_sends_nothing_after_tls_is_dropped() {
+        let (https, _, cert, _) = spawn_proxy_with_limits(
+            Router::new(),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let mut tls = tls_connect(https, client_config(cert)).await;
+        let mut buf = [0u8; 1];
+        let read = tokio::time::timeout(IDLE * 3, tls.read(&mut buf))
+            .await
+            .expect("silent client was not dropped");
+        assert!(matches!(read, Ok(0) | Err(_)));
+    }
+
+    #[tokio::test]
+    async fn a_response_slower_than_the_idle_deadline_still_arrives() {
+        let (https, _, cert, _) = spawn_proxy_with_limits(
+            slow_admin(IDLE * 3, 0),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let (mut sender, _task) = http1_over_tls(https, cert).await;
+        assert_eq!(get(&mut sender, "admin.home.lan", "/slow").await, b"slow");
+    }
+
+    #[tokio::test]
+    async fn the_idle_deadline_starts_when_the_response_ends() {
+        let (https, _, cert, _) = spawn_proxy_with_limits(
+            slow_admin(IDLE * 2, 0),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let (mut sender, mut task) = http1_over_tls(https, cert).await;
+        assert_eq!(get(&mut sender, "admin.home.lan", "/slow").await, b"slow");
+        assert!(
+            !closed_within(&mut task, IDLE / 2).await,
+            "deadline counted from the request instead of the response"
+        );
+        assert!(
+            closed_within(&mut task, IDLE * 3).await,
+            "idle connection stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_longer_than_the_idle_deadline_is_received_whole() {
+        // Six chunks, one every IDLE / 2: three times the deadline.
+        let (https, _, cert, _) = spawn_proxy_with_limits(
+            slow_admin(IDLE, 6),
+            RouteTable::new(),
+            Router::new(),
+            short_limits(),
+        )
+        .await;
+        let (mut sender, _task) = http1_over_tls(https, cert).await;
+        assert_eq!(
+            get(&mut sender, "admin.home.lan", "/stream").await,
+            b"xxxxxx"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_upgraded_connection_outlives_the_idle_deadline() {
+        let backend = spawn_backend().await;
+        let table = RouteTable::new();
+        table.publish("abc", &["blog.home.lan".into()], Some(backend));
+        let (https, _, cert, _) =
+            spawn_proxy_with_limits(Router::new(), table, Router::new(), short_limits()).await;
+        let tls = tls_connect(https, client_config(cert)).await;
+        let (mut sender, conn) = client_http1::handshake(TokioIo::new(tls)).await.unwrap();
+        tokio::spawn(conn.with_upgrades());
+        let req = Request::builder()
+            .uri("/upgrade")
+            .header(header::HOST, "blog.home.lan")
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "test-protocol")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let mut response = sender.send_request(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        let mut io = TokioIo::new(hyper::upgrade::on(&mut response).await.unwrap());
+
+        tokio::time::sleep(IDLE * 3).await;
+        io.write_all(b"hello").await.unwrap();
+        let mut buf = [0u8; 5];
+        io.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"hello");
     }
 }
