@@ -199,8 +199,17 @@ self-host apps add --name hermes --compose-file hermes.yml --web-port 9119
 self-host apps stop hermes && self-host apps start hermes
 ```
 
-The CLI deploys container Applications. Native Applications and managed
-databases are created in the console. The supported Compose subset is in
+The CLI also manages routes, Virtual machines and managed databases:
+
+```bash
+self-host routes add-alias blog www.home.lan
+self-host routes add-path blog /api --strip-prefix
+self-host vms create --name workbench --ssh-key ~/.ssh/id_ed25519.pub
+self-host db create --name main && self-host db connect main --app blog
+```
+
+Run `self-host <command> --help` for the rest. Native Applications are created
+in the console. The supported Compose subset is in
 [docs/compose-applications.md](docs/compose-applications.md), and the Hermes
 workflow is in [docs/hermes.md](docs/hermes.md).
 
