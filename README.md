@@ -229,6 +229,31 @@ after each rebuild. If you run the Platform as a systemd system unit under the
 Operator's account, add `AmbientCapabilities=CAP_NET_BIND_SERVICE` under
 `[Service]` instead. The installer does not configure Linux supervision.
 
+A minimal unit for `/etc/systemd/system/self-host.service`:
+
+```ini
+[Unit]
+Description=self-host platform daemon
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/bin/self-host serve
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Each proxied connection uses one open file. `serve` raises its soft limit
+to the hard limit at start, and `LimitNOFILE` sets both, so a CDN that keeps
+many connections open cannot exhaust the systemd default of 1024. Add `User=`
+and `AmbientCapabilities=CAP_NET_BIND_SERVICE` to run it under the
+Operator's account.
+
 On Linux with systemd-resolved, `self-host setup-dns` installs
 `self-host-dns.service`. It routes only the DNS Suffix to the Host. The service
 restores that route at boot and when systemd-resolved restarts. It does not

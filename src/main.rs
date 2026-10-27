@@ -1515,6 +1515,10 @@ async fn run_server(
     audit_events_max_age: Option<std::time::Duration>,
     port: Option<u16>,
 ) {
+    match self_host::fd_limit::raise() {
+        Ok(limit) => tracing::info!(limit, "open file limit"),
+        Err(error) => tracing::warn!("could not raise the open file limit: {error}"),
+    }
     // One set of metrics for the whole daemon: DNS, the proxy, the collector
     // and the API all count and read from the same place (ADR-0020).
     let metrics = self_host::metrics::Metrics::with_window(window);
