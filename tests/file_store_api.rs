@@ -1052,24 +1052,34 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
         .as_array()
         .unwrap()
         .clone();
+    // Recent enough that audit retention, 30 days by default, keeps them on
+    // boot. A fixed date stops working a month after it was written.
+    let ago = |seconds: i64| {
+        (time::OffsetDateTime::now_utc() - time::Duration::seconds(seconds))
+            .format(time::macros::format_description!(
+                "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:9]Z"
+            ))
+            .unwrap()
+    };
+    let (queued_at, started_at, orphan_at) = (ago(3600), ago(3599), ago(7200));
     for (task, status, started) in [(&queue[0], "running", true), (&queue[1], "pending", false)] {
         events.push(json!({
             "id": task.id, "action": task.action, "status": status,
-            "occurredAt": "2026-09-21T10:00:00.000000000Z",
-            "startedAt": if started { json!("2026-09-21T10:00:01.000000000Z") } else { Value::Null },
-            "finishedAt": null, "updatedAt": "2026-09-21T10:00:01.000000000Z",
+            "occurredAt": queued_at,
+            "startedAt": if started { json!(started_at) } else { Value::Null },
+            "finishedAt": null, "updatedAt": started_at,
             "apiName": "laptop", "description": "Operation queued.",
             "subject": {"kind": "application", "id": id, "name": "blog"},
             "progress": if started { json!({"stages": [{
                 "id": "container", "label": "Starting container", "status": "running",
-                "startedAt": "2026-09-21T10:00:01.000000000Z", "output": ["Starting container."]
+                "startedAt": started_at, "output": ["Starting container."]
             }]}) } else { Value::Null }
         }));
     }
     events.push(json!({
         "id": "event-orphan", "action": "create", "status": "running",
-        "occurredAt": "2026-09-21T09:00:00.000000000Z", "startedAt": "2026-09-21T09:00:00.000000000Z",
-        "finishedAt": null, "updatedAt": "2026-09-21T09:00:00.000000000Z",
+        "occurredAt": orphan_at, "startedAt": orphan_at,
+        "finishedAt": null, "updatedAt": orphan_at,
         "apiName": null, "description": "Operation is running in the background.",
         "subject": {"kind": "custom-image", "id": "image-gone", "name": "old"}
     }));
@@ -1118,7 +1128,7 @@ async fn a_restart_requeues_pending_tasks_and_fails_running_ones() {
         interrupted["error"]["error"],
         "The Platform restarted before this task finished."
     );
-    assert_eq!(interrupted["startedAt"], "2026-09-21T10:00:01.000000000Z");
+    assert_eq!(interrupted["startedAt"], started_at.as_str());
     assert_eq!(interrupted["progress"]["stages"][0]["status"], "failed");
     assert_eq!(
         interrupted["progress"]["stages"][0]["error"],
