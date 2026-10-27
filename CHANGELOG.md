@@ -1,5 +1,15 @@
 # self-host
 
+## 0.15.0
+
+### Minor Changes
+
+- b663532: The CLI manages routes, Virtual machines and databases, like the console. `self-host routes` adds and removes aliases, path rules and redirects, and sets whether the proxy rewrites the Host header. `self-host vms` creates, starts, stops, restarts, retries and removes Virtual machines. `self-host db` creates, recreates and removes PostgreSQL databases, connects and disconnects Applications, and prints a connection's URL. Each command waits for its task and prints the failure when it fails.
+
+### Patch Changes
+
+- 0e59ee2: The proxy no longer runs out of open files behind a CDN. It closes a connection after 960 seconds with no request in flight, drops clients that do not finish the TLS handshake within 10 seconds, and detects vanished peers with TCP keepalive and HTTP/2 pings. Responses, streams and WebSockets that run longer are not cut. `serve` raises its open file limit to the hard limit at start, and the proxy pauses after a failed accept instead of flooding the log.
+
 ## 0.14.0
 
 ### Minor Changes
