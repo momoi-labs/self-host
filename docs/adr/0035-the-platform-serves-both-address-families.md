@@ -51,7 +51,10 @@ DNS, HTTP and HTTPS each add a listener on the IPv6 unspecified address,
 IPv6-only, next to the IPv4 one. On macOS the unspecified address is the only
 one the Operator may bind below port 1024, for IPv6 as for IPv4
 (`in6_pcbbind`). On Linux a named IPv6 address would go stale with the
-provider's prefix. The IPv6 listener is best effort when IPv4 has one: a Host
+provider's prefix. A UDP reply on the unspecified address leaves from an
+address the kernel picks, and it prefers a privacy one, which a Consumer that
+asked the stable address drops. The IPv6 DNS socket therefore asks for the
+public source address. The IPv6 listener is best effort when IPv4 has one: a Host
 whose IPv6 port is taken keeps serving IPv4, with a warning. On a Host with an
 IPv6 default route and no IPv4 one, the proxy's IPv6 listeners are required,
 and so is the IPv6 DNS listener on Linux. The macOS installer finds the LAN
