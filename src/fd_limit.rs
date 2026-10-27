@@ -3,6 +3,10 @@
 //! (systemd) or 256 (launchd). Behind a CDN that pools connections, 1024 runs
 //! out: accept fails with EMFILE and every site on the Host goes down.
 
+/// `OPEN_MAX` from macOS `<sys/syslimits.h>`. The libc crate does not export it.
+#[cfg(target_os = "macos")]
+const OPEN_MAX: libc::rlim_t = 10240;
+
 /// Raises the soft open file limit to the hard limit, and returns the soft
 /// limit in effect afterwards. Never lowers the soft limit and never changes
 /// the hard limit. macOS rejects values above `OPEN_MAX`, so there the raise
@@ -19,8 +23,7 @@ pub fn raise() -> std::io::Result<u64> {
         return Ok(limit.rlim_cur);
     }
     #[cfg(target_os = "macos")]
-    let fallback = Some((libc::OPEN_MAX as libc::rlim_t).min(limit.rlim_max))
-        .filter(|open_max| *open_max > limit.rlim_cur);
+    let fallback = Some(OPEN_MAX.min(limit.rlim_max)).filter(|open_max| *open_max > limit.rlim_cur);
     #[cfg(not(target_os = "macos"))]
     let fallback = None;
     let mut error = None;
@@ -73,7 +76,7 @@ mod tests {
             #[cfg(target_os = "macos")]
             assert!(
                 after.rlim_cur == before.rlim_max
-                    || after.rlim_cur == (libc::OPEN_MAX as libc::rlim_t).min(before.rlim_max),
+                    || after.rlim_cur == super::OPEN_MAX.min(before.rlim_max),
                 "soft limit {} not raised",
                 after.rlim_cur
             );
