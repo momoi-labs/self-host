@@ -33,6 +33,7 @@ pub mod dns_records;
 pub mod docker;
 pub mod environments;
 pub mod error;
+pub mod fd_limit;
 pub mod file_store;
 pub mod host;
 pub mod host_addresses;
