@@ -12,6 +12,8 @@ use self_host::store::StateStore;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod cli;
+
 #[derive(Parser)]
 #[command(name = "self-host", version, about = "LAN self-host PaaS platform")]
 struct Cli {
@@ -108,6 +110,21 @@ enum Command {
     Apps {
         #[command(subcommand)]
         command: AppsCommand,
+    },
+    /// Manage the hostnames, paths and redirects the proxy answers
+    Routes {
+        #[command(subcommand)]
+        command: cli::routes::RoutesCommand,
+    },
+    /// Manage Virtual machines
+    Vms {
+        #[command(subcommand)]
+        command: cli::vms::VmsCommand,
+    },
+    /// Manage PostgreSQL databases and their connections
+    Db {
+        #[command(subcommand)]
+        command: cli::databases::DbCommand,
     },
     /// Stream Application logs
     Logs {
@@ -331,6 +348,24 @@ async fn main() {
         }
         Some(Command::Apps { command }) => {
             if let Err(e) = run_apps_command(command).await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Routes { command }) => {
+            if let Err(e) = cli::routes::run(command).await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Vms { command }) => {
+            if let Err(e) = cli::vms::run(command).await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Db { command }) => {
+            if let Err(e) = cli::databases::run(command).await {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
