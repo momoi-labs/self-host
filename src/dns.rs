@@ -733,6 +733,23 @@ mod tests {
         .expect("DNS response within five seconds")
     }
 
+    /// Listeners on an ephemeral port of `address`'s family. The UDP port is
+    /// free when picked, but a parallel test may hold the same TCP port, so
+    /// another port is tried then.
+    async fn ephemeral(address: &str) -> (UdpSocket, TcpListener) {
+        for _ in 0..32 {
+            match super::listen(address.parse().unwrap()).await {
+                Ok(sockets) => return sockets,
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse) => {}
+                Err(error) => panic!("listen on {address}: {error:#}"),
+            }
+        }
+        panic!("no free UDP and TCP port pair on {address}");
+    }
+
     /// A server on an ephemeral loopback port of `listen`'s family.
     async fn server_on(
         listen: &str,
@@ -740,7 +757,7 @@ mod tests {
         upstream: ForwardConfig,
         metrics: &Metrics,
     ) -> (Server<Catalog>, SocketAddr, ServedZone) {
-        let sockets = super::listen(listen.parse().unwrap()).await.unwrap();
+        let sockets = ephemeral(listen).await;
         let address = sockets.0.local_addr().unwrap();
         let (server, zone) = bind(
             &Config::new("home.lan", vec![]).unwrap(),
@@ -1189,8 +1206,8 @@ mod tests {
     #[tokio::test]
     async fn a_dual_stack_host_answers_both_families_on_both_families() {
         let unavailable = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let v4 = listen("127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let v6 = listen("[::1]:0".parse().unwrap()).await.unwrap();
+        let v4 = ephemeral("127.0.0.1:0").await;
+        let v6 = ephemeral("[::1]:0").await;
         let listeners = [v4.0.local_addr().unwrap(), v6.0.local_addr().unwrap()];
         let (mut server, _) = bind(
             &Config::new("home.lan", vec![]).unwrap(),
@@ -1368,8 +1385,9 @@ mod tests {
 
     #[tokio::test]
     async fn bind_conflicts_fail_without_leaving_a_partial_listener() {
-        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (udp, tcp) = ephemeral("127.0.0.1:0").await;
         let address = udp.local_addr().unwrap();
+        drop(tcp);
         let error = listen(address).await.err().unwrap();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
@@ -1377,7 +1395,9 @@ mod tests {
         );
         drop(udp);
 
-        let tcp = TcpListener::bind(address).await.unwrap();
+        let (udp, tcp) = ephemeral("127.0.0.1:0").await;
+        let address = udp.local_addr().unwrap();
+        drop(udp);
         let error = listen(address).await.err().unwrap();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
