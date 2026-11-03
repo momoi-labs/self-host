@@ -27,8 +27,8 @@ outside the Host is needed for that local setup.
   Suffix. With an ACME account saved in Settings, every hostname outside the
   Suffix gets a public certificate
   ([public certificates](docs/public-certificates.md)).
-- **Virtual machines (macOS).** A persistent Ubuntu workspace with its own name
-  and address on the LAN. It is not an Application
+- **Virtual machines (macOS).** A persistent Ubuntu or Oracle Linux workspace
+  with its own name and address on the LAN. It is not an Application
   ([ADR-0023](docs/adr/0023-virtual-machines-run-on-apple-virtualization.md)).
 - **Event history.** The console keeps a history of platform events and audit
   records.

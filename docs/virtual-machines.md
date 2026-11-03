@@ -2,7 +2,7 @@
 
 A Virtual machine is a Lima instance on Apple's Virtualization framework
 ([ADR-0023](adr/0023-virtual-machines-run-on-apple-virtualization.md)). It runs
-Ubuntu on its own kernel, with systemd, mise and T3 as native processes. The
+Ubuntu 24.04 or Oracle Linux 10 on its own kernel, with systemd, mise and T3 as native processes. The
 Platform manages only instances named `sf-dev-<id>`.
 
 ## What the Host needs
@@ -32,8 +32,30 @@ That daemon runs as root, unmanaged, from boot; the Platform never needs
 The Host writes an instance template carrying the Operator's CPU, memory and
 disk, the bridged network with a MAC address the Platform pins to the machine,
 a forwarded port for the web service, and the provisioning script. Lima
-downloads Canonical's Ubuntu 24.04 cloud image, verifies its digest, boots it,
-and cloud-init runs the script during that boot.
+downloads the cloud image of the machine's operating system, verifies its
+digest, boots it, and cloud-init runs the script during that boot.
+
+## Choosing the operating system
+
+The Base OS field on the create form, or `--os` on `self-host vms create`,
+picks the image:
+
+| Base OS | `--os` | Image |
+|---|---|---|
+| Ubuntu 24.04 LTS | `ubuntu-24.04` (default) | Canonical's cloud image |
+| Oracle Linux 10 | `oracle-linux-10` | Oracle's OL10 Update 1 KVM template, the one Lima's `oraclelinux-10` template pins |
+
+The choice is made once. The OS is the disk, so a machine keeps it for life,
+and an update that asks for another is refused. A machine created before the
+choice existed runs Ubuntu.
+
+The provisioning script is the same for both. It installs the equivalent
+packages with `apt` or `dnf`, and on Oracle Linux it opens the web port in
+firewalld, which lets in only `ssh` otherwise. SELinux stays enforcing.
+
+Custom commands run as written. A recipe that calls `apt-get` fails on Oracle
+Linux, and one that calls `dnf` fails on Ubuntu. Oracle's image is under the
+[Oracle Linux license](https://www.oracle.com/downloads/licenses/oracle-linux-license.html).
 
 The machine's name becomes its DNS name, `<name>.<suffix>`, so it has to be a
 DNS label: a create refuses a name with a space or any other character a label
@@ -141,7 +163,7 @@ the existing instance first, so an interrupted one continues. Start, stop and
 restart keep the disk. Bootstrap and update run the provisioning script again
 through a shell, because cloud-init only fires on the first boot.
 
-Update does not upgrade Ubuntu, resize the machine, or uninstall tools dropped
+Update does not upgrade the operating system, resize the machine, or uninstall tools dropped
 from the recipe.
 
 Repositories, credentials and T3 state live on the machine's disk. Delete

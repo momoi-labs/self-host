@@ -95,4 +95,9 @@ Reaching a machine by name. A machine answers on a forwarded port today, and
 whether it should be published through the Platform's proxy and DNS, which
 would tie its reachability to the Platform running, is still open.
 
-Other base images, snapshots, and migration between Hosts.
+Snapshots and migration between Hosts.
+
+Other base images were out of scope here. Oracle Linux 10 was added on
+2026-11-03, after it booted on `vz` on the home-server Mac with the same
+bridged network and provisioning script
+([choosing the operating system](../virtual-machines.md#choosing-the-operating-system)).

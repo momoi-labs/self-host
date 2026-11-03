@@ -39,10 +39,24 @@ pub struct VmConfig {
     pub cpus: u16,
     pub memory_gib: u16,
     pub disk_gib: u16,
+    /// Records saved before the choice existed ran Ubuntu, and still do.
+    #[serde(default)]
+    pub os: BaseOs,
     pub ssh_public_key: String,
     pub recipe: Recipe,
     pub command: String,
     pub web_port: u16,
+}
+
+/// The Linux a machine boots. Chosen at create and kept for the machine's
+/// life, like its disk: changing it would mean a new disk.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum BaseOs {
+    #[default]
+    #[serde(rename = "ubuntu-24.04")]
+    Ubuntu2404,
+    #[serde(rename = "oracle-linux-10")]
+    OracleLinux10,
 }
 
 impl VmConfig {
@@ -840,6 +854,12 @@ pub(crate) async fn update<S: StateStore>(
             "CPU, memory, and disk changes are not supported yet.",
         );
     }
+    if record.config.os != request.config.os {
+        return error(
+            StatusCode::CONFLICT,
+            "A machine keeps the operating system it was created with.",
+        );
+    }
     if records
         .as_ref()
         .unwrap()
@@ -1176,6 +1196,7 @@ mod running_tests {
                 cpus: 2,
                 memory_gib: 4,
                 disk_gib: 20,
+                os: Default::default(),
                 ssh_public_key: "ssh-ed25519 AAAA test".into(),
                 recipe: Recipe {
                     name: "T3".into(),

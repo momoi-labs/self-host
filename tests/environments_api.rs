@@ -106,6 +106,7 @@ fn config(name: &str) -> VmConfig {
         cpus: 2,
         memory_gib: 4,
         disk_gib: 20,
+        os: Default::default(),
         ssh_public_key: "ssh-ed25519 AAAA test".into(),
         recipe: self_host::custom_images::Recipe {
             name: "T3".into(),
@@ -561,6 +562,35 @@ async fn saving_a_draft_keeps_the_last_applied_configuration() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(saved["config"]["command"], "t3 serve --port 4000");
     assert_eq!(saved["applied_config"]["command"], "t3 serve --port 3000");
+}
+
+/// The OS is the disk, so a machine keeps the one it was created with. A
+/// machine saved before the choice existed reads as the Ubuntu it runs.
+#[tokio::test]
+async fn a_machine_keeps_its_operating_system() {
+    let (app, _store) = app(FakeRuntime::new()).await;
+    let mut older = serde_json::to_value(config("alpha")).unwrap();
+    older.as_object_mut().unwrap().remove("os");
+    let (_, created) = request(
+        &app,
+        Method::POST,
+        "/virtual-machines",
+        Some(json!({"request_id":"os-1", "config":older})),
+    )
+    .await;
+    assert_eq!(created["config"]["os"], "ubuntu-24.04");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let id = created["id"].as_str().unwrap();
+    let mut other = config("alpha");
+    other.os = self_host::environments::BaseOs::OracleLinux10;
+    let (status, _) = request(
+        &app,
+        Method::PUT,
+        &format!("/virtual-machines/{id}"),
+        Some(serde_json::to_value(other).unwrap()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
 }
 
 #[tokio::test]

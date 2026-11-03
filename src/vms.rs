@@ -26,7 +26,8 @@ use tokio::{
 };
 
 use crate::environments::{
-    LogSource, MachineUsage, RunnerObservation, RuntimeProgress, VmConfig, VmRuntime, VmState,
+    BaseOs, LogSource, MachineUsage, RunnerObservation, RuntimeProgress, VmConfig, VmRuntime,
+    VmState,
 };
 
 const PROVISION: &str = include_str!("vms/bootstrap.sh");
@@ -46,7 +47,7 @@ fn mac_address(id: &str) -> String {
 
 /// Canonical's images, one per architecture. Lima picks the one that matches
 /// the Host and verifies the digest before it boots anything.
-const IMAGES: &[(&str, &str, &str)] = &[
+const UBUNTU_IMAGES: &[(&str, &str, &str)] = &[
     (
         "aarch64",
         "https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img",
@@ -58,6 +59,36 @@ const IMAGES: &[(&str, &str, &str)] = &[
         "sha256:ffe6203da54deeb6db5d2a98a83f9ec8e55f149d3f7ba622e1abe5fa966ee3d6",
     ),
 ];
+
+/// Oracle's KVM templates for Oracle Linux 10 Update 1, the same pair Lima's
+/// own `oraclelinux-10` template pins. They carry cloud-init and boot on vz.
+const ORACLE_LINUX_IMAGES: &[(&str, &str, &str)] = &[
+    (
+        "aarch64",
+        "https://yum.oracle.com/templates/OracleLinux/OL10/u1/aarch64/OL10U1_aarch64-kvm-cloud-b178.qcow2",
+        "sha256:e203063e0e8b2752a896787ecc44fc506527055ec819b1422a297d60ad968b20",
+    ),
+    (
+        "x86_64",
+        "https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-kvm-b291.qcow2",
+        "sha256:8e59326c4bf7cfa58a6cac404db8ed583fe3a5f4c460e2b73c64988785bb4f0f",
+    ),
+];
+
+fn images(os: BaseOs) -> &'static [(&'static str, &'static str, &'static str)] {
+    match os {
+        BaseOs::Ubuntu2404 => UBUNTU_IMAGES,
+        BaseOs::OracleLinux10 => ORACLE_LINUX_IMAGES,
+    }
+}
+
+/// The name the provisioning script switches on.
+fn os_family(os: BaseOs) -> &'static str {
+    match os {
+        BaseOs::Ubuntu2404 => "ubuntu",
+        BaseOs::OracleLinux10 => "oracle-linux",
+    }
+}
 
 /// The counters one reading of `/proc` gave, kept so the next reading can be
 /// turned into a rate. CPU time is cumulative; percent is a difference.
@@ -313,6 +344,7 @@ impl LimaRuntime {
     fn payload(&self, config: &VmConfig) -> String {
         format!(
             "#!/usr/bin/env bash\n\
+             export SELF_HOST_OS={}\n\
              export SELF_HOST_HOSTNAME={}\n\
              export SELF_HOST_SSH_PUBLIC_KEY_B64={}\n\
              export SELF_HOST_MISE_TOML_B64={}\n\
@@ -320,6 +352,7 @@ impl LimaRuntime {
              export SELF_HOST_COMMAND_B64={}\n\
              export SELF_HOST_WEB_PORT={}\n\
              {}",
+            os_family(config.os),
             shell_quote(&guest_hostname(&config.name)),
             shell_quote(&encode(&config.ssh_public_key)),
             shell_quote(&encode(&config.recipe.mise_toml())),
@@ -333,7 +366,7 @@ impl LimaRuntime {
     /// The Lima instance template. Nothing from the Host is mounted into the
     /// machine, and containerd stays out: this is a workspace, not a runtime.
     fn template(&self, id: &str, config: &VmConfig, host_port: u16) -> String {
-        let images: String = IMAGES
+        let images: String = images(config.os)
             .iter()
             .map(|(arch, location, digest)| {
                 format!(
@@ -1091,6 +1124,7 @@ mod tests {
             cpus: 4,
             memory_gib: 8,
             disk_gib: 40,
+            os: Default::default(),
             ssh_public_key: "ssh-ed25519 AAAA test".into(),
             recipe: Recipe {
                 name: "T3 Code".into(),
@@ -1174,6 +1208,24 @@ mod tests {
         // that installs the recipe.
         assert!(template.contains("provision:"));
         assert!(template.contains("SF_STEP"));
+    }
+
+    /// The choice of OS reaches both halves: the image Lima boots and the
+    /// script that provisions it.
+    #[test]
+    fn an_oracle_linux_machine_boots_oracle_linux() {
+        let mut oracle = config();
+        oracle.os = BaseOs::OracleLinux10;
+        let yaml: Value =
+            serde_yaml::from_str(&LimaRuntime::default().template("env-workbench", &oracle, 45123))
+                .unwrap();
+        for image in yaml["images"].as_array().unwrap() {
+            assert!(image["location"].as_str().unwrap().contains("/OL10/"));
+        }
+        let payload = LimaRuntime::default().payload(&oracle);
+        assert!(payload.contains("export SELF_HOST_OS=oracle-linux\n"));
+        let ubuntu = LimaRuntime::default().payload(&config());
+        assert!(ubuntu.contains("export SELF_HOST_OS=ubuntu\n"));
     }
 
     /// A machine is allowed to run nothing. Lima refuses a forward to port
@@ -1403,11 +1455,16 @@ esac
     /// whatever the mirror served that day.
     #[test]
     fn every_image_is_pinned_by_digest() {
-        assert!(!IMAGES.is_empty());
-        for (arch, location, digest) in IMAGES {
-            assert!(location.starts_with("https://cloud-images.ubuntu.com/"));
-            assert!(digest.starts_with("sha256:"));
-            assert!(!arch.is_empty());
+        for (os, origin) in [
+            (BaseOs::Ubuntu2404, "https://cloud-images.ubuntu.com/"),
+            (BaseOs::OracleLinux10, "https://yum.oracle.com/templates/"),
+        ] {
+            let arches: Vec<_> = images(os).iter().map(|(arch, _, _)| *arch).collect();
+            assert_eq!(arches, ["aarch64", "x86_64"]);
+            for (_, location, digest) in images(os) {
+                assert!(location.starts_with(origin));
+                assert!(digest.starts_with("sha256:"));
+            }
         }
     }
 
