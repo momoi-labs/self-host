@@ -27,6 +27,9 @@ pub enum VmsCommand {
         /// Disk in GiB (default: 40)
         #[arg(long, default_value_t = 40)]
         disk: u16,
+        /// The operating system the machine boots
+        #[arg(long, default_value = "ubuntu-24.04", value_parser = ["ubuntu-24.04", "oracle-linux-10"])]
+        os: String,
         /// A file with the SSH public key that may log in as `dev`
         #[arg(long, value_name = "FILE")]
         ssh_key: Option<String>,
@@ -108,6 +111,7 @@ pub async fn run(command: VmsCommand) -> anyhow::Result<()> {
             cpus,
             memory,
             disk,
+            os,
             ssh_key,
             command,
             web_port,
@@ -133,6 +137,7 @@ pub async fn run(command: VmsCommand) -> anyhow::Result<()> {
                     "cpus": cpus,
                     "memory_gib": memory,
                     "disk_gib": disk,
+                    "os": os,
                     "ssh_public_key": ssh_public_key,
                     "recipe": recipe,
                     "command": command.unwrap_or_default(),
@@ -274,6 +279,7 @@ fn operation_label(operation: &Value) -> String {
 fn print_machine(machine: &Value) {
     let config = &machine["config"];
     println!("Name:      {}", str(config, "name"));
+    println!("OS:        {}", str(config, "os"));
     println!("State:     {}", str(machine, "state"));
     println!("Hostname:  {}", str(machine, "hostname"));
     println!(

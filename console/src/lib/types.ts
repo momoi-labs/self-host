@@ -319,6 +319,9 @@ export type Metrics = {
   dns: { queries_total: number; by_name: { name: string; queries: number }[] };
 };
 
+/** The Linux a Virtual machine boots. */
+export type BaseOs = "ubuntu-24.04" | "oracle-linux-10";
+
 /** A Virtual machine's saved settings. `applied_config` is what the Host has
  * actually installed; `config` is what the Operator last saved.
  *
@@ -329,6 +332,8 @@ export type EnvironmentConfig = {
   cpus: number;
   memory_gib: number;
   disk_gib: number;
+  /** Chosen at create and kept for the machine's life. */
+  os: BaseOs;
   ssh_public_key: string;
   recipe: {
     name: string;

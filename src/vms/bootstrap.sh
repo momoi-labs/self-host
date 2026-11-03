@@ -13,6 +13,8 @@ SELF_HOST_SETUP_B64="${SELF_HOST_SETUP_B64:-}"
 SELF_HOST_COMMAND_B64="${SELF_HOST_COMMAND_B64:-}"
 SELF_HOST_WEB_PORT="${SELF_HOST_WEB_PORT:-0}"
 SELF_HOST_HOSTNAME="${SELF_HOST_HOSTNAME:-}"
+# Scripts written before the choice existed ran on Ubuntu.
+SELF_HOST_OS="${SELF_HOST_OS:-ubuntu}"
 
 readonly config_dir=/etc/self-host-environment
 readonly dev_user=dev
@@ -57,14 +59,33 @@ if test -n "$SELF_HOST_HOSTNAME"; then
 fi
 
 progress system-packages
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates curl git openssh-server build-essential python3 procps \
-    unzip xz-utils pkg-config
+case "$SELF_HOST_OS" in
+    ubuntu)
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git openssh-server build-essential python3 procps \
+            unzip xz-utils pkg-config
+        ssh_service=ssh
+        useradd_options=()
+        ;;
+    oracle-linux)
+        dnf install -y ca-certificates curl git openssh-server gcc gcc-c++ make \
+            python3 procps-ng unzip xz pkgconf-pkg-config
+        ssh_service=sshd
+        # Lima gives its own user a subordinate ID range large enough to
+        # exhaust Oracle Linux's default, and useradd then refuses to create
+        # dev at all. dev runs no rootless containers, so it needs no range.
+        useradd_options=(-K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0)
+        ;;
+    *)
+        printf 'Unknown operating system: %s\n' "$SELF_HOST_OS"
+        exit 1
+        ;;
+esac
 
 progress user-and-ssh
 if ! id "$dev_user" >/dev/null 2>&1; then
-    useradd --create-home --home-dir "$dev_home" --shell /bin/bash "$dev_user"
+    useradd "${useradd_options[@]}" --create-home --home-dir "$dev_home" --shell /bin/bash "$dev_user"
 fi
 # The machine is the Operator's own workspace and they are its only user.
 # Without this the shell can never install anything: dev has no password, so
@@ -92,7 +113,7 @@ fi
 chown "$dev_user:$dev_user" "$dev_home/.ssh/authorized_keys"
 chmod 0600 "$dev_home/.ssh/authorized_keys"
 ssh-keygen -A
-systemctl enable --now ssh
+systemctl enable --now "$ssh_service"
 
 progress mise
 if ! test -x /usr/local/bin/mise; then
@@ -199,6 +220,13 @@ else
     # Nothing to run. Leave the unit in place so adding a command later is a
     # restart rather than a reinstall.
     systemctl disable --now self-host-environment.service 2>/dev/null || true
+fi
+
+# Oracle Linux ships firewalld letting in only ssh. The machine is a device on
+# the LAN, and its service is what the Operator asked it to serve there.
+if test "$SELF_HOST_WEB_PORT" -gt 0 && systemctl is-active --quiet firewalld; then
+    firewall-cmd --quiet --permanent --add-port="$SELF_HOST_WEB_PORT/tcp"
+    firewall-cmd --quiet --reload
 fi
 
 progress health

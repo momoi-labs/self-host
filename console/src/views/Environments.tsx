@@ -64,18 +64,25 @@ import {
 } from "../lib/runSteps.js";
 import { machineSeriesFor } from "../lib/useMetrics.js";
 import type {
+  BaseOs,
   Environment,
   EnvironmentConfig,
   Metrics,
   Report,
 } from "../lib/types.js";
 
+/** What the Operator picks from, in the order the form offers it. */
+const OS_LABELS: Record<BaseOs, string> = {
+  "ubuntu-24.04": "Ubuntu 24.04 LTS",
+  "oracle-linux-10": "Oracle Linux 10",
+};
 
 const demoConfig = (name: string): EnvironmentConfig => ({
   name,
   cpus: 4,
   memory_gib: 8,
   disk_gib: 40,
+  os: "ubuntu-24.04",
   ssh_public_key: "ssh-ed25519 AAAA... operator@host",
   recipe: {
     name: "T3 Code",
@@ -213,6 +220,7 @@ function freshConfig(): EnvironmentConfig {
     cpus: 4,
     memory_gib: 8,
     disk_gib: 40,
+    os: "ubuntu-24.04",
     ssh_public_key: "",
     recipe: {
       name: "",
@@ -1168,7 +1176,7 @@ function Summary({
             </div>
           </div>
         ) : (
-          <p className="muted">No tools in the recipe. This is a plain Ubuntu.</p>
+          <p className="muted">No tools in the recipe. This is a plain {OS_LABELS[applied.os]}.</p>
         )}
       </section>
       <section>
@@ -1220,7 +1228,7 @@ function Summary({
           <dd className="mono">{applied.web_port || "None"}</dd>
           <dt>Machine</dt>
           <dd>
-            {applied.cpus} CPUs · {applied.memory_gib} GiB memory · {applied.disk_gib} GiB disk
+            {OS_LABELS[applied.os]} · {applied.cpus} CPUs · {applied.memory_gib} GiB memory · {applied.disk_gib} GiB disk
           </dd>
         </dl>
       </section>
@@ -1265,7 +1273,7 @@ export function EnvironmentEditor({
   failedAt?: string | null;
 }) {
   // A machine needs a name and a size. Everything else is an offer: no
-  // template, no tools and no service is a plain Ubuntu, which is a thing an
+  // template, no tools and no service is a plain Linux, which is a thing an
   // Operator may well want.
   const valid =
     config.name.trim().length > 0 &&
@@ -1349,10 +1357,17 @@ export function EnvironmentEditor({
             <select
               id="environment-os"
               className="input"
-              value="ubuntu-lts"
-              disabled
+              value={config.os}
+              onChange={(event) =>
+                onChange({ os: event.target.value as BaseOs })
+              }
+              disabled={busy || existing}
             >
-              <option value="ubuntu-lts">Ubuntu LTS</option>
+              {Object.entries(OS_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
           </FormField>
         </Step>
@@ -1368,7 +1383,7 @@ export function EnvironmentEditor({
           <FormField
             id="environment-setup"
             label="Custom commands"
-            hint="One command per line. Runs as root, with network, after the dependencies. This is where a shell installer or an apt package goes."
+            hint="One command per line. Runs as root, with network, after the dependencies. This is where a shell installer or a system package goes: apt on Ubuntu, dnf on Oracle Linux."
           >
             <ShellEditor
               id="environment-setup"
