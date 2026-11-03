@@ -129,8 +129,9 @@ mod linux_tests {
 
     #[test]
     fn a_root_owned_executable_is_used_as_installed() {
-        let installed = Path::new("/usr/bin/true");
-        assert_eq!(bundled(installed).unwrap().as_deref(), Some(installed));
+        // Ubuntu 26.04 links /usr/bin/true to gnutrue, and a link is refused.
+        let installed = std::fs::canonicalize("/usr/bin/true").unwrap();
+        assert_eq!(bundled(&installed).unwrap(), Some(installed));
     }
 
     #[test]
