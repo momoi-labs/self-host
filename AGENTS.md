@@ -32,6 +32,11 @@ in, the components to reuse, and a checklist to run before you call the screen
 done. A screen that invents its own layout is the thing ADR-0024 was written to
 end.
 
+## Kiso
+
+The UI follows Kiso. Read `docs/kiso.md` before changing a screen, and use
+the `kiso-page` skill to build or change one.
+
 ## Console
 
 The console is a React app in `console/`, built with Vite onto

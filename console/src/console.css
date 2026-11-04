@@ -8,7 +8,7 @@
 /* Operator access. Kiso supplies the controls and canvas asset; the Host owns
    the help and this layout. Login is outside ADR-0024's screen shapes. */
 .auth-shell { display: grid; min-height: 100svh; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); position: relative; isolation: isolate; background-color: var(--color-background); }
-.auth-shell::before { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0; background-color: var(--color-foreground); mask-image: var(--canvas-pattern); mask-size: var(--canvas-size); mask-position: var(--canvas-position); mask-repeat: var(--canvas-repeat); opacity: var(--canvas-opacity); }
+.auth-shell::before { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0; background-color: var(--color-foreground); mask-image: var(--canvas-mask); mask-size: var(--canvas-size); mask-position: var(--canvas-position); mask-repeat: var(--canvas-repeat); opacity: var(--canvas-opacity); }
 .auth-shell > * { position: relative; z-index: 1; }
 .auth-guide { align-content: center; padding: clamp(24px, 5vw, 80px); background: var(--color-muted); border-right: 1px solid var(--color-border); gap: var(--spacing-2xl); }
 .auth-guide > * { width: 100%; max-width: 560px; margin-inline: auto; }

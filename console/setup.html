@@ -1,17 +1,26 @@
 <!doctype html>
 <html lang="en"
+  data-theme="light"
   data-accent="tangerine"
+  data-chart-line="stepped"
+  data-chart-fill="dots"
+  data-chart-layout="standard"
+  data-chart-legend="inline"
+  data-shadow-style="soft"
   data-border-style="solid"
   data-corner-style="pixel"
-  data-corner-marks="ticks"
+  data-corner-marks="none"
   data-corner-size="small"
   data-mark-size="medium"
-  data-visual-style="editorial"
-  data-app-shell="default"
+  data-visual-style="default"
+  data-app-shell="inset"
+  data-app-shell-outer="compact"
+  data-page-width="full"
+  data-page-align="start"
   data-frame-scope="all"
   data-mark-scope="panels"
   data-mark-clearance="normal"
-  data-background-style="construction"
+  data-background-style="fibers"
   data-background-strength="quiet"
   data-background-placement="both"
   data-frame-detail="medium"
@@ -20,6 +29,7 @@
   data-outer-border-style="inherit"
   data-outer-corner-style="inherit"
   data-outer-corner-marks="inherit"
+  data-outer-shadow-style="inherit"
 >
 <head>
   <meta charset="utf-8">
@@ -31,6 +41,7 @@
     try {
       var stored = localStorage.getItem("kiso-theme");
       if (stored === "light" || stored === "dark") document.documentElement.dataset.theme = stored;
+      else if (stored === "system") delete document.documentElement.dataset.theme;
     } catch (cause) {}
   </script>
 </head>
