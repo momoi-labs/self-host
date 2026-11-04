@@ -5,7 +5,7 @@ const themes = ["system", "light", "dark"];
 
 /**
  * Storage can be unavailable (private mode, disabled cookies). A failure has
- * to degrade to "system", not throw and leave the page half-built.
+ * to degrade to the light default, not leave the page half-built.
  */
 export function currentTheme(): string {
   let stored: string | null = null;
@@ -14,7 +14,7 @@ export function currentTheme(): string {
   } catch {
     stored = null;
   }
-  return stored && themes.includes(stored) ? stored : "system";
+  return stored && themes.includes(stored) ? stored : "light";
 }
 
 /**

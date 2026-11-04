@@ -16,9 +16,9 @@ Do not apply the authenticated list, detail or create layout to this screen.
   above the form. Keep key retrieval help in an expandable disclosure.
 - Place the server origin under self-host. Keep a programmatic heading for
   the form without adding a second visible title or Host line.
-- Keep the quiet Momoi background theme-aware and the form readable on its
-  translucent surface. Use existing Kiso tokens. Scope product layout rules
-  to the authentication screen.
+- Inherit the quiet fibers background from the HTML appearance attributes in
+  `docs/kiso.md`. Keep it theme-aware and the form readable on its translucent
+  surface. Use existing Kiso tokens. Scope layout rules to authentication.
 - Explain that `self-host init --show-key` runs on the Host and prints the
   existing initial key. An uninitialized Host needs `self-host init` first.
 

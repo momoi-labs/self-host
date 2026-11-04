@@ -78,7 +78,7 @@ function Login() {
   }
 
   return (
-    <main className="auth-shell" data-background-style="momoi" data-background-strength="quiet">
+    <main className="auth-shell">
       <aside className="auth-guide stack" aria-labelledby="guide-title">
         <Brand />
         <div className="stack-sm">
