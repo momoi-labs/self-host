@@ -1,5 +1,20 @@
 # self-host
 
+## 0.17.0
+
+### Minor Changes
+
+- 983d3fe: Native Applications can build from a Git repository and run under the native
+  runtime. The form gains a Worker or static site mode that builds a module
+  Worker (a `main` config) or a static site (an `assets` config) with a pinned
+  Wrangler and runs it locally with workerd. Nothing is deployed to Cloudflare.
+  Host native build limits (source size, file count and build payload) are
+  editable under Settings > General > Applications and apply to the next build.
+
+### Patch Changes
+
+- a446bd1: Update Kiso React to 0.28.0 and use the same default visual style across the console, login and device setup. Default to light while preserving saved theme choices. Use inset framing, soft pixel shadows, a fibers background and stepped charts with dotted fills.
+
 ## 0.16.0
 
 ### Minor Changes
