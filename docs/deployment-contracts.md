@@ -259,7 +259,9 @@ readiness, import and explicit data-removal behavior.
 ## Git sources and immutable builds
 
 `POST /apps` accepts `git` instead of an image, Host path, inline Compose or
-development definition. Git sources use the container Runtime. `PUT
+development definition. Git sources support container and native Runtimes.
+Native sources use repository access, ref, revision and context settings;
+container build settings are refused. See [native applications](native-applications.md#git-releases-and-standalone-workers). `PUT
 /apps/id/{id}` accepts the same source fields and `refresh_source`, which
 defaults to `false`.
 

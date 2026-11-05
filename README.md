@@ -96,7 +96,8 @@ flowchart LR
 | Feature | Linux | macOS |
 | --- | --- | --- |
 | Container Applications (image, Compose, local build) | Yes, with Docker | Yes. The installer sets up Colima unless Docker already runs |
-| Git repository and custom image builds | Yes, with Docker | Yes, with Docker |
+| Git repository builds | Yes, with Docker or native runtime | Yes, with Docker or native MVP |
+| Custom image builds | Yes, with Docker | Yes, with Docker |
 | Managed PostgreSQL | Yes | Yes |
 | Native Applications | Yes, after the native supervisor is installed | MVP, through a restricted helper |
 | Resource limits, metrics and terminal for native Applications | Yes | No |

@@ -76,8 +76,14 @@ pub struct NativeDefinition {
     /// validates it when anything runs.
     #[serde(default)]
     pub account: String,
-    /// argv; argv[0] is the program.
+    /// argv; argv[0] is the program. Workers use the managed workerd command.
+    #[serde(default)]
     pub command: Vec<String>,
+    /// Commands run in each Git candidate before replacing the current release.
+    #[serde(default)]
+    pub build: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<crate::native::git::WorkerDefinition>,
     /// Relative to the account's home. `None` is the home itself.
     #[serde(default)]
     pub working_dir: Option<String>,
@@ -672,6 +678,8 @@ mod tests {
             runtime: Runtime::Native(NativeDefinition {
                 account: "sf-app-k3n8qz4v2x1p".into(),
                 command: vec!["/opt/api/bin/serve".into(), "--port".into(), "8080".into()],
+                build: vec![],
+                worker: None,
                 recipe: Default::default(),
                 working_dir: Some("app".into()),
                 port: Some(8080),

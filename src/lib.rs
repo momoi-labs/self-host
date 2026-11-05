@@ -1895,9 +1895,8 @@ async fn deploy_app<S: StateStore>(
         network_policy: body.network_policy,
     };
 
-    if is_native {
-        if body.git.is_some()
-            || body.source_revision.is_some()
+    if is_native && body.git.is_none() {
+        if body.source_revision.is_some()
             || !body.image.is_empty()
             || !body.path.is_empty()
             || !body.compose.is_empty()
@@ -1923,10 +1922,21 @@ async fn deploy_app<S: StateStore>(
             Err(error) => deploy_error_response(error),
         };
     }
-    if !body.environment.is_empty() {
+    if !body.environment.is_empty() && !is_native {
         return deploy_error_response(DeployError::InvalidNative("environment on create requires native Runtime; use Application Variables for containers".into()));
     }
     if let Some(source) = body.git {
+        if is_native {
+            if let Err(error) = native::lifecycle::validate_environment(
+                &body
+                    .environment
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>(),
+            ) {
+                return deploy_error_response(DeployError::InvalidNative(error.to_string()));
+            }
+        }
         if !body.image.is_empty()
             || !body.path.is_empty()
             || !body.compose.is_empty()
@@ -1946,7 +1956,15 @@ async fn deploy_app<S: StateStore>(
         )
         .await
         {
-            Ok(pending) => accept_git_deploy(&state, pending, "create").await,
+            Ok(pending) => {
+                for (key, value) in body.environment {
+                    if let Err(error) = state.store.set_env(&pending.record.id, &key, &value).await
+                    {
+                        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error);
+                    }
+                }
+                accept_git_deploy(&state, pending, "create").await
+            }
             Err(error) => deploy_error_response(error),
         };
     }

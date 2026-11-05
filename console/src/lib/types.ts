@@ -37,6 +37,9 @@ export type NativeDefinition = {
   port?: number | null;
   limits?: ResourceLimits;
   recipe?: NativeRecipe;
+  /** Commands run in each Git candidate checkout, separate from account setup. */
+  build?: string[];
+  worker?: { config: string } | null;
 };
 
 /** How an Application runs (ADR-0028). Every Application predating the field
@@ -84,6 +87,7 @@ export type GitSource = {
 
 export type GitBuild = {
   revision: string;
+  native_release?: string | null;
   images: Record<string, string>;
   status: string;
 };
@@ -383,6 +387,7 @@ export type BootstrapStatus = {
 
 /** What `GET /settings` answers. */
 export type Settings = {
+  nativeBuildLimits: { max_source_bytes: number; max_files: number; max_input_bytes: number } | null;
   auditEventsMaxAge: {
     effective: string;
     source: "command-line" | "operator" | "default";

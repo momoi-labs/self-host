@@ -74,6 +74,84 @@ Preparation has a 15-minute limit and bounded output. Application Variable
 values are redacted before the log is stored. Stopping preparation cleans its
 process tree through the same cgroup boundary as other native commands.
 
+## Git releases and standalone Workers
+
+Choose Git repository in the native form, then select a saved connection or
+enter a repository URL. Set the ref and context directory. Working directory
+is relative to that context. Build commands run for each candidate, under the
+Application Account and its resource limits. Recipe setup still runs from the
+Application home only when the recipe changes.
+
+The Platform records the resolved commit and writes each candidate under
+`~/.self-host/releases/<release>`. Checkouts exclude Git metadata and access
+credentials. Sources accept regular files and directories. Symlinks are refused.
+Keep persistent data outside releases.
+
+Settings > General > Applications has source size (MiB), source file count
+and build payload (MiB) controls. Save build limits applies them to the next
+build. Discard restores the saved values. The file lives beside the Platform
+configuration, under `--data-dir` when supplied or `~/.config/self-host` by
+default. Saving does not require root. The Platform passes a snapshot of the
+limits to each native build, including across privilege boundaries.
+
+The Host reads `native-build-limits.json` in that directory for native Git limits.
+Without this file, defaults are 16 MiB of source, 10,000 files and a 32 MiB
+serialized build payload. For larger repositories, create this file on the
+Host, readable by the Platform:
+
+```json
+{
+  "max_source_bytes": 67108864,
+  "max_files": 20000,
+  "max_input_bytes": 134217728
+}
+```
+
+All fields are optional positive integers. Unknown fields and invalid values
+fail the operation. Changes apply to the next build without a daemon restart.
+Keep the file and its directory writable only by the Platform account and
+the Host administrator.
+The internal transport accepts at most 1 GiB per request. The configurable
+payload limit cannot exceed that ceiling. The payload includes base64 source
+contents, paths and configuration, so give
+`max_input_bytes` room beyond the source size. The example allows 64 MiB of
+source and a 128 MiB payload. These limits apply to native Git builds, including
+standalone Workers, on Linux and macOS.
+
+Saving configuration rebuilds the deployed commit by default. Use Update to
+review and deploy a newer commit. A failed build leaves the previous release
+running. Updating a stopped Application preserves its stopped intent. Start,
+Restart and Variable edits reuse the built release. This does not provide
+rollback after a successfully built candidate fails during startup. Recipe
+changes can also alter shared tools before a candidate succeeds.
+
+Select Worker or static site to build with Wrangler and run locally with
+workerd. The form supplies tested, pinned Node, Wrangler and workerd
+dependencies through mise. Set the Wrangler config path relative to the
+working directory, enable Web publication and choose a free loopback port.
+The Platform generates the workerd configuration; no Cloudflare deploy occurs.
+Node and Wrangler exit after building.
+
+A config with `main` bundles one JS/TS module Worker with a default export.
+It supports a compatibility date, compatibility flags and string vars.
+Application Variables override vars from Wrangler when the process starts.
+
+A config with `assets` serves a static site from the built directory. The
+Platform mounts the directory as a workerd disk service behind a generated
+wrapper Worker that fills in `Content-Type` and applies
+`not_found_handling`. Both `none` and `single-page-application` work; the SPA
+mode rewrites unknown paths to `index.html`.
+
+The two are mutually exclusive. A config with both `main` and `assets`, where
+one Worker both runs code and serves its own static files, is refused at build
+time. workerd can express it with a service binding, but the build and
+generated config do not support that combination yet.
+
+Cloudflare service bindings such as D1, KV, R2 and Durable Objects are not
+supported. Unsupported settings fail the build. Projects with dependencies can
+use a build command such as `pnpm install --frozen-lockfile` before Wrangler
+runs.
+
 ## Provisioning is privileged, launching is not
 
 `provision` runs as root. It calls `useradd --system --user-group

@@ -477,6 +477,17 @@ async fn execute<S: StateStore>(
                 .map_err(|error| ErrorReport::new(&error));
         }
         Work::BuildGitApplication { pending } => {
+            if matches!(pending.record.runtime, crate::store::Runtime::Native(_)) {
+                return apps::finish_native_git_deploy(
+                    store,
+                    state.native.as_ref(),
+                    routes,
+                    *pending,
+                )
+                .await
+                .map(|(_, changes)| changes)
+                .map_err(|error| ErrorReport::new(&error));
+            }
             return apps::finish_git_deploy(store, docker, routes, *pending)
                 .await
                 .map(|(_, changes)| changes)

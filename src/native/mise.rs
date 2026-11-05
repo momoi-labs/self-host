@@ -114,14 +114,28 @@ pub(crate) fn environment(home: &Path, values: &[(String, String)]) -> Vec<(Stri
     result
 }
 
-pub(crate) fn command(home: &Path, recipe: &NativeRecipe, argv: Vec<String>) -> Vec<String> {
+/// Discover tools only from the managed home, then enter the release after
+/// mise finishes configuration discovery. A repository's mise.toml is not used.
+pub(crate) fn command_at(
+    home: &Path,
+    recipe: &NativeRecipe,
+    directory: &Path,
+    argv: Vec<String>,
+) -> Vec<String> {
     if recipe.is_empty() {
         return argv;
     }
     let mut command = vec![
         home.join(".self-host/mise/bin/mise").display().to_string(),
+        "--cd".into(),
+        home.display().to_string(),
         "exec".into(),
         "--".into(),
+        "/bin/sh".into(),
+        "-ec".into(),
+        "cd \"$1\"; shift; exec \"$@\"".into(),
+        "native-command".into(),
+        directory.display().to_string(),
     ];
     command.extend(argv);
     command
@@ -138,10 +152,47 @@ pub(crate) fn apply(
     use std::time::{Duration, Instant};
     let account = super::AccountName::parse(&service.account)?;
     let home = super::resolve(&account)?.home;
+    let mut input = std::process::Stdio::null();
+    let mut script = include_str!("mise-setup.sh").to_owned();
+    if let Some(build) = &service.git_build {
+        use std::io::{Seek, SeekFrom};
+        use std::os::unix::fs::OpenOptionsExt;
+        build.validate()?;
+        let binary = service
+            .build_binary
+            .as_deref()
+            .context("missing protected build binary")?;
+        super::supervision::host::protected(binary)?;
+        let path =
+            std::env::temp_dir().join(format!("self-host-build-{:032x}", rand::random::<u128>()));
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)?;
+        // Only an inherited descriptor reaches the child, not a readable Host path.
+        std::fs::remove_file(path)?;
+        serde_json::to_writer(&mut file, build)?;
+        if file.metadata()?.len() > build.limits.max_input_bytes {
+            bail!("native build input exceeds configured payload limit");
+        }
+        file.seek(SeekFrom::Start(0))?;
+        input = file.into();
+        let quoted = format!(
+            "'{}'",
+            binary
+                .to_str()
+                .context("non-UTF8 build binary")?
+                .replace('\'', "'\\''")
+        );
+        script = format!("{{\n{script}\n}} < /dev/null\nexec {quoted} native-source-build\n");
+    }
     let mut command = vec![
         "/bin/sh".into(),
         "-ec".into(),
-        include_str!("mise-setup.sh").into(),
+        script,
         "native-recipe".into(),
         service.recipe.toml(),
         if service.recipe.is_empty() { "0" } else { "1" }.into(),
@@ -158,9 +209,9 @@ pub(crate) fn apply(
         purpose: super::Purpose::Build,
     };
     #[cfg(target_os = "linux")]
-    let launched = super::launch(root, &request);
+    let launched = super::launch::launch_input(root, &request, input);
     #[cfg(target_os = "macos")]
-    let launched = super::launch(&request);
+    let launched = super::launch::launch_input(&request, input);
     let mut process =
         launched.context("native environment preparation was refused by the non-root launcher")?;
     let (sender, chunks) = std::sync::mpsc::sync_channel(16);
@@ -320,12 +371,22 @@ mod tests {
             "first\nsecond".into(),
             "".into(),
         ];
-        assert_eq!(command(home, &NativeRecipe::default(), argv.clone()), argv);
+        assert_eq!(
+            command_at(home, &NativeRecipe::default(), home, argv.clone()),
+            argv
+        );
         let recipe = NativeRecipe {
             setup: vec!["true".into()],
             ..Default::default()
         };
-        assert_eq!(&command(home, &recipe, argv.clone())[3..], argv);
+        let command = command_at(
+            home,
+            &recipe,
+            Path::new("/fixture/one/release"),
+            argv.clone(),
+        );
+        assert_eq!(&command[1..4], ["--cd", "/fixture/one", "exec"]);
+        assert_eq!(&command[10..], argv);
     }
     #[test]
     fn preparation_output_is_bounded_and_still_drains_the_process() {

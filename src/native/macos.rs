@@ -17,12 +17,16 @@ pub const ROOT: &str = "/Library/Application Support/self-host/native";
 pub const DATA: &str = "/Library/Application Support/self-host/native-data";
 pub const HELPER: &str = "/Library/PrivilegedHelperTools/dev.momoi.self-host";
 pub const S6: &str = "/Library/PrivilegedHelperTools/dev.momoi.self-host.s6";
-const MAX_REQUEST: u64 = 256 * 1024;
 const DEADLINE: Duration = Duration::from_secs(960);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    BuildGit {
+        record: Box<ApplicationRecord>,
+        input: super::git::BuildInput,
+        environment: Vec<(String, String)>,
+    },
     Deploy {
         record: Box<ApplicationRecord>,
         environment: Vec<(String, String)>,
@@ -54,7 +58,7 @@ enum Request {
 impl Request {
     fn id(&self) -> &str {
         match self {
-            Self::Deploy { record, .. } => &record.id,
+            Self::Deploy { record, .. } | Self::BuildGit { record, .. } => &record.id,
             Self::Start { id }
             | Self::Stop { id }
             | Self::Restart { id }
@@ -70,20 +74,39 @@ impl Request {
             record,
             environment,
             ..
+        }
+        | Self::BuildGit {
+            record,
+            environment,
+            ..
         } = self
         {
             let Runtime::Native(definition) = &mut record.runtime else {
                 bail!("only native definitions are accepted");
             };
-            if record.source != crate::apps::SOURCE_NATIVE
-                || record.git.is_some()
+            if ![crate::apps::SOURCE_NATIVE, crate::apps::SOURCE_GIT]
+                .contains(&record.source.as_str())
+                || (record.source == crate::apps::SOURCE_GIT) != record.git.is_some()
                 || record.compose.is_some()
                 || record.development.is_some()
             {
-                bail!("macOS native Applications require a direct command");
+                bail!("macOS native Applications require a native command or Git source");
             }
             super::lifecycle::validate_definition(&record.id, definition, record.publication)?;
             super::lifecycle::validate_environment(environment)?;
+            if let Some(source) = &record.git {
+                super::git::validate_source(source)?;
+            }
+            if record.git.is_none() && (definition.worker.is_some() || !definition.build.is_empty())
+            {
+                bail!("Workers and build commands require Git");
+            }
+        }
+        if let Self::BuildGit { record, input, .. } = self {
+            input.validate()?;
+            if record.git.is_none() || record.runtime != Runtime::Native(input.definition.clone()) {
+                bail!("native build input does not match its Application definition");
+            }
         }
         Ok(())
     }
@@ -114,8 +137,8 @@ pub struct HelperRuntime {}
 impl HelperRuntime {
     async fn spawn(request: &Request) -> Result<tokio::process::Child> {
         let bytes = serde_json::to_vec(request)?;
-        if bytes.len() as u64 > MAX_REQUEST {
-            bail!("native request exceeds 256 KiB");
+        if bytes.len() as u64 > super::git::TRANSPORT_MAX {
+            bail!("native request exceeds configured payload limit");
         }
         host::protected(Path::new(HELPER))
             .context("macOS native helper is not installed; rerun the self-host installer")?;
@@ -170,6 +193,20 @@ impl HelperRuntime {
 
 #[async_trait]
 impl NativeRuntime for HelperRuntime {
+    async fn build_git(
+        &self,
+        record: &ApplicationRecord,
+        input: super::git::BuildInput,
+        environment: Vec<(String, String)>,
+    ) -> Result<()> {
+        Self::call(Request::BuildGit {
+            record: Box::new(record.clone()),
+            input,
+            environment,
+        })
+        .await?;
+        Ok(())
+    }
     async fn deploy(
         &self,
         record: &ApplicationRecord,
@@ -316,12 +353,12 @@ pub async fn control() -> Result<()> {
     tokio::time::timeout(
         Duration::from_secs(5),
         tokio::io::stdin()
-            .take(MAX_REQUEST + 1)
+            .take(super::git::TRANSPORT_MAX + 1)
             .read_to_end(&mut bytes),
     )
     .await??;
-    if bytes.len() as u64 > MAX_REQUEST {
-        bail!("native request exceeds 256 KiB");
+    if bytes.len() as u64 > super::git::TRANSPORT_MAX {
+        bail!("native request exceeds configured payload limit");
     }
     let mut request: Request = serde_json::from_slice(&bytes)?;
     request.validate()?;
@@ -335,6 +372,11 @@ pub async fn control() -> Result<()> {
         Some(operation_lock(request.id())?)
     };
     let result = async {
+        if let Request::BuildGit { record, input, environment } = &request {
+            if !record_path.exists() { host::write(&record_path, &serde_json::to_vec(record)?, 0o600)?; }
+            runtime.build_git(record, input.clone(), environment.clone()).await?;
+            return Ok::<_, anyhow::Error>(None);
+        }
         if let Request::Deploy { record, environment, running } = &request {
             // Save before side effects so a failed setup can be stopped or
             // removed after the Platform restarts.
@@ -370,7 +412,7 @@ pub async fn control() -> Result<()> {
                     stdout.flush().await?;
                 }
             }
-            Request::Deploy { .. } => unreachable!(),
+            Request::Deploy { .. } | Request::BuildGit { .. } => unreachable!(),
         }
         Ok(None)
     }.await;

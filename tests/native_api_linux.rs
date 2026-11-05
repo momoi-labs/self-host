@@ -19,6 +19,9 @@ use self_host::routes::FakeRoutes;
 use self_host::store::StateStore;
 use serde_json::{Value, json};
 
+#[path = "support/git_http.rs"]
+mod transport;
+
 struct Fixture {
     root: PathBuf,
     cgroup: PathBuf,
@@ -49,7 +52,7 @@ impl Fixture {
         fs::create_dir(supervision.join("services")).unwrap();
         let binary = root.join("self-host");
         fs::copy(env!("CARGO_BIN_EXE_self-host"), &binary).unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
         let cgroup = PathBuf::from(format!("/sys/fs/cgroup/sf-native-api-{marker}"));
         fs::create_dir(&cgroup).unwrap();
         let scanner = Command::new("s6-svscan")
@@ -133,13 +136,38 @@ impl Fixture {
     }
 
     async fn finish(&self, response: (u16, Value), expected: &str) -> Value {
+        self.finish_timeout(response, expected, Duration::from_secs(40))
+            .await
+    }
+
+    async fn finish_timeout(
+        &self,
+        response: (u16, Value),
+        expected: &str,
+        timeout: Duration,
+    ) -> Value {
         assert_eq!(response.0, 202, "{}", response.1);
         let task = response.1["task_id"].as_str().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(event) = self.store.get_audit_event(task).await.unwrap() {
                 let event: Event = serde_json::from_str(&event).unwrap();
                 if ["completed", "failed"].contains(&event.status.as_str()) {
+                    if event.status != expected {
+                        for entry in fs::read_dir(self.root.join("supervision/logs"))
+                            .unwrap()
+                            .flatten()
+                        {
+                            for name in ["recipe.log", "current"] {
+                                if let Ok(log) = fs::read_to_string(entry.path().join(name)) {
+                                    eprintln!(
+                                        "{} {name}:\n{log}",
+                                        entry.file_name().to_string_lossy()
+                                    );
+                                }
+                            }
+                        }
+                    }
                     assert_eq!(event.status, expected, "{:?}", event.error);
                     return response.1;
                 }
@@ -206,6 +234,12 @@ impl Drop for Fixture {
             {
                 let _ = supervisor.remove(id, Duration::from_secs(10));
             }
+            if let Ok(supervisor) = &supervisor {
+                let builder = self_host::native::git::build_id(id);
+                if supervisor.exists(&builder).unwrap_or(false) {
+                    let _ = supervisor.remove(&builder, Duration::from_secs(10));
+                }
+            }
             let _ = Command::new("userdel").arg(account).output();
         }
         let _ = Command::new("s6-svscanctl")
@@ -213,8 +247,12 @@ impl Drop for Fixture {
             .arg(self.root.join("supervision/services"))
             .status();
         let _ = self.scanner.wait();
-        let _ = fs::remove_dir_all(&self.root);
         let _ = fs::remove_dir(&self.cgroup);
+        if std::env::var_os("SELF_HOST_KEEP_NATIVE_FIXTURE").is_some() {
+            eprintln!("Native fixture data retained at {}", self.root.display());
+        } else {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }
 
@@ -552,6 +590,8 @@ async fn api_requeues_unstarted_native_work_once() {
                 self_host::store::NativeDefinition {
                     account: String::new(),
                     command: worker(),
+                    build: vec![],
+                    worker: None,
                     recipe: Default::default(),
                     working_dir: None,
                     port: None,
@@ -819,7 +859,7 @@ async fn native_recipe_runs_once_non_root_preserves_stop_and_blocks_failed_setup
     let mut fixture = Fixture::new().await;
     // The fake mise executable avoids network in this boundary regression.
     // scripts/test-native-mise.py checks actual tool downloads and versions.
-    let fake = "#!/bin/sh\ncase \"$1\" in install) id -u >> \"$HOME/installations\";; reshim) :;; exec) shift; test \"$1\" = --; shift; exec \"$@\";; *) exit 99;; esac\n";
+    let fake = "#!/bin/sh\nif [ \"$1\" = --cd ]; then cd \"$2\"; shift 2; fi\ncase \"$1\" in install) id -u >> \"$HOME/installations\";; reshim) :;; exec) shift; test \"$1\" = --; shift; exec \"$@\";; *) exit 99;; esac\n";
     let created = fixture.create("synthetic-recipe", vec![
         "/bin/sh".into(), "-ec".into(),
         "printf '%s' \"$1\" > .self-host/mise/bin/mise; chmod 700 .self-host/mise/bin/mise; echo $$ >> starts; exec sleep 300".into(),
@@ -1083,4 +1123,261 @@ async fn native_recipe_never_writes_through_home_symlinks_as_root() {
         )
         .await;
     assert_eq!(fixture.count(id), 1);
+}
+
+#[tokio::test]
+#[ignore = "real Git, accounts, cgroups and s6; root on disposable Linux"]
+async fn git_native_candidates_pin_commits_preserve_failed_releases_and_stopped_intent() {
+    let fixture = Fixture::new().await;
+    let repo = fixture.root.join("repo");
+    fs::create_dir(&repo).unwrap();
+    fs::create_dir(repo.join("app")).unwrap();
+    let git = |args: &[&str]| -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "--initial-branch=main"]);
+    fs::write(repo.join("app/message"), "first").unwrap();
+    fs::write(repo.join("app/serve.py"), "import http.server, os\nclass Handler(http.server.BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write((open('built').read()+':'+os.environ['MESSAGE']).encode())\nhttp.server.HTTPServer(('127.0.0.1',int(os.environ['PORT'])),Handler).serve_forever()\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "first"]);
+    let first = git(&["rev-parse", "HEAD"]);
+    let (repository, transport) = transport::git_http(fixture.root.clone()).await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let source = json!({"repository":repository,"git_ref":"main","context":"app"});
+    let definition = json!({"kind":"native","account":"","command":["/usr/bin/python3","serve.py"],"build":["test $(id -u) -ne 0 && test ! -e .git && cp message built"],"port":port,"limits":{"cpu_percent":50,"memory_bytes":134217728,"max_tasks":32}});
+    let response = fixture.request(reqwest::Method::POST, "/apps", json!({"name":"git-native","git":source,"runtime":definition,"publication":{"kind":"web"},"environment":{"PORT":port.to_string(),"MESSAGE":"from-variable"}})).await;
+    assert_eq!(response.0, 202, "{}", response.1);
+    let id = response.1["id"].as_str().unwrap().to_owned();
+    fixture
+        .accounts
+        .lock()
+        .unwrap()
+        .push(format!("sf-app-{id}"));
+    fixture.finish(response, "completed").await;
+    let url = format!("http://127.0.0.1:{port}");
+    assert_eq!(
+        fixture
+            .client
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "first:from-variable"
+    );
+    let saved = fixture.store.get_application(&id).await.unwrap().unwrap();
+    assert_eq!(saved.git_build.as_ref().unwrap().revision, first);
+    let release = saved.git_build.as_ref().unwrap().native_release.clone();
+    assert!(saved.git_build.as_ref().unwrap().images.is_empty());
+    fs::write(repo.join("app/message"), "second").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "second"]);
+    let second = git(&["rev-parse", "HEAD"]);
+    let path = format!("/apps/id/{id}");
+    fixture
+        .finish(
+            fixture
+                .request(reqwest::Method::PUT, &path, json!({"refresh_source":false}))
+                .await,
+            "completed",
+        )
+        .await;
+    assert_eq!(
+        fixture
+            .store
+            .get_application(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .git_build
+            .unwrap()
+            .revision,
+        first
+    );
+    let failed = json!({"runtime":{"kind":"native","account":format!("sf-app-{id}"),"command":["/usr/bin/python3","serve.py"],"build":["exit 42"],"port":port},"refresh_source":true});
+    fixture
+        .finish(
+            fixture.request(reqwest::Method::PUT, &path, failed).await,
+            "failed",
+        )
+        .await;
+    assert_eq!(
+        fixture
+            .client
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "first:from-variable"
+    );
+    let after = fixture.store.get_application(&id).await.unwrap().unwrap();
+    assert_eq!(after.git_build.as_ref().unwrap().revision, first);
+    assert_ne!(
+        after.git_build.as_ref().unwrap().native_release,
+        release,
+        "the pinned rebuild created its own candidate"
+    );
+    assert!(fixture.routes.get(&id).is_some());
+    fixture.action(&id, "stop").await;
+    fixture.finish(fixture.request(reqwest::Method::PUT, &path, json!({"refresh_source":true,"source_revision":second,"expected_git_revision":first})).await, "completed").await;
+    let stopped = fixture.store.get_application(&id).await.unwrap().unwrap();
+    assert_eq!(stopped.status, "stopped");
+    assert_eq!(stopped.git_build.as_ref().unwrap().revision, second);
+    assert!(!fixture.runtime.status(&stopped).await.unwrap().running);
+    assert!(fixture.routes.get(&id).is_none());
+    let stale = fixture
+        .request(
+            reqwest::Method::PUT,
+            &path,
+            json!({"source_revision":first,"expected_git_revision":first}),
+        )
+        .await;
+    assert_eq!(stale.0, 400, "{}", stale.1);
+    fixture.action(&id, "start").await;
+    assert_eq!(
+        fixture
+            .client
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "second:from-variable"
+    );
+    assert!(fixture.routes.get(&id).is_some());
+    fixture.action(&id, "stop").await;
+    transport.abort();
+}
+
+#[tokio::test]
+#[ignore = "downloads mise tools and provisions native accounts; disposable Linux only"]
+async fn git_worker_runs_standalone_and_variable_edits_do_not_rebuild() {
+    let fixture = Fixture::new().await;
+    let repo = fixture.root.join("repo");
+    fs::create_dir(&repo).unwrap();
+    fs::write(repo.join("worker.ts"), "export default { async fetch(request: Request, env: {MESSAGE: string}) { return new Response('worker:' + env.MESSAGE); } };\n").unwrap();
+    fs::write(repo.join("wrangler.jsonc"), "{\n// JSONC is parsed by Wrangler, not by self-host.\n\"name\":\"native-worker-fixture\",\"main\":\"worker.ts\",\"compatibility_date\":\"2026-11-01\",\"vars\":{\"MESSAGE\":\"config-value\"}}\n").unwrap();
+    for args in [
+        vec!["init", "--initial-branch=main"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "worker",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let (repository, transport) = transport::git_http(fixture.root.clone()).await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let response = fixture.request(reqwest::Method::POST, "/apps", json!({"name":"git-worker","git":{"repository":repository,"git_ref":"main"},"runtime":{"kind":"native","account":"","worker":{"config":"wrangler.jsonc"},"port":port,"recipe":{"dependencies":[{"tool":"node","version":"24.22.2"},{"tool":"npm:wrangler","version":"4.157.0"},{"tool":"github:cloudflare/workerd","version":"1.20261103.1"}]}},"publication":{"kind":"web"},"environment":{"MESSAGE":"first-variable"}})).await;
+    assert_eq!(response.0, 202, "{}", response.1);
+    let id = response.1["id"].as_str().unwrap().to_owned();
+    fixture
+        .accounts
+        .lock()
+        .unwrap()
+        .push(format!("sf-app-{id}"));
+    fixture
+        .finish_timeout(response, "completed", Duration::from_secs(930))
+        .await;
+    let url = format!("http://127.0.0.1:{port}");
+    assert_eq!(
+        fixture
+            .client
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "worker:first-variable"
+    );
+    let before = fixture.store.get_application(&id).await.unwrap().unwrap();
+    let cgroup = CgroupRoot::at(&fixture.cgroup)
+        .unwrap()
+        .application(&id)
+        .unwrap();
+    let pids = cgroup.processes().unwrap();
+    assert_eq!(
+        pids.len(),
+        1,
+        "Node and Wrangler must leave after the build: {pids:?}"
+    );
+    let cmdline = fs::read(format!("/proc/{}/cmdline", pids[0])).unwrap();
+    assert!(String::from_utf8_lossy(&cmdline).contains("workerd"));
+    fixture
+        .finish(
+            fixture
+                .request(
+                    reqwest::Method::POST,
+                    "/apps/git-worker/env",
+                    json!({"key":"MESSAGE","value":"second-variable"}),
+                )
+                .await,
+            "completed",
+        )
+        .await;
+    let after = fixture.store.get_application(&id).await.unwrap().unwrap();
+    assert_eq!(
+        after.git_build, before.git_build,
+        "Variable edits reuse the built release"
+    );
+    assert_eq!(
+        fixture
+            .client
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "worker:second-variable"
+    );
+    fixture.action(&id, "stop").await;
+    transport.abort();
 }

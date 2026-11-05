@@ -255,6 +255,14 @@ fn environment_for(account: &ResolvedAccount, request: &LaunchRequest) -> Vec<(S
 /// s6 owns the Darwin session and cleans its foreground process group.
 #[cfg(target_os = "macos")]
 pub fn launch(request: &LaunchRequest) -> Result<LaunchedProcess, LaunchError> {
+    launch_input(request, std::process::Stdio::null())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn launch_input(
+    request: &LaunchRequest,
+    input: std::process::Stdio,
+) -> Result<LaunchedProcess, LaunchError> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -271,7 +279,7 @@ pub fn launch(request: &LaunchRequest) -> Result<LaunchedProcess, LaunchError> {
         .args(&request.command[1..])
         .env_clear()
         .envs(environment_for(&account, request))
-        .stdin(Stdio::null())
+        .stdin(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // SAFETY: only system calls and stack data are used between fork and exec.
@@ -329,11 +337,20 @@ fn become_account_macos(uid: u32, gid: u32) -> std::io::Result<()> {
 /// nothing and leaves no cgroup behind.
 #[cfg(target_os = "linux")]
 pub fn launch(root: &CgroupRoot, request: &LaunchRequest) -> Result<LaunchedProcess, LaunchError> {
+    launch_input(root, request, std::process::Stdio::null())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn launch_input(
+    root: &CgroupRoot,
+    request: &LaunchRequest,
+    input: std::process::Stdio,
+) -> Result<LaunchedProcess, LaunchError> {
     let account = super::identity::resolve(&request.account)?;
     working_dir_within(&account.home, &request.working_dir)?;
     validate(request)?;
     let cgroup = root.create(&request.application_id, &request.limits)?;
-    match launch_in(&cgroup, request) {
+    match launch_in_input(&cgroup, request, input) {
         Ok(process) => Ok(process),
         Err(error) => {
             let _ = cgroup.remove();
@@ -349,9 +366,18 @@ pub(crate) fn launch_in(
     cgroup: &ApplicationCgroup,
     request: &LaunchRequest,
 ) -> Result<LaunchedProcess, LaunchError> {
+    launch_in_input(cgroup, request, std::process::Stdio::null())
+}
+
+#[cfg(target_os = "linux")]
+fn launch_in_input(
+    cgroup: &ApplicationCgroup,
+    request: &LaunchRequest,
+    input: std::process::Stdio,
+) -> Result<LaunchedProcess, LaunchError> {
     use std::process::Stdio;
     let child = command_in(cgroup, request)?
-        .stdin(Stdio::null())
+        .stdin(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

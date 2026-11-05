@@ -24,6 +24,11 @@ pub struct ServiceDefinition {
     pub limits: ResourceLimits,
     #[serde(default)]
     pub recipe: super::mise::NativeRecipe,
+    /// Internal candidate input, only consumed by non-root preparation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_build: Option<super::git::BuildInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_binary: Option<PathBuf>,
     /// An optional command that must exit successfully before s6 reports ready.
     pub readiness: Option<Vec<String>>,
     pub startup_timeout_ms: u64,
@@ -32,13 +37,27 @@ pub struct ServiceDefinition {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl ServiceDefinition {
+    fn environment_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        if let Some(build) = &self.git_build {
+            format!(
+                "{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(&(self.recipe.clone(), &build.release)).expect("build JSON")
+                )
+            )
+        } else {
+            self.recipe.fingerprint()
+        }
+    }
+
     fn request(&self, command: Vec<String>, purpose: Purpose) -> Result<LaunchRequest> {
         let account = AccountName::parse(&self.account)?;
         let home = super::resolve(&account)?.home;
         Ok(LaunchRequest {
             application_id: self.application_id.clone(),
             account,
-            command: super::mise::command(&home, &self.recipe, command),
+            command: super::mise::command_at(&home, &self.recipe, &self.working_dir, command),
             working_dir: self.working_dir.clone(),
             environment: super::mise::environment(&home, &self.environment),
             limits: self.limits.clone(),
@@ -235,7 +254,7 @@ pub(crate) mod host {
             );
         }
         protected(&receipt)?;
-        if fs::read_to_string(receipt)? != definition.recipe.fingerprint() {
+        if fs::read_to_string(receipt)? != definition.environment_fingerprint() {
             bail!(
                 "native environment recipe has changed; reapply the Application configuration before starting"
             );
@@ -443,7 +462,7 @@ pub(crate) mod host {
         match result {
             Ok(()) => write(
                 &service.join("data/recipe-sha256"),
-                definition.recipe.fingerprint().as_bytes(),
+                definition.environment_fingerprint().as_bytes(),
                 0o600,
             )?,
             Err(error) => write(
@@ -578,7 +597,7 @@ impl Supervisor {
         let receipt = service.join("data/recipe-sha256");
         if receipt.exists() {
             host::protected(&receipt)?;
-            if std::fs::read_to_string(&receipt)? == definition.recipe.fingerprint() {
+            if std::fs::read_to_string(&receipt)? == definition.environment_fingerprint() {
                 return Ok(());
             }
             std::fs::remove_file(&receipt)?;
@@ -606,7 +625,7 @@ impl Supervisor {
         if error.exists() {
             bail!("{}", std::fs::read_to_string(error)?);
         }
-        if std::fs::read_to_string(receipt)? != definition.recipe.fingerprint() {
+        if std::fs::read_to_string(receipt)? != definition.environment_fingerprint() {
             bail!("native preparation did not complete");
         }
         Ok(())
@@ -667,7 +686,7 @@ impl Supervisor {
         let service = self.service(&definition.application_id)?;
         host::protected(&service.join("data"))?;
         let receipt = service.join("data/recipe-sha256");
-        let fingerprint = definition.recipe.fingerprint();
+        let fingerprint = definition.environment_fingerprint();
         if receipt.exists() {
             host::protected(&receipt)?;
             if std::fs::read_to_string(&receipt)? == fingerprint {

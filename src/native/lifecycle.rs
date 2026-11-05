@@ -35,6 +35,14 @@ pub trait NativeRuntime: Send + Sync {
         env: Vec<(String, String)>,
         running: bool,
     ) -> Result<()>;
+    async fn build_git(
+        &self,
+        _: &ApplicationRecord,
+        _: super::git::BuildInput,
+        _: Vec<(String, String)>,
+    ) -> Result<()> {
+        bail!("native Git builds are unavailable on this Host")
+    }
     async fn start(&self, record: &ApplicationRecord) -> Result<()>;
     async fn stop(&self, record: &ApplicationRecord) -> Result<()>;
     async fn restart(&self, record: &ApplicationRecord) -> Result<()>;
@@ -193,19 +201,38 @@ impl S6Runtime {
         if identity.home != home || std::fs::symlink_metadata(&home)?.uid() != identity.uid {
             bail!("Application Account does not own its dedicated data home");
         }
-        let working_dir = definition
-            .working_dir
-            .as_deref()
-            .map(|relative| home.join(relative))
-            .unwrap_or(home.clone());
+        let working_dir = if record.git_build.is_some() || record.git.is_none() {
+            super::git::working_dir(&home, record)?
+        } else {
+            home.clone()
+        };
+        let command = if definition.worker.is_some() {
+            let mut command = vec![
+                self.binary.display().to_string(),
+                "native-worker-run".into(),
+                "--port".into(),
+                definition
+                    .port
+                    .context("Worker requires a Web Target")?
+                    .to_string(),
+            ];
+            for (key, _) in &env {
+                command.extend(["--variable".into(), key.clone()]);
+            }
+            command
+        } else {
+            definition.command.clone()
+        };
         Ok(ServiceDefinition {
             application_id: record.id.clone(),
             account: definition.account.clone(),
-            command: definition.command.clone(),
+            command,
             working_dir,
             environment: env,
             limits: definition.limits.clone(),
             recipe: definition.recipe.clone(),
+            git_build: None,
+            build_binary: None,
             readiness: None,
             startup_timeout_ms: STARTUP.as_millis() as u64,
             stop_grace_ms: 1000,
@@ -351,6 +378,34 @@ fn private_listener(port: u16, uid: u32) -> Result<bool> {
 
 #[async_trait]
 impl NativeRuntime for S6Runtime {
+    async fn build_git(
+        &self,
+        record: &ApplicationRecord,
+        input: super::git::BuildInput,
+        env: Vec<(String, String)>,
+    ) -> Result<()> {
+        input.validate()?;
+        let record = record.clone();
+        self.blocking(move |runtime| {
+            let supervisor = runtime.supervisor()?;
+            let mut service = runtime.setup(&record, env)?;
+            service.application_id = super::git::build_id(&record.id);
+            service.command = vec!["/usr/bin/false".into()];
+            service.working_dir = runtime.home(&record.id)?;
+            service.git_build = Some(input);
+            service.build_binary = Some(runtime.binary.clone());
+            if supervisor.exists(&service.application_id)? {
+                supervisor.replace(&service, STOP)?;
+            } else {
+                supervisor.prepare(&service)?;
+            }
+            // Linux uses a separate candidate cgroup. Darwin reuses the existing
+            // s6 preparation runner and its foreground process-group cleanup.
+            supervisor.prepare_environment(&service)
+        })
+        .await
+    }
+
     async fn deploy(
         &self,
         record: &ApplicationRecord,
@@ -404,6 +459,10 @@ impl NativeRuntime for S6Runtime {
             let supervisor = runtime.supervisor()?;
             if supervisor.exists(&record.id)? {
                 supervisor.remove(&record.id, STOP)?;
+            }
+            let builder = super::git::build_id(&record.id);
+            if supervisor.exists(&builder)? {
+                supervisor.remove(&builder, STOP)?;
             }
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
@@ -520,11 +579,7 @@ impl NativeRuntime for S6Runtime {
                     account: &account,
                     home: &home,
                 })?;
-                let working_dir = definition
-                    .working_dir
-                    .as_deref()
-                    .map(|relative| home.join(relative))
-                    .unwrap_or(home.clone());
+                let working_dir = super::git::working_dir(&home, &record)?;
                 let canonical = std::fs::canonicalize(&working_dir)?;
                 if !canonical.starts_with(runtime.home(&record.id)?) {
                     bail!("native working directory resolves outside the Application home");
@@ -535,9 +590,10 @@ impl NativeRuntime for S6Runtime {
                     super::LaunchRequest {
                         application_id: record.id.clone(),
                         account,
-                        command: super::mise::command(
+                        command: super::mise::command_at(
                             &home,
                             &definition.recipe,
+                            &working_dir,
                             vec!["/bin/sh".into(), "-i".into()],
                         ),
                         working_dir,
@@ -564,19 +620,26 @@ impl NativeRuntime for S6Runtime {
             .blocking(move |runtime| {
                 runtime.supervisor()?;
                 account_name_for(&record.id)?;
-                Ok(runtime.root.join("logs").join(&record.id))
+                let logs = runtime.root.join("logs");
+                Ok(vec![
+                    logs.join(&record.id).join("recipe.log"),
+                    logs.join(&record.id).join("current"),
+                    logs.join(super::git::build_id(&record.id))
+                        .join("recipe.log"),
+                    logs.join(super::git::build_id(&record.id)).join("current"),
+                ])
             })
             .await?;
         let (sender, receiver) = mpsc::channel(64);
         tokio::spawn(async move {
-            let mut positions = [0usize; 2];
-            let mut identities = [0u64; 2];
-            let mut partials = [String::new(), String::new()];
+            let mut positions = [0usize; 4];
+            let mut identities = [0u64; 4];
+            let mut partials = [String::new(), String::new(), String::new(), String::new()];
             loop {
                 tokio::select! { _ = sender.closed() => break, _ = tokio::time::sleep(Duration::from_millis(100)) => () }
-                for (index, name) in ["recipe.log", "current"].iter().enumerate() {
+                for (index, name) in path.iter().enumerate() {
                     use tokio::io::AsyncReadExt;
-                    let Ok(mut file) = tokio::fs::File::open(path.join(name)).await else {
+                    let Ok(mut file) = tokio::fs::File::open(name).await else {
                         continue;
                     };
                     let Ok(metadata) = file.metadata().await else {
@@ -637,9 +700,11 @@ pub fn validate_definition(
     if definition.account != account {
         bail!("native Application Account must be {account}");
     }
-    if definition.command.is_empty()
-        || definition.command[0].is_empty()
-        || definition.command.iter().any(|arg| arg.contains('\0'))
+    super::git::validate_definition(definition)?;
+    if definition.worker.is_none()
+        && (definition.command.is_empty()
+            || definition.command[0].is_empty()
+            || definition.command.iter().any(|arg| arg.contains('\0')))
     {
         bail!("native command must contain a program and no NUL bytes");
     }
@@ -1055,6 +1120,8 @@ mod tests {
             let mut definition = NativeDefinition {
                 account: String::new(),
                 command: vec!["/bin/sleep".into(), "60".into()],
+                build: vec![],
+                worker: None,
                 working_dir: None,
                 port: None,
                 recipe: Default::default(),
@@ -1072,6 +1139,8 @@ mod tests {
         NativeDefinition {
             account: String::new(),
             command: vec!["/bin/sleep".into(), "300".into()],
+            build: vec![],
+            worker: None,
             working_dir: None,
             port: None,
             limits: Default::default(),

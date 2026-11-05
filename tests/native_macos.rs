@@ -67,6 +67,8 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
                 operator_file.into(),
             ],
             working_dir: None,
+            build: vec![],
+            worker: None,
             port: Some(port),
             limits: Default::default(),
             recipe: Default::default(),

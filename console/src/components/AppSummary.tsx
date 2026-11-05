@@ -67,7 +67,7 @@ export function opens(open: () => void) {
 
 /** What the definition names: the command, the repository or the image. */
 function sourceOf(app: App): string {
-  if (app.runtime?.kind === "native") return join(app.runtime.command);
+  if (app.runtime?.kind === "native") return app.runtime.worker?.config ?? join(app.runtime.command);
   return app.git?.repository ?? app.image;
 }
 
@@ -81,7 +81,7 @@ type Container = { name: string; image?: string; command?: string; state?: strin
  * port. Before anything runs, the definition alone names them.
  */
 function containersOf(app: App, inspected: Inspection | undefined): Container[] {
-  if (app.runtime?.kind === "native") return [{ name: "process", command: join(app.runtime.command), state: app.status, port: targetOf(app) }];
+  if (app.runtime?.kind === "native") return [{ name: app.runtime.worker ? "worker" : "process", command: sourceOf(app), state: app.status, port: targetOf(app) }];
   const defined = new Map((inspected?.services ?? []).map((service) => [service.name, service]));
   const names = app.services?.length ? app.services.map((service) => service.service) : [...defined.keys()];
   if (names.length === 0) names.push(app.web_service ?? app.name);
@@ -215,7 +215,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
               {app.git ? <>
                 <Fact icon="branch" label="Repository" value={app.git.repository} />
                 <Fact icon="tag" label="Ref" value={app.git.revision ? undefined : app.git.git_ref} empty="Pinned commit" />
-                <Fact icon="file-code" label="Built from" value={app.git.compose_path || app.git.dockerfile} />
+                <Fact icon="file-code" label={native?.worker ? "Worker config" : native ? "Context" : "Built from"} value={native ? native.worker?.config ?? app.git.context : app.git.compose_path || app.git.dockerfile} />
                 <Fact icon="commit" label="Commit" value={app.git_build?.revision ? <>
                   {app.git_build.revision.slice(0, 12)}{" "}
                   {/* A ref that moved on is something to act on, not a state of the container, so it warns. */}
@@ -264,12 +264,13 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
 
       <PaneGrid aria-label={`${app.name} summary`} defaultLayout={layout} onLayoutChange={saveLayout}>
         {native ? (
-          <GridPane id="start-command" title="Start command" size={12} actions={<>
-            <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard?.writeText(join(native.command))}>Copy</Button>
+          <GridPane id="start-command" title={native.worker ? "Worker or static site" : "Start command"} size={12} actions={<>
+            {app.git_build ? <Button size="sm" variant="ghost" disabled={busy} onClick={onRebuild}>Rebuild</Button> : null}
+            <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard?.writeText(sourceOf(app))}>Copy</Button>
             {edit}
           </>}>
-            <pre><code>{join(native.command)}</code></pre>
-            <p className="muted t-label">Runs as <code>{native.account}</code> in {native.working_dir || "the Application home"}</p>
+            <pre><code>{sourceOf(app)}</code></pre>
+            <p className="muted t-label">Runs as <code>{native.account}</code> in {native.working_dir || (app.git ? "the repository context" : "the Application home")}</p>
             {capabilities?.resource_limits ? <p className="muted t-label">{limitsOf(native.limits)}</p> : null}
           </GridPane>
         ) : (
