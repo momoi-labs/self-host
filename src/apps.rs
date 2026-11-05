@@ -582,7 +582,7 @@ async fn pending_record(
             "Application Runtime cannot be changed".into(),
         ));
     }
-    if source != SOURCE_NATIVE && matches!(runtime, Runtime::Native(_)) {
+    if source != SOURCE_NATIVE && source != SOURCE_GIT && matches!(runtime, Runtime::Native(_)) {
         return Err(DeployError::NativeUnavailable);
     }
     let publication = settle_publication(
@@ -595,6 +595,11 @@ async fn pending_record(
         .unwrap_or(VariableDelivery::Referenced);
 
     if let Runtime::Native(definition) = &mut runtime {
+        if source != SOURCE_GIT && (definition.worker.is_some() || !definition.build.is_empty()) {
+            return Err(DeployError::InvalidNative(
+                "native build commands and Workers require a Git source".into(),
+            ));
+        }
         crate::native::lifecycle::validate_definition(&id, definition, publication)
             .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
         crate::native::lifecycle::validate_port(store, &id, definition.port).await?;
@@ -911,6 +916,11 @@ async fn prepare_native_update(
     let Runtime::Native(definition) = &mut record.runtime else {
         unreachable!()
     };
+    if record.git.is_none() && (definition.worker.is_some() || !definition.build.is_empty()) {
+        return Err(DeployError::InvalidNative(
+            "native build commands and Workers require a Git source".into(),
+        ));
+    }
     crate::native::lifecycle::validate_definition(&record.id, definition, record.publication)
         .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
     crate::native::lifecycle::validate_port(store, &record.id, definition.port).await?;
@@ -2617,9 +2627,13 @@ pub async fn prepare_git_create_reviewed(
         return Err(DeployError::AlreadyExists(name.into()));
     }
     if matches!(options.runtime, Some(Runtime::Native(_))) {
-        return Err(DeployError::Source(crate::source::SourceError::Invalid(
-            "Git builds require container Runtime".into(),
-        )));
+        crate::native::git::validate_source(&source)?;
+        if web_service.is_some() || web_port.is_some() {
+            return Err(DeployError::InvalidNative(
+                "native Git sources use the Runtime's loopback Web Target, not container ports"
+                    .into(),
+            ));
+        }
     }
     let mut record = pending_record(store, name, String::new(), SOURCE_GIT, None, &options).await?;
     if record.publication == Publication::Unpublished {
@@ -2673,7 +2687,7 @@ pub async fn prepare_git_update_reviewed(
         let saved = get_application(store, &current.id).await?;
         check_expected_git_revision(&saved, Some(expected))?;
     }
-    if current.git.is_none() || current.runtime != Runtime::Container {
+    if current.git.is_none() {
         return Err(DeployError::Source(crate::source::SourceError::Invalid(
             "Git source updates require an existing Git Application".into(),
         )));
@@ -2687,14 +2701,24 @@ pub async fn prepare_git_update_reviewed(
             "Git build type cannot change after creation".into(),
         )));
     }
-    if update.image.is_some()
-        || update.compose.is_some()
-        || update.development.is_some()
-        || matches!(update.runtime, Some(Runtime::Native(_)))
-    {
+    if matches!(current.runtime, Runtime::Native(_)) {
+        crate::native::git::validate_source(&source)?;
+        if update.web_service.is_some() || update.web_port.is_some() {
+            return Err(DeployError::InvalidNative(
+                "native Git sources use the Runtime's loopback Web Target".into(),
+            ));
+        }
+    }
+    if update.runtime.as_ref().is_some_and(|runtime| {
+        std::mem::discriminant(runtime) != std::mem::discriminant(&current.runtime)
+    }) {
+        return Err(DeployError::InvalidNative(
+            "Application Runtime cannot be changed".into(),
+        ));
+    }
+    if update.image.is_some() || update.compose.is_some() || update.development.is_some() {
         return Err(DeployError::Source(crate::source::SourceError::Invalid(
-            "Git source accepts no image, inline Compose, development definition or native Runtime"
-                .into(),
+            "Git source accepts no image, inline Compose or development definition".into(),
         )));
     }
     let mut record = current.clone();
@@ -2758,6 +2782,17 @@ async fn apply_git_update(
     update: &ApplicationUpdate,
 ) -> Result<(), DeployError> {
     settle_publication(update.publication, Some(record.publication))?;
+    if let Some(Runtime::Native(mut definition)) = update.runtime.clone() {
+        crate::native::lifecycle::validate_definition(
+            &record.id,
+            &mut definition,
+            record.publication,
+        )
+        .map_err(|e| DeployError::InvalidNative(e.to_string()))?;
+        crate::native::lifecycle::validate_port(store, &record.id, definition.port).await?;
+        record.web_target_port = definition.port;
+        record.runtime = Runtime::Native(definition);
+    }
     if record.publication == Publication::Unpublished {
         refuse_routing_for_unpublished(
             update.hostname.as_deref(),
@@ -2799,6 +2834,102 @@ async fn apply_git_update(
         record.network_policy = policy.clone();
     }
     Ok(())
+}
+
+pub async fn finish_native_git_deploy(
+    store: &impl StateStore,
+    runtime: &dyn crate::native::lifecycle::NativeRuntime,
+    routes: &dyn RouteStore,
+    pending: PendingGitDeploy,
+) -> Result<(ApplicationRecord, Vec<crate::audit::Change>), DeployError> {
+    let id = pending.record.id.clone();
+    let result = async {
+        let current = get_application(store, &id).await?;
+        check_expected_git_revision(&current, pending.expected_git_revision.as_deref())?;
+        validate_reviewed_revision(&pending.source, pending.source_revision.as_deref())?;
+        let mut candidate = current.clone();
+        if let Some(update) = &pending.update {
+            apply_git_update(store, &mut candidate, update).await?;
+        }
+        let Runtime::Native(definition) = &candidate.runtime else {
+            return Err(DeployError::InvalidNative(
+                "expected native Git Runtime".into(),
+            ));
+        };
+        crate::native::git::validate_source(&pending.source)?;
+        let unchanged_selection = current.git.as_ref().is_some_and(|old| {
+            old.repository == pending.source.repository && old.git_ref == pending.source.git_ref
+        });
+        let pinned = pending.source_revision.as_deref().or_else(|| {
+            if !pending.refresh_source && unchanged_selection {
+                current
+                    .git_build
+                    .as_ref()
+                    .map(|build| build.revision.as_str())
+            } else {
+                None
+            }
+        });
+        let source =
+            crate::source::native_checkout(&crate::source::private_root(), &pending.source, pinned)
+                .await?;
+        let revision = source.revision.clone();
+        let release = format!("{:032x}", rand::random::<u128>());
+        let input = crate::native::git::BuildInput {
+            limits: crate::native::git::build_limits().map_err(DeployError::Native)?,
+            source,
+            release: release.clone(),
+            definition: definition.clone(),
+        };
+        runtime
+            .build_git(&candidate, input, store.get_all_env(&id).await?)
+            .await
+            .map_err(DeployError::Native)?;
+        // Metadata edits bypass the Task queue. Read them back, and recheck the
+        // reviewed deployed commit after repository code has finished.
+        let mut record = get_application(store, &id).await?;
+        check_expected_git_revision(&record, pending.expected_git_revision.as_deref())?;
+        if let Some(update) = &pending.update {
+            apply_git_update(store, &mut record, update).await?;
+        }
+        record.git = Some(pending.source);
+        record.git_build = Some(crate::source::GitBuild {
+            revision: revision.clone(),
+            images: Default::default(),
+            status: "completed".into(),
+            native_release: Some(release),
+        });
+        validate_routing(store, &record).await?;
+        validate_connectivity(store, &record).await?;
+        let changes = current
+            .git_build
+            .as_ref()
+            .filter(|old| old.revision != revision)
+            .map(|old| crate::audit::Change {
+                setting: "Git revision".into(),
+                from: old.revision.clone(),
+                to: revision,
+            })
+            .into_iter()
+            .collect();
+        let running = current.status != STATUS_STOPPED;
+        store.insert_application(&record).await?;
+        let record =
+            crate::native::lifecycle::deploy(store, runtime, routes, record, running).await?;
+        Ok((record, changes))
+    }
+    .await;
+    if let Err(error) = &result
+        && let Ok(current) = get_application(store, &id).await
+        && current.git_build.is_none()
+        && current.status == STATUS_PENDING
+    {
+        let _ = store
+            .set_application_outcome(&id, STATUS_FAILED, Some(ErrorReport::new(error)))
+            .await;
+        routes.withdraw(&id);
+    }
+    result
 }
 
 pub async fn finish_git_deploy(
@@ -4879,6 +5010,8 @@ services:
         Runtime::Native(crate::store::NativeDefinition {
             account: "sf-app-api".into(),
             command: vec!["/opt/api/bin/serve".into()],
+            build: vec![],
+            worker: None,
             working_dir: None,
             port: Some(8080),
             limits: Default::default(),
@@ -5175,6 +5308,7 @@ services:
             revision: first.clone(),
             images: Default::default(),
             status: "completed".into(),
+            native_release: None,
         });
         store.insert_application(&current).await.unwrap();
         let candidate = prepare_git_update_reviewed(

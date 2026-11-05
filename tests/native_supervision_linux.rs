@@ -73,6 +73,8 @@ impl Fixture {
             readiness: Some(vec!["/bin/sh".into(), "-c".into(), "test $(id -u) -ne 0 && cat /proc/self/status > readiness-identity && cat /proc/self/cgroup > readiness-cgroup && test -s descendant".into()]),
             startup_timeout_ms: 5000, stop_grace_ms: 100,
             recipe: Default::default(),
+            git_build: None,
+            build_binary: None,
         }
     }
 }

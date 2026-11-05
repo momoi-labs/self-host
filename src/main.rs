@@ -52,6 +52,15 @@ enum Command {
         #[arg(long)]
         root: std::path::PathBuf,
     },
+    #[command(hide = true)]
+    NativeSourceBuild,
+    #[command(hide = true)]
+    NativeWorkerRun {
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        variable: Vec<String>,
+    },
     /// Bootstrap the platform on this Host
     Init {
         /// DNS suffix for Application Hostnames (default: home.lan)
@@ -304,6 +313,10 @@ async fn main() {
     }
 
     match cli.command {
+        Some(Command::NativeSourceBuild) => native_result(self_host::native::git::build()),
+        Some(Command::NativeWorkerRun { port, variable }) => {
+            native_result(self_host::native::git::run_worker(port, &variable))
+        }
         #[cfg(target_os = "macos")]
         Some(Command::NativeControl) => native_result(self_host::native::macos::control().await),
         #[cfg(target_os = "macos")]

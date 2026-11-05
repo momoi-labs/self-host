@@ -27,6 +27,7 @@ fn main() -> anyhow::Result<()> {
                 command: vec!["/bin/sh".into(), "-c".into(), "cat /proc/sys/kernel/random/boot_id >> boots; id -u > uid; echo retained > data; exec sleep 86400".into()],
                 working_dir: home, environment: vec![], limits: ResourceLimits::NONE,
                 recipe: Default::default(),
+                git_build: None, build_binary: None,
                 readiness: Some(vec!["/bin/sh".into(), "-c".into(), "test $(id -u) -ne 0".into()]),
                 startup_timeout_ms: 5000, stop_grace_ms: 100,
             };

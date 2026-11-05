@@ -1,8 +1,13 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { Button, Form, FormActions, FormField, KV, KVKey, KVValue, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@momoi-labs/kiso-react";
+import { Button, Form, FormActions, FormField, KV, KVKey, KVValue, RadioGroup, RadioGroupItem, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@momoi-labs/kiso-react";
 import { parseAliases } from "../lib/status.js";
 import { nativeCommand, nativeCommandFields } from "../lib/nativeCommand.js";
 import { nativeRecipe, nativeRecipeFields } from "../lib/nativeRecipe.js";
+import { nativeGitBuild, nativeGitFields, nativeGitSource, workerDependencies } from "../lib/nativeGit.js";
+import { GitConnectionSelector } from "./GitConnections.js";
+import { GitRepositoryPicker } from "./GitRepositoryPicker.js";
+import { GitSourceFields, gitFieldsOf } from "./GitSourceFields.js";
+import "./git-workflow.css";
 import { isVersion } from "../lib/dependencies.js";
 import type { App, Report } from "../lib/types.js";
 import type { Submission } from "./AppForm.js";
@@ -20,6 +25,9 @@ function fieldsOf(app?: App) {
   return {
     name: app?.name ?? "", ...nativeCommandFields(native?.command),
     ...nativeRecipeFields(native?.recipe),
+    ...nativeGitFields(native),
+    source: app?.git ? "git" : "home",
+    git: gitFieldsOf(app?.git),
     workingDir: native?.working_dir ?? "",
     cpu: native?.limits?.cpu_percent?.toString() ?? "",
     memory: native?.limits?.memory_bytes ? String(native.limits.memory_bytes / 1048576) : "",
@@ -46,6 +54,8 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
   const [commandError, setCommandError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [editingVariable, setEditingVariable] = useState(false);
+  const [gitMode, setGitMode] = useState<"repositories" | "url">(app ? "url" : "repositories");
+  const gitSource = fields.source === "git";
   const dirty = JSON.stringify(fields) !== JSON.stringify(saved);
   const validDependencies = fields.dependencies.every((dependency) => isVersion(dependency.version));
   const native = app?.runtime?.kind === "native" ? app.runtime : null;
@@ -54,6 +64,7 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
   async function save(event: FormEvent) {
     event.preventDefault();
     if (saving || editingVariable || !validDependencies || !capabilities?.available) return;
+    if (fields.worker && (!gitSource || !fields.web || !fields.port || !fields.workerConfig.trim())) return;
     setFailure(null);
     setCommandError(null);
     let command: string[];
@@ -74,10 +85,12 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
         name: fields.name, aliases: fields.web ? parseAliases(fields.aliases) : [],
         ...(fields.web && (fields.hostname.trim() || app) ? { hostname: fields.hostname.trim() } : {}),
         publication: { kind: fields.web ? "web" : "unpublished" },
+        ...(gitSource ? { git: nativeGitSource(fields.git) } : {}),
         runtime: {
           kind: "native", account: native?.account ?? "",
           command,
           recipe: nativeRecipe(fields),
+          ...(gitSource ? nativeGitBuild(fields) : {}),
           working_dir: fields.workingDir.trim() || null,
           port: fields.web ? Number(fields.port) : null,
           limits: capabilities?.resource_limits ? {
@@ -87,7 +100,7 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
           } : {},
         },
         ...(!app ? { environment: Object.fromEntries(variables.map(({ key, value }) => [key.trim(), value])) } : {}),
-      }, "native");
+      }, gitSource ? "git" : "native");
       if (report) setFailure(report);
       else setVariables([]);
     } catch {
@@ -101,7 +114,23 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
       <Steps>
         <Step title="Application">
           <FormField id="native-name" label="Name" value={fields.name} onChange={(event) => change("name", event.target.value)} required autoFocus={!app} disabled={saving} />
+          {app ? <KV><KVKey>Source</KVKey><KVValue>{gitSource ? "Git repository" : "Application home"}</KVValue></KV> : <RadioGroup label="Source" variant="tiles" value={fields.source} disabled={saving} onValueChange={(source) => setFields({ ...fields, source, ...(source === "home" ? { worker: false } : {}) })}>
+            <RadioGroupItem value="home" label="Application home" description="Run a program installed by the Application Account recipe." />
+            <RadioGroupItem value="git" label="Git repository" description="Build a commit and run it as a native release." />
+          </RadioGroup>}
         </Step>
+        {gitSource ? <Step title="Repository">
+          <GitConnectionSelector value={fields.git.credentialId} disabled={saving} onChange={(credentialId) => change("git", { ...fields.git, credentialId })} />
+          {!app && gitMode === "repositories" ? <>
+            <GitRepositoryPicker credentialId={fields.git.credentialId} disabled={saving} onImport={(repository) => {
+              setFields({ ...fields, name: fields.name || repository.full_name.split("/").pop() || "", git: { ...fields.git, repository: repository.clone_url, gitRef: repository.default_branch || "HEAD", revision: "" } });
+              setGitMode("url");
+            }} />
+            <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => setGitMode("url")}>Use a repository URL instead</Button>
+          </> : !app ? <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => setGitMode("repositories")}>Choose from connected repositories</Button> : null}
+          <GitSourceFields fields={fields.git} onChange={(git) => change("git", git)} section="repository" includeRepository={!!app || gitMode === "url"} disabled={saving} />
+          <FormField id="native-git-context" label="Repository context" value={fields.git.context} disabled={saving} onChange={(event) => change("git", { ...fields.git, context: event.target.value })} placeholder="." hint="Directory inside the checkout used for build and process commands." />
+        </Step> : null}
         <Step title="Dependencies">
           <Dependencies id="native-dependencies" value={fields.dependencies} onChange={(dependencies) => change("dependencies", dependencies)} disabled={saving} hint="Enter to add a tool. Click its version to edit." />
         </Step>
@@ -110,11 +139,27 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
             <ShellEditor id="native-setup" value={fields.setup} onChange={(setup) => change("setup", setup)} disabled={saving} />
           </FormField>
         </Step>
-        <Step title="Process">
-          <FormField id="native-command" label="Start command" error={commandError} hint="Run in the foreground. Use sh -c for shell syntax.">
-            <ShellEditor id="native-command" required placeholder="node server.js --port 3000" value={fields.command} disabled={saving} onChange={(command) => { change("command", command); setCommandError(null); }} />
+        {gitSource ? <Step title="Build">
+          <FormField id="native-build" label="Build commands" hint="One command per line, run for each Git candidate. Setup above runs for the Application Account.">
+            <ShellEditor id="native-build" value={fields.build} onChange={(build) => change("build", build)} disabled={saving} placeholder={"npm ci\nnpm run build"} />
           </FormField>
-          <FormField id="native-directory" label="Working directory" value={fields.workingDir} onChange={(event) => change("workingDir", event.target.value)} disabled={saving} placeholder="Application home" hint="Relative to the app home. Setup can create it." />
+        </Step> : null}
+        <Step title="Process">
+          <RadioGroup label="Run" variant="tiles" value={fields.worker ? "worker" : "command"} disabled={saving} description={!gitSource ? "Workers and static sites require a Git repository source." : undefined} onValueChange={(value) => {
+            const worker = value === "worker";
+            setFields({ ...fields, worker, ...(worker ? { web: true, dependencies: workerDependencies(fields.dependencies) } : {}) });
+            setCommandError(null);
+          }}>
+            <RadioGroupItem value="command" label="Start command" description="Run a foreground process." />
+            <RadioGroupItem value="worker" label="Worker or static site" description="Build with Wrangler and run locally with workerd." disabled={!gitSource || (!!app && !fields.web)} />
+          </RadioGroup>
+          {fields.worker ? <>
+            <FormField id="native-worker-config" label="Wrangler config path" value={fields.workerConfig} onChange={(event) => change("workerConfig", event.target.value)} required disabled={saving} placeholder="wrangler.jsonc" hint="Relative to the repository context and working directory." />
+            <p className="muted">A module Worker (main in the config) or a static site (assets in the config). No Cloudflare storage bindings. The result runs locally with workerd, without deploying to Cloudflare.</p>
+          </> : <FormField id="native-command" label="Start command" error={commandError} hint="Run in the foreground. Use sh -c for shell syntax.">
+            <ShellEditor id="native-command" required placeholder="node server.js --port 3000" value={fields.command} disabled={saving} onChange={(command) => { change("command", command); setCommandError(null); }} />
+          </FormField>}
+          <FormField id="native-directory" label="Working directory" value={fields.workingDir} onChange={(event) => change("workingDir", event.target.value)} disabled={saving} placeholder={gitSource ? "Repository context" : "Application home"} hint={gitSource ? "Relative to the repository context." : "Relative to the app home. Setup can create it."} />
         </Step>
         {capabilities?.resource_limits ? <Step title="Resource limits">
           <div className="field-row">
@@ -126,8 +171,8 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
         : null}
         <Step title="Publication">
           {app ? <KV><KVKey>Access</KVKey><KVValue>{fields.web ? "Hostname" : "No hostname"}</KVValue></KV> : (
-            <Select value={fields.web ? "web" : "unpublished"} onValueChange={(value) => change("web", value === "web")} disabled={saving}>
-              <FormField id="native-publication" label="Access">
+            <Select value={fields.web ? "web" : "unpublished"} onValueChange={(value) => change("web", value === "web")} disabled={saving || fields.worker}>
+              <FormField id="native-publication" label="Access" hint={fields.worker ? "Workers and static sites require Web publication on 127.0.0.1." : undefined}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
               </FormField>
               <SelectContent><SelectItem value="web">Hostname</SelectItem><SelectItem value="unpublished">No hostname</SelectItem></SelectContent>
@@ -156,10 +201,10 @@ export function NativeAppForm({ app, onSubmit, onCancel, onReload, definition }:
       {capabilities?.reason ? <p role="status">{capabilities.reason}</p> : null}
       {failure ? <Failure failure={failure} /> : null}
     </div>
-    <FormActions sticky tone={failure || commandError ? "danger" : dirty ? "warning" : "neutral"} message={app ? dirty ? "Unsaved changes." : "Saved." : undefined}>
+    <FormActions sticky tone={failure || commandError ? "danger" : dirty ? "warning" : "neutral"} message={app ? dirty ? gitSource ? "Unsaved changes. Saving builds the selected Git source." : "Unsaved changes." : gitSource ? "Saved. Use Update to review newer commits, or save to rebuild." : "Saved." : undefined}>
       {onCancel ? <Button type="button" size="sm" onClick={onCancel}>Cancel</Button> : null}
       {app && dirty ? <Button type="button" size="sm" disabled={saving} onClick={() => { setFields(saved); setFailure(null); setCommandError(null); }}>Discard</Button> : null}
-      <Button type="submit" size="sm" variant="primary" disabled={!capabilities?.available || saving || editingVariable || !validDependencies || !fields.name.trim() || !fields.command.trim() || (fields.web && !fields.port)}>{saving ? "Saving..." : app ? "Save" : "Deploy"}</Button>
+      <Button type="submit" size="sm" variant="primary" disabled={!capabilities?.available || saving || editingVariable || !validDependencies || !fields.name.trim() || (!fields.worker && !fields.command.trim()) || (fields.worker && (!gitSource || !fields.web || !fields.workerConfig.trim())) || (gitSource && !fields.git.repository.trim()) || (fields.web && !fields.port)}>{saving ? "Saving..." : app ? gitSource ? "Save and build" : "Save" : "Deploy"}</Button>
     </FormActions>
   </Form>;
 }

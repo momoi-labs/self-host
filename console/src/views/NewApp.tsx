@@ -55,7 +55,9 @@ export function NewApp({
               : source === "native"
                 ? "Starting the process under its dedicated Application Account ..."
               : source === "git"
-                ? "Checking out the selected commit and building its image ..."
+                ? body.runtime?.kind === "native"
+                  ? "Checking out the selected commit and preparing its native release ..."
+                  : "Checking out the selected commit and building its image ..."
               : `Pulling image ${body.image} ...`,
           caused_by: [],
         });

@@ -64,6 +64,7 @@ pub struct Toggle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    pub native_build_limits: Option<crate::native::git::BuildLimits>,
     pub audit_events_max_age: Retention,
     /// Whether a restart or a redeploy pulls newer images when the request does
     /// not say.
@@ -82,6 +83,7 @@ pub struct Settings {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Update {
+    pub native_build_limits: Option<crate::native::git::BuildLimits>,
     /// A duration like `45d`.
     #[serde(default, deserialize_with = "present")]
     pub audit_events_max_age: Option<Option<String>>,
@@ -225,6 +227,7 @@ async fn current<S: StateStore>(state: &AppState<S>) -> Settings {
     };
     let pull = pull_setting(state).await;
     Settings {
+        native_build_limits: crate::native::git::build_limits().ok(),
         audit_events_max_age: Retention {
             effective: format_duration(effective),
             source,
@@ -246,6 +249,24 @@ pub(crate) async fn update<S: StateStore>(
     Json(update): Json<Update>,
 ) -> Response {
     let before = current(&state).await;
+    if let Some(limits) = &update.native_build_limits {
+        if let Err(error) =
+            crate::native::git::BuildLimits::parse(&serde_json::to_vec(limits).unwrap())
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorReport::plain(error.to_string())),
+            )
+                .into_response();
+        }
+        if let Err(error) = crate::native::git::save_build_limits(limits) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorReport::plain(format!("{error:#}"))),
+            )
+                .into_response();
+        }
+    }
     let result = match update
         .audit_events_max_age
         .as_ref()
@@ -328,6 +349,13 @@ pub(crate) async fn update<S: StateStore>(
         .routes
         .set_rewrite_host_default(after.rewrite_host.effective);
     let mut changes = Vec::new();
+    if update.native_build_limits.is_some() {
+        changes.push(crate::audit::Change {
+            setting: "native_build_limits".into(),
+            from: serde_json::to_string(&before.native_build_limits).unwrap(),
+            to: serde_json::to_string(&after.native_build_limits).unwrap(),
+        });
+    }
     if update.audit_events_max_age.is_some() {
         changes.push(crate::audit::Change {
             setting: AUDIT_EVENTS_MAX_AGE_KEY.into(),
@@ -441,6 +469,21 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn native_build_limits_are_readable_and_zero_is_refused() {
+        let (app, _) = setup(None).await;
+        let (status, body) = call(&app, "GET", json!(null)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body["nativeBuildLimits"]["max_source_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let (status, _) = call(&app, "PUT", json!({"nativeBuildLimits":{"max_files":0}})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
 
     async fn setup(flag: Option<Duration>) -> (Router, FakeStateStore) {
         let store = FakeStateStore::new();

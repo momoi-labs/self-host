@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod cgroup;
+pub mod git;
 pub mod identity;
 pub mod launch;
 pub mod lifecycle;

@@ -46,21 +46,22 @@ export function gitSourceOf(fields: GitFields): GitSource {
   };
 }
 
-export function GitSourceFields({ fields, onChange, includeRepository = true, section = "all" }: {
+export function GitSourceFields({ fields, onChange, includeRepository = true, section = "all", disabled = false }: {
   fields: GitFields;
   onChange: (fields: GitFields) => void;
   includeRepository?: boolean;
+  disabled?: boolean;
   section?: "all" | "repository" | "build";
 }) {
   const set = (key: Exclude<keyof GitFields, "strict">, value: string) => onChange({ ...fields, [key]: value });
   return <>
     {section !== "build" ? <>
       {includeRepository ? <FormField id="f-git-repository" label="Repository URL" hint="HTTP or HTTPS URL.">
-        <Input id="f-git-repository" type="url" required value={fields.repository} placeholder="https://git.example.invalid/team/app.git" onChange={(event) => set("repository", event.target.value)} />
+        <Input id="f-git-repository" type="url" required disabled={disabled} value={fields.repository} placeholder="https://git.example.invalid/team/app.git" onChange={(event) => set("repository", event.target.value)} />
       </FormField> : null}
       <div className="field-row">
-        <FormField id="f-git-ref" label="Branch or tag" value={fields.gitRef} onChange={(event) => set("gitRef", event.target.value)} placeholder="HEAD" />
-        <FormField id="f-git-revision" label="Pinned commit" className="mono" value={fields.revision} onChange={(event) => set("revision", event.target.value)} hint="Optional full commit id. Updates keep this commit until you change or clear it." />
+        <FormField id="f-git-ref" label="Branch or tag" disabled={disabled} value={fields.gitRef} onChange={(event) => set("gitRef", event.target.value)} placeholder="HEAD" />
+        <FormField id="f-git-revision" label="Pinned commit" className="mono" disabled={disabled} value={fields.revision} onChange={(event) => set("revision", event.target.value)} hint="Optional full commit id. Updates keep this commit until you change or clear it." />
       </div>
     </> : null}
     {section !== "repository" ? <>

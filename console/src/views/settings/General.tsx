@@ -286,6 +286,56 @@ export function ApplicationDefaults({ id, size }: PaneProps) {
   );
 }
 
+export function NativeBuildLimits({ id, size }: PaneProps) {
+  const queryClient = useQueryClient();
+  const { data: settings, isError } = useQuery(settingsQuery);
+  const saved = settings?.nativeBuildLimits;
+  const [draft, setDraft] = useState({ source: "", files: "", payload: "" });
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (saved && !dirty) setDraft({ source: String(saved.max_source_bytes / 1048576), files: String(saved.max_files), payload: String(saved.max_input_bytes / 1048576) });
+  }, [saved, dirty]);
+  const values = { max_source_bytes: Number(draft.source) * 1048576, max_files: Number(draft.files), max_input_bytes: Number(draft.payload) * 1048576 };
+  const valid = Object.values(values).every(value => Number.isSafeInteger(value) && value > 0);
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (!valid) return;
+    setSaving(true); setError(null);
+    try {
+      const response = await api("/settings", { method: "PUT", body: JSON.stringify({ nativeBuildLimits: values }) });
+      if (!response.ok) throw new Error((await failureOf(response)).error);
+      queryClient.setQueryData(settingsQuery.queryKey, await response.json());
+      setDirty(false);
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setSaving(false); }
+  }
+  return (
+    <GridPane id={id} size={size} title="Native Git build limits">
+      <Form onSubmit={save}>
+        <div className="form-body">
+          <p className="muted t-label">Native Git build limits apply to all Applications on this Host. Changes apply to the next build.</p>
+          {error || isError || (settings && !saved) ? <Alert variant="error"><AlertDescription>{error ?? "Could not read native build limits. Check the Host configuration."}</AlertDescription></Alert> : null}
+          <FormField id="native-source-limit" label="Source size limit (MiB)" hint="Total checkout file size before build.">
+            <Input id="native-source-limit" type="number" min="0.000001" step="any" value={draft.source} disabled={!settings || saving} onChange={event => { setDraft({ ...draft, source: event.target.value }); setDirty(true); }} />
+          </FormField>
+          <FormField id="native-files-limit" label="Source file limit">
+            <Input id="native-files-limit" type="number" min="1" step="1" value={draft.files} disabled={!settings || saving} onChange={event => { setDraft({ ...draft, files: event.target.value }); setDirty(true); }} />
+          </FormField>
+          <FormField id="native-payload-limit" label="Build payload limit (MiB)" hint="Includes encoded source and configuration. Allow room beyond the source size.">
+            <Input id="native-payload-limit" type="number" min="0.000001" step="any" value={draft.payload} disabled={!settings || saving} onChange={event => { setDraft({ ...draft, payload: event.target.value }); setDirty(true); }} />
+          </FormField>
+        </div>
+        <FormActions tone={error ? "danger" : dirty ? "warning" : "neutral"} message={dirty ? "Unsaved changes." : settings ? "Saved." : "Loading..."}>
+          {dirty ? <Button type="button" size="sm" disabled={saving || !saved} onClick={() => { setDirty(false); setError(null); }}>Discard</Button> : null}
+          <Button type="submit" size="sm" variant="primary" disabled={!dirty || !valid || saving}>{saving ? "Saving..." : "Save build limits"}</Button>
+        </FormActions>
+      </Form>
+    </GridPane>
+  );
+}
+
 /** What the console may do on the Host itself. Off until the Operator turns it on; the switch applies at once. */
 export function HostAccess({ id, size }: PaneProps) {
   const queryClient = useQueryClient();

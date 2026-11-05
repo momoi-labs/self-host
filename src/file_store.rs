@@ -1079,6 +1079,8 @@ mod tests {
         app.runtime = Runtime::Native(crate::store::NativeDefinition {
             account: "sf-app-k3n8qz4v2x1p".into(),
             command: vec!["/opt/api/bin/serve".into()],
+            build: vec![],
+            worker: None,
             recipe: Default::default(),
             working_dir: None,
             port: Some(8080),

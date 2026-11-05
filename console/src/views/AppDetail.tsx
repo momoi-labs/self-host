@@ -83,7 +83,7 @@ export function AppDetail({
   const [removing, setRemoving] = useState(false);
   const removalInFlight = useRef(false);
   const samples = seriesFor(metrics, app.id);
-  const [tab, setTab] = useState(app.status === "pending" && native ? "logs" : app.git && app.status === "pending" ? "last-update" : "summary");
+  const [tab, setTab] = useState(app.git && app.status === "pending" ? "last-update" : app.status === "pending" && native ? "logs" : "summary");
   const [openedTerminal, setOpenedTerminal] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [building, setBuilding] = useState(false);

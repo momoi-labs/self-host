@@ -43,7 +43,7 @@ const statusLabel = (status: string) => status.charAt(0).toUpperCase() + status.
 
 /** What an Application's definition names: the image, the repository, the command. */
 function sourceOf(app: App): string {
-  if (app.runtime?.kind === "native") return app.runtime.command.join(" ");
+  if (app.runtime?.kind === "native") return app.git?.repository ?? app.runtime.worker?.config ?? app.runtime.command.join(" ");
   return app.git?.repository ?? app.image;
 }
 

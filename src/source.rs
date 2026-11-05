@@ -57,6 +57,9 @@ pub struct GitBuild {
     pub revision: String,
     pub images: BTreeMap<String, String>,
     pub status: String,
+    /// Relative native release identity, never a Host path or a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_release: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -615,6 +618,29 @@ async fn checkout(
     Ok((directory, pinned, history))
 }
 
+/// The same credential-bound, pinned checkout used by container builds. Only
+/// checked source files cross the native launcher boundary, never Git metadata
+/// or the workspace's authentication files.
+pub async fn native_checkout(
+    root: &Path,
+    source: &GitSource,
+    pinned_revision: Option<&str>,
+) -> Result<crate::native::git::NativeSource, SourceError> {
+    crate::native::git::validate_source(source)?;
+    if pinned_revision.is_some_and(|revision| !valid_revision(revision)) {
+        return Err(invalid("pinned revision is invalid"));
+    }
+    private_directory(root)?;
+    let workspace = Workspace(root.join(format!("work-{:032x}", rand::random::<u128>())));
+    private_directory(&workspace.0)?;
+    let (checkout, revision, _) =
+        checkout(&workspace.0, source, pinned_revision, root, None).await?;
+    let context = contained_path(&checkout, &source.context)?;
+    let files =
+        crate::native::git::source_files(&context).map_err(|error| invalid(error.to_string()))?;
+    Ok(crate::native::git::NativeSource { revision, files })
+}
+
 pub async fn build(
     root: &Path,
     app_id: &str,
@@ -729,6 +755,7 @@ pub async fn build(
             revision,
             images,
             status: "completed".into(),
+            native_release: None,
         },
         image,
         compose,

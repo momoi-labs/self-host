@@ -4,7 +4,8 @@ export function nativeCommandFields(command: readonly string[] = []) {
   return { command: join(command) };
 }
 
-export function nativeCommand(fields: { command: string }): string[] {
+export function nativeCommand(fields: { command: string; worker?: boolean }): string[] {
+  if (fields.worker) return [];
   let command: string[];
   try {
     command = split(fields.command);
