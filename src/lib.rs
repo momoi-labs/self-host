@@ -1926,16 +1926,16 @@ async fn deploy_app<S: StateStore>(
         return deploy_error_response(DeployError::InvalidNative("environment on create requires native Runtime; use Application Variables for containers".into()));
     }
     if let Some(source) = body.git {
-        if is_native {
-            if let Err(error) = native::lifecycle::validate_environment(
+        if is_native
+            && let Err(error) = native::lifecycle::validate_environment(
                 &body
                     .environment
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect::<Vec<_>>(),
-            ) {
-                return deploy_error_response(DeployError::InvalidNative(error.to_string()));
-            }
+            )
+        {
+            return deploy_error_response(DeployError::InvalidNative(error.to_string()));
         }
         if !body.image.is_empty()
             || !body.path.is_empty()
