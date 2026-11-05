@@ -60,6 +60,11 @@ impl VariableDelivery {
 /// How an Application runs on the Host (ADR-0028).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// NativeDefinition carries the full native runtime shape, so the enum is the
+// size of that struct. Records are stored in state and cloned per Application,
+// not in a hot array; boxing would touch every Runtime::Native site for no
+// measured gain.
+#[allow(clippy::large_enum_variant)]
 pub enum Runtime {
     /// Docker: one container or a Compose project. Every row written before
     /// this field existed runs this way.
