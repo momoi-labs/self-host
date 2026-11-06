@@ -44,7 +44,9 @@ Do not apply the authenticated list, detail or create layout to this screen.
 
 1. Run `npm run typecheck`, `npm test` and `npm run build` in `console/`.
 2. Start the real console through `cargo run -- serve`. Verify that it serves
-   the rebuilt bundle. Use isolated Platform State for disposable credentials.
+   the rebuilt bundle. Use isolated Platform State initialized with `cargo run
+   -- init --dns prototype.lan --api-key local`, and use `local` to unlock the
+   console.
 3. At desktop and mobile widths, check the split, hidden panel, visible server
    origin and available help. Check light, dark and system themes.
 4. Use the keyboard to paste, reveal, hide and submit. Revealing must keep the

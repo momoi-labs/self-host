@@ -49,6 +49,8 @@ if PATH="$work/stubs:$PATH" SELF_HOST_TEST_ARCHIVE="$work/incomplete.tar.gz" \
 fi
 [[ ! -e /usr/libexec/self-host/s6 && ! -e /usr/local/bin/self-host ]]
 PATH="$work/stubs:$PATH" SELF_HOST_BINARY_ONLY=1 bash "$installer" v0.0.0
+cmp "$work/download/self-host" /usr/libexec/self-host/native-source-build
+[[ "$(stat -c %u:%g:%a /usr/libexec/self-host/native-source-build)" = 0:0:755 ]]
 for path in /usr/libexec/self-host/s6/*; do
   [[ "$(stat -c %u:%g:%a "$path")" = 0:0:755 ]]
 done

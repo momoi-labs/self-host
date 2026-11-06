@@ -121,6 +121,12 @@ impl ApplicationCgroup {
         Ok(parse_pids(&procs))
     }
 
+    /// OOM kills recorded for this tree before cleanup removes the cgroup.
+    pub(crate) fn oom_kills(&self) -> Result<u64, CgroupError> {
+        let events = read(&self.path.join("memory.events"))?;
+        Ok(event_value(&events, "oom_kill"))
+    }
+
     /// `cgroup.kill`, then wait up to `grace` for `cgroup.procs` to empty,
     /// then remove the directory. Nothing of the tree survives; if something
     /// still holds on after the grace, that is `StillRunning`. A directory
@@ -145,7 +151,7 @@ impl ApplicationCgroup {
             }
             std::thread::sleep(POLL_INTERVAL);
         }
-        remove_dir(&self.path)
+        remove_dir_when_ready(&self.path, grace)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -349,6 +355,43 @@ fn remove_dir(path: &Path) -> Result<(), CgroupError> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn remove_dir_when_ready(path: &Path, grace: Duration) -> Result<(), CgroupError> {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        match std::fs::remove_dir(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            // An OOM can leave descendants in the kernel's dying state after
+            // cgroup.procs is empty. The cgroup becomes removable shortly
+            // afterwards, so wait instead of replacing the original failure
+            // with a cleanup race.
+            Err(error)
+                if error.raw_os_error() == Some(libc::EBUSY)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(source) => {
+                return Err(CgroupError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        }
+    }
+}
+
+fn event_value(events: &str, name: &str) -> u64 {
+    events
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(' ')?;
+            (key == name).then(|| value.trim().parse().ok()).flatten()
+        })
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +449,13 @@ mod tests {
     fn a_procs_listing_reads_as_pids_and_skips_blank_lines() {
         assert_eq!(parse_pids("12\n345\n\n"), vec![12, 345]);
         assert!(parse_pids("").is_empty());
+    }
+
+    #[test]
+    fn memory_events_name_the_oom_kill_count() {
+        let events = "low 0\nhigh 0\nmax 96540\noom 3\noom_kill 3\noom_group_kill 1\n";
+        assert_eq!(event_value(events, "oom_kill"), 3);
+        assert_eq!(event_value(events, "missing"), 0);
     }
 
     #[test]

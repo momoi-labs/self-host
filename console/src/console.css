@@ -440,6 +440,9 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 :is(.detail-tabs .logview, .logview-flush)::before { content: none; }
 .detail-log-pane > :not(:last-child) { flex: none; padding: var(--spacing-lg); }
 .detail-log-pane > :last-child { flex: 1; min-height: 0; }
+/* Application output can contain long package-manager progress lines. Keep
+   those lines inside the panel instead of making the detail page pan sideways. */
+.detail-logs .logview [data-slot="log-view-line"] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .container-terminal { position: relative; height: 100%; min-height: 320px; }
 /* xterm's fit addon reads the parent's computed height as its content box.

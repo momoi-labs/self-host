@@ -222,8 +222,12 @@ screen is the exception.
     or the log when one is going, and does it stay where the Operator put it
     afterwards?
 11. `npm run typecheck && npm run build`, then load the screen in the real
-    console from `cargo run -- serve`. A screenshot of the prototype is not
-    evidence the real screen renders.
+    console from `cargo run -- serve`. For an isolated test environment,
+    initialize the same `SELF_HOST_DATA_DIR` with `cargo run -- init --dns
+    prototype.lan --api-key local` before starting it. Always use `local` as
+    the API key for a local test environment so the Operator can unlock the
+    console without retrieving a disposable key. A screenshot of the
+    prototype is not evidence the real screen renders.
 
 ## If the shape does not fit
 

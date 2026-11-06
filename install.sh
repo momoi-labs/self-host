@@ -150,6 +150,11 @@ install_binary() {
 	fi
 
 	if [ "$os" = "linux" ]; then
+		# Native Git builds run after NoNewPrivs and a complete capability drop.
+		# Executing the network-capable main binary there is refused by Linux,
+		# so keep an identical capability-free copy in a protected directory.
+		sudo install -d -m 755 -o root -g root /usr/libexec/self-host
+		sudo install -m 755 -o root -g root "$tmpdir/$BINARY" /usr/libexec/self-host/native-source-build
 		if ! command -v setcap >/dev/null 2>&1; then
 			echo "install libcap (libcap2-bin on Debian/Ubuntu), then run:" >&2
 			echo "  sudo setcap cap_net_bind_service=+ep ${INSTALL_DIR}/${BINARY}" >&2

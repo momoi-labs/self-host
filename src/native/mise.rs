@@ -259,6 +259,8 @@ pub(crate) fn apply(
             Err(error) => break Err(error),
         }
     };
+    #[cfg(target_os = "linux")]
+    let oom_kills = process.cgroup.oom_kills().unwrap_or(0);
     let cleanup = process.stop(Duration::from_secs(1));
     #[cfg(target_os = "linux")]
     for reader in readers {
@@ -273,14 +275,47 @@ pub(crate) fn apply(
             .join()
             .map_err(|_| anyhow::anyhow!("native environment log worker failed"))??;
     }
-    cleanup.context("could not clean the native environment preparation process tree")?;
-    let Some(status) = result.context("could not observe native environment preparation")? else {
-        bail!("native environment preparation exceeded 15 minutes; inspect Application logs");
-    };
-    if !status.success() {
-        bail!("native environment preparation failed ({status}); inspect Application logs");
+    let preparation = (|| -> anyhow::Result<()> {
+        let Some(status) = result.context("could not observe native environment preparation")?
+        else {
+            bail!("native environment preparation exceeded 15 minutes; inspect Application logs");
+        };
+        #[cfg(target_os = "linux")]
+        if oom_kills > 0
+            && let Some(bytes) = service.limits.memory_bytes
+        {
+            let limit = memory_limit_label(bytes);
+            bail!(
+                "native environment preparation exceeded the {limit} memory limit; increase Memory in Configuration, then retry"
+            );
+        }
+        if !status.success() {
+            if status.code() == Some(126) {
+                bail!(
+                    "native environment preparation could not execute a required program ({status}); inspect Application logs for the refused executable and operating-system error"
+                );
+            }
+            bail!("native environment preparation failed ({status}); inspect Application logs");
+        }
+        Ok(())
+    })();
+    if let Err(error) = preparation {
+        if let Err(cleanup_error) = cleanup {
+            tracing::warn!(%cleanup_error, "native environment cleanup failed after preparation failed");
+        }
+        return Err(error);
     }
+    cleanup.context("could not clean the native environment preparation process tree")?;
     Ok(())
+}
+
+fn memory_limit_label(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} bytes")
+    }
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -401,5 +436,11 @@ mod tests {
         log.write_all(&[b'x'; 4096]).unwrap();
         assert!(bytes.starts_with(b"1234\nNative environment output truncated"));
         assert!(bytes.len() < 80);
+    }
+
+    #[test]
+    fn memory_limits_are_written_for_people() {
+        assert_eq!(memory_limit_label(256 * 1024 * 1024), "256 MiB");
+        assert_eq!(memory_limit_label(1000), "1000 bytes");
     }
 }

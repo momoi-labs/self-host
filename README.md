@@ -153,9 +153,10 @@ Install a newer release's file the same way to upgrade. Remove it with
 `sudo pacman -R self-host-bin`, `sudo apt remove self-host-bin`, or
 `sudo dnf remove self-host-bin`. AUR publication is disabled.
 
-Packages keep Platform State and install the binary and the s6 tools. They do
-not configure Docker, DNS, daemon startup or native supervision. After each
-install or upgrade, grant the binary the bind privilege with
+Packages keep Platform State and install the binary, a capability-free native
+build copy and the s6 tools. They do not configure Docker, DNS, daemon startup
+or native supervision. After each install or upgrade, grant only the main
+binary the bind privilege with
 `sudo setcap cap_net_bind_service=+ep /usr/bin/self-host`, or use the systemd
 setting described under [DNS](#dns).
 
