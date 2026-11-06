@@ -122,6 +122,7 @@ impl ApplicationCgroup {
     }
 
     /// OOM kills recorded for this tree before cleanup removes the cgroup.
+    #[cfg(target_os = "linux")]
     pub(crate) fn oom_kills(&self) -> Result<u64, CgroupError> {
         let events = read(&self.path.join("memory.events"))?;
         Ok(event_value(&events, "oom_kill"))
@@ -382,6 +383,7 @@ fn remove_dir_when_ready(path: &Path, grace: Duration) -> Result<(), CgroupError
     }
 }
 
+#[cfg(target_os = "linux")]
 fn event_value(events: &str, name: &str) -> u64 {
     events
         .lines()
@@ -452,6 +454,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn memory_events_name_the_oom_kill_count() {
         let events = "low 0\nhigh 0\nmax 96540\noom 3\noom_kill 3\noom_group_kill 1\n";
         assert_eq!(event_value(events, "oom_kill"), 3);
