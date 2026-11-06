@@ -100,6 +100,7 @@ aurs:
     conflicts: [self-host]
     package: |
       install -Dm755 "self-host" "${pkgdir}/usr/bin/self-host"
+      install -Dm755 "self-host" "${pkgdir}/usr/libexec/self-host/native-source-build"
       install -Dm644 "LICENSE" "${pkgdir}/usr/share/licenses/self-host-bin/LICENSE"
       install -d "${pkgdir}/usr/libexec/self-host/s6" "${pkgdir}/usr/share/licenses/self-host-bin/s6"
       install -m755 s6/bin/* "${pkgdir}/usr/libexec/self-host/s6/"
@@ -126,6 +127,10 @@ nfpms:
     contents:
       - src: LICENSE
         dst: /usr/share/licenses/self-host-bin/LICENSE
+      - src: target/{{ .Target }}/release/self-host
+        dst: /usr/libexec/self-host/native-source-build
+        file_info:
+          mode: 0755
       - src: target/{{ .Target }}/release/s6/bin/
         dst: /usr/libexec/self-host/s6
         file_info:

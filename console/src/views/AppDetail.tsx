@@ -312,13 +312,22 @@ export function AppDetail({
         />
       </div>
 
-      {app.last_error ? (
+      {app.last_error && !building ? (
         <Failure
           failure={app.last_error}
           actionLabel="Retry"
-          onAction={() =>
-            (document.getElementById("app-form") as HTMLFormElement | null)?.requestSubmit()
-          }
+          onAction={() => {
+            if (app.git) {
+              void rebuildCurrent();
+              return;
+            }
+            // Inactive tab panels are not mounted. Open Configuration before
+            // asking its form to submit the saved values again.
+            setTab("configuration");
+            requestAnimationFrame(() =>
+              (document.getElementById("app-form") as HTMLFormElement | null)?.requestSubmit()
+            );
+          }}
         />
       ) : null}
 

@@ -79,7 +79,9 @@ GoReleaser produces:
   binary and MIT license. Linux tarballs also contain `s6/bin`, `s6/licenses`
   and `s6/versions.txt`. Existing `install.sh` URLs keep working.
 - Two packages per Linux format, for amd64 and arm64: `.pkg.tar.zst`, `.deb`,
-  and `.rpm`. Each format uses its distribution's architecture and dependency names.
+  and `.rpm`. Each installs the main binary and its capability-free native
+  build copy. Each format uses its distribution's architecture and dependency
+  names.
 - `checksums.txt` with SHA-256 hashes of the downloadable packages and archives.
 - A Homebrew Cask with both macOS architectures and their SHA-256 hashes.
 - A local AUR `self-host-bin` recipe with both Linux architectures and their

@@ -447,6 +447,12 @@ packages place them in `/usr/libexec/self-host/s6`; they do not replace a
 distribution's s6 installation. Linux must expose cgroup v2 with `cpu`,
 `memory`, `pids` and `cgroup.kill`.
 
+Linux releases also install `/usr/libexec/self-host/native-source-build` as a
+root-owned `0755` copy without file capabilities. Native Git preparation runs
+that copy after dropping privileges and enabling `NoNewPrivs`. The main binary
+may keep `cap_net_bind_service`; Linux would refuse to execute that capable
+file inside the restricted build process.
+
 `assets/linux/self-host-native.service` starts one root-owned s6 tree with
 `Delegate=cpu memory pids`. The boot command moves the supervisor into a
 separate cgroup leaf before enabling controllers for Application cgroups.
@@ -469,6 +475,8 @@ unit with root ownership, then start the unit:
 
 ```sh
 sudo install -o root -g root -m 755 target/debug/self-host /usr/local/bin/self-host
+sudo install -d -o root -g root -m 755 /usr/libexec/self-host
+sudo install -o root -g root -m 755 target/debug/self-host /usr/libexec/self-host/native-source-build
 sudo install -o root -g root -m 644 assets/linux/self-host-native.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now self-host-native.service

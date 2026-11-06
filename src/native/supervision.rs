@@ -709,10 +709,10 @@ impl Supervisor {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(log_path)?;
         let result = super::mise::apply(&self.cgroup_root, definition, log.try_clone()?);
-        if result.is_ok() {
-            host::write(&receipt, fingerprint.as_bytes(), 0o600)?;
+        if let Err(error) = &result {
+            writeln!(log, "\nNative environment preparation failed: {error:#}")?;
         } else {
-            log.write_all(b"\nNative environment preparation failed.\n")?;
+            host::write(&receipt, fingerprint.as_bytes(), 0o600)?;
         }
         result
     }

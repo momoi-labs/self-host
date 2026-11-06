@@ -77,6 +77,7 @@ pub type HostRuntime = S6Runtime;
 pub struct S6Runtime {
     root: PathBuf,
     binary: PathBuf,
+    build_binary: PathBuf,
     data_root: PathBuf,
     #[cfg(not(target_os = "macos"))]
     cgroup_root: Option<PathBuf>,
@@ -96,6 +97,10 @@ impl Default for S6Runtime {
             #[cfg(target_os = "macos")]
             binary: super::macos::HELPER.into(),
             #[cfg(not(target_os = "macos"))]
+            build_binary: "/usr/libexec/self-host/native-source-build".into(),
+            #[cfg(target_os = "macos")]
+            build_binary: super::macos::HELPER.into(),
+            #[cfg(not(target_os = "macos"))]
             data_root: crate::paths::native_data_root()
                 .unwrap_or_else(|| "/var/lib/self-host/native-data".into()),
             #[cfg(target_os = "macos")]
@@ -112,9 +117,11 @@ impl S6Runtime {
     /// Explicit paths are for a protected, disposable Linux fixture.
     #[cfg(not(target_os = "macos"))]
     pub fn at(root: PathBuf, binary: PathBuf, cgroup_root: PathBuf, data_root: PathBuf) -> Self {
+        let build_binary = binary.with_file_name("native-source-build");
         Self {
             root,
             binary,
+            build_binary,
             data_root,
             cgroup_root: Some(cgroup_root),
             #[cfg(target_os = "linux")]
@@ -393,7 +400,7 @@ impl NativeRuntime for S6Runtime {
             service.command = vec!["/usr/bin/false".into()];
             service.working_dir = runtime.home(&record.id)?;
             service.git_build = Some(input);
-            service.build_binary = Some(runtime.binary.clone());
+            service.build_binary = Some(runtime.build_binary.clone());
             if supervisor.exists(&service.application_id)? {
                 supervisor.replace(&service, STOP)?;
             } else {

@@ -53,6 +53,23 @@ impl Fixture {
         let binary = root.join("self-host");
         fs::copy(env!("CARGO_BIN_EXE_self-host"), &binary).unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let build_binary = root.join("native-source-build");
+        fs::copy(env!("CARGO_BIN_EXE_self-host"), &build_binary).unwrap();
+        fs::set_permissions(&build_binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let setcap = Command::new("setcap")
+            .args(["cap_net_bind_service=+ep", binary.to_str().unwrap()])
+            .status()
+            .expect("setcap is required by the native API fixture");
+        assert!(
+            setcap.success(),
+            "apply a file capability to the main binary"
+        );
+        let main_capabilities = Command::new("getcap").arg(&binary).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&main_capabilities.stdout).contains("cap_net_bind_service=ep")
+        );
+        let helper_capabilities = Command::new("getcap").arg(&build_binary).output().unwrap();
+        assert!(helper_capabilities.stdout.is_empty());
         let cgroup = PathBuf::from(format!("/sys/fs/cgroup/sf-native-api-{marker}"));
         fs::create_dir(&cgroup).unwrap();
         let scanner = Command::new("s6-svscan")

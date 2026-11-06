@@ -935,15 +935,19 @@ async fn prepare_native_update(
     }
     validate_routing(store, &record).await?;
     let changed = record.runtime != current.runtime;
+    // Retry submits the saved definition again. A failed native Application
+    // must redeploy even when no field changed, just like a failed container
+    // Application does.
+    let redeploy = changed || current.status == STATUS_FAILED;
     let running = current.status != STATUS_STOPPED;
-    if changed {
+    if redeploy {
         record.status = STATUS_PENDING.into();
         record.last_error = None;
     }
     store.insert_application(&record).await?;
     Ok(PendingDeploy {
         record,
-        work: if changed {
+        work: if redeploy {
             DeployWork::Native { running }
         } else {
             DeployWork::Settled
@@ -5163,6 +5167,45 @@ services:
             "native execution is not available yet; the Application runtime must be container"
         );
         assert!(store.list_applications().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn retrying_a_failed_native_application_redeploys_saved_configuration() {
+        let store = initialized_store().await;
+        let pending = prepare_deploy_native(
+            &store,
+            "api",
+            DeployOptions {
+                runtime: Some(Runtime::Native(
+                    serde_json::from_value(serde_json::json!({
+                        "command": ["/opt/api/bin/serve"],
+                        "port": 8080
+                    }))
+                    .unwrap(),
+                )),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        let id = pending.record.id;
+        store
+            .set_application_outcome(
+                &id,
+                STATUS_FAILED,
+                Some(ErrorReport::plain("native supervision was unavailable")),
+            )
+            .await
+            .unwrap();
+
+        let retry = prepare_update(&store, &id, ApplicationUpdate::default())
+            .await
+            .unwrap();
+
+        assert_eq!(retry.native_intent(), Some(true));
+        assert_eq!(retry.record.status, STATUS_PENDING);
+        assert_eq!(retry.record.last_error, None);
     }
 
     #[tokio::test]
