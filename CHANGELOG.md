@@ -1,5 +1,13 @@
 # self-host
 
+## 0.17.1
+
+### Patch Changes
+
+- 969b6fb: Keep native Git builds executable when the main Linux binary has its network
+  bind capability. Report preparation failures with their real cause, allow
+  failed deploys to retry, and keep long logs inside the Application page.
+
 ## 0.17.0
 
 ### Minor Changes
