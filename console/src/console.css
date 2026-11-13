@@ -15,7 +15,7 @@
 .auth-guide-instructions { border-top: 1px solid var(--color-border); padding-top: var(--spacing-xl); }
 .auth-access { display: grid; place-items: center; padding: clamp(24px, 5vw, 80px); }
 .auth-panel { width: 100%; max-width: 440px; }
-.auth-panel .card { --frame-fill: color-mix(in srgb, var(--color-card) 65%, transparent); background-color: var(--frame-fill); }
+.auth-panel .card { --frame-fill: color-mix(in srgb, var(--color-card) 65%, transparent); background-color: color-mix(in srgb, var(--frame-fill) calc((1 - var(--pixel-enabled, 0)) * (1 - var(--appearance-expressive, 0)) * 100%), transparent); }
 .auth-brand-copy { display: grid; gap: var(--spacing-2xs); min-width: 0; }
 .auth-server-url { overflow-wrap: anywhere; }
 .auth-eyebrow { font-size: var(--type-size-label); letter-spacing: .08em; text-transform: uppercase; }
