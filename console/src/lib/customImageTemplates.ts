@@ -13,7 +13,10 @@ export type CustomImageTemplate = {
   dependencies: ImageDependency[];
   setup: string[];
   buildChecks: string[];
-  application: { command: string; web_port: number; persist_data: boolean };
+  /** How an Application runs the image, for a template made to run one. */
+  application?: { command: string; web_port: number; persist_data: boolean };
+  /** A file the Operator owns from the start, in place of the builder. */
+  dockerfile?: string;
 };
 
 export const customImageTemplates: CustomImageTemplate[] = [{
@@ -41,6 +44,26 @@ export const customImageTemplates: CustomImageTemplate[] = [{
     web_port: 3000,
     persist_data: true,
   },
+}, {
+  id: "postgresql",
+  name: "PostgreSQL",
+  imageName: "postgres-extensions",
+  dependencies: [],
+  setup: [],
+  buildChecks: [],
+  dockerfile: `FROM postgres:18-bookworm
+
+# pgBackRest is what backs a managed PostgreSQL server up. Keep it.
+RUN apt-get update \\
+ && apt-get install -y --no-install-recommends pgbackrest \\
+ && rm -rf /var/lib/apt/lists/*
+
+# Install extensions here. Keep the version in the package name equal to
+# the version in FROM. For example:
+# RUN apt-get update \\
+#  && apt-get install -y --no-install-recommends postgresql-18-pgvector \\
+#  && rm -rf /var/lib/apt/lists/*
+`,
 }];
 
 export function customImageTemplate(id?: string | null) {

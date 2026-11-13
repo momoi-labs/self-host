@@ -1216,6 +1216,7 @@ mod tests {
                     major: 17,
                     volume: "synthetic-data".into(),
                     native_port: Some(28432),
+                    custom_image: None,
                 },
             )
             .await

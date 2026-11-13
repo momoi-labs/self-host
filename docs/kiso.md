@@ -42,6 +42,8 @@ rules. All entry points use it.
 | `AppSummary`, `GroupCard`, `ProcessCard` | Application facts and running processes |
 | `LogPane`, `Logs`, `useToast` | Logs and action feedback |
 | `PrivateAccessField`, `DatabaseConnections` | Application access grants and managed database connections |
+| `DatabaseBackups` | A managed database server's backups: on or off, days to keep, the repository's backups, restore to a new server and verification |
+| `RestoreDialog` | Restores a server's backups into a new server. The Backups tab opens it for one server, and the Databases list lets the Operator pick the source |
 | `barSteps`, `phase` in `console/src/lib/runSteps.ts` | Task progress and phase labels |
 
 `EnvironmentEditor` is exported from `console/src/views/Environments.tsx`.
@@ -97,7 +99,7 @@ These map the existing screens. They do not certify a full contract audit.
 | Databases, DNS, routes, events and custom image lists | `crud`, with ADR-0024 list layout |
 | Custom image editor | `crud`, with ADR-0024 create/detail layouts |
 | Virtual machine create/detail | `crud`, `guided-flow`, with ADR-0024 layouts |
-| Settings: general, Host, DNS, certificates, API keys, scheduled tasks and Git connections | `settings` |
+| Settings: general, Host, DNS, certificates, API keys, scheduled tasks, backup storage, maintenance window and Git connections | `settings` |
 | Login | `login-authentication`, plus `skills/add-page/login.md` |
 | Device setup | `onboarding`; outside the authenticated shell |
 | Host and standalone remote screen | No full-screen pattern; product-specific terminal and remote screen |

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   StatusBadge,
-  Button, Card,
+  Badge, Button, Card,
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
   EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
@@ -139,7 +139,9 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
                         event.preventDefault();
                         onOpen(image.id);
                       }}>
-                      <TableCell>{image.name}</TableCell>
+                      <TableCell>
+                        <span className="row">{image.name}{image.platform ? <Badge variant="neutral">Platform</Badge> : null}</span>
+                      </TableCell>
                       <TableCell className="mono">
                         {image.dockerfile ? <span className="muted">Custom Dockerfile</span>
                           : image.dependencies.map((dep) => `${dep.tool}@${dep.version}`).join(", ")}

@@ -572,6 +572,7 @@ export function Environments({
     });
     // A template brings its own service. The machine keeps its state under the
     // dev user's home rather than the data volume a container would have.
+    if (!template.application) return;
     patch({
       command: template.application.command.replace(
         "/data/t3home",
@@ -1306,7 +1307,7 @@ export function EnvironmentEditor({
                 disabled={busy}
               >
                 <option value="">None</option>
-                {customImageTemplates.map((template) => (
+                {customImageTemplates.filter((template) => template.application).map((template) => (
                   <option key={template.id} value={template.id}>
                     {template.name}
                   </option>

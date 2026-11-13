@@ -117,6 +117,26 @@ _Avoid_: dependencies (ambiguous with app deps), sidecars
 One console action the Platform carries out on its own worker after accepting the request: create, delete, stop, start, restart or configure an Application, a Virtual machine or a custom image. A Task is `pending`, then `running`, then `completed` or `failed`; the audit event with the same id is its record. Tasks on one object run one at a time, oldest first (ADR-0027).
 _Avoid_: job, background operation, cron (a Task is not scheduled for a time)
 
+**Backup**:
+One physical copy of a whole managed PostgreSQL server, taken by pgBackRest and kept in the server's Repository: full, differential or incremental. A Backup runs as a Task. With the archived WAL it restores into a new server, at the latest state or at a time in the Recovery window (ADR-0035).
+_Avoid_: snapshot, export, dump
+
+**Repository**:
+The pgBackRest repository of one managed PostgreSQL server: its Backups and its archived WAL, under the server's own path in the Backup storage.
+_Avoid_: stanza (pgBackRest's word, kept out of the console), archive
+
+**Recovery window**:
+The span of time a server can be restored to: from its oldest kept full Backup to its last archived WAL segment. The days to keep set its length.
+_Avoid_: retention period, PITR range
+
+**Backup storage**:
+The one S3-compatible bucket a Host sends its Backups to, with the keys to reach it. Part of Platform State; the secret key is never shown after it is saved.
+_Avoid_: backup target, destination, repository (a Repository is one server's part of it)
+
+**Maintenance window**:
+The hours of the day, in the Host's local time, in which the Platform starts planned database work such as a scheduled Backup. One per Host.
+_Avoid_: backup schedule (each database has its own), cron
+
 **Platform State**:
 Everything the Operator configured, as the Platform records it: settings, credentials, the Zone's Records, Virtual machines, custom images, the audit history, and each Application's identity, publication, definition and environment. Authoritative, owned by the daemon, and separate from anything generated from it. Kept in one SQLite file the daemon opens in-process (ADR-0027); the Compose definitions stay verbatim on disk beside it.
 _Avoid_: database (as the name of a component that runs), cache, the state store (as a component that runs)

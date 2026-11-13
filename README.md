@@ -14,6 +14,7 @@ outside the Host is needed for that local setup.
 - **Databases.** Managed PostgreSQL 16, 17 and 18 runs as a private container.
   For each connection, the Platform creates a database and a login, and stores
   the connection in a variable the Application reads, usually `DATABASE_URL`.
+  A server can run a custom image, for extensions the official image lacks.
 - **Custom images.** An image recipe carries its own Dockerfile. Setup commands
   run during the build, and you can edit the generated Dockerfile by hand
   ([ADR-0022](docs/adr/0022-custom-images-hand-over-their-dockerfile.md)).
@@ -208,6 +209,7 @@ self-host routes add-alias blog www.home.lan
 self-host routes add-path blog /api --strip-prefix
 self-host vms create --name workbench --ssh-key ~/.ssh/id_ed25519.pub
 self-host db create --name main && self-host db connect main --app blog
+self-host db backup enable main --keep-days 14
 ```
 
 Run `self-host <command> --help` for the rest. Native Applications are created

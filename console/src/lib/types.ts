@@ -163,6 +163,49 @@ export type DatabaseImport = {
   task: import("./platformEvents.js").PlatformEvent | null;
 };
 
+/** One backup in a server's pgBackRest repository, as `GET /databases/{id}/backups` lists it. */
+export type DatabaseBackup = {
+  label: string; kind: "full" | "diff" | "incr";
+  started_at: string; finished_at: string;
+  /** The size of the server the backup holds. */
+  bytes: number;
+  /** What this backup added to the bucket. */
+  repository_bytes: number;
+};
+
+/** The last test restore of a server's latest backup. */
+export type BackupVerification = { status: "running" | "passed" | "failed"; task_id: string; at: string; label?: string | null; error?: string | null };
+
+/** A server's backups, as `GET /databases/{id}/backups/settings` reads them. */
+export type BackupSettings = {
+  enabled: boolean; keep_days: number;
+  /** The Task that is turning backups on or off. */
+  change?: { task_id: string; enable: boolean } | null;
+  /** The backup Task that is queued or running. */
+  running?: string | null;
+  /** When the next scheduled backup starts and its type; null when backups are off. */
+  next_run_at: string | null; next_kind: DatabaseBackup["kind"] | null;
+  storage_configured: boolean;
+  archiving: { last_archived_at: string | null; last_failed_at: string | null; failing: boolean };
+  verification: BackupVerification | null;
+  /** What needs the Operator: WAL that does not reach the bucket, or the last failure. */
+  problem: string | null;
+  /** The Task a change of `enabled` queued. */
+  task_id?: string;
+};
+
+/** One row of `GET /backups`: a server that has backups on or a repository. */
+export type BackupSummary = { database_application_id: string; enabled: boolean; last: DatabaseBackup | null; problem: string | null };
+
+/** The Host's backup storage, as `GET /backups/storage` shows it: never the secret key. */
+export type BackupStorage = {
+  configured: boolean; endpoint: string; region: string; bucket: string; prefix: string;
+  path_style: boolean; verify_tls: boolean; access_key_id: string; has_secret: boolean;
+};
+
+/** The hours the Host may run planned database work in, in the Host's local time. */
+export type MaintenanceWindow = { start_hour: number; hours: number; utc_offset: string };
+
 /** A consumer database the Platform made on a server, as
  * `GET /databases/{id}/databases` lists it: a connection can choose it. */
 export type ConsumerDatabase = {
@@ -213,6 +256,8 @@ export type CustomImage = {
   setup?: string[];
   build_checks?: string[];
   dockerfile?: string | null;
+  /** The Platform wrote this recipe and rebuilds it; nobody edits it. */
+  platform?: boolean;
   image: string;
   status: "building" | "ready" | "failed";
   last_error: Report | null;

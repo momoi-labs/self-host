@@ -58,7 +58,9 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
   // This image is building. Other images build beside it; a save now would
   // queue another build of this one, so the form waits instead.
   const building = current?.status === "building";
-  const editingDisabled = submitting || building;
+  // The Platform wrote this recipe and rebuilds it, so the form only shows it.
+  const locked = !!current?.platform;
+  const editingDisabled = submitting || building || locked;
   const manual = dockerfile !== null;
   // Something to build: a mise tool or a custom command, and every tool with
   // a version. The Host asks the same before it renders a file.
@@ -106,6 +108,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
     setDependencies(structuredClone(template?.dependencies ?? []));
     setSetup((template?.setup ?? []).join("\n"));
     setBuildChecks((template?.buildChecks ?? []).join("\n"));
+    setDockerfile(template?.dockerfile ?? null);
     setEditorKey((value) => value + 1);
   }
 
@@ -167,7 +170,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
           {manual ? (
             <div className="row">
               <p className="t-caps grow">Dockerfile</p>
-              <Badge variant="warning">Edited by hand</Badge>
+              {locked ? <Badge variant="neutral">Platform</Badge> : <Badge variant="warning">Edited by hand</Badge>}
             </div>
           ) : !selected ? (
             <p className="t-caps">Configuration</p>
@@ -179,11 +182,15 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
                 required maxLength={128} disabled={editingDisabled}
               />
               <FormField id="custom-image-dockerfile" label="Dockerfile"
-                hint="The Host builds this file as is. Keep the dev user and the entrypoint, or the container will not start. Build checks only run if you keep their RUN --network=none step.">
+                hint={locked
+                  ? "The Platform wrote this file. It adds pgBackRest to the official PostgreSQL image."
+                  : templateId === "postgresql"
+                  ? "The Host builds this file as is. Choose it under Image when you create a database. To change it later, edit it here, save, then recreate the database."
+                  : "The Host builds this file as is. Keep the dev user and the entrypoint, or the container will not start. Build checks only run if you keep their RUN --network=none step."}>
                 <ShellEditor id="custom-image-dockerfile" value={dockerfile} onChange={setDockerfile}
                   disabled={editingDisabled} maxLength={65536} />
               </FormField>
-              <div className="custom-image-takeover">
+              {locked ? null : <div className="custom-image-takeover">
                 {discarding ? (
                   <>
                     <p className="grow t-label">Discard this file and go back to the builder? It is written again from the fields, which still hold what they held before.</p>
@@ -200,7 +207,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
                       onClick={() => setDiscarding(true)}>Back to builder</Button>
                   </>
                 )}
-              </div>
+              </div>}
             </>
           ) : (
             <>
@@ -269,6 +276,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
             tone={dirty ? "warning" : !building && current?.status === "failed" ? "danger" : "neutral"}
             message={
               !selected ? undefined
+                : locked ? "The Platform builds this image for PostgreSQL backups. You cannot edit it. To add extensions, create an image from the PostgreSQL template."
                 : building ? "This image is building."
                 : dirty ? <><strong>Unsaved changes.</strong> Applications keep the last build until you save and build again.</>
                 : current?.status === "failed" ? <><strong>The last build failed.</strong> Fix the recipe, then save and build again.</>
@@ -282,7 +290,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
             ) : current?.status === "failed" && !building ? (
               <Button type="button" size="sm" onClick={() => setTab("log")}>Open build log</Button>
             ) : null}
-            <Button type="submit" size="sm" variant="primary" disabled={submitting || building || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
+            <Button type="submit" size="sm" variant="primary" disabled={submitting || building || locked || !loaded || !!loadFailure || !ready || (!!selected && !current)}>
               {submitting ? "Saving..." : current?.status === "building" ? "Building..." : "Save and build"}
             </Button>
           </FormActions>

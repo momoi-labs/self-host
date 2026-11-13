@@ -1221,6 +1221,7 @@ mod tests {
                     major: 17,
                     volume: "fixture_data".into(),
                     native_port: None,
+                    custom_image: None,
                 },
             )
             .await
