@@ -264,6 +264,7 @@ fn build_platform_with_native<S: StateStore>(
 
     let api_routes = Router::new()
         .merge(postgres::api::router::<S>())
+        .merge(postgres::backups_api::router::<S>())
         .route("/health", get(health::<S>))
         .route(
             "/native/capabilities",
@@ -4119,6 +4120,7 @@ mod tests {
                     major: 18,
                     volume: "teste_data".into(),
                     native_port: None,
+                    custom_image: None,
                 },
             )
             .await

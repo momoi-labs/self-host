@@ -288,6 +288,9 @@ pub(crate) fn spawn<S: StateStore>(state: AppState<S>) {
                     tracing::warn!("could not run schedule {}: {error}", builtin.id);
                 }
             }
+            if let Err(error) = crate::postgres::backups::run_due(&state).await {
+                tracing::warn!("could not start the scheduled backups: {error}");
+            }
         }
     });
 }

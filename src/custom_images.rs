@@ -148,7 +148,7 @@ impl Recipe {
         if self
             .template_id
             .as_deref()
-            .is_some_and(|id| id != "t3-code")
+            .is_some_and(|id| id != "t3-code" && id != "postgresql")
         {
             return Err("Unknown custom image template.".into());
         }
@@ -353,6 +353,10 @@ pub struct Image {
     pub last_error: Option<ErrorReport>,
     #[serde(default)]
     pub log: String,
+    /// The Platform wrote this recipe and rebuilds it when it needs to, so
+    /// the Operator cannot edit it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub platform: bool,
 }
 
 #[derive(Default)]
@@ -557,6 +561,26 @@ async fn referenced_images<S: StateStore>(state: &AppState<S>) -> anyhow::Result
     Ok(references)
 }
 
+/// The name, the current tag and the readiness of a custom image.
+pub(crate) async fn current<S: StateStore>(
+    state: &AppState<S>,
+    id: &str,
+) -> anyhow::Result<Option<(String, String, bool)>> {
+    let records = state.custom_images.records(&state.store).await?;
+    Ok(records
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|image| image.id == id)
+        .map(|image| {
+            (
+                image.recipe.name.clone(),
+                image.image.clone(),
+                image.status == "ready",
+            )
+        }))
+}
+
 /// Returns a ready custom image when its stable ID still names the exact
 /// requested tag. Callers keep already deployed tags independently, so an
 /// image edit cannot invalidate an Application that still uses an older tag.
@@ -703,6 +727,15 @@ pub(crate) async fn create<S: StateStore>(
         }
         None => crate::apps::generate_app_id(),
     };
+    if next.iter().any(|image| image.id == id && image.platform) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorReport::plain(
+                "The Platform builds this image and you cannot edit it. To add extensions, create an image from the PostgreSQL template.",
+            )),
+        )
+            .into_response();
+    }
     if next
         .iter()
         .any(|image| image.id != id && image.recipe.name == recipe.name)
@@ -722,6 +755,7 @@ pub(crate) async fn create<S: StateStore>(
         status: "building".into(),
         last_error: None,
         log: String::from("Starting Docker build...\n"),
+        platform: false,
     };
     // Changed configuration gets a new tag; identical configuration reuses it.
     next.retain(|old| old.id != image.id);
@@ -820,6 +854,76 @@ pub(crate) async fn run_build<S: StateStore>(
         outcome = Err(report);
     }
     outcome
+}
+
+/// Makes sure the custom image `name`, built from `dockerfile`, is ready on
+/// the Host, and answers its tag. The Platform calls this from inside a Task
+/// for an image it needs itself, such as PostgreSQL with pgBackRest
+/// (ADR-0035). The image is a custom image like any other: the Operator sees
+/// it and its build log under Custom images.
+pub(crate) async fn ensure_platform_image<S: StateStore>(
+    state: &AppState<S>,
+    name: &str,
+    dockerfile: &str,
+) -> Result<String, ErrorReport> {
+    let recipe = Recipe {
+        name: name.into(),
+        template_id: None,
+        dependencies: Vec::new(),
+        setup: Vec::new(),
+        build_checks: Vec::new(),
+        dockerfile: Some(dockerfile.into()),
+    };
+    let image = {
+        let mut records = state
+            .custom_images
+            .records(&state.store)
+            .await
+            .map_err(|error| ErrorReport::new(error.as_ref()))?;
+        let mut next = records.as_ref().unwrap().clone();
+        let named = next.iter().find(|image| image.recipe.name == name);
+        if named.is_some_and(|image| !image.platform) {
+            return Err(ErrorReport::plain(format!(
+                "A custom image named {name} already exists. Rename it so self-host can build its own"
+            )));
+        }
+        let id = named
+            .map(|image| image.id.clone())
+            .unwrap_or_else(crate::apps::generate_app_id);
+        let tag = recipe.image_tag(&id);
+        let ready = next
+            .iter()
+            .any(|image| image.id == id && image.image == tag && image.status == "ready");
+        if ready
+            && state
+                .docker
+                .image_id(&tag)
+                .await
+                .map_err(|error| ErrorReport::new(&error))?
+                .is_some()
+        {
+            return Ok(tag);
+        }
+        let image = Image {
+            image: tag,
+            id,
+            recipe,
+            status: "building".into(),
+            last_error: None,
+            log: String::from("Starting Docker build...\n"),
+            platform: true,
+        };
+        next.retain(|old| old.id != image.id);
+        next.insert(0, image.clone());
+        save(&state.store, &next)
+            .await
+            .map_err(|error| ErrorReport::new(error.as_ref()))?;
+        *records = Some(next);
+        image
+    };
+    let tag = image.image.clone();
+    run_build(state, image).await?;
+    Ok(tag)
 }
 
 /// Renders the file a builder recipe would build. The console calls this when
@@ -1322,6 +1426,7 @@ mod tests {
             status: "ready".into(),
             last_error: None,
             log: String::new(),
+            platform: false,
         };
 
         write_build_context(&path, &image).unwrap();

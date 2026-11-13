@@ -2,6 +2,7 @@
 //! Virtual machines, routes and databases. Each one speaks to the Operator
 //! API, the way the console does.
 
+pub mod backups;
 pub mod databases;
 pub mod routes;
 pub mod vms;

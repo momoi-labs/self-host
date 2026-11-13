@@ -21,6 +21,10 @@ pub enum DbCommand {
         /// PostgreSQL major version: 16, 17 or 18 (default: 18)
         #[arg(long, default_value_t = 18)]
         major: u16,
+        /// Name of a custom image to run instead of the official one, for
+        /// example one that installs an extension
+        #[arg(long)]
+        image: Option<String>,
     },
     /// Recreate the database container; the data stays
     Redeploy {
@@ -76,6 +80,11 @@ pub enum DbCommand {
         /// The connection's Variable (default: DATABASE_URL)
         #[arg(long, default_value = "DATABASE_URL")]
         variable: String,
+    },
+    /// Back up a server, restore it to a point in time, and verify its backups
+    Backup {
+        #[command(subcommand)]
+        command: super::backups::BackupCommand,
     },
 }
 
@@ -150,12 +159,16 @@ pub async fn run(command: DbCommand) -> anyhow::Result<()> {
                 );
             }
         }
-        DbCommand::Create { name, major } => {
+        DbCommand::Create { name, major, image } => {
+            let custom_image = match &image {
+                Some(image) => Some(custom_image_id(&api, image).await?),
+                None => None,
+            };
             let accepted = api
                 .send(
                     Method::POST,
                     "/databases",
-                    Some(json!({"name": name, "major": major})),
+                    Some(json!({"name": name, "major": major, "custom_image": custom_image})),
                     "Create failed",
                 )
                 .await?;
@@ -277,12 +290,25 @@ pub async fn run(command: DbCommand) -> anyhow::Result<()> {
                 .await?;
             println!("{}", str(&revealed, "url"));
         }
+        DbCommand::Backup { command } => super::backups::run(&api, command).await?,
     }
     Ok(())
 }
 
 /// A database is an Application the Platform manages; it is named the same way.
-async fn database_id(api: &Api, name: &str) -> anyhow::Result<String> {
+/// The id of the custom image with this name. The Platform checks the rest.
+async fn custom_image_id(api: &Api, name: &str) -> anyhow::Result<String> {
+    let images = api.get("/custom-images", "Create failed").await?;
+    images
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|image| str(image, "name") == name)
+        .map(|image| str(image, "id").to_owned())
+        .ok_or_else(|| anyhow::anyhow!("Custom image '{name}' not found"))
+}
+
+pub(super) async fn database_id(api: &Api, name: &str) -> anyhow::Result<String> {
     let app = api
         .application(name)
         .await

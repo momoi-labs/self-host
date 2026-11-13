@@ -9,14 +9,15 @@ import {
 import { GitConnectionsSettings } from "../components/GitConnections.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
 import { ApiKeys } from "./settings/ApiKeys.js";
+import { BackupStorage, MaintenanceWindow } from "./settings/Backups.js";
 import { DnsSetup, YourHost } from "./settings/DnsSetup.js";
 import { ApplicationDefaults, AuditHistory, HostAccess, NativeBuildLimits } from "./settings/General.js";
 import { PublicCertificates } from "./settings/PublicCertificates.js";
 import { ScheduledTasks } from "./settings/ScheduledTasks.js";
 
-export type SettingsSection = "general" | "api-keys" | "dns-setup" | "git-connections" | "host" | "public-certificates" | "scheduled-tasks";
+export type SettingsSection = "general" | "api-keys" | "backup-storage" | "dns-setup" | "git-connections" | "host" | "public-certificates" | "scheduled-tasks";
 
-export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "dns-setup", "git-connections", "host", "public-certificates", "scheduled-tasks"];
+export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "backup-storage", "dns-setup", "git-connections", "host", "public-certificates", "scheduled-tasks"];
 
 export function isSettingsSection(value: string): value is SettingsSection {
   return (settingsSections as readonly string[]).includes(value);
@@ -26,6 +27,7 @@ export function isSettingsSection(value: string): value is SettingsSection {
 const paneFor: Record<SettingsSection, string> = {
   general: "audit-history",
   "api-keys": "api-keys",
+  "backup-storage": "backup-storage",
   "dns-setup": "dns-setup",
   "git-connections": "git-connections",
   host: "host-access",
@@ -78,6 +80,8 @@ export function Settings({ section }: { section: SettingsSection }) {
         <YourHost id="your-host" size={6} />
         <GitConnectionsSettings id="git-connections" size={12} />
         <ScheduledTasks id="scheduled-tasks" size={12} />
+        <BackupStorage id="backup-storage" size={6} />
+        <MaintenanceWindow id="maintenance-window" size={6} />
         <PublicCertificates id="public-certificates" size={6} />
         <DnsSetup id="dns-setup" size={6} />
       </PaneGrid>

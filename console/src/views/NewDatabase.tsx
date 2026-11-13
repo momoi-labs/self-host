@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button, Card, Form, FormActions, FormField, PageHeader, PageHeaderTitle, Spinner } from "@momoi-labs/kiso-react";
 
 import { Failure } from "../components/Failure.js";
 import { PostgresFields } from "../components/PostgresFields.js";
 import { useToast } from "../components/Toasts.js";
 import { api, asReport, failureOf } from "../lib/api.js";
+import { customImagesQuery } from "../lib/queries.js";
 import type { App, Report } from "../lib/types.js";
 
 export function NewDatabase({ reload, onCancel, onCreated }: {
@@ -14,6 +16,12 @@ export function NewDatabase({ reload, onCancel, onCreated }: {
 }) {
   const [name, setName] = useState("");
   const [major, setMajor] = useState(18);
+  const [image, setImage] = useState<string | null>(null);
+  // A failed read leaves the official image, which needs no custom image.
+  // The Platform's own postgres-<major>-backups image is the official one with
+  // pgBackRest, which a server with backups on already runs.
+  const images = (useQuery(customImagesQuery).data ?? [])
+    .filter((item) => item.status === "ready" && !item.platform);
   const [failure, setFailure] = useState<Report | null>(null);
   const [saving, setSaving] = useState(false);
   const notify = useToast();
@@ -24,7 +32,7 @@ export function NewDatabase({ reload, onCancel, onCreated }: {
     setSaving(true);
     setFailure(null);
     try {
-      const response = await api("/databases", { method: "POST", body: JSON.stringify({ name, major }) });
+      const response = await api("/databases", { method: "POST", body: JSON.stringify({ name, major, custom_image: image }) });
       if (!response.ok) throw await failureOf(response);
       const accepted = await response.json() as { id: string };
       await reload();
@@ -43,7 +51,7 @@ export function NewDatabase({ reload, onCancel, onCreated }: {
       <Form onSubmit={create} aria-busy={saving}>
         <div className="form-body">
           <FormField id="database-name" label="Name" value={name} onChange={(event) => setName(event.target.value)} required autoFocus />
-          <PostgresFields major={major} onChange={setMajor} />
+          <PostgresFields major={major} onChange={setMajor} image={image} onImage={setImage} images={images} />
           {failure ? <Failure failure={failure} /> : null}
         </div>
         <FormActions sticky tone={failure ? "danger" : "neutral"}>

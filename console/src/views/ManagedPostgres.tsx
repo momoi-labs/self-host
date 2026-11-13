@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useToast } from "../components/Toasts.js";
 import { useQuery } from "@tanstack/react-query";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, Card, Checkbox, FormField, Label, Lifecycle, PageHeader, PageHeaderTitle, StatusBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@momoi-labs/kiso-react";
 
@@ -12,12 +13,14 @@ import { useEvents } from "../lib/useEvents.js";
 import { Failure } from "../components/Failure.js";
 import { AppLogPane } from "../components/LogPane.js";
 
+import { DatabaseBackups } from "../components/DatabaseBackups.js";
 import { DatabaseConnections } from "../components/DatabaseConnections.js";
 import { DatabaseImports } from "../components/DatabaseImports.js";
 import { DatabaseOperation } from "../components/DatabaseOperation.js";
 import { DatabaseSummary } from "../components/DatabaseSummary.js";
 
 export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenApp }: { app: App; apps: App[]; metrics: Metrics | null; reload: () => Promise<App[]>; onRemoved: () => void; onOpenApp: (id: string) => void }) {
+  const notify = useToast();
   const detail = useQuery({ ...databaseQuery(app.id), refetchInterval: 3000 });
   const imports = useQuery({ ...databaseImportsQuery(app.id), refetchInterval: 3000 });
   const refetchImports = useCallback(() => { void imports.refetch(); }, [imports.refetch]);
@@ -76,7 +79,7 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
     {loadFailure ? <Failure failure={loadFailure} /> : null}
     {app.last_error ? <Failure failure={app.last_error} /> : null}
     <Card className="detail-tabs"><Tabs sections value={tab} onValueChange={setTab}>
-      <TabsList aria-label="Database details"><TabsTrigger value="summary">Summary</TabsTrigger><TabsTrigger value="connections">Connections</TabsTrigger><TabsTrigger value="imports">Imports</TabsTrigger><TabsTrigger value="last-operation">Last operation</TabsTrigger><TabsTrigger value="logs">Logs</TabsTrigger></TabsList>
+      <TabsList aria-label="Database details"><TabsTrigger value="summary">Summary</TabsTrigger><TabsTrigger value="connections">Connections</TabsTrigger><TabsTrigger value="imports">Imports</TabsTrigger><TabsTrigger value="backups">Backups</TabsTrigger><TabsTrigger value="last-operation">Last operation</TabsTrigger><TabsTrigger value="logs">Logs</TabsTrigger></TabsList>
       <TabsContent value="summary"><DatabaseSummary app={app} apps={apps} database={database} onOpenApp={onOpenApp} onOpenConnections={() => setTab("connections")} /></TabsContent>
       <TabsContent value="connections">
         <DatabaseConnections app={app} apps={apps} connections={active} loading={database === null} busy={busy || taskBusy} failure={failure} onOperation={async (path, method, body) => Boolean(await operation(path, method, body))} />
@@ -95,6 +98,10 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
             } catch (error) { return { failure: asReport(error) }; }
           }} />
       </TabsContent>
+      <TabsContent value="backups"><DatabaseBackups databaseId={app.id} databaseName={app.name}
+          onRestoring={(id, name) => { notify("success", `Creating ${name} from the backups of ${app.name}`); void reload().then(() => onOpenApp(id)); }}
+          onStarted={(id, title) => { setOperationLabel(title); setTaskId(id); reloadEvents(); }}
+          onOpenOperation={() => setTab("last-operation")} /></TabsContent>
       <TabsContent value="last-operation" className="detail-run"><DatabaseOperation event={acceptedTask} child={currentTask !== acceptedTask ? currentTask : null} error={eventsError} /></TabsContent>
       <TabsContent value="logs" className="detail-logs"><div className="detail-log-pane"><AppLogPane id={app.id} /></div></TabsContent>
     </Tabs></Card>

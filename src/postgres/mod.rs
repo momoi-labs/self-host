@@ -1,10 +1,13 @@
 //! Managed PostgreSQL remains an unpublished container Application (ADR-0029).
 
 pub(crate) mod api;
+pub(crate) mod backups;
+pub(crate) mod backups_api;
 mod progress;
 #[cfg(test)]
 mod progress_tests;
 pub mod runtime;
+pub(crate) mod storage;
 #[cfg(test)]
 mod test_runtime;
 pub(crate) mod uploads;
@@ -37,6 +40,8 @@ pub(crate) static CONNECTION_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 pub(crate) static IMPORTS: Collection<Import> = Collection::new("postgres-import");
 pub(crate) static STANDALONE: Collection<StandaloneDatabase> =
     Collection::new("postgres-standalone-database");
+/// Counts what a database holds: tables, views, sequences and the like.
+const RELATION_COUNT: &str = "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f');";
 
 /// What a database dump is, as pg_dump writes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +179,10 @@ pub struct Database {
     pub major: u16,
     pub volume: String,
     pub native_port: Option<u16>,
+    /// The custom image this server was created from, by its stable id. The
+    /// official image when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_image: Option<String>,
 }
 impl Keyed for Database {
     fn key(&self) -> String {
@@ -241,6 +250,10 @@ pub(crate) struct StandaloneDatabase {
     /// Whether an import made the database on the server yet.
     #[serde(default)]
     pub made: bool,
+    /// The NOLOGIN role that owns the database when a restore copied one
+    /// that connections shared on the source. None when `role` owns it.
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 impl Keyed for StandaloneDatabase {
     fn key(&self) -> String {
@@ -308,6 +321,7 @@ async fn platform_roles(
     for d in STANDALONE.list(store).await? {
         if d.database_application_id == provider {
             roles.logins.insert(d.role);
+            roles.owners.extend(d.owner);
         }
     }
     Ok(roles)
@@ -640,6 +654,31 @@ pub enum Operation {
         id: String,
         delete_data: bool,
     },
+    /// Turns a server's backups on: the image with pgBackRest, the
+    /// repository, WAL archiving and the first full backup (ADR-0035).
+    EnableBackups {
+        id: String,
+    },
+    /// Turns a server's backups off. Its repository stays in the bucket.
+    DisableBackups {
+        id: String,
+    },
+    /// One pgBackRest backup of the whole server.
+    Backup {
+        id: String,
+        kind: backups::Kind,
+    },
+    /// Fills the new server `id` from `source`'s repository.
+    RestoreBackup {
+        source: String,
+        id: String,
+        /// The time to restore to. None is the repository's latest state.
+        time: Option<String>,
+    },
+    /// A test restore of a server's latest backup into a throwaway container.
+    VerifyBackup {
+        id: String,
+    },
 }
 
 fn all_or_nothing_default() -> bool {
@@ -656,13 +695,17 @@ pub enum Error {
     /// Docker could not do what a step needed, said in the Platform's words.
     /// Unlike `Runtime`, it carries no Docker output, so a stage records it.
     Unavailable(String),
+    /// A request the backup method cannot serve, such as a point in time.
+    Unsupported(String),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(s) | Self::Conflict(s) | Self::Runtime(s) | Self::Unavailable(s) => {
-                f.write_str(s)
-            }
+            Self::Invalid(s)
+            | Self::Conflict(s)
+            | Self::Runtime(s)
+            | Self::Unavailable(s)
+            | Self::Unsupported(s) => f.write_str(s),
             Self::Missing => f.write_str("Managed database or connection not found"),
             Self::Store(e) => e.fmt(f),
         }
@@ -735,6 +778,9 @@ pub(crate) async fn secrets(store: &impl StateStore) -> Result<Vec<String>, Stor
         if let Some(password) = store.get_env(&database.application_id, PASSWORD).await? {
             secrets.push(password);
         }
+    }
+    if let Some(storage) = storage::STORAGE.get(store, storage::STORAGE_ID).await? {
+        secrets.push(storage.secret_access_key);
     }
     secrets.retain(|secret| secret.len() >= 8);
     secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
@@ -821,7 +867,57 @@ pub async fn native_publication(
         }))
 }
 
+pub(crate) fn official_image(major: u16) -> String {
+    format!("postgres:{major}-bookworm")
+}
+
+/// The image a server runs while its backups are off: the current build of
+/// the custom image it was created from, or the official image.
+pub(crate) async fn server_image<S: StateStore>(
+    state: &AppState<S>,
+    definition: &Database,
+) -> Result<String, Error> {
+    let Some(id) = &definition.custom_image else {
+        return Ok(official_image(definition.major));
+    };
+    let (name, tag, ready) = crate::custom_images::current(state, id)
+        .await
+        .map_err(|e| Error::Runtime(e.to_string()))?
+        .ok_or_else(|| {
+            Error::Conflict(
+                "Custom image not found. It may have been deleted under Custom images".into(),
+            )
+        })?;
+    if !ready {
+        return Err(Error::Conflict(format!(
+            "The custom image {name} is not built. Open it under Custom images, wait for its build or fix it, then retry"
+        )));
+    }
+    Ok(tag)
+}
+
+/// The PostgreSQL major version in what `postgres --version` prints.
+pub(crate) fn major_of(version: &str) -> Option<u16> {
+    version
+        .trim()
+        .strip_prefix("postgres (PostgreSQL) ")?
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
 pub fn template(major: u16) -> Result<String, Error> {
+    template_with(major, &official_image(major), None)
+}
+
+/// The server's compose file. `conf` is the Host directory of the pgBackRest
+/// configuration, for a server with backups on.
+pub(crate) fn template_with(
+    major: u16,
+    image: &str,
+    conf: Option<&std::path::Path>,
+) -> Result<String, Error> {
     if !MAJORS.contains(&major) {
         return Err(Error::Invalid(
             "Choose PostgreSQL major version 16, 17 or 18".into(),
@@ -834,8 +930,11 @@ pub fn template(major: u16) -> Result<String, Error> {
     } else {
         "/var/lib/postgresql/data"
     };
+    let conf = conf.map_or_else(String::new, |dir| {
+        format!("      - {}:{}:ro\n", dir.display(), storage::CONF_MOUNT)
+    });
     Ok(format!(
-        "services:\n  database:\n    image: postgres:{major}-bookworm\n    environment:\n      POSTGRES_USER: {ADMIN}\n      POSTGRES_PASSWORD: ${{{PASSWORD}:?Managed PostgreSQL credentials are missing}}\n      POSTGRES_DB: postgres\n      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256\n    volumes:\n      - data:{volume_path}\n    healthcheck:\n      test: [CMD, pg_isready, -h, 127.0.0.1, -U, {ADMIN}, -d, postgres]\n      interval: 2s\n      timeout: 3s\n      retries: 30\n      start_period: 10s\nvolumes:\n  data: {{}}\n"
+        "services:\n  database:\n    image: {image}\n    environment:\n      POSTGRES_USER: {ADMIN}\n      POSTGRES_PASSWORD: ${{{PASSWORD}:?Managed PostgreSQL credentials are missing}}\n      POSTGRES_DB: postgres\n      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256\n    volumes:\n      - data:{volume_path}\n{conf}    healthcheck:\n      test: [CMD, pg_isready, -h, 127.0.0.1, -U, {ADMIN}, -d, postgres]\n      interval: 2s\n      timeout: 3s\n      retries: 30\n      start_period: 10s\nvolumes:\n  data: {{}}\n"
     ))
 }
 
@@ -1050,7 +1149,15 @@ pub(crate) async fn run<S: StateStore>(
     operation: Operation,
 ) -> Result<(), ErrorReport> {
     let provider = match &operation {
-        Operation::Provision { id, .. } | Operation::Remove { id, .. } => Some(id.clone()),
+        Operation::Provision { id, .. }
+        | Operation::Remove { id, .. }
+        | Operation::EnableBackups { id }
+        | Operation::DisableBackups { id }
+        | Operation::Backup { id, .. }
+        // The source only archives one WAL segment: the new server is locked.
+        | Operation::RestoreBackup { id, .. } => Some(id.clone()),
+        // A test restore runs in its own container, beside the server.
+        Operation::VerifyBackup { .. } => None,
         Operation::Connect { connection_id }
         | Operation::Disconnect { connection_id }
         | Operation::Import { connection_id, .. } => CONNECTIONS
@@ -1088,6 +1195,12 @@ pub(crate) async fn run<S: StateStore>(
                     let _ = CONNECTIONS.upsert(&state.store, &c).await;
                 }
             }
+            Operation::RestoreBackup { id, .. } => {
+                let _ = state
+                    .store
+                    .set_application_outcome(id, "failed", Some(ErrorReport::new(error)))
+                    .await;
+            }
             _ => {}
         }
     }
@@ -1099,6 +1212,9 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
     let store = &state.store;
     match operation {
         Operation::Provision { id, recreate } => {
+            // A changed compose file is deployed; `compose_recreate` only
+            // restarts what the project file on disk already says.
+            let moved = recreate && backups::follow_custom_image(state, &id).await?;
             let (_, app) = database(store, &id).await?;
             ensure_image(state, &app.image).await?;
             let label = if recreate {
@@ -1112,7 +1228,7 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
                 label,
                 "PostgreSQL container started with its persistent volume.",
                 async {
-                    if recreate {
+                    if recreate && !moved {
                         let project = apps::project_for(store, &app)
                             .await
                             .map_err(|e| Error::Runtime(e.to_string()))?;
@@ -1427,11 +1543,20 @@ async fn execute<S: StateStore>(state: &AppState<S>, operation: Operation) -> Re
                     {
                         STANDALONE.remove(store, &standalone.key()).await?;
                     }
+                    // The repository stays in the bucket; only the Host forgets it.
+                    backups::forget(store, &id).await?;
                     Ok(())
                 },
             )
             .await?;
         }
+        Operation::EnableBackups { id } => Box::pin(backups::enable(state, &id)).await?,
+        Operation::DisableBackups { id } => Box::pin(backups::disable(state, &id)).await?,
+        Operation::Backup { id, kind } => Box::pin(backups::back_up(state, &id, kind)).await?,
+        Operation::RestoreBackup { source, id, time } => {
+            Box::pin(backups::restore(state, &source, &id, time)).await?
+        }
+        Operation::VerifyBackup { id } => Box::pin(backups::verify(state, &id)).await?,
     }
     Ok(())
 }
@@ -1675,7 +1800,6 @@ async fn import<S: StateStore>(
     if let Target::Standalone(d) = target {
         prepare_standalone(state, d).await?;
     }
-    let count_sql = "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f');";
     // A database that already holds data takes the import too: what clashes
     // fails the restore and shows the tool's error. All or nothing rolls the
     // whole restore back; without it the rest stays and the stage still
@@ -1728,7 +1852,7 @@ async fn import<S: StateStore>(
                 target.provider(),
                 target.database(),
                 target.role(),
-                count_sql.into(),
+                RELATION_COUNT.into(),
             )
             .await?;
             let count: u64 = count.parse().map_err(|_| {
@@ -1864,6 +1988,7 @@ mod tests {
                     major: 17,
                     volume: "fixture_data".into(),
                     native_port: None,
+                    custom_image: None,
                 },
             )
             .await
@@ -1877,6 +2002,28 @@ mod tests {
             Arc::new(crate::dns_records::UnservedZone),
             None,
         )
+    }
+
+    #[tokio::test]
+    async fn a_restored_shared_database_keeps_its_owner_as_a_platform_role() {
+        let store = FakeStateStore::new();
+        STANDALONE
+            .upsert(
+                &store,
+                &StandaloneDatabase {
+                    database_application_id: "restored".into(),
+                    name: "db_fixture".into(),
+                    role: "role_fixture".into(),
+                    password: "private-fixture".into(),
+                    made: true,
+                    owner: Some("owner_fixture".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let roles = platform_roles(&store, "restored").await.unwrap();
+        assert!(roles.contains("role_fixture"));
+        assert!(roles.owners.contains("owner_fixture"));
     }
 
     #[tokio::test]
@@ -2661,6 +2808,28 @@ mod tests {
         }
         assert!(template(15).is_err());
         assert!(template(19).is_err());
+    }
+    #[test]
+    fn a_server_runs_the_custom_image_it_was_created_from() {
+        let yaml = template_with(17, "sf-img-abc:123", None).unwrap();
+        assert!(yaml.contains("    image: sf-img-abc:123\n"), "{yaml}");
+        assert!(!yaml.contains("postgres:17-bookworm"), "{yaml}");
+        // A record written before custom images still reads, as the official image.
+        let old: Database = serde_json::from_str(
+            r#"{"application_id":"a","major":17,"volume":"v","native_port":null}"#,
+        )
+        .unwrap();
+        assert!(old.custom_image.is_none());
+    }
+    #[test]
+    fn the_major_version_is_read_from_what_postgres_prints() {
+        assert_eq!(
+            major_of("postgres (PostgreSQL) 17.6 (Debian 17.6-1.pgdg12+1)\n"),
+            Some(17)
+        );
+        assert_eq!(major_of("postgres (PostgreSQL) 18beta1"), Some(18));
+        assert_eq!(major_of("pgbackrest 2.54"), None);
+        assert_eq!(major_of(""), None);
     }
     #[test]
     fn upload_ids_cannot_escape_private_storage() {

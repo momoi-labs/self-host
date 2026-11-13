@@ -199,6 +199,9 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/dev.momoi.self-host.plist
 bind mounts outside `apps/<id>/` hold what your Applications wrote, and none of
 it is in this archive. Back those up separately.
 
+Managed PostgreSQL has its own backups to an S3-compatible bucket. See
+[Backups](managed-postgresql.md#backups).
+
 ## Restore
 
 Stop the daemon, unpack the archive over `~/.config/self-host/`, and start it

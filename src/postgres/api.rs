@@ -46,7 +46,7 @@ pub(crate) fn router<S: StateStore>() -> Router<AppState<S>> {
         )
 }
 
-const NAME_RULE: &str = "Name the database with lowercase letters, digits and underscores, starting with a letter or underscore, in at most 63 characters. It cannot start with pg_ or be postgres, template0 or template1";
+pub(super) const NAME_RULE: &str = "Name the database with lowercase letters, digits and underscores, starting with a letter or underscore, in at most 63 characters. It cannot start with pg_ or be postgres, template0 or template1";
 
 /// Where an import goes, as its route or upload session names it.
 pub(super) enum Destination {
@@ -157,7 +157,7 @@ async fn database_in_use(
 }
 
 /// The standalone database `name`, recorded with a new role when it is new.
-async fn keep_standalone(
+pub(super) async fn keep_standalone(
     store: &impl StateStore,
     provider: &str,
     name: &str,
@@ -176,6 +176,7 @@ async fn keep_standalone(
         role: format!("role_{:024x}", rand::random::<u128>()),
         password: secret(),
         made: false,
+        owner: None,
     };
     STANDALONE.upsert(store, &standalone).await?;
     Ok(standalone)
@@ -619,6 +620,7 @@ pub(crate) fn failure(error: Error) -> Response {
         Error::Invalid(_) => StatusCode::BAD_REQUEST,
         Error::Conflict(_) => StatusCode::CONFLICT,
         Error::Missing => StatusCode::NOT_FOUND,
+        Error::Unsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     crate::error_response(status, &error)
@@ -629,6 +631,9 @@ pub(crate) fn failure(error: Error) -> Response {
 struct Create {
     name: String,
     major: u16,
+    /// The id of a custom image to run instead of the official one.
+    #[serde(default)]
+    custom_image: Option<String>,
 }
 
 async fn create<S: StateStore>(
@@ -636,7 +641,19 @@ async fn create<S: StateStore>(
     Json(request): Json<Create>,
 ) -> Response {
     let result = async {
-        let definition = template(request.major)?;
+        let mut record = Database {
+            application_id: String::new(),
+            major: request.major,
+            volume: String::new(),
+            native_port: None,
+            custom_image: request.custom_image.clone().filter(|id| !id.is_empty()),
+        };
+        template(request.major)?;
+        let image = super::server_image(&state, &record).await?;
+        if record.custom_image.is_some() {
+            super::backups::runs_major(&image, request.major).await?;
+        }
+        let definition = super::template_with(request.major, &image, None)?;
         let _namespace = state.dns_records.lock_namespace().await;
         let _write = CONNECTION_WRITE.lock().await;
         if state.store.application_exists(&request.name).await? {
@@ -661,17 +678,9 @@ async fn create<S: StateStore>(
         .map_err(|e| Error::Invalid(e.to_string()))?;
         let app = &pending.record;
         state.store.set_env(&app.id, PASSWORD, &secret()).await?;
-        DATABASES
-            .upsert(
-                &state.store,
-                &Database {
-                    application_id: app.id.clone(),
-                    major: request.major,
-                    volume: format!("{}_data", apps::project_name_for(&app.id)),
-                    native_port: None,
-                },
-            )
-            .await?;
+        record.application_id = app.id.clone();
+        record.volume = format!("{}_data", apps::project_name_for(&app.id));
+        DATABASES.upsert(&state.store, &record).await?;
         let task_id = tasks::enqueue(
             &state,
             "create",

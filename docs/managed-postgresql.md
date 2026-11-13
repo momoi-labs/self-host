@@ -62,6 +62,32 @@ cannot be removed. A Variable owned by a connection cannot be edited through
 the generic Variable API. A disconnected database stays on the server and is
 offered again under **Existing database**.
 
+## Extensions and custom images
+
+The official image has the extensions PostgreSQL ships with. For any other
+extension, run the server from a custom image:
+
+1. Under **Custom images**, choose **New image** and the **PostgreSQL**
+   template. The template is a Dockerfile: the official image plus pgBackRest,
+   with a commented example of an extension package.
+2. Set the version in `FROM` to the major version of the server. Add the
+   extension's package, for example `postgresql-17-pgvector`. Then **Save and
+   build**.
+3. Under **New database**, pick the image in the **Image** field. From the
+   CLI: `self-host db create --name main --major 17 --image <image name>`.
+
+The Platform refuses an image that does not run the chosen major version. The
+image is chosen at creation and stays with the server.
+
+To add an extension later, edit the same custom image and save it. When the
+build is ready, press **Recreate** on the server. Recreate moves the server to
+the image's current build and keeps the volume. A custom image a server uses
+cannot be deleted.
+
+Backups need pgBackRest in the image. The template installs it. If you remove
+it, or write the Dockerfile yourself without it, turning backups on fails and
+names the lines to add.
+
 ## Persistence and removal
 
 Restart and Recreate preserve the volume. Recreate replaces the container
@@ -80,8 +106,135 @@ The dialog has a separate **Permanently delete the stored database data**
 checkbox. Only that explicit choice removes the volume. A retained volume is
 not adopted automatically by a new database Application.
 
-This slice does not upgrade PostgreSQL's major version, manage replicas or
-create scheduled backups.
+This slice does not upgrade PostgreSQL's major version or manage replicas.
+
+## Backups
+
+A server with backups on keeps a pgBackRest repository in an S3-compatible
+bucket: physical backups of the whole server and every WAL segment since
+([ADR-0035](adr/0035-postgresql-backups-are-pgbackrest-repositories-with-point-in-time-recovery.md)).
+A restore makes a new server, at the latest state or at a time you pick.
+
+Each server has its own repository at `<prefix>/<database id>/`. Backups are
+not encrypted by self-host. Use a private bucket, and turn on the provider's
+encryption at rest when it has one.
+
+### Set up
+
+1. In **Settings**, fill **Backup storage**: an HTTPS endpoint (empty for AWS
+   S3), region, bucket, optional prefix and the access keys. The bucket must
+   exist. Clear **Verify the TLS certificate** only for a bucket on your own
+   network with a self-signed certificate. **Test connection** writes, reads
+   and deletes a small object. A Host has one backup storage. The secret key
+   stays in private Platform State and is never shown again. While any
+   server has backups on, or is turning them on or off, you can change the
+   keys but not the endpoint, bucket or prefix.
+2. In **Settings**, set the **Maintenance window**: the hour it starts, in the
+   Host's local time, and how long it lasts. The default is 02:00 for 4 hours.
+3. On the server's **Backups** tab, check **Back up this server**, set the
+   days to keep, then **Save**.
+
+Turning backups on runs as a Task. It builds the custom image
+`postgres-<major>-backups` (the official image plus pgBackRest), recreates the
+container with it, creates the repository, turns WAL archiving on and takes
+the first full backup. PostgreSQL restarts once. Turning backups off restarts
+it once more and puts the official image back. The repository stays in the
+bucket.
+
+Custom images lists `postgres-<major>-backups` with a **Platform** badge. The
+Platform writes and rebuilds it, so the console shows it read-only and the API
+answers 409 to an edit.
+
+A server created from a custom image keeps that image with backups on and
+off. The Task checks that the image has pgBackRest and builds nothing. A
+server restored from its backups runs the same custom image.
+
+### Schedule and retention
+
+| Day | Backup |
+| --- | --- |
+| Sunday | Full |
+| Wednesday and Saturday | Differential |
+| Other days | Incremental |
+
+A scheduled backup starts when the maintenance window opens. A Host that was
+off at that hour runs it when it comes back, if the window is still open.
+Otherwise it waits for the next window. **Back up now** takes an incremental
+backup at any time.
+
+PostgreSQL sends each finished WAL segment to the bucket, and closes a segment
+at least once a minute while there are writes. At most one minute of writes is
+outside the bucket.
+
+**Days to keep** is how far back a restore can go. After each backup,
+pgBackRest deletes the full backups and the WAL that are older than that. You
+do not delete single backups.
+
+### Restore
+
+A restore makes a **new server** and never touches the source. On the Backups
+tab, choose **Restore to a new server**, name it, and pick the latest state or
+a date and time. **Restore from backup** on the Databases list opens the same
+dialog and asks which server to restore from. It lists the servers that have a
+backup.
+
+The console opens the new server on its Last operation tab, where the restore
+runs. The source keeps running. The new server has the databases, roles and
+passwords the source had at that moment. It has no connections, and its backups are off.
+
+To put restored data in place of a damaged database, restore, check the new
+server, then connect the Application to it from its Connections tab as an
+existing database.
+
+A restore that fails leaves the new server in the list with the status
+`failed`. Remove it before you try again.
+
+### Verify
+
+**Verify latest backup** restores the latest backup into a throwaway volume
+and container with no published port, starts PostgreSQL, queries every
+database, then removes both. It needs free disk space for one copy of the
+server. The result shows as **Last verification**. Nothing verifies on a
+schedule.
+
+### When the bucket does not answer
+
+PostgreSQL keeps the WAL it could not send and tries again. Nothing is lost.
+The Backups tab shows **Backups need attention** and the list of databases
+shows **Problem** on the server. The WAL grows on the data volume until the
+bucket answers again, so a long outage can fill the disk.
+
+### Limits
+
+- One bucket per Host, over HTTPS. No local-disk or SFTP target.
+- A restore is the whole server, on the same PostgreSQL major. To move one
+  database or change major, use an import.
+- No restore over the source server in place.
+- Removing a server forgets its backup settings. Its repository stays in the
+  bucket.
+- Backups run inside the database container and stream to the bucket. They
+  need no extra disk on the Host.
+
+### CLI
+
+```bash
+self-host db backup storage set --endpoint https://s3.example.com \
+  --region us-east-1 --bucket backups --prefix home \
+  --access-key-id KEY --secret-access-key-file ./secret
+self-host db backup storage test
+self-host db backup window set --start 2 --hours 4
+self-host db backup enable main --keep-days 14
+self-host db backup now main --type full
+self-host db backup list main
+self-host db backup verify main
+self-host db backup restore main --as main-restored
+self-host db backup restore main --as main-monday --time 2026-11-09T14:30:00Z
+self-host db backup disable main
+```
+
+`storage set` takes `--no-verify-tls` for a self-signed certificate.
+Without `--secret-access-key-file`, the CLI reads the secret from
+`SELF_HOST_S3_SECRET_ACCESS_KEY` or asks for it without echo.
 
 ## Logical import
 
@@ -202,7 +355,7 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 
 | Endpoint | Request or result |
 | --- | --- |
-| `POST /databases` | `{ "name": "database", "major": 18 }` |
+| `POST /databases` | `{ "name": "database", "major": 18 }`; optional `"custom_image": "<custom image id>"` runs that image in place of the official one. It must be built and run the same major version |
 | `GET /databases/{id}` | Version, volume, readiness and connection metadata |
 | `POST /databases/{id}/redeploy` | Recreate the container and check readiness |
 | `POST /databases/{id}/connections` | `{ "consumer_application_id": "...", "variable": "DATABASE_URL", "database": { "new": "mochi_cut" } }`; `{ "existing": "mochi_cut" }` joins a database the Platform made; without `database` the name is generated |
@@ -220,6 +373,17 @@ Every endpoint requires Operator authentication. Mutations return a Task id.
 | `POST /databases/import-format` | `{ "path": "..." }`; answers `{ "format": "custom" }`, or `null` when the type cannot be told |
 | `GET /databases/{id}/imports` | None; answers the last 50 imports, newest first, each with its Task |
 | `DELETE /databases/{id}` | `{ "confirm_name": "database", "delete_data": false }` |
+| `GET /backups/storage` | None; answers `configured`, `endpoint`, `region`, `bucket`, `prefix`, `path_style`, `verify_tls`, `access_key_id` and `has_secret`. Never the secret key |
+| `PUT /backups/storage` | `{ "endpoint": "", "region": "us-east-1", "bucket": "backups", "prefix": "home", "path_style": true, "verify_tls": true, "access_key_id": "...", "secret_access_key": "..." }`; without `secret_access_key` the saved one stays. An `http://` endpoint answers 400. A new endpoint, bucket or prefix answers 409 while any server has backups on or is turning them on or off |
+| `POST /backups/storage/test` | The same body tests it without saving; no body tests the saved storage. A storage that fails answers 422 |
+| `DELETE /backups/storage` | None; 409 while a server has backups on |
+| `GET /maintenance-window` and `PUT /maintenance-window` | `{ "start_hour": 2, "hours": 4 }` in the Host's local time; the answer adds `utc_offset` |
+| `GET /backups` | None; one row per server with backups on or a repository: `database_application_id`, `enabled`, `last` and `problem` |
+| `GET /databases/{id}/backups/settings` and `PUT` | `{ "enabled": true, "keep_days": 14 }`, each optional. The answer adds `next_run_at`, `next_kind`, `storage_configured`, `archiving`, `verification` and `problem`. A `PUT` that changes `enabled` queues a Task and adds its `task_id` |
+| `GET /databases/{id}/backups` | None; answers the repository's backups, newest first, each with `label`, `kind` (`full`, `diff` or `incr`), `started_at`, `finished_at`, `bytes` and `repository_bytes` |
+| `POST /databases/{id}/backups` | Optional `{ "kind": "full" }`, default `incr`; queues a backup and answers its Task id |
+| `POST /databases/{id}/backups/restore` | `{ "name": "main-restored", "time": "2026-11-09T14:30:00Z" }`; `time` is optional. Queues a restore into a new server and answers its `id` and the `task_id` |
+| `POST /databases/{id}/backups/verify` | None; queues a test restore of the latest backup |
 
 The Application response adds optional `managed_postgres` metadata. Older
 Applications retain their existing shape and behavior. Definition metadata and
@@ -234,6 +398,15 @@ Run `python3 scripts/test-managed-postgres.py`. The script creates synthetic
 PostgreSQL 18 fixtures, checks the versioned volume layout, persistence through
 restart and recreation, private credentials, import and revocation, then removes
 only what it created. It retains failed fixtures for diagnosis.
+
+For backups, run `python3 scripts/test-postgres-backups.py` with the same
+environment against a Host that has no backup storage. It needs `openssl`. It
+starts its own S3 server in Docker (`SELF_HOST_TEST_S3_IMAGE`, default
+`versity/versitygw`) behind a TLS proxy with a self-signed certificate, turns
+backups on for a new server, verifies the latest backup and restores to a time
+between two rows into a new server. The database containers must reach the
+proxy on an address of the Host. Set `SELF_HOST_TEST_S3_ADDRESS` when a
+firewall blocks the default one.
 
 With native supervision and `postgresql-client` installed, run
 `python3 scripts/test-native-postgres.py` with the same environment. It checks

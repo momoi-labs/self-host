@@ -212,6 +212,11 @@ fn event(task: &Task, status: &str, description: impl Into<String>) -> audit::Ev
             crate::postgres::Operation::Import { .. }
             | crate::postgres::Operation::ImportDatabase { .. } => "Database import",
             crate::postgres::Operation::Remove { .. } => "Database removal",
+            crate::postgres::Operation::EnableBackups { .. } => "Turn backups on",
+            crate::postgres::Operation::DisableBackups { .. } => "Turn backups off",
+            crate::postgres::Operation::Backup { .. } => "Database backup",
+            crate::postgres::Operation::RestoreBackup { .. } => "Backup restore",
+            crate::postgres::Operation::VerifyBackup { .. } => "Backup verification",
         };
         format!(
             "{operation} {}.",

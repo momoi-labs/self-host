@@ -164,7 +164,7 @@ export function App() {
         ) : view.view === "routes" ? (
           <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} />
         ) : view.view === "databases" ? (
-          <Databases apps={apps} ready={ready} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
+          <Databases apps={apps} ready={ready} reload={reload} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
         ) : view.view === "database-new" ? (
           <NewDatabase reload={reload} onCancel={() => go({ view: "databases", id: null })} onCreated={(id) => go({ view: "app", id })} />
         ) : view.view === "settings" ? (

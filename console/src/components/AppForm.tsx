@@ -698,11 +698,11 @@ export function AppForm({
               onChange={(event) => {
                 const selected = customImages.find((image) => image.image === event.target.value);
                 if (selected) {
-                  const template = customImageTemplate(selected.template_id);
+                  const template = customImageTemplate(selected.template_id)?.application;
                   if (creating && !customImageId && !runtimeEdited.current && template) {
-                    setStartCommand(template.application.command);
-                    setDevPort(String(template.application.web_port));
-                    setPersistData(template.application.persist_data);
+                    setStartCommand(template.command);
+                    setDevPort(String(template.web_port));
+                    setPersistData(template.persist_data);
                   }
                   setCustomImageId(selected.id);
                   setCustomImageTag(selected.image);

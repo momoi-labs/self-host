@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 
 import { api, failureOf, readJson } from "./api.js";
-import type { App, BootstrapStatus, ConsumerDatabase, CustomImage, DatabaseDetail, DatabaseImport, HostStatus, Settings } from "./types.js";
+import type { App, BackupSettings, BackupStorage, BackupSummary, BootstrapStatus, ConsumerDatabase, DatabaseBackup, CustomImage, DatabaseDetail, DatabaseImport, HostStatus, MaintenanceWindow, Settings } from "./types.js";
 
 /*
  * The reads more than one screen shares. A screen that polls one of these
@@ -44,6 +44,32 @@ export const consumerDatabasesQuery = (id: string) => queryOptions({
 export const databaseImportsQuery = (id: string) => queryOptions({
   queryKey: ["databases", id, "imports"],
   queryFn: ({ signal }) => readJson<DatabaseImport[]>(`/databases/${id}/imports`, signal),
+});
+
+export const databaseBackupsQuery = (id: string) => queryOptions({
+  queryKey: ["databases", id, "backups"],
+  queryFn: ({ signal }) => readJson<DatabaseBackup[]>(`/databases/${id}/backups`, signal),
+});
+
+export const backupSettingsQuery = (id: string) => queryOptions({
+  queryKey: ["databases", id, "backup-settings"],
+  queryFn: ({ signal }) => readJson<BackupSettings>(`/databases/${id}/backups/settings`, signal),
+});
+
+/** The last backup of every database that has one, for the list of databases. */
+export const backupSummaryQuery = queryOptions({
+  queryKey: ["backups"],
+  queryFn: ({ signal }) => readJson<BackupSummary[]>("/backups", signal),
+});
+
+export const backupStorageQuery = queryOptions({
+  queryKey: ["backup-storage"],
+  queryFn: ({ signal }) => readJson<BackupStorage>("/backups/storage", signal),
+});
+
+export const maintenanceWindowQuery = queryOptions({
+  queryKey: ["maintenance-window"],
+  queryFn: ({ signal }) => readJson<MaintenanceWindow>("/maintenance-window", signal),
 });
 
 export const customImagesQuery = queryOptions({
