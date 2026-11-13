@@ -8,7 +8,7 @@ import {
   EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   Search,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { CustomImageEditor } from "../components/CustomImageEditor.js";
@@ -121,7 +121,7 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
         </Card>
       ) : loaded ? (
         <div className="stack custom-image-list">
-          <div className="table-wrap">
+          <TableFrame>
             <div className="table-scroll">
               <Table>
                 <TableHeader><TableRow>
@@ -160,7 +160,7 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
               </Table>
             </div>
             <p className="table-footer">{visible.length} of {images.length} images</p>
-          </div>
+          </TableFrame>
         </div>
       ) : null}
       {confirmDialog}

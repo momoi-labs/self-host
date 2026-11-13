@@ -2,7 +2,7 @@ import { Fragment, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   Badge, Button, Diagram, DiagramColumn, DiagramEdge, DiagramNode, GridPane, KV, KVKey, KVValue, PaneGrid, Search, StatusBadge,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
   type DiagramKind, type DiagramStatus,
 } from "@momoi-labs/kiso-react";
 import { Layers, SquareTerminal, type LucideIcon } from "lucide-react";
@@ -358,7 +358,7 @@ function PrivateAccess({ app, apps, onOpenApp }: { app: App; apps: App[]; onOpen
     }),
   ];
   return (
-    <div className="table-wrap">
+    <TableFrame>
       <div className="table-scroll">
         <Table aria-label="Private access">
           <TableHeader>
@@ -389,7 +389,7 @@ function PrivateAccess({ app, apps, onOpenApp }: { app: App; apps: App[]; onOpen
           </TableBody>
         </Table>
       </div>
-    </div>
+    </TableFrame>
   );
 }
 

@@ -24,7 +24,7 @@ import {
   PageHeaderDescription,
   PageHeaderTitle,
   StepBar,
-  Table,
+  Table, TableFrame,
   TableBody,
   TableCell,
   TableHead,
@@ -1133,7 +1133,7 @@ function Summary({
       <section>
         <p className="t-caps">Tools</p>
         {tools.length ? (
-          <div className="table-wrap">
+          <TableFrame>
             <div className="table-scroll">
               <Table>
                 <TableHeader>
@@ -1174,7 +1174,7 @@ function Summary({
                 </TableBody>
               </Table>
             </div>
-          </div>
+          </TableFrame>
         ) : (
           <p className="muted">No tools in the recipe. This is a plain {OS_LABELS[applied.os]}.</p>
         )}

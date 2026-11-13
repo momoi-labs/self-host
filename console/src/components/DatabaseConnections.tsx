@@ -5,7 +5,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
   EmptyState, EmptyStateTitle, FormField, PageHeader, PageHeaderTitle, RadioGroup, RadioGroupItem, Search, Skeleton,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusBadge,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 import type { App, DatabaseConnection, Report } from "../lib/types.js";
 import { api, asReport, failureOf } from "../lib/api.js";
@@ -77,7 +77,7 @@ export function DatabaseConnections({ app, apps, connections, loading, busy, fai
       </SelectContent></Select>
       {query || status !== "all" ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); }}>Clear filters</Button> : null}
     </div>
-    {!loading && !connections.length ? <EmptyState variant="first-run"><EmptyStateTitle>No connections</EmptyStateTitle></EmptyState> : <div className="table-wrap"><div className="table-scroll"><Table aria-label="Database connections" aria-busy={loading}>
+    {!loading && !connections.length ? <EmptyState variant="first-run"><EmptyStateTitle>No connections</EmptyStateTitle></EmptyState> : <TableFrame><div className="table-scroll"><Table aria-label="Database connections" aria-busy={loading}>
       <TableHeader><TableRow><TableHead>Application</TableHead><TableHead>Database</TableHead><TableHead>Variable</TableHead><TableHead>Status</TableHead><TableHead className="col-tight">Actions</TableHead></TableRow></TableHeader>
       <TableBody>{loading ? <TableRow>{[0, 1, 2, 3, 4].map((cell) => <TableCell key={cell}><Skeleton /></TableCell>)}</TableRow> : visible.length ? visible.map((connection) => <TableRow key={connection.id} aria-selected={selected?.id === connection.id}>
         <TableCell><div className="stack-xs"><strong>{appName(connection)}</strong><span className="muted">{apps.find((candidate) => candidate.id === connection.consumer_application_id)?.runtime?.kind === "native" ? "Native process" : "Container"}</span></div></TableCell>
@@ -93,7 +93,7 @@ export function DatabaseConnections({ app, apps, connections, loading, busy, fai
           </DropdownMenuContent>
         </DropdownMenu></TableCell>
       </TableRow>) : <TableRow><TableCell colSpan={5}>No connections match your filters.</TableCell></TableRow>}</TableBody>
-    </Table></div><p className="table-footer"><span>{visible.length} of {connections.length} connections</span></p></div>}
+    </Table></div><p className="table-footer"><span>{visible.length} of {connections.length} connections</span></p></TableFrame>}
     <Dialog open={editor !== null} onOpenChange={(open) => { if (!open && !busy && !revealing) close(); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{editor === "connect" ? "Connect application" : editor === "disconnect" ? "Disconnect application" : selected ? appName(selected) : "Connection"}</DialogTitle></DialogHeader>

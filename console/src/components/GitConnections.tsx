@@ -6,7 +6,7 @@ import {
   EmptyState, EmptyStateDescription, EmptyStateTitle, FormField, GridPane,
   Search,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-  StatusBadge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  StatusBadge, Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 import {
   deleteGitConnection, saveGitConnection, useGitConnections,
@@ -197,7 +197,7 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
       <Search aria-label="Search Git connections" placeholder="Search Git connections..." value={query} onChange={(event) => setQuery(event.target.value)} />
       {query ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
     </div>
-    <div className="table-wrap">
+    <TableFrame>
       <div className="table-scroll"><Table>
         <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
         <TableBody>
@@ -212,7 +212,7 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
         </TableBody>
       </Table></div>
       <p className="table-footer"><span>{visible.length} of {connections.length} connections</span></p>
-    </div>
+    </TableFrame>
     {dialog ? <GitConnectionDialog open connection={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onSaved={() => {}} /> : null}
     {setup ? <GitProviderSetup open onClose={() => setSetup(false)} /> : null}
     <Dialog open={Boolean(disconnecting)} onOpenChange={(open) => { if (!open && !busy) setDisconnecting(null); }}>

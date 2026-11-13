@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Button, GridPane, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusBadge, Switch,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { api, asReport, failureOf, readJson } from "../../lib/api.js";
@@ -90,7 +90,7 @@ export function ScheduledTasks({ id, size }: PaneProps) {
   return (
     <GridPane id={id} size={size} title="Scheduled tasks">
       <p className="muted t-label">Work the Platform runs on its own. Each run is a task, and its outcome is in Events.</p>
-      <div className="table-wrap">
+      <TableFrame>
         <div className="table-scroll">
           <Table aria-label="Scheduled tasks">
             <TableHeader>
@@ -149,7 +149,7 @@ export function ScheduledTasks({ id, size }: PaneProps) {
             </TableBody>
           </Table>
         </div>
-      </div>
+      </TableFrame>
     </GridPane>
   );
 }

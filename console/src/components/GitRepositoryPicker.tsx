@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Button,
   Search,
-  Table,
+  Table, TableFrame,
   TableBody,
   TableCell,
   TableHead,
@@ -91,7 +91,7 @@ export function GitRepositoryPicker({ credentialId, disabled, onImport }: {
       <Search aria-label="Search repositories" placeholder="Search repositories..." value={query} onChange={(event) => setQuery(event.target.value)} />
     </div>
     {failure ? <Failure failure={failure} actionLabel={loaded ? undefined : "Retry"} onAction={() => setRetry((value) => value + 1)} /> : null}
-    {!loaded && loading ? <p className="muted" role="status">Loading repositories...</p> : loaded ? <div className="table-wrap">
+    {!loaded && loading ? <p className="muted" role="status">Loading repositories...</p> : loaded ? <TableFrame>
       <div className="table-scroll">
         <Table>
           <TableHeader><TableRow><TableHead scope="col">Repository</TableHead><TableHead scope="col">Access</TableHead><TableHead scope="col">Action</TableHead></TableRow></TableHeader>
@@ -105,7 +105,7 @@ export function GitRepositoryPicker({ credentialId, disabled, onImport }: {
         </Table>
       </div>
       <p className="table-footer"><span>{visible.length} of {repositories.length} loaded repositories</span></p>
-    </div> : null}
+    </TableFrame> : null}
     {nextPage !== null ? <Button type="button" size="sm" disabled={loading || disabled} onClick={() => void loadMore()}>{loading ? "Loading..." : "Load more repositories"}</Button> : null}
   </section>;
 }

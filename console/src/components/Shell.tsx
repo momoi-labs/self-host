@@ -101,6 +101,8 @@ export function Shell({
     <ApplicationShell
       className="console-shell"
       phoneNavigation="bottom"
+      collapsible
+      togglePlacement="header"
       drawerOpen={drawerOpen}
       onDrawerOpenChange={setDrawerOpen}
       brand={

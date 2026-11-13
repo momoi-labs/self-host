@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
   StatusBadge,
-  Table,
+  Table, TableFrame,
   TableBody,
   TableCell,
   TableHead,
@@ -214,7 +214,7 @@ export function PublicCertificates({ id, size }: PaneProps) {
       </Form>
 
       {enabled ? (
-        <div className="table-wrap">
+        <TableFrame>
           <div className="table-scroll">
             <Table aria-label="Public certificates">
               <TableHeader>
@@ -246,7 +246,7 @@ export function PublicCertificates({ id, size }: PaneProps) {
             </Table>
           </div>
           <p className="table-footer"><span>{rows.length} {rows.length === 1 ? "certificate" : "certificates"}</span></p>
-        </div>
+        </TableFrame>
       ) : null}
     </GridPane>
   );

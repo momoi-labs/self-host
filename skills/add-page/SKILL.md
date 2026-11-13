@@ -40,10 +40,10 @@ not apply. Say so rather than forcing it.
   {/* any extra filter goes here */}
   {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
 </div>
-<div className="table-wrap">
+<TableFrame>
   <div className="table-scroll"><Table>…</Table></div>
   <p className="table-footer"><span>{visible.length} of {all.length} things</span></p>
-</div>
+</TableFrame>
 ```
 
 Rules:
@@ -54,6 +54,12 @@ Rules:
 - "Clear filters" renders only once something is filtered. A permanent one is
   a button that does nothing most of the time.
 - The count goes in `.table-footer`, not above the table.
+- A table that is its own panel sits in kiso's `TableFrame`, on a list
+  screen, in a tab or in a dialog. Never write `<div className="table-wrap">`
+  by hand: the frame also renders the layer that paints the panel's shadow,
+  and a hand-written one has no shadow under pixel corners. A table inside a
+  `Card` or a `GridPane` already has that panel's frame and takes no second
+  one.
 - Creating a small record (a DNS record, an API key) is a dialog, not a card
   parked above the table. A record with a recipe gets a create screen.
 - Empty state: `EmptyState variant="first-run"` when there are no records at
@@ -196,7 +202,7 @@ one is a question with a yes or no answer — if it is no, fix it or say why the
 screen is the exception.
 
 1. Does it reuse `PageHeader`, `Lifecycle`, `Glance`, kiso's `Form` and `FormActions`,
-   `.table-wrap`, `.detail-tabs` rather than restating them in new CSS?
+   `TableFrame`, `.detail-tabs` rather than restating them in new CSS?
 2. Is every new class in `console/src/console.css` a rule kiso leaves to the
    product? If a second Momoi product would want it, it belongs upstream in
    the blueprint.

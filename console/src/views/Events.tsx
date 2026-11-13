@@ -6,7 +6,7 @@ import {
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   Pagination, PaginationEllipsis, PaginationNext, PaginationPage, PaginationPrevious,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Spinner,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "../components/Failure.js";
@@ -106,7 +106,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
           </Select>
           {filtered ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); turnTo(1); }}>Clear filters</Button> : null}
         </div>
-        <div className="table-wrap">
+        <TableFrame>
           <div className="table-scroll" ref={scroller}>
             <Table aria-label="Platform events">
               <TableHeader><TableRow>
@@ -150,7 +150,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
               <PaginationNext disabled={current === pages} onClick={() => turnTo(current + 1)} />
             </Pagination>}
           </p>
-        </div>
+        </TableFrame>
       </div>
       {selected && <aside id="event-details" className="events-details" aria-labelledby="event-details-title"
         onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); closeDetails(); } }}>

@@ -6,7 +6,7 @@ import {
   EmptyState, EmptyStateDescription, EmptyStateTitle, FormField,
   KV, KVKey, KVValue, PageHeader, PageHeaderDescription, PageHeaderTitle, Search,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "../components/Failure.js";
@@ -113,7 +113,7 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
       {inventory === null ? <p className="muted">Loading records...</p> : rows.length === 0 ? (
         <EmptyState variant="first-run"><EmptyStateTitle>No records</EmptyStateTitle><EmptyStateDescription>Create a Record or check the Zone diagnostics below.</EmptyStateDescription></EmptyState>
       ) : (
-        <div className="table-wrap">
+        <TableFrame>
           <div className="table-scroll">
             <Table>
               <TableHeader><TableRow>
@@ -144,7 +144,7 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
             </Table>
           </div>
           <p className="table-footer"><span>{visible.length} of {rows.length} records</span></p>
-        </div>
+        </TableFrame>
       )}
       <Card>
         <CardHeader><h2 className="t-caps">Zone diagnostics</h2></CardHeader>
