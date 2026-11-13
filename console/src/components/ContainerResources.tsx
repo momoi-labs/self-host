@@ -1,7 +1,7 @@
 import {
   StatusBadge,
   Sparkline,
-  Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { NetworkChart } from "./NetworkChart.js";
@@ -86,7 +86,7 @@ export function ContainerResources({
       {rows.length ? (
         <div className="container-metrics">
           <p className="t-caps">Per container</p>
-          <div className="table-wrap">
+          <TableFrame>
             <div className="table-scroll">
               <Table>
                 <TableHeader>
@@ -154,7 +154,7 @@ export function ContainerResources({
                 ) : null}
               </Table>
             </div>
-          </div>
+          </TableFrame>
         </div>
       ) : null}
     </div>

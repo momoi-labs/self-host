@@ -28,7 +28,7 @@ import {
   SelectValue,
   Skeleton,
   StatusBadge,
-  Table,
+  Table, TableFrame,
   TableBody,
   TableCell,
   TableHead,
@@ -262,7 +262,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
 
     {!loading && !imports.length && !uploads.length && !failure ? <EmptyState variant="first-run"><EmptyStateTitle>No imports yet</EmptyStateTitle></EmptyState> : null}
 
-    {loading || imports.length || uploads.length ? <div className="table-wrap"><div className="table-scroll"><Table aria-label="Database imports" aria-busy={loading} className="imports-table">
+    {loading || imports.length || uploads.length ? <TableFrame><div className="table-scroll"><Table aria-label="Database imports" aria-busy={loading} className="imports-table">
       <colgroup><col className="imports-when" /><col className="imports-app" /><col /><col className="imports-result" /><col className="imports-objects" /></colgroup>
       <TableHeader><TableRow><TableHead>When</TableHead><TableHead>Application</TableHead><TableHead>File</TableHead><TableHead>Result</TableHead><TableHead className="col-tight">Objects</TableHead></TableRow></TableHeader>
       <TableBody>{uploads.map((upload) => <TableRow key={upload.key}>
@@ -286,7 +286,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
           <TableCell className="col-tight">{item.imported_objects ?? "—"}</TableCell>
         </TableRow>;
       })}</TableBody>
-    </Table></div><p className="table-footer"><span>{imports.length} {imports.length === 1 ? "import" : "imports"}{uploads.length ? `, ${uploads.length} uploading` : ""}</span></p></div>
+    </Table></div><p className="table-footer"><span>{imports.length} {imports.length === 1 ? "import" : "imports"}{uploads.length ? `, ${uploads.length} uploading` : ""}</span></p></TableFrame>
       : null}
 
     {selected ? <div className="detail-run import-run">

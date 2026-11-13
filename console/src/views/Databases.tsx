@@ -4,7 +4,7 @@ import {
   EmptyState, EmptyStateActions, EmptyStateTitle,
   PageHeader, PageHeaderTitle, Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Skeleton, StatusBadge,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../components/Icon.js";
@@ -44,7 +44,7 @@ export function Databases({ apps, ready, onCreate, onOpen }: {
       </Select>
       {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
     </div>
-    <div className="table-wrap" aria-busy={!ready}>
+    <TableFrame aria-busy={!ready}>
       <div className="table-scroll"><Table aria-label="Databases">
         <TableHeader><TableRow>
           <TableHead scope="col">Database</TableHead>
@@ -80,6 +80,6 @@ export function Databases({ apps, ready, onCreate, onOpen }: {
         </TableBody>
       </Table></div>
       <p className="table-footer" role="status"><span>{ready ? `${visible.length} of ${databases.length} databases` : "Loading databases..."}</span></p>
-    </div>
+    </TableFrame>
   </>;
 }

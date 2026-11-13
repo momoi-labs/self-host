@@ -46,6 +46,12 @@
 
 /* The health indicator doubles as the way to show platform services. */
 .health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); padding: 0; border: 0; background: none; font: inherit; color: inherit; }
+/* The sidebar toggle on the left is an icon button, so its icon sits inset
+   from the bar's edge. The health line gets the same inset on the right. On a
+   phone the brand starts at the edge, so the line does too. */
+@media (min-width: 700px) {
+  .topbar .health-link { padding-inline-end: var(--spacing-sm); }
+}
 /* Degraded, the line is the way to what failed. */
 button.health-link:not(:disabled) { cursor: pointer; }
 button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: underline; text-underline-offset: 3px; }

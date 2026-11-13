@@ -5,8 +5,8 @@ contracts own the shared rules.
 
 ## Contracts
 
-- Packages in `console/`: `@momoi-labs/kiso-react` 0.28.0 and
-  `@momoi-labs/kiso` 1.6.0, resolved in `console/package-lock.json`.
+- Packages in `console/`: `@momoi-labs/kiso-react` 0.30.0 and
+  `@momoi-labs/kiso` 1.8.0, resolved in `console/package-lock.json`.
 - Contracts: `console/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 
 ## Paths
@@ -69,14 +69,20 @@ Other components above live in `console/src/components/`.
   `console/tests/appearance.test.mjs` records the selected values.
 - Default to light. A saved light, dark or system selection takes precedence
   before first paint. System removes `data-theme` and follows the OS.
-- Use the tangerine accent, default presentation, an inset shell with compact
-  outer chrome, full page width and start alignment.
-- Use solid pixel frames, small corners, no corner marks, soft shadows,
-  translucent panels and quiet fibers inside and outside the frame.
-- Use stepped chart lines, dotted fills, standard chart layout and inline
+- Use the tangerine accent, the warm neutral, the accent as primary, Inter,
+  default presentation, an inset shell with no outer chrome, a floating,
+  compact header set outside the page width, full page width and center
+  alignment.
+- Use solid pixel frames, small corners, no corner marks, hard
+  shadows, translucent panels and a quiet construction background inside and outside
+  the frame.
+- Use stepped chart lines, square fills, standard chart layout and inline
   legends. Keep existing product-specific chart legend visibility.
-- Use Kiso's `Card` paint layer for shaped shadows. Native frames need
-  `PanelShadow` as their first child, as documented in the installed tokens.
+- The sidebar is collapsible. `ApplicationShell` puts the toggle in the header, before the breadcrumb.
+- Use Kiso's `Card` paint layer for shaped shadows. A table that is its own
+  panel sits in `TableFrame`, never in a hand-written `div.table-wrap`. Other native frames
+  need `PanelShadow` as their first child, as documented in the installed
+  tokens.
 
 ## Pattern choices
 

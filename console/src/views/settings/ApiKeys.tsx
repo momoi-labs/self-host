@@ -16,7 +16,7 @@ import {
   FormField,
   GridPane,
   Search,
-  Table,
+  Table, TableFrame,
   TableBody,
   TableCell,
   TableHead,
@@ -109,7 +109,7 @@ export function ApiKeys({ id, size }: PaneProps) {
         ) : null}
       </div>
 
-      <div className="table-wrap">
+      <TableFrame>
         <div className="table-scroll">
           <Table>
             <TableHeader>
@@ -159,7 +159,7 @@ export function ApiKeys({ id, size }: PaneProps) {
             {visible.length} of {keys.length} {keys.length === 1 ? "key" : "keys"}
           </span>
         </p>
-      </div>
+      </TableFrame>
 
       {/* Creating is one field, so it is a dialog rather than a card that sits
           above the list forever asking to be filled in. */}

@@ -6,7 +6,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
   EmptyState, EmptyStateTitle, FormField, KV, KVKey, KVValue,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, StatusBadge,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 import { api, asReport, failureOf } from "../lib/api.js";
 import { fetchEvents } from "../lib/useEvents.js";
@@ -115,7 +115,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
       </Select>
       {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
     </div>
-    <div className="table-wrap" aria-busy={loading}><div className="table-scroll"><Table aria-label="Deployments">
+    <TableFrame aria-busy={loading}><div className="table-scroll"><Table aria-label="Deployments">
       <TableHeader><TableRow>
         <TableHead scope="col">Deployment</TableHead>
         <TableHead scope="col">Status</TableHead>
@@ -147,7 +147,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
           </DropdownMenuContent>
         </DropdownMenu></TableCell>
       </TableRow>)}</TableBody>
-    </Table></div><p className="table-footer" role="status"><span>{loading ? "Loading deployments..." : `${visible.length} of ${entries.length} deployments`}</span>{busy ? <span>Recovering...</span> : null}</p></div>
+    </Table></div><p className="table-footer" role="status"><span>{loading ? "Loading deployments..." : `${visible.length} of ${entries.length} deployments`}</span>{busy ? <span>Recovering...</span> : null}</p></TableFrame>
     <Dialog open={!!details} onOpenChange={(open) => { if (!open) setSelected(null); }}>
       <DialogContent><DialogHeader><DialogTitle>Deployment details</DialogTitle>
         <DialogDescription>{details ? new Date(details.created_at).toLocaleString() : ""}</DialogDescription>
