@@ -1,4 +1,10 @@
-# self-host
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/lockup-light.svg">
+    <img alt="self-host" src="assets/brand/lockup-light.svg" width="360">
+  </picture>
+</h1>
 
 self-host runs on one machine on your LAN, called the Host. It gives each
 Application its own name, such as `https://blog.home.lan`, serves DNS and HTTPS
