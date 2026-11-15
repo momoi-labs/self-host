@@ -3,30 +3,26 @@ import { createRoot } from "react-dom/client";
 import {
   Alert,
   AlertDescription,
-  BrandMark,
   Button,
   Card,
   CardContent,
   FormField,
   PasswordInput,
   Spinner,
-  TerminalIcon,
   ThemeSelector,
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "./components/Icon.js";
+import { Lockup } from "./components/Logo.js";
 import { checkApiKey, type LoginFailure } from "./lib/login.js";
 import { useTheme } from "./lib/theme.js";
 import "./console.css";
 
 function Brand() {
   return (
-    <div className="brand">
-      <BrandMark><TerminalIcon /></BrandMark>
-      <div className="auth-brand-copy">
-        <span className="t-h3">self-host</span>
-        <span className="auth-server-url t-metadata muted">{window.location.origin}</span>
-      </div>
+    <div className="auth-brand-copy">
+      <Lockup />
+      <span className="auth-server-url t-metadata muted">{window.location.origin}</span>
     </div>
   );
 }

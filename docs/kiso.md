@@ -28,6 +28,7 @@ rules. All entry points use it.
 | Component | Purpose |
 | --- | --- |
 | `Shell` | Console navigation, health and theme selection |
+| `BrandSymbol`, `Lockup` | The self-host brand: the lockup with the DNS suffix under it in the sidebar and drawer, the lockup with the origin in the login brand row, and the symbol alone in the phone header where the lockup does not fit. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
 | `AppForm`, `NativeAppForm`, `PostgresFields` | Application and database configuration |
 | `CustomImageEditor`, `EnvironmentEditor` | Image and virtual machine configuration |
 | `Glance` | Detail-page metrics |

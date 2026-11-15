@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import {
   ApplicationShell,
-  BrandMark,
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbLink,
@@ -10,7 +9,6 @@ import {
   BreadcrumbSeparator,
   Button,
   Dot,
-  TerminalIcon,
   ThemeSelector,
 } from "@momoi-labs/kiso-react";
 
@@ -20,6 +18,7 @@ import { useTheme } from "../lib/theme.js";
 import type { App, Environment, FailingWorkload } from "../lib/types.js";
 import { CreateResource } from "./CreateResource.js";
 import { Icon } from "./Icon.js";
+import { BrandSymbol, Lockup } from "./Logo.js";
 
 /** Where a sidebar entry points, and how it knows it is the current one. */
 export type Destination = {
@@ -106,13 +105,13 @@ export function Shell({
       drawerOpen={drawerOpen}
       onDrawerOpenChange={setDrawerOpen}
       brand={
-        <div className="brand">
-          <BrandMark>
-            <TerminalIcon />
-          </BrandMark>
-          <div className="grow truncate">
-            <div className="t-label">self-host</div>
-            <div className="t-metadata muted mono">{dnsSuffix}</div>
+        <div className="console-brand">
+          <div className="console-brand-full">
+            <Lockup />
+            <span className="t-metadata muted truncate">{dnsSuffix}</span>
+          </div>
+          <div className="console-brand-compact">
+            <BrandSymbol label="self-host" />
           </div>
         </div>
       }

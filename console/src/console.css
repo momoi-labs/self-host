@@ -7,7 +7,7 @@
 
 /* Operator access. Kiso supplies the controls and canvas asset; the Host owns
    the help and this layout. Login is outside ADR-0024's screen shapes. */
-.auth-shell { display: grid; min-height: 100svh; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); position: relative; isolation: isolate; background-color: var(--color-background); }
+.auth-shell { --auth-display-size: clamp(32px, 4vw, 54px); --brand-lockup-height: calc(var(--auth-display-size) * .95); display: grid; min-height: 100svh; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); position: relative; isolation: isolate; background-color: var(--color-background); }
 .auth-shell::before { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0; background-color: var(--color-foreground); mask-image: var(--canvas-mask); mask-size: var(--canvas-size); mask-position: var(--canvas-position); mask-repeat: var(--canvas-repeat); opacity: var(--canvas-opacity); }
 .auth-shell > * { position: relative; z-index: 1; }
 .auth-guide { align-content: center; padding: clamp(24px, 5vw, 80px); background: var(--color-muted); border-right: 1px solid var(--color-border); gap: var(--spacing-2xl); }
@@ -19,7 +19,7 @@
 .auth-brand-copy { display: grid; gap: var(--spacing-2xs); min-width: 0; }
 .auth-server-url { overflow-wrap: anywhere; }
 .auth-eyebrow { font-size: var(--type-size-label); letter-spacing: .08em; text-transform: uppercase; }
-.auth-display { font-size: clamp(32px, 4vw, 54px); line-height: 1.12; font-weight: 600; letter-spacing: -.035em; }
+.auth-display { font-size: var(--auth-display-size); line-height: 1.12; font-weight: 600; letter-spacing: -.035em; }
 .auth-key-help { line-height: 1.6; }
 .auth-key-help code { overflow-wrap: anywhere; }
 .auth-mobile-brand, .auth-mobile-help { display: none; }
@@ -34,10 +34,32 @@
   .auth-guide { display: none; }
   .auth-access { padding: var(--spacing-xl) var(--spacing-lg); }
   .auth-mobile-brand, .auth-mobile-help { display: block; }
+  .auth-mobile-brand { --brand-lockup-height: 48px; }
 }
 @media (forced-colors: active) {
   .auth-shell::before { display: none; }
 }
+
+.brand-symbol { display: block; width: var(--size-control-sm); height: var(--size-control-sm); flex: none; }
+.brand-symbol img { display: block; width: 100%; height: 100%; }
+.brand-lockup { display: block; }
+.brand-lockup img { display: block; height: var(--brand-lockup-height); width: auto; max-width: 100%; object-fit: contain; object-position: left; }
+.brand-on-dark { display: none !important; }
+:root[data-theme="dark"] .brand-on-light { display: none !important; }
+:root[data-theme="dark"] .brand-on-dark { display: block !important; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .brand-on-light { display: none !important; }
+  :root:not([data-theme]) .brand-on-dark { display: block !important; }
+}
+
+/* The console's brand slot: the lockup with the DNS suffix under it, aligned
+   like the login's origin line. The phone header has no room for it, so the
+   symbol takes its place there. */
+.console-brand { --brand-lockup-height: 40px; min-width: 0; }
+.console-brand-full { display: grid; gap: var(--spacing-2xs); min-width: 0; }
+.console-brand-compact { display: none; }
+.app-shell-phone-brand .console-brand-full { display: none; }
+.app-shell-phone-brand .console-brand-compact { display: block; }
 
 /* Public device setup, reached by IP before DNS or CA trust is configured. */
 .device-setup { width: 100%; max-width: 840px; margin-inline: auto; padding: var(--spacing-xl); }
