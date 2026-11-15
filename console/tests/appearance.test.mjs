@@ -109,6 +109,6 @@ test("login inherits the product background instead of overriding it", () => {
 
 test("Kiso cards include the shaped shadow paint layer", () => {
   const markup = renderToStaticMarkup(createElement(Card, null, "Panel content"));
-  assert.match(markup, /<span class="panel-shadow" aria-hidden="true"><span><span><\/span><\/span><\/span>/);
+  assert.match(markup, /<span class="panel-shadow" aria-hidden="true"><span><span><\/span><\/span><span><\/span><\/span>/);
   assert.match(markup, /Panel content/);
 });
