@@ -689,7 +689,10 @@ async fn serve_http(
                     let path = req.uri().path();
                     let is_setup = path == "/setup"
                         || path.starts_with("/setup/")
-                        || path.starts_with("/console/assets/");
+                        || path.starts_with("/console/assets/")
+                        || path
+                            .strip_prefix("/console/")
+                            .is_some_and(|icon| crate::console::SETUP_ICONS.contains(&icon));
                     let response = if is_challenge_path(path) {
                         serve_router(&challenge_router, req).await
                     } else if is_setup && requested_by_ip(&req) {
@@ -1767,7 +1770,7 @@ mod integration {
                 .skip(1)
                 .map(|part| part.split('"').next().unwrap())
             {
-                if path.starts_with("/console/assets/") {
+                if path.starts_with("/console/") {
                     let response = client.get(format!("{base}{path}")).send().await.unwrap();
                     assert_eq!(response.status(), StatusCode::OK, "{path}");
                 }

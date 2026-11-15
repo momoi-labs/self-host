@@ -128,6 +128,7 @@ pub fn http_setup_router(admin_hostname: String, ca_path: std::path::PathBuf) ->
         )
         .route("/setup/info", get(http_setup_info))
         .route("/console/assets/{*path}", get(http_setup_asset))
+        .route("/console/{icon}", get(http_setup_icon))
         .with_state((admin_hostname, ca_path.clone()))
         .nest("/setup", crate::public_ca_router(ca_path))
 }
@@ -136,6 +137,23 @@ async fn http_setup_asset(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> Response<Body> {
     static_asset(axum::extract::Path(format!("assets/{path}"))).await
+}
+
+pub const SETUP_ICONS: [&str; 4] = [
+    "favicon.svg",
+    "favicon-32.png",
+    "icon-512.png",
+    "apple-touch-icon.png",
+];
+
+async fn http_setup_icon(axum::extract::Path(icon): axum::extract::Path<String>) -> Response<Body> {
+    if !SETUP_ICONS.contains(&icon.as_str()) {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    }
+    static_asset(axum::extract::Path(icon)).await
 }
 
 async fn http_setup_info(
@@ -192,6 +210,40 @@ mod tests {
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn setup_listener_serves_the_favicons_only() {
+        let router = super::http_setup_router("admin.home.lan".into(), "missing.pem".into());
+        for (path, status, content_type) in [
+            (
+                "/console/favicon.svg",
+                StatusCode::OK,
+                Some("image/svg+xml"),
+            ),
+            ("/console/favicon-32.png", StatusCode::OK, Some("image/png")),
+            (
+                "/console/apple-touch-icon.png",
+                StatusCode::OK,
+                Some("image/png"),
+            ),
+            ("/console/icon-512.png", StatusCode::OK, Some("image/png")),
+            ("/console/index.html", StatusCode::NOT_FOUND, None),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{path}");
+            if let Some(content_type) = content_type {
+                assert_eq!(
+                    response.headers()[header::CONTENT_TYPE],
+                    content_type,
+                    "{path}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

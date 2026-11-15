@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="self-host">
+  <rect width="512" height="512" rx="112" fill="#0B0F14"/>
+  <g transform="translate(35.84 35.84) scale(0.86)">
+    <path fill="#D32F2F" d="M32.5 80.5Q256 136 479.5 80.5L450.25 139.75L441.25 139.75L441.25 157L70.75 157L70.75 139.75L61.75 139.75ZM58 195.25L454 195.25L454 235L58 235ZM117.4 150.25L165.7 150.25L133.75 431.5L73 431.5ZM346.3 150.25L394.6 150.25L439 431.5L378.25 431.5Z"/>
+  </g>
+</svg>
