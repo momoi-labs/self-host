@@ -102,13 +102,15 @@ export function Shell({
       phoneNavigation="bottom"
       collapsible
       togglePlacement="header"
+      shellLayout
+      headerVariant="default"
+      brandMark={<BrandSymbol />}
       drawerOpen={drawerOpen}
       onDrawerOpenChange={setDrawerOpen}
       brand={
         <div className="console-brand">
           <div className="console-brand-full">
             <Lockup />
-            <span className="t-metadata muted truncate">{dnsSuffix}</span>
           </div>
           <div className="console-brand-compact">
             <BrandSymbol label="self-host" />
@@ -116,7 +118,10 @@ export function Shell({
         </div>
       }
       primaryAction={
-        <CreateResource onDeploy={() => navigate(deploy)} onCreateMachine={() => navigate(newMachine)} onCreateDatabase={() => navigate(newDatabase)} />
+        <>
+          <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span>
+          <CreateResource onDeploy={() => navigate(deploy)} onCreateMachine={() => navigate(newMachine)} onCreateDatabase={() => navigate(newDatabase)} />
+        </>
       }
       navigation={[
         {
