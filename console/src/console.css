@@ -52,11 +52,10 @@
   :root:not([data-theme]) .brand-on-dark { display: block !important; }
 }
 
-/* The console's brand slot: the lockup with the DNS suffix under it, aligned
-   like the login's origin line. The phone header has no room for it, so the
-   symbol takes its place there. */
-.console-brand { --brand-lockup-height: 40px; min-width: 0; }
-.console-brand-full { display: grid; gap: var(--spacing-2xs); min-width: 0; }
+.console-brand { --brand-lockup-height: calc(var(--size-control-sm) * 415 / 512); min-width: 0; }
+.console-brand-full { min-width: 0; }
+.app-shell-phone-action .console-dns { display: none; }
+.sidebar-actions .console-dns { padding-inline-start: calc(var(--app-shell-brand-inset) - var(--spacing-sm)); }
 .console-brand-compact { display: none; }
 .app-shell-phone-brand .console-brand-full { display: none; }
 .app-shell-phone-brand .console-brand-compact { display: block; }
@@ -68,9 +67,6 @@
 
 /* The health indicator doubles as the way to show platform services. */
 .health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); padding: 0; border: 0; background: none; font: inherit; color: inherit; }
-/* The sidebar toggle on the left is an icon button, so its icon sits inset
-   from the bar's edge. The health line gets the same inset on the right. On a
-   phone the brand starts at the edge, so the line does too. */
 @media (min-width: 700px) {
   .topbar .health-link { padding-inline-end: var(--spacing-sm); }
 }
@@ -560,7 +556,6 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 
 /* The resource menu uses spacing between groups and reserves the footer for
    Settings, the native theme selector and Lock on one line. */
-.console-shell [data-slot="sidebar-header"],
 .console-shell [data-slot="sidebar-footer"] { border-block: 0; }
 .sidebar-controls { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .sidebar-controls > * { flex-shrink: 0; }
