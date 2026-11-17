@@ -5,8 +5,8 @@ contracts own the shared rules.
 
 ## Contracts
 
-- Packages in `console/`: `@momoi-labs/kiso-react` 0.31.1 and
-  `@momoi-labs/kiso` 1.9.1, resolved in `console/package-lock.json`.
+- Packages in `console/`: `@momoi-labs/kiso-react` 0.32.0 and
+  `@momoi-labs/kiso` 1.10.0, resolved in `console/package-lock.json`.
 - Contracts: `console/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 
 ## Paths
