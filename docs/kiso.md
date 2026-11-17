@@ -68,19 +68,22 @@ Other components above live in `console/src/components/`.
   preview or prototype does not verify backend behavior.
 - Keep the console's list, detail and create compositions from
   `skills/add-page/SKILL.md` and ADR-0024.
-- Use the same appearance attributes on all three HTML entry points.
+- Use the same appearance attributes on all three HTML entry points, except
+  the header variant noted below.
   `console/tests/appearance.test.mjs` records the selected values.
 - Default to light. A saved light, dark or system selection takes precedence
   before first paint. System removes `data-theme` and follows the OS.
 - Use the tangerine accent, the warm neutral, the accent as primary, Inter,
   default presentation, the default shell with automatic outer chrome, a
-  floating, default-size header set outside the page width, full page width
-  and center alignment. The default header size gives the bar sewa's height,
-  so the sidebar bar fits the lockup and the DNS suffix.
-- Use solid pixel frames, small corners, no corner marks, hard
-  shadows, translucent panels and a quiet construction background inside and outside
-  the frame.
-- Use stepped chart lines, square fills, standard chart layout and inline
+  default-size header set to the page width, full page width and start
+  alignment. The console uses the default header variant. Login and setup
+  keep the floating header, because they have no sidebar. The default header
+  size gives the bar sewa's height, so the sidebar bar fits the lockup and the
+  DNS suffix.
+- Use solid pixel frames, small corners, no corner marks, soft
+  shadows with a hard outer shadow, glass panels, landing bands inside the
+  frame and a quiet construction background inside and outside the frame.
+- Use stepped chart lines, dot fills, compact chart layout and inline
   legends. Keep existing product-specific chart legend visibility.
 - The sidebar is collapsible. `ApplicationShell` puts the toggle in the header, before the breadcrumb.
 - Use Kiso's `Card` paint layer for shaped shadows. A table that is its own
