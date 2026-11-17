@@ -79,9 +79,9 @@ homebrew_casks:
     # These binaries are not Apple-notarized. Limit the hook to our binary.
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/self-host"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/self-host"]
           end
 
 aurs:
