@@ -29,7 +29,6 @@ function render(apps, environments, selected = "") {
     crumb: "Overview", dnsSuffix: "home.lan", healthy: true, version: "0.4.0",
     apps, environments,
     overview: { href: "/console/", active: !selected },
-    deploy: { href: "/console/#new", active: false },
     application: app => ({ href: `/console/#app-${app.id}`, active: selected === app.id }),
     virtualMachine: vm => ({ href: `/console/#virtual-machine-${vm.id}`, active: selected === vm.id }),
     children: null,

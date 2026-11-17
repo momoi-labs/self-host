@@ -105,25 +105,10 @@ export function App() {
         active: view.view === "events",
         onClick: () => go({ view: "events", id: null }),
       }}
-      deploy={{
-        href: "/console/#new",
-        active: view.view === "new",
-        onClick: () => go({ view: "new", id: null }),
-      }}
       databases={{
         href: "/console/#databases",
         active: view.view === "databases" || view.view === "database-new" || !!app?.managed_postgres,
         onClick: () => go({ view: "databases", id: null }),
-      }}
-      newDatabase={{
-        href: "/console/#new-database",
-        active: view.view === "database-new",
-        onClick: () => go({ view: "database-new", id: null }),
-      }}
-      newMachine={{
-        href: "/console/#new-virtual-machine",
-        active: view.view === "environment-new",
-        onClick: () => go({ view: "environment-new", id: null }),
       }}
       virtualMachine={(machine) => ({
         href: `/console/#virtual-machine-${machine.id}`,
