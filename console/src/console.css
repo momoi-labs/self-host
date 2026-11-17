@@ -53,9 +53,13 @@
 }
 
 .console-brand { --brand-lockup-height: calc(var(--size-control-sm) * 415 / 512); min-width: 0; }
-.console-brand-full { min-width: 0; }
-.app-shell-phone-action .console-dns { display: none; }
-.sidebar-actions .console-dns { padding-inline-start: calc(var(--app-shell-brand-inset) - var(--spacing-sm)); }
+.console-brand-full { display: grid; min-width: 0; line-height: 1.15; }
+.console-shell .sidebar-header { background: var(--color-accent-surface); }
+.console-dns { font-family: var(--font-mono); }
+@media (min-width: 1024px) {
+  .console-shell > .sidebar > .sidebar-header .console-brand-full { position: relative; height: var(--size-control-sm); align-content: center; }
+  .console-shell > .sidebar > .sidebar-header .console-dns { position: absolute; inset-inline: 0; top: calc(50% + var(--brand-lockup-height) / 2); }
+}
 .console-brand-compact { display: none; }
 .app-shell-phone-brand .console-brand-full { display: none; }
 .app-shell-phone-brand .console-brand-compact { display: block; }
