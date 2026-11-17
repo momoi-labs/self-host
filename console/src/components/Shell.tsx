@@ -104,13 +104,13 @@ export function Shell({
         <div className="console-brand">
           <div className="console-brand-full">
             <Lockup />
+            <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span>
           </div>
           <div className="console-brand-compact">
             <BrandSymbol label="self-host" />
           </div>
         </div>
       }
-      primaryAction={<span className="console-dns t-metadata muted truncate">{dnsSuffix}</span>}
       navigation={[
         {
           destinations: [

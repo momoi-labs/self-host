@@ -28,7 +28,7 @@ rules. All entry points use it.
 | Component | Purpose |
 | --- | --- |
 | `Shell` | Console navigation, health and theme selection |
-| `BrandSymbol`, `Lockup` | The self-host brand: the lockup in the sidebar bar (`shellLayout`) with the DNS suffix below the bar, the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. The shell uses `headerVariant="default"`, so the rail keeps the mark and the header bar line meets the sidebar bar line. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
+| `BrandSymbol`, `Lockup` | The self-host brand: the lockup in the sidebar bar (`shellLayout`) with the DNS suffix under it, inside the bar, as sewa shows its address. The sidebar bar has the accent surface, the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. The lockup sits in a box of that size, centered like the rail mark, with the DNS suffix below it. The shell uses `headerVariant="default"`, so the rail keeps the mark and the header bar line meets the sidebar bar line. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
 | `AppForm`, `NativeAppForm`, `PostgresFields` | Application and database configuration |
 | `CustomImageEditor`, `EnvironmentEditor` | Image and virtual machine configuration |
 | `Glance` | Detail-page metrics |
@@ -73,9 +73,10 @@ Other components above live in `console/src/components/`.
 - Default to light. A saved light, dark or system selection takes precedence
   before first paint. System removes `data-theme` and follows the OS.
 - Use the tangerine accent, the warm neutral, the accent as primary, Inter,
-  default presentation, an inset shell with no outer chrome, a floating,
-  compact header set outside the page width, full page width and center
-  alignment.
+  default presentation, the default shell with automatic outer chrome, a
+  floating, default-size header set outside the page width, full page width
+  and center alignment. The default header size gives the bar sewa's height,
+  so the sidebar bar fits the lockup and the DNS suffix.
 - Use solid pixel frames, small corners, no corner marks, hard
   shadows, translucent panels and a quiet construction background inside and outside
   the frame.
