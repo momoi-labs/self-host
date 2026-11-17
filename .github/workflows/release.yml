@@ -156,7 +156,7 @@ jobs:
 
       - uses: goreleaser/goreleaser-action@v6
         with:
-          version: v2.18.2
+          version: v2.20.2
           args: release --clean ${{ env.VERSION == 'snapshot' && '--snapshot' || '--release-notes=release-notes.md' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}

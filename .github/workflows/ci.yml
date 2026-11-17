@@ -22,7 +22,7 @@ jobs:
       - run: npm ci && npm run test:release
       - uses: goreleaser/goreleaser-action@v6
         with:
-          version: v2.18.2
+          version: v2.20.2
           args: check
 
   s6-bundle:
