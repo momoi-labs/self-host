@@ -15,10 +15,10 @@ const appearance = {
   "data-primary": "accent",
   "data-typeface": "inter",
   "data-chart-line": "stepped",
-  "data-chart-fill": "squares",
-  "data-chart-layout": "standard",
+  "data-chart-fill": "dots",
+  "data-chart-layout": "compact",
   "data-chart-legend": "inline",
-  "data-shadow-style": "hard",
+  "data-shadow-style": "soft",
   "data-border-style": "solid",
   "data-corner-style": "pixel",
   "data-corner-marks": "none",
@@ -26,12 +26,12 @@ const appearance = {
   "data-mark-size": "medium",
   "data-visual-style": "default",
   "data-app-shell": "default",
-  "data-header-variant": "floating",
+  "data-header-variant": "default",
   "data-header-size": "default",
-  "data-header-width": "outset",
+  "data-header-width": "page",
   "data-app-shell-outer": "auto",
   "data-page-width": "full",
-  "data-page-align": "center",
+  "data-page-align": "start",
   "data-frame-scope": "all",
   "data-mark-scope": "panels",
   "data-mark-clearance": "normal",
@@ -40,12 +40,12 @@ const appearance = {
   "data-background-placement": "both",
   "data-frame-detail": "medium",
   "data-paper-tone": "theme",
-  "data-panel-fill": "translucent",
-  "data-landing-bands": "full",
+  "data-panel-fill": "glass",
+  "data-landing-bands": "inside",
   "data-outer-border-style": "inherit",
   "data-outer-corner-style": "inherit",
   "data-outer-corner-marks": "inherit",
-  "data-outer-shadow-style": "inherit",
+  "data-outer-shadow-style": "hard",
 };
 
 for (const entry of ["index", "login", "setup"]) {
@@ -55,7 +55,8 @@ for (const entry of ["index", "login", "setup"]) {
       [...html.match(/<html\b[^>]*>/)[0].matchAll(/([\w-]+)="([^"]*)"/g)]
         .map(([, name, value]) => [name, value]),
     );
-    assert.deepEqual(attributes, appearance);
+    const headerVariant = entry === "index" ? "default" : "floating";
+    assert.deepEqual(attributes, { ...appearance, "data-header-variant": headerVariant });
   });
 
   test(`${entry} applies the saved theme before first paint`, () => {
