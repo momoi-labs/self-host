@@ -16,7 +16,6 @@ import { logout } from "../lib/api.js";
 import { statusTone } from "../lib/status.js";
 import { useTheme } from "../lib/theme.js";
 import type { App, Environment, FailingWorkload } from "../lib/types.js";
-import { CreateResource } from "./CreateResource.js";
 import { Icon } from "./Icon.js";
 import { BrandSymbol, Lockup } from "./Logo.js";
 
@@ -42,10 +41,7 @@ export function Shell({
   onOpenFailing,
   version,
   overview,
-  deploy,
-  newMachine = { href: "/console/#new-virtual-machine", active: false },
   databases = { href: "/console/#databases", active: false },
-  newDatabase = { href: "/console/#new-database", active: false },
   customImages = { href: "/console/#custom-images", active: false },
   routes = { href: "/console/#routes", active: false },
   dns = { href: "/console/#dns", active: false },
@@ -69,10 +65,7 @@ export function Shell({
   onOpenFailing?: (id: string) => void;
   version: string | null;
   overview: Destination;
-  deploy: Destination;
-  newMachine?: Destination;
   databases?: Destination;
-  newDatabase?: Destination;
   customImages?: Destination;
   routes?: Destination;
   events?: Destination;
@@ -117,12 +110,7 @@ export function Shell({
           </div>
         </div>
       }
-      primaryAction={
-        <>
-          <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span>
-          <CreateResource onDeploy={() => navigate(deploy)} onCreateMachine={() => navigate(newMachine)} onCreateDatabase={() => navigate(newDatabase)} />
-        </>
-      }
+      primaryAction={<span className="console-dns t-metadata muted truncate">{dnsSuffix}</span>}
       navigation={[
         {
           destinations: [

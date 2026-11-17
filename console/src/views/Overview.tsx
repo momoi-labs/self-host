@@ -24,6 +24,7 @@ import {
   TableRow,
 } from "@momoi-labs/kiso-react";
 
+import { CreateResource } from "../components/CreateResource.js";
 import { definitionOf, describeDefinition } from "../components/DefinitionPicker.js";
 import { Icon } from "../components/Icon.js";
 import { formatBytes } from "../lib/format.js";
@@ -113,14 +114,7 @@ export function Overview({
               machine to work in. Both are reachable from your LAN.
             </EmptyStateDescription>
             <EmptyStateActions>
-              <Button size="sm" variant="primary" onClick={onDeploy}>
-                <Icon name="plus" />
-                Deploy application
-              </Button>
-              <Button size="sm" onClick={onNewMachine}>
-                <Icon name="plus" />
-                Create virtual machine
-              </Button>
+              <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} />
             </EmptyStateActions>
           </EmptyState>
         </Card>

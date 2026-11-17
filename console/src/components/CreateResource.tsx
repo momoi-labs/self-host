@@ -41,7 +41,6 @@ export function CreateResource({
         ref={trigger}
         variant="primary"
         size="sm"
-        className="btn-block"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => changeOpen(true)}
