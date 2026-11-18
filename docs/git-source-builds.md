@@ -15,6 +15,9 @@ Runtime. Native commands do not use this build path.
 - **Build context** is a directory relative to the checkout root.
 - **Dockerfile path** is relative to the checkout root, including when the
   context is a subdirectory.
+- **Build target** is an optional Dockerfile stage name. The build stops at
+  that stage, which needs the numeric `USER` below. Default is the last stage.
+  Compose sources do not take it.
 - **Compose path** selects a Compose file instead of one Dockerfile. Its
   `build.context` is relative to the Compose file; `build.dockerfile` is
   relative to that context.
@@ -61,7 +64,8 @@ promise an automatic rollback when the new Application fails to start.
 A Git build is a plain `docker build` by default. Its steps run as whatever
 user the Dockerfile sets, root included, so a stage can install packages
 before it switches user. The image that runs is held to a rule the build is
-not: the final stage needs an explicit numeric, nonzero `USER`, and the built
+not: the built stage (the build target, else the last) needs an explicit numeric,
+nonzero `USER`, and the built
 image's user is checked after the build. An optional group id must be numeric
 and nonzero. Names such as `app`, root, variable substitutions and implicit
 inherited users are refused there.

@@ -83,6 +83,7 @@ export type GitSource = {
   credential_id?: string | null;
   registry_credential_id?: string | null;
   strict_build?: boolean;
+  build_target?: string | null;
 };
 
 export type GitBuild = {

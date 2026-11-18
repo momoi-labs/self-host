@@ -24,13 +24,17 @@ fn source(repository: String) -> GitSource {
         credential_id: None,
         registry_credential_id: None,
         strict_build: false,
+        build_target: None,
     }
 }
 
 #[test]
 fn rejects_root_steps_custom_frontends_and_ambiguous_users() {
     let good = "FROM alpine:3.21 AS build\nUSER 1001:1001\nRUN echo build\nFROM alpine:3.21\nUSER 1001\nCMD [\"sleep\", \"infinity\"]\n";
-    assert_eq!(dockerfile_policy(good, true).unwrap(), vec!["alpine:3.21"]);
+    assert_eq!(
+        dockerfile_policy(good, true, None).unwrap(),
+        vec!["alpine:3.21"]
+    );
     for bad in [
         "FROM alpine\nRUN echo root\nUSER 1001",
         "FROM alpine\nUSER app\nRUN true",
@@ -46,7 +50,7 @@ fn rejects_root_steps_custom_frontends_and_ambiguous_users() {
         "FROM $BASE\nUSER 1000",
         "FROM alpine\nUSER 1000\nRUN --security=insecure true",
     ] {
-        assert!(dockerfile_policy(bad, true).is_err(), "{bad}");
+        assert!(dockerfile_policy(bad, true, None).is_err(), "{bad}");
     }
     assert!(!nonroot_user("root"));
     assert!(!nonroot_user("0000"));
@@ -54,11 +58,58 @@ fn rejects_root_steps_custom_frontends_and_ambiguous_users() {
 }
 
 #[test]
+fn a_build_target_judges_only_the_stage_it_builds() {
+    let text = "FROM alpine:3.21 AS web\nUSER 1001\nFROM debian:12 AS central\nUSER 1002\nFROM busybox AS cell\nRUN true\n";
+    assert_eq!(
+        dockerfile_policy(text, false, Some("web")).unwrap(),
+        vec!["alpine:3.21"]
+    );
+    assert_eq!(
+        dockerfile_policy(text, false, Some("CENTRAL")).unwrap(),
+        vec!["debian:12"]
+    );
+    assert!(dockerfile_policy(text, false, None).is_err());
+    let guarded = "FROM alpine AS web\nUSER 1001\nRUN true\nFROM alpine\nRUN --network=none true\nUSER 1002\n";
+    assert!(dockerfile_policy(guarded, true, Some("web")).is_ok());
+    assert!(dockerfile_policy(text, false, Some("cell")).is_err());
+    assert!(dockerfile_policy(text, false, Some("missing")).is_err());
+    let graph = "FROM alpine:3.21 AS unused\nFROM node:24 AS web\nFROM rust:1 AS build\nCOPY --from=web /a /a\nFROM debian:12 AS app\nCOPY --from=build /b /b\nUSER 1001\nFROM busybox AS later\nRUN true\n";
+    assert_eq!(
+        dockerfile_policy(graph, false, Some("app")).unwrap(),
+        vec!["debian:12", "node:24", "rust:1"]
+    );
+    let forward = "FROM alpine AS one\nCOPY --from=two /a /a\nUSER 1001\nFROM alpine AS two\n";
+    assert!(dockerfile_policy(forward, false, Some("one")).is_err());
+    let numbered = "FROM alpine AS unused\nFROM alpine AS build\nFROM alpine AS app\nCOPY --from=1 /a /a\nUSER 1001\n";
+    assert!(dockerfile_policy(numbered, false, Some("app")).is_err());
+    let same_name = "FROM alpine AS alpine\nUSER 1001\n";
+    assert_eq!(
+        dockerfile_policy(same_name, false, Some("alpine")).unwrap(),
+        vec!["alpine"]
+    );
+}
+
+#[test]
+fn a_build_target_needs_a_stage_name_and_a_dockerfile() {
+    let mut source = source("https://example.invalid/repo.git".into());
+    source.build_target = Some("cell".into());
+    assert!(validate(&source).is_ok());
+    source.build_target = Some("bad name".into());
+    assert!(validate(&source).is_err());
+    source.build_target = Some("cell".into());
+    source.compose_path = Some("compose.yaml".into());
+    assert!(validate(&source).is_err());
+}
+
+#[test]
 fn a_plain_build_runs_steps_as_any_user_and_ends_on_a_nonroot_one() {
     let rails = "FROM ruby:3.3 AS build\nRUN apt-get update && apt-get install -y build-essential\nUSER app\nRUN bundle install\nFROM ruby:3.3\nUSER root\nRUN useradd -u 1000 rails\nUSER 1000:1000\nCMD [\"rails\", \"server\"]\n";
-    assert_eq!(dockerfile_policy(rails, false).unwrap(), vec!["ruby:3.3"]);
+    assert_eq!(
+        dockerfile_policy(rails, false, None).unwrap(),
+        vec!["ruby:3.3"]
+    );
     assert!(
-        dockerfile_policy(rails, true).is_err(),
+        dockerfile_policy(rails, true, None).is_err(),
         "the guard still refuses root steps"
     );
     for bad in [
@@ -72,7 +123,7 @@ fn a_plain_build_runs_steps_as_any_user_and_ends_on_a_nonroot_one() {
         "FROM alpine\nUSER 1000\nONBUILD RUN true",
         "# syntax=custom/frontend\nFROM alpine\nUSER 1000",
     ] {
-        assert!(dockerfile_policy(bad, false).is_err(), "{bad}");
+        assert!(dockerfile_policy(bad, false, None).is_err(), "{bad}");
     }
 }
 
