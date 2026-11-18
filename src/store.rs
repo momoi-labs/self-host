@@ -341,8 +341,12 @@ pub trait StateStore: Clone + Send + Sync + 'static {
     async fn unset_env(&self, app_id: &str, key: &str) -> Result<(), StoreError>;
 
     async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, StoreError>;
-    async fn create_api_key(&self, id: &str, label: &str) -> Result<(), StoreError>;
-    async fn revoke_api_key(&self, id: &str) -> Result<(), StoreError>;
+    async fn create_api_key(&self, key: &ApiKeyRecord) -> Result<(), StoreError>;
+    async fn revoke_api_key(&self, id: &str, at: &str) -> Result<(), StoreError>;
+    async fn touch_api_key(&self, id: &str, at: &str) -> Result<(), StoreError>;
+    async fn find_api_key(&self, id: &str) -> Result<Option<ApiKeyRecord>, StoreError> {
+        Ok(self.list_api_keys().await?.into_iter().find(|k| k.id == id))
+    }
 
     /// One collection of records, keyed by `kind` and `id`, each a JSON body.
     /// [`crate::collection::Collection`] is the typed face of these; nothing
@@ -390,11 +394,17 @@ pub struct AuditRow {
     pub body: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApiKeyRecord {
     pub id: String,
     pub label: String,
     pub created_at: String,
+    pub kind: String,
+    pub scopes: Option<Vec<String>>,
+    pub expires_at: Option<String>,
+    pub node_id: Option<String>,
+    pub last_used_at: Option<String>,
+    pub revoked_at: Option<String>,
 }
 
 /// One collection in the fake: `(id, body)` pairs in insertion order.
@@ -541,21 +551,24 @@ impl StateStore for FakeStateStore {
         Ok(self.api_keys.read().await.clone())
     }
 
-    async fn create_api_key(&self, id: &str, label: &str) -> Result<(), StoreError> {
-        self.api_keys.write().await.push(ApiKeyRecord {
-            id: id.to_string(),
-            label: label.to_string(),
-            created_at: "now".into(),
-        });
+    async fn create_api_key(&self, key: &ApiKeyRecord) -> Result<(), StoreError> {
+        self.api_keys.write().await.insert(0, key.clone());
         Ok(())
     }
 
-    async fn revoke_api_key(&self, id: &str) -> Result<(), StoreError> {
+    async fn revoke_api_key(&self, id: &str, at: &str) -> Result<(), StoreError> {
         let mut keys = self.api_keys.write().await;
-        let len = keys.len();
-        keys.retain(|k| k.id != id);
-        if keys.len() == len {
-            return Err(StoreError::NotFound(id.to_string()));
+        let key = keys
+            .iter_mut()
+            .find(|k| k.id == id && k.revoked_at.is_none())
+            .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+        key.revoked_at = Some(at.into());
+        Ok(())
+    }
+
+    async fn touch_api_key(&self, id: &str, at: &str) -> Result<(), StoreError> {
+        if let Some(key) = self.api_keys.write().await.iter_mut().find(|k| k.id == id) {
+            key.last_used_at = Some(at.into());
         }
         Ok(())
     }

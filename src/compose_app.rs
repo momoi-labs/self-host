@@ -242,6 +242,7 @@ pub struct ComposeDefinition {
     /// Mounts, by service and position, whose source the file wrote with a
     /// `$`. Their resolved paths may hold a Variable's value.
     interpolated_mounts: BTreeSet<(String, usize)>,
+    variable_mounts: std::collections::BTreeMap<(String, usize), String>,
 }
 
 /// Where the Application answers: one service, one container port.
@@ -334,6 +335,7 @@ impl ComposeDefinition {
         }
 
         let interpolated_mounts = interpolated_mounts(&top);
+        let variable_mounts = variable_mounts(&top);
         let mut interpolator = Interpolator::new(variables, resolution);
         interpolator.document(&mut top)?;
         let mut referenced = interpolator.referenced;
@@ -375,7 +377,14 @@ impl ComposeDefinition {
             declared_volumes,
             referenced,
             interpolated_mounts,
+            variable_mounts,
         })
+    }
+
+    pub fn mount_as_written(&self, service: &str, index: usize) -> Option<&str> {
+        self.variable_mounts
+            .get(&(service.to_owned(), index))
+            .map(String::as_str)
     }
 
     /// Names of every Variable the definition references: `${VAR}` in any of
@@ -755,6 +764,36 @@ fn interpolated_mounts(top: &Mapping) -> BTreeSet<(String, usize)> {
                 .is_some_and(|s| s.contains('$'))
             {
                 found.insert((key_name(name), index));
+            }
+        }
+    }
+    found
+}
+
+fn variable_mounts(top: &Mapping) -> std::collections::BTreeMap<(String, usize), String> {
+    fn reads_variables(value: &Value) -> bool {
+        match value {
+            Value::String(text) => text.contains('$'),
+            Value::Mapping(entry) => entry.values().any(reads_variables),
+            Value::Sequence(items) => items.iter().any(reads_variables),
+            Value::Tagged(tagged) => reads_variables(&tagged.value),
+            _ => false,
+        }
+    }
+    let mut found = std::collections::BTreeMap::new();
+    let Some(Value::Mapping(services)) = top.get("services") else {
+        return found;
+    };
+    for (name, body) in services {
+        let Some(Value::Sequence(items)) = body.get("volumes") else {
+            continue;
+        };
+        for (index, item) in items.iter().enumerate() {
+            if reads_variables(item) {
+                found.insert(
+                    (key_name(name), index),
+                    serde_yaml::to_string(item).unwrap_or_default(),
+                );
             }
         }
     }
