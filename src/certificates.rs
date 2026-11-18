@@ -152,6 +152,7 @@ pub struct CertificateResolver {
     local: CertificateEntry,
     managed: RwLock<BTreeSet<String>>,
     public: RwLock<HashMap<String, CertificateEntry>>,
+    tailnet: RwLock<Option<(String, CertificateEntry)>>,
 }
 
 impl std::fmt::Debug for CertificateResolver {
@@ -168,6 +169,12 @@ impl CertificateResolver {
             return self.local.valid_at(now).then(|| self.local.key.clone());
         };
         let name = name.to_ascii_lowercase();
+        if let Some((tailnet, entry)) = &*self.tailnet.read().unwrap()
+            && *tailnet == name
+            && entry.valid_at(now)
+        {
+            return Some(entry.key.clone());
+        }
         if self.managed.read().unwrap().contains(&name) {
             return self
                 .public
@@ -256,6 +263,7 @@ impl CertificateManager {
                     local,
                     managed: RwLock::new(managed),
                     public: RwLock::new(public),
+                    tailnet: RwLock::new(None),
                 }),
                 challenges: Arc::new(RwLock::new(HashMap::new())),
                 statuses: RwLock::new(statuses),
@@ -266,6 +274,16 @@ impl CertificateManager {
 
     pub fn resolver(&self) -> Arc<CertificateResolver> {
         self.inner.resolver.clone()
+    }
+
+    pub fn install_tailnet(&self, name: &str, chain: &str, key: &str) -> anyhow::Result<()> {
+        let entry = CertificateEntry::from_pem(chain, key)?;
+        let name = name.to_ascii_lowercase();
+        if !entry.names.contains(&name) {
+            bail!("the tailnet certificate does not name {name}");
+        }
+        *self.inner.resolver.tailnet.write().unwrap() = Some((name, entry));
+        Ok(())
     }
 
     pub fn status(&self) -> Vec<CertificateStatus> {

@@ -100,8 +100,9 @@ enum Command {
         #[arg(long, value_parser = self_host::metrics::parse_duration, default_value = "5m")]
         monitoring_max_age: std::time::Duration,
         /// Serve the API and the console without the DNS server. Names under
-        /// the DNS Suffix stop resolving, so reach the Platform by address.
-        /// For a Host that already has something on port 53.
+        /// the DNS Suffix stop resolving, so reach the Platform on loopback
+        /// port 3721 on the Host, or on its tailnet name. For a Host that
+        /// already has something on port 53.
         #[arg(long)]
         no_dns: bool,
         /// How long audit history is kept, as `30d`, `36h` or `90m`. Given
@@ -110,7 +111,7 @@ enum Command {
         /// it the Operator's setting applies, then the default of 30d.
         #[arg(long, value_parser = parse_audit_events_max_age)]
         audit_events_max_age: Option<std::time::Duration>,
-        /// The port the API and the console listen on, on every address
+        /// The port the API and the console listen on, on loopback
         /// (default: 3721). SELF_HOST_LISTEN picks the address too.
         #[arg(short, long)]
         port: Option<u16>,
@@ -1730,11 +1731,33 @@ async fn serve_proxy(
     };
     let ports = format!("{} and {}", config.https_port, config.http_port);
 
-    let bound = self_host::proxy::bind(config, admin_router, table, metrics)
+    let mut bound = self_host::proxy::bind(config, admin_router, table, metrics)
         .await
         .with_context(|| format!("cannot serve Consumer traffic on {ports}. {}", bind_hint()))?
         .with_certificate_resolver(certificates.resolver())
         .with_challenge_router(certificates.challenge_router());
+
+    let tailnet_renewal = match serve_tailnet_name(&certificates).await {
+        Some(name) => {
+            bound = bound.with_tailnet(
+                name.clone(),
+                std::sync::Arc::new(self_host::tailnet::WhoIs::default()),
+            );
+            let certificates = certificates.clone();
+            Some(tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    if let Err(error) = install_tailnet_certificate(&certificates, &name).await {
+                        tracing::warn!("could not renew the certificate for {name}: {error:#}");
+                    }
+                }
+            }))
+        }
+        None => None,
+    };
 
     // Every Hostname outside the Suffix gets a public certificate, read off
     // the Applications once a minute along with the account the Operator
@@ -1762,7 +1785,44 @@ async fn serve_proxy(
     });
     let result = bound.run().await;
     renewal.abort();
+    if let Some(task) = tailnet_renewal {
+        task.abort();
+    }
     result
+}
+
+async fn serve_tailnet_name(
+    certificates: &self_host::certificates::CertificateManager,
+) -> Option<String> {
+    let Some(name) = self_host::tailnet::status()
+        .await
+        .and_then(|status| status.name)
+    else {
+        info!(
+            "agent access is off: Tailscale is not running here, or the tailnet has HTTPS certificates turned off"
+        );
+        return None;
+    };
+    match install_tailnet_certificate(certificates, &name).await {
+        Ok(()) => {
+            info!("agents reach this Host at https://{name}");
+            Some(name)
+        }
+        Err(error) => {
+            tracing::warn!("agent access is off: no certificate for {name}: {error:#}");
+            None
+        }
+    }
+}
+
+async fn install_tailnet_certificate(
+    certificates: &self_host::certificates::CertificateManager,
+    name: &str,
+) -> anyhow::Result<()> {
+    let (chain, key) =
+        self_host::tailnet::issue_certificate(name, &file_store::state_dir().join("tailnet"))
+            .await?;
+    certificates.install_tailnet(name, &chain, &key)
 }
 
 #[cfg(target_os = "macos")]
@@ -1845,7 +1905,7 @@ async fn remove_legacy_system_network(docker: &dyn DockerRuntime) {
 async fn resolve_server_config(port: Option<u16>) -> (String, String) {
     let api_key = env::var("SELF_HOST_API_KEY").unwrap_or_default();
     let listen_addr =
-        env::var("SELF_HOST_LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{OPERATOR_API_PORT}"));
+        env::var("SELF_HOST_LISTEN").unwrap_or_else(|_| format!("127.0.0.1:{OPERATOR_API_PORT}"));
 
     (api_key, with_port(&listen_addr, port))
 }
@@ -2021,6 +2081,12 @@ mod tests {
         assert_eq!(with_port("0.0.0.0:3721", Some(4000)), "0.0.0.0:4000");
         assert_eq!(with_port("100.1.2.3:3721", Some(4000)), "100.1.2.3:4000");
         assert_eq!(with_port("0.0.0.0:3721", None), "0.0.0.0:3721");
+    }
+
+    #[tokio::test]
+    async fn the_operator_api_listens_on_loopback_by_default() {
+        assert!(env::var("SELF_HOST_LISTEN").is_err());
+        assert_eq!(resolve_server_config(None).await.1, "127.0.0.1:3721");
     }
 
     /// On macOS /tmp is /private/tmp, and only the latter is mounted into

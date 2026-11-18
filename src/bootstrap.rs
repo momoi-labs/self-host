@@ -116,7 +116,7 @@ pub async fn run_bootstrap(
         Err(e) => return Err(e),
     };
 
-    let api_listen_addr = format!("0.0.0.0:{OPERATOR_API_PORT}");
+    let api_listen_addr = format!("127.0.0.1:{OPERATOR_API_PORT}");
 
     info!("bootstrap complete: dns_suffix={dns_suffix}, api_listen={api_listen_addr}");
 
@@ -312,7 +312,10 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!(
         "Consumer traffic enters on port 443 (HTTPS) and 80 (device setup and HTTPS redirects)."
     );
-    println!("Operator API is on port {OPERATOR_API_PORT}.");
+    println!(
+        "Operator API is on port {OPERATOR_API_PORT}, on loopback only. Other machines use https://admin.{}.",
+        result.dns_suffix
+    );
     println!();
     println!("Start the daemon with: self-host serve");
 }

@@ -53,6 +53,7 @@ pub mod settings;
 pub mod source;
 pub mod source_build_guard;
 pub mod store;
+pub mod tailnet;
 pub mod tasks;
 pub mod terminal;
 pub mod tls;
@@ -266,6 +267,7 @@ fn build_platform_with_native<S: StateStore>(
         .merge(postgres::api::router::<S>())
         .merge(postgres::backups_api::router::<S>())
         .route("/health", get(health::<S>))
+        .route("/tailnet", get(tailnet_status))
         .route(
             "/native/capabilities",
             get(async || Json(native::capabilities())),
@@ -2735,6 +2737,13 @@ async fn revoke_key<S: StateStore>(
             error_response(StatusCode::NOT_FOUND, &StoreError::NotFound("key".into()))
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+async fn tailnet_status() -> Response {
+    match tailnet::status().await {
+        Some(status) => Json(status).into_response(),
+        None => Json(serde_json::json!({ "name": null, "nodes": [] })).into_response(),
     }
 }
 
