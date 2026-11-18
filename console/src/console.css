@@ -60,6 +60,12 @@
   --app-shell-brand-inset: calc((var(--size-touch-min) + 2 * var(--spacing-md) - 1px - var(--size-control-sm)) / 2);
 }
 .console-shell.app-shell[data-shell-layout] > .sidebar > .sidebar-header { padding-block-end: var(--console-stripe); }
+@media (min-width: 1024px) {
+  .console-shell.app-shell[data-shell-layout] > .sidebar .sidebar-link-with-icon {
+    justify-content: flex-start;
+    padding-inline-start: calc(var(--app-shell-brand-inset) + (var(--size-control-sm) - var(--size-icon-sm)) / 2 - var(--spacing-sm));
+  }
+}
 .console-dns { font-family: var(--font-mono); }
 @media (min-width: 1024px) {
   .console-shell > .sidebar > .sidebar-header .console-brand-full { height: var(--size-control-sm); align-content: center; }
