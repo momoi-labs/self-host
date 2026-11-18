@@ -85,9 +85,9 @@ Other components above live in `console/src/components/`.
   grey. Below 720px the breadcrumb shows only the current page, so the phone
   header shows the suffix after the symbol. The drawer shows it under the
   lockup.
-- Use solid pixel frames, small corners, no corner marks, soft
-  shadows with a hard outer shadow, glass panels, landing bands inside the
-  frame and a quiet construction background inside and outside the frame.
+- Use solid pixel frames, small corners, no corner marks, hard shadows,
+  glass panels, landing bands inside the frame and a quiet construction
+  background inside and outside the frame.
 - Use stepped chart lines, dot fills, compact chart layout and inline
   legends. Keep existing product-specific chart legend visibility.
 - The sidebar is collapsible. `ApplicationShell` puts the toggle in the header, before the breadcrumb.
