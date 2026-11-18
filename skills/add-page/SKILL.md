@@ -64,7 +64,11 @@ Rules:
   parked above the table. A record with a recipe gets a create screen.
 - Empty state: `EmptyState variant="first-run"` when there are no records at
   all, and a plain "No things match your filters." row when a filter emptied
-  it. They are different situations and say different things.
+  it. They are different situations and say different things. Both go in the
+  table body, under the headers. The `EmptyState` has an icon, a title, one
+  sentence and an action when the Operator can act.
+- No disabled action in the header. Hide what the Operator cannot do yet,
+  and let the empty state say why.
 - A record mid-operation shows it in one line: a `StatusBadge` naming the
   phase, kiso's `StepBar` from `barSteps` in `console/src/lib/runSteps.js`,
   and the count. No ticker in a cell; the record's own screen has the

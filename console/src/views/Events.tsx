@@ -5,7 +5,7 @@ import {
   EmptyState, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   Pagination, PaginationEllipsis, PaginationNext, PaginationPage, PaginationPrevious,
-  Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Spinner,
+  Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, Spinner,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
@@ -65,8 +65,9 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
   const selected = matching.find(event => event.id === selectedId);
   const filtered = query !== "" || status !== "all";
 
-  // A new page starts at its top; the rows scroll inside the card, not the window.
-  useEffect(() => { scroller.current?.scrollTo({ top: 0 }); }, [current]);
+  useEffect(() => {
+    if ((scroller.current?.getBoundingClientRect().top ?? 0) < 0) scroller.current?.scrollIntoView({ block: "start" });
+  }, [current]);
 
   const turnTo = (next: number) => { setPage(next); setSelectedId(null); };
   const closeDetails = () => {
@@ -106,13 +107,19 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
           </Select>
           {filtered ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); turnTo(1); }}>Clear filters</Button> : null}
         </div>
-        <TableFrame>
+        <TableFrame data-fill="false">
           <div className="table-scroll" ref={scroller}>
             <Table aria-label="Platform events">
               <TableHeader><TableRow>
                 <TableHead className="events-status">Status</TableHead><TableHead>Action</TableHead><TableHead>Affected service</TableHead><TableHead>Actor</TableHead><TableHead>Last updated</TableHead>
               </TableRow></TableHeader>
-              <TableBody>{rows.map(event => <TableRow key={event.id} data-state={selected?.id === event.id ? "selected" : undefined}
+              <TableBody>{!rows.length ? (loading ? [0, 1, 2].map(row => <TableRow key={row}>
+                {Array.from({ length: 5 }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}
+              </TableRow>) : <TableRow><TableCell colSpan={5}>{error ? "Could not load events." : filtered ? "No events match your filters." : <EmptyState variant="informational">
+                <EmptyStateIcon><Icon name="history" size="lg" /></EmptyStateIcon>
+                <EmptyStateTitle>No events yet</EmptyStateTitle>
+                <EmptyStateDescription>Service and virtual machine activity will appear here.</EmptyStateDescription>
+              </EmptyState>}</TableCell></TableRow>) : rows.map(event => <TableRow key={event.id} data-state={selected?.id === event.id ? "selected" : undefined}
                 className={`events-row events-row-${event.status}`} onClick={click => {
                   if (click.target instanceof Element && click.target.closest("a")) return;
                   selectedButton.current = click.currentTarget.querySelector("button");
@@ -134,11 +141,6 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
                 <TableCell><Timestamp value={eventUpdatedAt(event)} /></TableCell>
               </TableRow>)}</TableBody>
             </Table>
-            {!rows.length && <EmptyState variant="informational">
-              <EmptyStateIcon><Icon name="history" size="lg" /></EmptyStateIcon>
-              <EmptyStateTitle>{loading ? "Loading events" : error ? "Could not load events" : filtered ? "No matching events" : "No events yet"}</EmptyStateTitle>
-              <EmptyStateDescription>{loading ? "Fetching platform activity." : error ? "Retry to load the event history." : filtered ? "Try another service name or clear the filters." : "Service and virtual machine activity will appear here."}</EmptyStateDescription>
-            </EmptyState>}
           </div>
           <p className="table-footer">
             <span role="status">{matching.length ? `${from + 1}–${from + rows.length} of ${matching.length}` : "0"} {matching.length === 1 ? "event" : "events"}{filtered ? ` · ${events.length} in total` : ""}</span>

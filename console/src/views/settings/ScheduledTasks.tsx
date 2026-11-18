@@ -90,7 +90,7 @@ export function ScheduledTasks({ id, size }: PaneProps) {
   return (
     <GridPane id={id} size={size} title="Scheduled tasks">
       <p className="muted t-label">Work the Platform runs on its own. Each run is a task, and its outcome is in Events.</p>
-      <TableFrame>
+      <TableFrame frame="none">
         <div className="table-scroll">
           <Table aria-label="Scheduled tasks">
             <TableHeader>

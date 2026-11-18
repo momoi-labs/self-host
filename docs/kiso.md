@@ -100,6 +100,25 @@ Other components above live in `console/src/components/`.
   panel sits in `TableFrame`, never in a hand-written `div.table-wrap`. Other native frames
   need `PanelShadow` as their first child, as documented in the installed
   tokens.
+- A list page is a `PageHeader` with a title, a one-line description and the
+  primary action, then the filters, then the table. The table and its headers
+  always render. Loading is `Skeleton` rows. An empty list is an `EmptyState`
+  in the table body, with an icon, a title, one sentence and an action when
+  the Operator can act. Overview's group tables follow the same rule. Only
+  Overview's empty Host is a standalone `EmptyState` in a `Card`.
+- No disabled header action. Hide an action the Operator cannot take, and let
+  the empty state say why. Routes hides Add route until an Application exists.
+- A list's `TableFrame` fits its rows. `data-fill="false"` opts out of Kiso's
+  stretch for a last-child table, so Databases and Events do not fill the
+  window.
+- Settings has one `Card` per group, and no frame inside it. A table in a
+  group uses `TableFrame frame="none"` and sits flush with the card edges,
+  with no search or count. Kiso clips a form footer only when the form is the
+  card's last child. A `GridPane` body is not, so `console.css` applies the
+  same `--pixel-footer-clip` to the body when a form or a flush table ends it.
+  Kiso has no rule for this case, so it is product CSS.
+- Kiso suggests a no-results `EmptyState` with Clear filters. The console
+  keeps a plain "No X match your filters." row, per `skills/add-page/SKILL.md`.
 
 ## Pattern choices
 
