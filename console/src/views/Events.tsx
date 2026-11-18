@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import {
-  Button, Card, CardContent, CardHeader,
+  Badge, Button, Card, CardContent, CardHeader,
   EmptyState, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   Pagination, PaginationEllipsis, PaginationNext, PaginationPage, PaginationPrevious,
@@ -12,7 +12,7 @@ import {
 import { Failure } from "../components/Failure.js";
 import { Changes } from "../components/Changes.js";
 import { Icon } from "../components/Icon.js";
-import { eventActionLabel, eventStatusLabel, eventSubjectHref, eventSubjectKindLabel, eventUpdatedAt, filterEvents, pageItems } from "../lib/platformEvents.js";
+import { eventActionLabel, eventSource, eventStatusLabel, eventSubjectHref, eventSubjectKindLabel, eventUpdatedAt, filterEvents, pageItems } from "../lib/platformEvents.js";
 import type { PlatformEvent } from "../lib/platformEvents.js";
 import { useEvents } from "../lib/useEvents.js";
 import "./events.css";
@@ -137,7 +137,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
                 <TableCell>{subjectLink(event.subject)}<span className="events-secondary">
                   {eventSubjectKindLabel(event.subject)}
                 </span></TableCell>
-                <TableCell><span className={`mono${event.apiName ? "" : " muted"}`}>{event.apiName?.trim() || "system"}</span></TableCell>
+                <TableCell><Actor event={event} /></TableCell>
                 <TableCell><Timestamp value={eventUpdatedAt(event)} /></TableCell>
               </TableRow>)}</TableBody>
             </Table>
@@ -169,7 +169,8 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
               <dt>Status</dt><dd>{eventStatusLabel(selected.status)}</dd>
               <dt>Affected service</dt><dd>{subjectLink(selected.subject)}</dd>
               <dt>Resource</dt><dd>{selected.subject.kind === "virtual-machine" ? "Virtual machine" : selected.subject.name}</dd>
-              <dt>Actor</dt><dd className="mono">{selected.apiName?.trim() || "system"}</dd>
+              <dt>Actor</dt><dd><Actor event={selected} /></dd>
+              {selected.tool ? <><dt>MCP tool</dt><dd className="mono">{selected.tool}</dd></> : null}
               <dt>Last updated</dt><dd><Timestamp value={eventUpdatedAt(selected)} /></dd>
               <dt>Started</dt><dd>{selected.startedAt ? <Timestamp value={selected.startedAt} /> : "Not recorded"}</dd>
               <dt>Finished</dt><dd>{selected.finishedAt ? <Timestamp value={selected.finishedAt} /> : selected.status === "running" || selected.status === "pending" ? "Not finished" : "Not recorded"}</dd>
@@ -180,4 +181,12 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
       </aside>}
     </div>
   </div>;
+}
+
+function Actor({ event }: { event: PlatformEvent }) {
+  const source = eventSource(event);
+  return <span className="row-wrap">
+    <span className={`mono${event.apiName ? "" : " muted"}`}>{event.apiName?.trim() || "system"}</span>
+    {source ? <Badge variant="neutral">{source}</Badge> : null}
+  </span>;
 }

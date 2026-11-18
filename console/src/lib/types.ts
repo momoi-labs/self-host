@@ -311,6 +311,16 @@ export type ApiKey = {
   created_at: string;
   /** The Platform's own key, `admin`: made by init, never revoked. */
   primary?: boolean;
+  kind: "human" | "agent";
+  scopes: string[];
+  expires_at?: string;
+  node_id?: string;
+  last_used_at?: string;
+};
+
+export type TailnetStatus = {
+  name: string | null;
+  nodes: { id: string; name: string }[];
 };
 
 /** One minute of one scope: an Application, or one of its containers

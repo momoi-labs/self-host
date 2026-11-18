@@ -36,7 +36,7 @@ Do not apply the authenticated list, detail or create layout to this screen.
   and give the Operator a useful next action without exposing exceptions.
 - During submission, guard against duplicate requests, make the input
   read-only, disable submit and announce "Checking key". Keep the form visible.
-- Preserve the existing success flow: check `/health`, save the accepted key
+- Preserve the existing success flow: check `/whoami`, refuse an agent key, save the accepted key
   in tab sessionStorage and open `/console/`. Do not change authentication or
   persistence as part of a layout adjustment.
 

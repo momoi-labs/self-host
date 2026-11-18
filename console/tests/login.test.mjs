@@ -4,11 +4,18 @@ import { checkApiKey } from "../src/lib/login.ts";
 
 test("accepted keys are trimmed and checked with a bearer header", async () => {
   const result = await checkApiKey("  test-key\n", async (url, options) => {
-    assert.equal(url, "/health");
+    assert.equal(url, "/whoami");
     assert.deepEqual(options.headers, { Authorization: "Bearer test-key" });
-    return new Response(null, { status: 200 });
+    return Response.json({ kind: "human", label: "admin" });
   });
   assert.deepEqual(result, { kind: "accepted", key: "test-key" });
+});
+
+test("agent keys are refused without opening the console", async () => {
+  const result = await checkApiKey("agent-key", async () => Response.json({ kind: "agent", label: "claude" }));
+  assert.equal(result.kind, "key");
+  assert.match(result.message, /agent key/);
+  assert.ok(!result.message.includes("agent-key"));
 });
 
 test("empty or malformed keys never send a request", async () => {
