@@ -18,7 +18,7 @@ const appearance = {
   "data-chart-fill": "dots",
   "data-chart-layout": "compact",
   "data-chart-legend": "inline",
-  "data-shadow-style": "soft",
+  "data-shadow-style": "hard",
   "data-border-style": "solid",
   "data-corner-style": "pixel",
   "data-corner-marks": "none",
