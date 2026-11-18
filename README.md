@@ -59,7 +59,7 @@ flowchart LR
 
   subgraph host["Host"]
     subgraph daemon["self-host serve"]
-      api["Operator API and console<br/>port 3721"]
+      api["Operator API and console<br/>port 3721, loopback only"]
       worker["Task worker"]
       dns["DNS server<br/>port 53"]
       proxy["HTTP and HTTPS proxy<br/>ports 80 and 443"]
@@ -298,6 +298,36 @@ Docker runs the container Applications. The Platform's own proxy serves HTTP
 and HTTPS on ports 80 and 443.
 
 Backup, restore and upgrades are in [docs/operating.md](docs/operating.md).
+
+## Agent access over Tailscale
+
+An AI agent such as Claude Code or Codex can configure the Platform through its
+MCP server at `/mcp`. Agents reach it only on the Host's tailnet name, over
+HTTPS. Port 3721 listens on loopback, so nothing on the LAN reaches the API
+without TLS.
+
+Agent access needs Tailscale on the Host, with MagicDNS and HTTPS certificates
+turned on for the tailnet. The daemon reads the Host's name from
+`tailscale status` and gets its certificate with `tailscale cert`. The account
+that runs the daemon needs that right: run `sudo tailscale set --operator=$USER`
+once. Without Tailscale, the Platform works as before and agent access stays
+off. The certificate is public, so the machine name appears in certificate
+transparency logs.
+
+Create the key in the console, under Settings > API keys. Choose the kind
+Agent. An agent key has scopes, expires in 30 days by default and in 365 days
+at most, and can be bound to one tailnet device. It cannot manage keys or
+settings, read secrets, reach the Host's disk or delete anything. The console
+login refuses it. Then, on a machine on the tailnet:
+
+```bash
+export SELF_HOST_AGENT_KEY=...   # shown once, when the key is created
+claude mcp add --transport http self-host https://<host>.<tailnet>.ts.net/mcp \
+  --header "Authorization: Bearer ${SELF_HOST_AGENT_KEY}"
+```
+
+Keep the CLI configuration, which holds the admin key, off machines where an
+agent runs.
 
 ## Local HTTPS
 
