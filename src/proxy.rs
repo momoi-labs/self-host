@@ -461,6 +461,7 @@ pub struct ProxyConfig {
 
 struct Context {
     admin_hostname: String,
+    tailnet: Option<(String, Arc<dyn crate::tailnet::NodeLookup>)>,
     admin_router: Router,
     challenge_router: Router,
     table: RouteTable,
@@ -518,6 +519,7 @@ pub async fn bind(
         limits: ConnectionLimits::default(),
         ctx: Arc::new(Context {
             admin_hostname: config.admin_hostname,
+            tailnet: None,
             admin_router,
             challenge_router: Router::new(),
             table,
@@ -549,6 +551,17 @@ impl Bound {
         Arc::get_mut(&mut self.ctx)
             .expect("listeners have not started")
             .challenge_router = router;
+        self
+    }
+
+    pub fn with_tailnet(
+        mut self,
+        name: String,
+        nodes: Arc<dyn crate::tailnet::NodeLookup>,
+    ) -> Self {
+        Arc::get_mut(&mut self.ctx)
+            .expect("listeners have not started")
+            .tailnet = Some((name.to_ascii_lowercase(), nodes));
         self
     }
 
@@ -791,6 +804,18 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
     }
 
     if host == ctx.admin_hostname {
+        return serve_router(&ctx.admin_router, req).await;
+    }
+
+    if let Some((name, nodes)) = &ctx.tailnet
+        && host == *name
+    {
+        let mut req = req;
+        req.extensions_mut().insert(crate::tailnet::Arrival {
+            name: name.clone(),
+            peer: peer_ip,
+            nodes: nodes.clone(),
+        });
         return serve_router(&ctx.admin_router, req).await;
     }
 
