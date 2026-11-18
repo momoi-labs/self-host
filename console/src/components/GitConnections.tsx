@@ -3,8 +3,7 @@ import {
   Alert, AlertDescription, Button,
   Dialog, DialogBody, DialogContent,
   DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField, GridPane,
-  Search,
+  EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle, FormField, GridPane,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   StatusBadge, Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
@@ -15,6 +14,7 @@ import {
 } from "../lib/gitConnections.js";
 import { useGitAuthorization } from "../lib/useGitAuthorization.js";
 import { GitProviderSetup } from "./GitProviderSetup.js";
+import { Icon } from "./Icon.js";
 
 function providerName(provider: GitProvider) {
   return provider === "github" ? "GitHub" : "GitLab";
@@ -165,13 +165,11 @@ export function GitConnectionSelector({ value, onChange, disabled }: {
 
 export function GitConnectionsSettings({ id, size }: { id: string; size?: number }) {
   const { connections, loading, error, refresh } = useGitConnections();
-  const [query, setQuery] = useState("");
   const [dialog, setDialog] = useState<"new" | GitConnection | null>(null);
   const [disconnecting, setDisconnecting] = useState<GitConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
-  const visible = connections.filter((connection) => `${connection.name} ${providerName(connection.provider)}`.toLowerCase().includes(query.trim().toLowerCase()));
 
   async function disconnect() {
     if (!disconnecting || busy) return;
@@ -193,25 +191,20 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
   </>}>
     <p className="muted t-label">Saved access for importing and updating applications.</p>
     {error ? <Alert variant="error"><AlertDescription>{error}</AlertDescription><Button size="sm" onClick={() => void refresh()}>Retry</Button></Alert> : null}
-    <div className="list-filters">
-      <Search aria-label="Search Git connections" placeholder="Search Git connections..." value={query} onChange={(event) => setQuery(event.target.value)} />
-      {query ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
-    </div>
-    <TableFrame>
+    <TableFrame frame="none">
       <div className="table-scroll"><Table>
         <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
         <TableBody>
-          {visible.map((connection) => <TableRow key={connection.id}>
+          {connections.map((connection) => <TableRow key={connection.id}>
             <TableCell>{connection.name}</TableCell><TableCell>{connectionMethod(connection)}</TableCell>
             <TableCell><StatusBadge tone={connection.status === "expired" ? "danger" : "success"}>{connection.status === "expired" ? "Reconnect required" : "Connected"}</StatusBadge></TableCell>
             <TableCell className="col-tight"><Button size="sm" variant="ghost" onClick={() => setDialog(connection)}>Reconnect</Button><Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={() => { setActionError(null); setDisconnecting(connection); }}>Disconnect</Button></TableCell>
           </TableRow>)}
-          {!visible.length ? <TableRow><TableCell colSpan={4}>
-            {loading ? "Loading connections..." : error ? "Could not load connections." : connections.length ? "No connections match your filters." : <EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories. Public repositories can also use a URL.</EmptyStateDescription></EmptyState>}
+          {!connections.length ? <TableRow><TableCell colSpan={4}>
+            {loading ? "Loading connections..." : error ? "Could not load connections." : <EmptyState variant="first-run"><EmptyStateIcon><Icon name="branch" size="lg" /></EmptyStateIcon><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories, or use a URL for a public one.</EmptyStateDescription><EmptyStateActions><Button variant="primary" onClick={() => setDialog("new")}>Connect Git</Button></EmptyStateActions></EmptyState>}
           </TableCell></TableRow> : null}
         </TableBody>
       </Table></div>
-      <p className="table-footer"><span>{visible.length} of {connections.length} connections</span></p>
     </TableFrame>
     {dialog ? <GitConnectionDialog open connection={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onSaved={() => {}} /> : null}
     {setup ? <GitProviderSetup open onClose={() => setSetup(false)} /> : null}

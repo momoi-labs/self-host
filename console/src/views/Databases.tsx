@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-  EmptyState, EmptyStateActions, EmptyStateTitle,
-  PageHeader, PageHeaderTitle, Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
+  PageHeader, PageHeaderDescription, PageHeaderTitle, Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Skeleton, StatusBadge,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
@@ -40,10 +40,13 @@ export function Databases({ apps, ready, reload, onCreate, onOpen }: {
   const create = <Button size="sm" variant="primary" onClick={onCreate}><Icon name="plus" />New database</Button>;
 
   return <>
-    <PageHeader actions={<div className="btn-group" role="group" aria-label="Add a database">
+    <PageHeader actions={sources.length ? <div className="btn-group" role="group" aria-label="Add a database">
       {create}
-      <Button size="sm" disabled={!sources.length} title={sources.length ? undefined : "No server has a backup yet."} onClick={() => setRestoring(true)}>Restore from backup</Button>
-    </div>}><PageHeaderTitle>Databases</PageHeaderTitle></PageHeader>
+      <Button size="sm" onClick={() => setRestoring(true)}>Restore from backup</Button>
+    </div> : create}>
+      <PageHeaderTitle>Databases</PageHeaderTitle>
+      <PageHeaderDescription>Managed PostgreSQL servers on this Host, with their status and last backup.</PageHeaderDescription>
+    </PageHeader>
     <div className="list-filters">
       <Search aria-label="Search databases" placeholder="Search databases..." value={query} onChange={(event) => setQuery(event.target.value)} />
       <Select value={status} onValueChange={setStatus}>
@@ -58,7 +61,7 @@ export function Databases({ apps, ready, reload, onCreate, onOpen }: {
       </Select>
       {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
     </div>
-    <TableFrame aria-busy={!ready}>
+    <TableFrame aria-busy={!ready} data-fill="false">
       <div className="table-scroll"><Table aria-label="Databases">
         <TableHeader><TableRow>
           <TableHead scope="col">Database</TableHead>
@@ -72,8 +75,10 @@ export function Databases({ apps, ready, reload, onCreate, onOpen }: {
             <TableCell><Skeleton /></TableCell><TableCell><Skeleton /></TableCell><TableCell><Skeleton /></TableCell>
           </TableRow>) : !databases.length ? <TableRow><TableCell colSpan={4}>
             <EmptyState variant="first-run">
+              <EmptyStateIcon><Icon name="database" size="lg" /></EmptyStateIcon>
               <EmptyStateTitle>No databases yet</EmptyStateTitle>
-              <EmptyStateActions>{create}</EmptyStateActions>
+              <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
+              <EmptyStateActions><Button variant="primary" onClick={onCreate}><Icon name="plus" />New database</Button></EmptyStateActions>
             </EmptyState>
           </TableCell></TableRow> : !visible.length ? <TableRow><TableCell colSpan={4}>
             No databases match your filters.

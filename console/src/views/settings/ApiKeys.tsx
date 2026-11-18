@@ -15,7 +15,6 @@ import {
   DialogTitle,
   FormField,
   GridPane,
-  Search,
   Table, TableFrame,
   TableBody,
   TableCell,
@@ -41,7 +40,6 @@ export function ApiKeys({ id, size }: PaneProps) {
   const [created, setCreated] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [query, setQuery] = useState("");
 
   useEffect(() => {
     requireKey();
@@ -73,10 +71,6 @@ export function ApiKeys({ id, size }: PaneProps) {
     await load();
   }
 
-  const visible = keys.filter((key) =>
-    `${key.label} ${key.id}`.toLowerCase().includes(query.trim().toLowerCase()),
-  );
-
   return (
     <GridPane id={id} size={size} title="API keys" actions={
       <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
@@ -95,21 +89,7 @@ export function ApiKeys({ id, size }: PaneProps) {
         </Alert>
       ) : null}
 
-      <div className="list-filters">
-        <Search
-          aria-label="Search by label"
-          placeholder="Search by label..."
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        {query ? (
-          <Button size="sm" variant="ghost" onClick={() => setQuery("")}>
-            Clear filters
-          </Button>
-        ) : null}
-      </div>
-
-      <TableFrame>
+      <TableFrame frame="none">
         <div className="table-scroll">
           <Table>
             <TableHeader>
@@ -123,14 +103,14 @@ export function ApiKeys({ id, size }: PaneProps) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {visible.length === 0 ? (
+              {keys.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={4} className="muted">
-                    {keys.length === 0 ? "No API keys yet." : "No keys match your filters."}
+                    No API keys yet.
                   </TableCell>
                 </TableRow>
               ) : (
-                visible.map((key) => (
+                keys.map((key) => (
                   <TableRow key={key.id}>
                     <TableCell className="mono">{key.id}</TableCell>
                     <TableCell>{key.primary ? <>{key.label} <span className="muted t-label">Platform key, made by init</span></> : key.label}</TableCell>
@@ -154,11 +134,6 @@ export function ApiKeys({ id, size }: PaneProps) {
             </TableBody>
           </Table>
         </div>
-        <p className="table-footer">
-          <span>
-            {visible.length} of {keys.length} {keys.length === 1 ? "key" : "keys"}
-          </span>
-        </p>
       </TableFrame>
 
       {/* Creating is one field, so it is a dialog rather than a card that sits

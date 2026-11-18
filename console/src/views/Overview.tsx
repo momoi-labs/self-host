@@ -11,6 +11,7 @@ import {
   EmptyStateIcon,
   EmptyStateTitle,
   PageHeader,
+  PageHeaderDescription,
   PageHeaderTitle,
   Search,
   Sparkline,
@@ -100,23 +101,25 @@ export function Overview({
     <>
       <PageHeader>
         <PageHeaderTitle>Overview</PageHeaderTitle>
+        <PageHeaderDescription>What runs on this Host, and how much of it is in use.</PageHeaderDescription>
       </PageHeader>
 
       {empty ? (
         <Card>
-          <EmptyState variant="first-run" className="hatch">
-            <EmptyStateIcon>
-              <Icon name="box" size="lg" />
-            </EmptyStateIcon>
-            <EmptyStateTitle>Nothing running yet</EmptyStateTitle>
-            <EmptyStateDescription>
-              Deploy an application from a container image or a Compose file, or create a virtual
-              machine to work in. Both are reachable from your LAN.
-            </EmptyStateDescription>
-            <EmptyStateActions>
-              <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} />
-            </EmptyStateActions>
-          </EmptyState>
+          <CardContent>
+            <EmptyState variant="first-run">
+              <EmptyStateIcon>
+                <Icon name="box" size="lg" />
+              </EmptyStateIcon>
+              <EmptyStateTitle>Nothing running yet</EmptyStateTitle>
+              <EmptyStateDescription>
+                Deploy an application or create a virtual machine, and reach it from your LAN.
+              </EmptyStateDescription>
+              <EmptyStateActions>
+                <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} />
+              </EmptyStateActions>
+            </EmptyState>
+          </CardContent>
         </Card>
       ) : (
         <div className="stack">
@@ -153,11 +156,20 @@ export function Overview({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {visibleApps.length === 0 ? (
+                  {applications.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="muted">
-                        {applications.length ? "No applications match your search." : "No applications yet."}
+                      <TableCell colSpan={5}>
+                        <EmptyState variant="first-run">
+                          <EmptyStateIcon><Icon name="box" size="lg" /></EmptyStateIcon>
+                          <EmptyStateTitle>No applications yet</EmptyStateTitle>
+                          <EmptyStateDescription>Deploy a container image, a Git repository or a native process.</EmptyStateDescription>
+                          <EmptyStateActions><Button variant="primary" onClick={onDeploy}><Icon name="plus" />Deploy application</Button></EmptyStateActions>
+                        </EmptyState>
                       </TableCell>
+                    </TableRow>
+                  ) : visibleApps.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="muted">No applications match your search.</TableCell>
                     </TableRow>
                   ) : (
                     visibleApps.map((app) => {
@@ -231,63 +243,68 @@ export function Overview({
                 New database
               </Button>
             </div>
-            {databases.length === 0 ? (
-              <EmptyState variant="first-run" size="md">
-                <EmptyStateTitle>No databases yet</EmptyStateTitle>
-              </EmptyState>
-            ) : (
-              <div className="table-scroll">
-                <Table aria-label="Databases">
-                  <TableHeader>
+            <div className="table-scroll">
+              <Table aria-label="Databases">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead scope="col">Database</TableHead>
+                    <TableHead scope="col">Status</TableHead>
+                    <TableHead scope="col">Used by</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {databases.length === 0 ? (
                     <TableRow>
-                      <TableHead scope="col">Database</TableHead>
-                      <TableHead scope="col">Status</TableHead>
-                      <TableHead scope="col">Used by</TableHead>
+                      <TableCell colSpan={3}>
+                        <EmptyState variant="first-run">
+                          <EmptyStateIcon><Icon name="database" size="lg" /></EmptyStateIcon>
+                          <EmptyStateTitle>No databases yet</EmptyStateTitle>
+                          <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
+                          <EmptyStateActions><Button variant="primary" onClick={onNewDatabase}><Icon name="plus" />New database</Button></EmptyStateActions>
+                        </EmptyState>
+                      </TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {visibleDatabases.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={3} className="muted">No databases match your search.</TableCell>
-                      </TableRow>
-                    ) : (
-                      visibleDatabases.map((database) => {
-                        const consumers = usedBy.get(database.id);
-                        return (
-                          <TableRow
-                            key={database.id}
-                            tabIndex={0}
-                            role="button"
-                            aria-label={`Open ${database.name}`}
-                            onClick={() => onOpenApp(database.id)}
-                            onKeyDown={(event) => {
-                              if (event.key !== "Enter" && event.key !== " ") return;
-                              event.preventDefault();
-                              onOpenApp(database.id);
-                            }}
-                          >
-                            <TableCell>
-                              <span className="stack-xs">
-                                <strong>{database.name}</strong>
-                                <span className="muted t-label">PostgreSQL {database.managed_postgres?.major}</span>
-                              </span>
-                            </TableCell>
-                            <TableCell>
-                              <StatusBadge tone={statusTone(database.status)}>{statusLabel(database.status)}</StatusBadge>
-                            </TableCell>
-                            <TableCell>
-                              {consumers === undefined ? <span className="muted">—</span>
-                                : consumers.length ? consumers.join(", ")
-                                  : <span className="muted">No Application</span>}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
+                  ) : visibleDatabases.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="muted">No databases match your search.</TableCell>
+                    </TableRow>
+                  ) : (
+                    visibleDatabases.map((database) => {
+                      const consumers = usedBy.get(database.id);
+                      return (
+                        <TableRow
+                          key={database.id}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`Open ${database.name}`}
+                          onClick={() => onOpenApp(database.id)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            onOpenApp(database.id);
+                          }}
+                        >
+                          <TableCell>
+                            <span className="stack-xs">
+                              <strong>{database.name}</strong>
+                              <span className="muted t-label">PostgreSQL {database.managed_postgres?.major}</span>
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={statusTone(database.status)}>{statusLabel(database.status)}</StatusBadge>
+                          </TableCell>
+                          <TableCell>
+                            {consumers === undefined ? <span className="muted">—</span>
+                              : consumers.length ? consumers.join(", ")
+                                : <span className="muted">No Application</span>}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </TableFrame>
 
           <TableFrame>
@@ -306,96 +323,101 @@ export function Overview({
                 Create virtual machine
               </Button>
             </div>
-            {environments.length === 0 ? (
-              <EmptyState variant="first-run" size="md">
-                <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
-              </EmptyState>
-            ) : (
-              <div className="table-scroll">
-                <Table aria-label="Virtual machines">
-                  <TableHeader>
+            <div className="table-scroll">
+              <Table aria-label="Virtual machines">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead scope="col">Virtual machine</TableHead>
+                    <TableHead scope="col">State</TableHead>
+                    <TableHead scope="col">Service</TableHead>
+                    <TableHead scope="col">Activity</TableHead>
+                    <TableHead scope="col">CPU</TableHead>
+                    <TableHead scope="col">Memory</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {environments.length === 0 ? (
                     <TableRow>
-                      <TableHead scope="col">Virtual machine</TableHead>
-                      <TableHead scope="col">State</TableHead>
-                      <TableHead scope="col">Service</TableHead>
-                      <TableHead scope="col">Activity</TableHead>
-                      <TableHead scope="col">CPU</TableHead>
-                      <TableHead scope="col">Memory</TableHead>
+                      <TableCell colSpan={6}>
+                        <EmptyState variant="first-run">
+                          <EmptyStateIcon><Icon name="screen" size="lg" /></EmptyStateIcon>
+                          <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
+                          <EmptyStateDescription>Create a persistent workspace with your tools and repositories, reachable over SSH.</EmptyStateDescription>
+                          <EmptyStateActions><Button variant="primary" onClick={onNewMachine}><Icon name="plus" />Create virtual machine</Button></EmptyStateActions>
+                        </EmptyState>
+                      </TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {machines.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="muted">
-                          No virtual machines match your search.
+                  ) : machines.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="muted">
+                        No virtual machines match your search.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    machines.map((one) => (
+                      <TableRow
+                        key={one.id}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`Open ${one.config.name}`}
+                        onClick={() => onOpenEnvironment(one.id)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ") return;
+                          event.preventDefault();
+                          onOpenEnvironment(one.id);
+                        }}
+                      >
+                        <TableCell>{one.config.name}</TableCell>
+                        <TableCell>
+                          <StatusBadge tone={statusTone(one.state)}>
+                            {one.state}
+                          </StatusBadge>
                         </TableCell>
-                      </TableRow>
-                    ) : (
-                      machines.map((one) => (
-                        <TableRow
-                          key={one.id}
-                          tabIndex={0}
-                          role="button"
-                          aria-label={`Open ${one.config.name}`}
-                          onClick={() => onOpenEnvironment(one.id)}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") return;
-                            event.preventDefault();
-                            onOpenEnvironment(one.id);
-                          }}
-                        >
-                          <TableCell>{one.config.name}</TableCell>
-                          <TableCell>
-                            <StatusBadge tone={statusTone(one.state)}>
-                              {one.state}
+                        <TableCell>
+                          {/* No service yet on a machine still being created:
+                              "disabled" would say something that is not so. */}
+                          {one.operation?.status === "running" &&
+                          one.operation.action === "create" &&
+                          !one.service_ready ? (
+                            <span className="muted">—</span>
+                          ) : (
+                            <StatusBadge
+                              tone={one.service_ready ? "success" : "neutral"}
+                            >
+                              {one.service_ready ? "Ready" : "Disabled"}
                             </StatusBadge>
-                          </TableCell>
-                          <TableCell>
-                            {/* No service yet on a machine still being created:
-                                "disabled" would say something that is not so. */}
-                            {one.operation?.status === "running" &&
-                            one.operation.action === "create" &&
-                            !one.service_ready ? (
-                              <span className="muted">—</span>
-                            ) : (
-                              <StatusBadge
-                                tone={one.service_ready ? "success" : "neutral"}
-                              >
-                                {one.service_ready ? "Ready" : "Disabled"}
-                              </StatusBadge>
-                            )}
-                          </TableCell>
-                          {/* What it is doing right now is the only reason to
-                              look at a machine mid-bootstrap: the action, one
-                              segment per step, and how far. An operation that
-                              ended well is history: it said "create: ready" at
-                              a machine being deleted. A failed one stays until
-                              the retry, with its red segment where it stopped. */}
-                          <TableCell>
-                            {one.operation?.status === "running" ||
-                            one.operation?.status === "failed" ? (
-                              <Activity operation={one.operation} />
-                            ) : (
-                              <span className="muted">Idle</span>
-                            )}
-                          </TableCell>
-                          <Usage
-                            samples={machineSeriesFor(metrics, one.id)}
-                            value={(sample) => sample.cpu_percent}
-                            render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
-                          />
-                          <Usage
-                            samples={machineSeriesFor(metrics, one.id)}
-                            value={(sample) => sample.memory_bytes}
-                            render={(sample) => formatBytes(sample.memory_bytes)}
-                          />
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
+                          )}
+                        </TableCell>
+                        {/* What it is doing right now is the only reason to
+                            look at a machine mid-bootstrap: the action, one
+                            segment per step, and how far. An operation that
+                            ended well is history: it said "create: ready" at
+                            a machine being deleted. A failed one stays until
+                            the retry, with its red segment where it stopped. */}
+                        <TableCell>
+                          {one.operation?.status === "running" ||
+                          one.operation?.status === "failed" ? (
+                            <Activity operation={one.operation} />
+                          ) : (
+                            <span className="muted">Idle</span>
+                          )}
+                        </TableCell>
+                        <Usage
+                          samples={machineSeriesFor(metrics, one.id)}
+                          value={(sample) => sample.cpu_percent}
+                          render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
+                        />
+                        <Usage
+                          samples={machineSeriesFor(metrics, one.id)}
+                          value={(sample) => sample.memory_bytes}
+                          render={(sample) => formatBytes(sample.memory_bytes)}
+                        />
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </TableFrame>
         </div>
       )}

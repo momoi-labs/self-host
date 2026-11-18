@@ -214,7 +214,7 @@ export function PublicCertificates({ id, size }: PaneProps) {
       </Form>
 
       {enabled ? (
-        <TableFrame>
+        <TableFrame frame="none">
           <div className="table-scroll">
             <Table aria-label="Public certificates">
               <TableHeader>
@@ -245,7 +245,6 @@ export function PublicCertificates({ id, size }: PaneProps) {
               </TableBody>
             </Table>
           </div>
-          <p className="table-footer"><span>{rows.length} {rows.length === 1 ? "certificate" : "certificates"}</span></p>
         </TableFrame>
       ) : null}
     </GridPane>

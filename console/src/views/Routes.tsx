@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Button, EmptyState, EmptyStateDescription, EmptyStateTitle, PageHeader, PageHeaderDescription, PageHeaderTitle,
+  Button, EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle, PageHeader, PageHeaderDescription, PageHeaderTitle,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@momoi-labs/kiso-react";
 
@@ -13,12 +13,13 @@ import { isPublished, kindLabel, redirectDraft, redirectFrom, redirectTo, routes
 import type { App } from "../lib/types.js";
 
 /** The HTTP proxy's whole table: every hostname and path, and the Application it reaches. */
-export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp }: {
+export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: {
   apps: App[];
   ready: boolean;
   dnsSuffix: string;
   reload: () => Promise<App[]>;
   onOpenApp: (id: string) => void;
+  onDeploy: () => void;
 }) {
   const notify = useToast();
   const [query, setQuery] = useState("");
@@ -44,11 +45,11 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp }: {
     redirectDraft(rule) ? setEditor({ app, redirect: index }) : setRedirectEditor({ app, index });
   const filtering = query.trim() !== "" || application !== "all" || kind !== "all";
   const clear = () => { setQuery(""); setApplication("all"); setKind("all"); };
-  const add = (
-    <Button size="sm" variant="primary" disabled={!published.length} onClick={() => setEditor({ app: null })}>
+  const add = published.length ? (
+    <Button size="sm" variant="primary" onClick={() => setEditor({ app: null })}>
       <Icon name="plus" />Add route
     </Button>
-  );
+  ) : null;
 
   return (
     <>
@@ -82,8 +83,12 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp }: {
         onOpenApp={onOpenApp}
         empty={
           <EmptyState variant="first-run">
+            <EmptyStateIcon><Icon name="route" size="lg" /></EmptyStateIcon>
             <EmptyStateTitle>No routes yet</EmptyStateTitle>
-            <EmptyStateDescription>An Application deployed with a Hostname brings its first route.</EmptyStateDescription>
+            <EmptyStateDescription>Routes come from an Application with a Hostname, so deploy one first.</EmptyStateDescription>
+            <EmptyStateActions>
+              <Button variant="primary" onClick={onDeploy}><Icon name="plus" />Deploy an application</Button>
+            </EmptyStateActions>
           </EmptyState>
         } />
       <details className="disclosure">
