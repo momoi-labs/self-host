@@ -91,6 +91,11 @@ Other components above live in `console/src/components/`.
 - Use stepped chart lines, dot fills, compact chart layout and inline
   legends. Keep existing product-specific chart legend visibility.
 - The sidebar is collapsible. `ApplicationShell` puts the toggle in the header, before the breadcrumb.
+  The nav icons keep the torii's center x when the sidebar collapses and
+  expands. Kiso centers them in the rail, so they would move 10px. From
+  1024px the links start at the brand inset plus half the difference
+  between the mark and the icon size, less the sidebar padding. Kiso has no
+  token for this, so it is product CSS.
 - The sidebar lists pages, not records. Applications and virtual machines open
   from the Overview's tables, and their detail screens mark Overview as the
   current destination. A database's screen marks Databases.
