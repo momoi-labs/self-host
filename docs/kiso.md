@@ -27,7 +27,7 @@ rules. All entry points use it.
 
 | Component | Purpose |
 | --- | --- |
-| `Shell` | Console navigation, health and theme selection |
+| `Shell` | Console navigation, health and the account menu |
 | `BrandSymbol`, `Lockup` | The self-host brand: the lockup in the sidebar bar (`shellLayout`) with the DNS suffix under it, inside the bar, as sewa shows its address. The sidebar bar has the accent surface, the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. The lockup sits in a box of that size, centered like the rail mark, with the DNS suffix below it. The shell uses `headerVariant="default"`, so the rail keeps the mark and the header bar line meets the sidebar bar line. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
 | `AppForm`, `NativeAppForm`, `PostgresFields` | Application and database configuration |
 | `CustomImageEditor`, `EnvironmentEditor` | Image and virtual machine configuration |
@@ -86,6 +86,11 @@ Other components above live in `console/src/components/`.
 - Use stepped chart lines, dot fills, compact chart layout and inline
   legends. Keep existing product-specific chart legend visibility.
 - The sidebar is collapsible. `ApplicationShell` puts the toggle in the header, before the breadcrumb.
+- Settings is the last navigation group, so the rail and the phone More sheet
+  list it as other destinations. The header ends with the account button. It
+  opens a `Popover` with the identity, `ThemeSelector` and Sign out. A
+  `DropdownMenu` would not do: its keyboard focus moves only between menu
+  items, so the theme buttons would be out of reach.
 - Use Kiso's `Card` paint layer for shaped shadows. A table that is its own
   panel sits in `TableFrame`, never in a hand-written `div.table-wrap`. Other native frames
   need `PanelShadow` as their first child, as documented in the installed
