@@ -40,6 +40,7 @@ pub mod file_store;
 pub mod host;
 pub mod host_addresses;
 pub mod host_dns;
+pub mod mcp;
 pub mod metrics;
 pub mod native;
 pub mod paths;
@@ -402,6 +403,19 @@ fn build_platform_with_native<S: StateStore>(
             require_api_key::<S>,
         ));
 
+    let mcp_routes = Router::new()
+        .route(
+            "/mcp",
+            post(mcp::handle)
+                .get(mcp::unsupported)
+                .delete(mcp::unsupported),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key::<S>,
+        ))
+        .with_state(authenticated.clone().with_state(state.clone()));
+
     let api_routes = authenticated
         // These routes authenticate their first WebSocket frame before opening
         // a PTY or the Host's screen: a browser cannot put a Bearer header on
@@ -414,7 +428,8 @@ fn build_platform_with_native<S: StateStore>(
         )
         .route("/host/screen", get(host::upgrade::<S>))
         .route("/host/terminal", get(terminal::upgrade_host::<S>))
-        .with_state(state.clone());
+        .with_state(state.clone())
+        .merge(mcp_routes);
 
     let router = console::console_router()
         .merge(public_ca_router(tls::ca_cert_path()))
