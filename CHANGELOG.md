@@ -1,5 +1,14 @@
 # self-host
 
+## 0.20.0
+
+### Minor Changes
+
+- 411c1ad: A Git Application can name a Dockerfile stage as its build target. The build
+  stops at that stage and the numeric `USER` rule applies to it, so one
+  multi-stage Dockerfile can build several Applications. The console has a
+  Build target field. Compose sources do not take it.
+
 ## 0.19.0
 
 ### Minor Changes
