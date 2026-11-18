@@ -9,6 +9,7 @@ import type { App, FailingWorkload, Health } from "./types.js";
 export type Platform = {
   apps: App[];
   dnsSuffix: string;
+  domain: string | null;
   healthy: boolean;
   /** Workloads that should be up and are not; empty while the Host is healthy. */
   failing: FailingWorkload[];
@@ -77,6 +78,7 @@ export function usePlatform(): Platform {
   return {
     apps: apps.data ?? noApps,
     dnsSuffix: status.data?.dns_suffix || "…",
+    domain: status.data?.dns_suffix || null,
     healthy: health.isSuccess,
     failing: health.data?.failing ?? noFailing,
     degraded: health.data?.status === "degraded",

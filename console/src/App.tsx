@@ -23,7 +23,7 @@ import { Settings } from "./views/Settings.js";
 import { Host } from "./views/Host.js";
 
 export function App() {
-  const { apps, dnsSuffix, healthy, degraded, failing, version, ready, reload } = usePlatform();
+  const { apps, dnsSuffix, domain, healthy, degraded, failing, version, ready, reload } = usePlatform();
   const { environments } = useEnvironments();
   const metrics = useMetrics();
   const [view, go] = useView();
@@ -85,7 +85,7 @@ export function App() {
     <Shell
       crumb={crumb}
       parent={parent}
-      dnsSuffix={dnsSuffix}
+      dnsSuffix={domain}
       apps={apps}
       environments={environments}
       healthy={healthy}

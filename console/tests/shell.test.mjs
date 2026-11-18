@@ -24,9 +24,9 @@ await build({
 });
 const { Shell } = await import(pathToFileURL(join(outDir, "Shell.mjs")));
 
-function render(apps, environments, selected = "") {
+function render(apps, environments, selected = "", dnsSuffix = "home.lan") {
   return renderToStaticMarkup(createElement(Shell, {
-    crumb: "Overview", dnsSuffix: "home.lan", healthy: true, version: "0.4.0",
+    crumb: "Overview", dnsSuffix, healthy: true, version: "0.4.0",
     apps, environments,
     overview: { href: "/console/", active: !selected },
     application: app => ({ href: `/console/#app-${app.id}`, active: selected === app.id }),
@@ -71,4 +71,11 @@ test("both types stay separate, with status dots and shortcuts first", () => {
   assert.match(html, /data-variant="danger"/);
   assert.match(html, /href="\/console\/#dns"/);
   assert.match(html, /href="\/console\/#virtual-machine-workspace"/);
+});
+
+test("the breadcrumb root names the DNS suffix and falls back to Console", () => {
+  assert.match(render([], []), /<a[^>]*href="\/console\/"[^>]*>home\.lan<\/a>/);
+  const unset = render([], [], "", null);
+  assert.match(unset, /<a[^>]*href="\/console\/"[^>]*>Console<\/a>/);
+  assert.doesNotMatch(unset, /console-dns/);
 });

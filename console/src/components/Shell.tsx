@@ -59,7 +59,7 @@ export function Shell({
   crumb: string;
   /** The list the current screen belongs to, linked between Console and it. */
   parent?: Destination & { label: string };
-  dnsSuffix: string;
+  dnsSuffix: string | null;
   apps: App[];
   environments: Environment[];
   healthy: boolean;
@@ -108,10 +108,11 @@ export function Shell({
         <div className="console-brand">
           <div className="console-brand-full">
             <Lockup />
-            <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span>
+            {dnsSuffix ? <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span> : null}
           </div>
           <div className="console-brand-compact">
             <BrandSymbol label="self-host" />
+            {dnsSuffix ? <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span> : null}
           </div>
         </div>
       }
@@ -150,7 +151,9 @@ export function Shell({
           <Breadcrumb>
             <BreadcrumbList>
               <BreadcrumbItem>
-                <BreadcrumbLink href="/console/">Console</BreadcrumbLink>
+                <BreadcrumbLink href="/console/" className={dnsSuffix ? "console-dns t-metadata truncate" : undefined}>
+                  {dnsSuffix ?? "Console"}
+                </BreadcrumbLink>
               </BreadcrumbItem>
               <BreadcrumbSeparator />
               {parent ? (
