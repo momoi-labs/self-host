@@ -50,6 +50,9 @@ pub struct GitSource {
     /// Off, the build is a plain `docker build` (ADR-0034).
     #[serde(default)]
     pub strict_build: bool,
+    /// Dockerfile stage to build instead of the last one.
+    #[serde(default)]
+    pub build_target: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,6 +321,16 @@ pub fn validate(source: &GitSource) -> Result<(), SourceError> {
         .chain(source.compose_path.iter())
     {
         relative_path(path)?;
+    }
+    if let Some(target) = &source.build_target {
+        if source.compose_path.is_some() {
+            return Err(invalid(
+                "a build target applies to a Dockerfile, not Compose",
+            ));
+        }
+        if !valid_stage_name(target) {
+            return Err(invalid("build target is not a valid stage name"));
+        }
     }
     for name in source.build_args.keys().chain(source.build_secrets.keys()) {
         if !valid_input_name(name) {
@@ -730,7 +743,8 @@ pub async fn build(
             ));
         }
         let text = std::fs::read_to_string(&dockerfile)?;
-        let base_images = dockerfile_policy(&text, source.strict_build)?;
+        let base_images =
+            dockerfile_policy(&text, source.strict_build, source.build_target.as_deref())?;
         let request = SourceBuild {
             context,
             dockerfile,
@@ -745,6 +759,7 @@ pub async fn build(
             registry_config,
             base_images,
             strict: source.strict_build,
+            target: source.build_target.clone(),
         };
         images.insert("app".into(), docker.build_source(&request).await?);
         None
@@ -847,11 +862,105 @@ pub fn dockerfile_instructions(text: &str) -> Result<Vec<String>, SourceError> {
     Ok(instructions)
 }
 
+fn valid_stage_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+}
+
+/// Keeps the named stage and the earlier stages it needs through `FROM` and
+/// `COPY --from`, so policy, pinning and the guard see what the build uses.
+pub(crate) fn stages_for(
+    instructions: Vec<String>,
+    target: &str,
+) -> Result<Vec<String>, SourceError> {
+    let mut preamble = Vec::new();
+    let mut stages: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    for line in instructions {
+        let (instruction, body) = line.split_once(char::is_whitespace).unwrap_or((&line, ""));
+        if instruction.eq_ignore_ascii_case("FROM") {
+            let words: Vec<_> = body.split_whitespace().collect();
+            let alias = (words.len() == 3).then(|| words[2].to_ascii_lowercase());
+            stages.push((alias, vec![line]));
+        } else if let Some((_, lines)) = stages.last_mut() {
+            lines.push(line);
+        } else {
+            preamble.push(line);
+        }
+    }
+    let target = target.to_ascii_lowercase();
+    let last = stages
+        .iter()
+        .position(|(alias, _)| alias.as_deref() == Some(target.as_str()))
+        .ok_or_else(|| invalid("build target names no stage in the Dockerfile"))?;
+    let stage_of = |name: &str, before: usize, copy: bool| -> Result<Option<usize>, SourceError> {
+        let name = name.to_ascii_lowercase();
+        if copy && name.bytes().all(|c| c.is_ascii_digit()) {
+            return Err(invalid(
+                "COPY --from must name its stage when a build target is set",
+            ));
+        }
+        let search = if copy { stages.len() } else { before };
+        match stages[..search]
+            .iter()
+            .position(|(alias, _)| alias.as_deref() == Some(name.as_str()))
+        {
+            Some(index) if index >= before => {
+                Err(invalid("a stage may only use stages that come before it"))
+            }
+            found => Ok(found),
+        }
+    };
+    let mut needed = vec![false; stages.len()];
+    needed[last] = true;
+    for index in (0..=last).rev() {
+        if !needed[index] {
+            continue;
+        }
+        for line in &stages[index].1 {
+            let (instruction, body) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+            let copy = instruction.eq_ignore_ascii_case("COPY");
+            let reference = if instruction.eq_ignore_ascii_case("FROM") {
+                body.split_whitespace().next()
+            } else if copy {
+                body.split_whitespace()
+                    .find_map(|word| word.strip_prefix("--from="))
+            } else {
+                None
+            };
+            if let Some(found) = reference
+                .map(|name| stage_of(name, index, copy))
+                .transpose()?
+                .flatten()
+            {
+                needed[found] = true;
+            }
+        }
+    }
+    let mut kept = preamble;
+    for (index, (_, lines)) in stages.into_iter().enumerate() {
+        if needed[index] {
+            kept.extend(lines);
+        }
+    }
+    Ok(kept)
+}
+
 /// `strict` is the build guard's policy: every `USER` numeric and nonzero,
 /// and one before every `RUN`. Without it a build stage may run as any user;
 /// both modes need the final stage to end on a numeric nonzero `USER`.
-pub fn dockerfile_policy(text: &str, strict: bool) -> Result<Vec<String>, SourceError> {
-    let instructions = dockerfile_instructions(text)?;
+pub fn dockerfile_policy(
+    text: &str,
+    strict: bool,
+    target: Option<&str>,
+) -> Result<Vec<String>, SourceError> {
+    let mut instructions = dockerfile_instructions(text)?;
+    if let Some(target) = target {
+        instructions = stages_for(instructions, target)?;
+    }
+    let guarded = instructions.join("\n");
     let mut stage = false;
     let mut user = false;
     let mut aliases = Vec::new();
@@ -916,7 +1025,7 @@ pub fn dockerfile_policy(text: &str, strict: bool) -> Result<Vec<String>, Source
     images.sort();
     images.dedup();
     if strict {
-        guard::dockerfile(text, "sf_guard_policy", &BTreeMap::new())?;
+        guard::dockerfile(&guarded, "sf_guard_policy", &BTreeMap::new())?;
     }
     Ok(images)
 }

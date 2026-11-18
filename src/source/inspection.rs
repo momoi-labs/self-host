@@ -134,7 +134,10 @@ fn inspect_checkout(checkout: &Path, source: &GitSource) -> Result<GitInspection
     let mut services = Vec::new();
     if let Some(path) = regular_file(checkout, &source.dockerfile)? {
         if source.compose_path.is_none() {
-            ports.extend(dockerfile_ports(&std::fs::read_to_string(path)?)?);
+            ports.extend(dockerfile_ports(
+                &std::fs::read_to_string(path)?,
+                source.build_target.as_deref(),
+            )?);
         }
         files.push(BuildFile {
             kind: BuildFileKind::Dockerfile,
@@ -191,14 +194,18 @@ fn tcp_port(value: &str) -> Option<u16> {
     port.parse::<u16>().ok().filter(|port| *port != 0)
 }
 
-fn dockerfile_ports(text: &str) -> Result<Vec<u16>, SourceError> {
+fn dockerfile_ports(text: &str, target: Option<&str>) -> Result<Vec<u16>, SourceError> {
     let mut ports = BTreeSet::new();
-    for instruction in super::dockerfile_instructions(text)? {
+    let mut instructions = super::dockerfile_instructions(text)?;
+    if let Some(target) = target {
+        instructions = super::stages_for(instructions, target)?;
+    }
+    for instruction in instructions {
         let (name, body) = instruction
             .split_once(char::is_whitespace)
             .unwrap_or((&instruction, ""));
         match name.to_ascii_uppercase().as_str() {
-            // Only the final stage is the Application image. Earlier build
+            // Only the built stage is the Application image. Earlier build
             // stages do not provide a Web Target.
             "FROM" => ports.clear(),
             "EXPOSE" => ports.extend(body.split_whitespace().filter_map(tcp_port)),
@@ -319,7 +326,10 @@ fn compose_services(
                 return Err(invalid("Dockerfile must be a file below 1 MiB"));
             }
             if ports.is_empty() {
-                ports.extend(dockerfile_ports(&std::fs::read_to_string(dockerfile)?)?);
+                ports.extend(dockerfile_ports(
+                    &std::fs::read_to_string(dockerfile)?,
+                    None,
+                )?);
             }
         }
         result.push(Service {
@@ -336,7 +346,15 @@ mod tests {
 
     #[test]
     fn detects_only_literal_tcp_ports_in_the_final_stage() {
-        assert_eq!(dockerfile_ports("FROM alpine AS build\nEXPOSE 9000\nFROM alpine\nEXPOSE 8080 8443/tcp 5353/udp $PORT 0 70000\nUSER 1001\n").unwrap(), vec![8080, 8443]);
+        assert_eq!(dockerfile_ports("FROM alpine AS build\nEXPOSE 9000\nFROM alpine\nEXPOSE 8080 8443/tcp 5353/udp $PORT 0 70000\nUSER 1001\n", None).unwrap(), vec![8080, 8443]);
+        assert_eq!(
+            dockerfile_ports(
+                "FROM alpine AS web\nEXPOSE 3000\nFROM alpine\nEXPOSE 8080\n",
+                Some("web")
+            )
+            .unwrap(),
+            vec![3000]
+        );
         assert_eq!(
             declared_port(&Value::String("127.0.0.1:80:8080/tcp".into()), true),
             Some(8080)

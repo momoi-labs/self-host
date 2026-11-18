@@ -136,6 +136,7 @@ pub fn validate_source(
         || !source.build_secrets.is_empty()
         || source.registry_credential_id.is_some()
         || source.strict_build
+        || source.build_target.is_some()
     {
         return Err(crate::source::SourceError::Invalid(
             "native Git sources accept repository credentials and a context, not container build settings".into(),

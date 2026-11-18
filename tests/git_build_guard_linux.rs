@@ -342,6 +342,7 @@ async fn source_build_guards_setuid_capabilities_shells_secrets_and_ignore_rules
         credential_id: None,
         registry_credential_id: None,
         strict_build: true,
+        build_target: None,
     };
     let built = self_host::source::build(
         &private,

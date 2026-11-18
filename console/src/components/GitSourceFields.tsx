@@ -14,6 +14,7 @@ export type GitFields = {
   registryCredentialId: string;
   username: string;
   token: string;
+  target: string;
   strict: boolean;
 };
 
@@ -25,7 +26,7 @@ export function gitFieldsOf(source?: GitSource): GitFields {
     dockerfile: source?.dockerfile ?? "Dockerfile", composePath: source?.compose_path ?? "",
     args: lines(source?.build_args), secrets: lines(source?.build_secrets),
     credentialId: source?.credential_id ?? "", registryCredentialId: source?.registry_credential_id ?? "",
-    username: "", token: "", strict: source?.strict_build ?? false,
+    username: "", token: "", target: source?.build_target ?? "", strict: source?.strict_build ?? false,
   };
 }
 
@@ -42,6 +43,7 @@ export function gitSourceOf(fields: GitFields): GitSource {
     build_args: pairs(fields.args), build_secrets: pairs(fields.secrets),
     credential_id: fields.credentialId.trim() || undefined,
     registry_credential_id: fields.registryCredentialId.trim() || undefined,
+    build_target: fields.target.trim() || undefined,
     strict_build: fields.strict,
   };
 }
@@ -68,7 +70,8 @@ export function GitSourceFields({ fields, onChange, includeRepository = true, se
       <FormField id="f-git-compose" label="Compose path" value={fields.composePath} onChange={(event) => set("composePath", event.target.value)} placeholder="compose.yaml" hint="Optional path inside the checkout. Its build and env_file inputs also stay inside the checkout." />
       {!fields.composePath.trim() ? <div className="field-row">
         <FormField id="f-git-context" label="Build context" value={fields.context} onChange={(event) => set("context", event.target.value)} placeholder="." />
-        <FormField id="f-git-dockerfile" label="Dockerfile path" value={fields.dockerfile} onChange={(event) => set("dockerfile", event.target.value)} placeholder="Dockerfile" hint="Relative to the checkout root. The final stage needs a numeric nonzero USER." />
+        <FormField id="f-git-dockerfile" label="Dockerfile path" value={fields.dockerfile} onChange={(event) => set("dockerfile", event.target.value)} placeholder="Dockerfile" hint="Relative to the checkout root. The built stage needs a numeric nonzero USER." />
+        <FormField id="f-git-target" label="Build target" value={fields.target} onChange={(event) => set("target", event.target.value)} placeholder="last stage" hint="Optional Dockerfile stage name." />
       </div> : null}
       <FormField id="f-git-args" label="Build arguments" hint="Ordinary inputs only. One NAME=value per line.">
         <Textarea id="f-git-args" className="mono" rows={3} value={fields.args} onChange={(event) => set("args", event.target.value)} />

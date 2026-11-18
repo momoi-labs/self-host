@@ -19,6 +19,7 @@ pub struct SourceBuild {
     pub base_images: Vec<String>,
     /// Route every `RUN` through the build guard (ADR-0034).
     pub strict: bool,
+    pub target: Option<String>,
 }
 
 #[derive(Debug)]
@@ -428,6 +429,15 @@ impl DockerRuntime for CliDocker {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        if let Some(target) = &build.target {
+            text = crate::source::stages_for(
+                crate::source::dockerfile_instructions(&text)
+                    .map_err(|_| source_refusal("Dockerfile cannot be parsed"))?,
+                target,
+            )
+            .map_err(|_| source_refusal("build target needs stages the Dockerfile lacks"))?
+            .join("\n");
+        }
         let needs_guard = build.strict
             && crate::source::dockerfile_instructions(&text)
                 .map_err(|_| source_refusal("Dockerfile cannot be parsed"))?
@@ -580,6 +590,9 @@ impl DockerRuntime for CliDocker {
                 "--build-context".into(),
                 format!("{guard_name}={}", context.display()),
             ]);
+        }
+        if let Some(target) = &build.target {
+            args.extend(["--target".into(), target.clone()]);
         }
         for (name, value) in &build.build_args {
             args.extend(["--build-arg".into(), format!("{name}={value}")]);
