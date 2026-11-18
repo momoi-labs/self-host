@@ -9,11 +9,17 @@ export async function checkApiKey(value: string, request: typeof fetch = fetch):
   }
   let response: Response;
   try {
-    response = await request("/health", { headers: { Authorization: "Bearer " + key } });
+    response = await request("/whoami", { headers: { Authorization: "Bearer " + key } });
   } catch {
     return { kind: "host", message: "Could not reach the Host. Check your LAN connection and try again." };
   }
-  if (response.ok) return { kind: "accepted", key };
+  if (response.ok) {
+    const who = (await response.json().catch(() => null)) as { kind?: string } | null;
+    if (who?.kind === "agent") {
+      return { kind: "key", message: "This is an agent key. Agent keys reach the Host through MCP and cannot open the console. Use your own key." };
+    }
+    return { kind: "accepted", key };
+  }
   if (response.status === 401 || response.status === 403) {
     return { kind: "key", message: "This key was not accepted. Check that it belongs to this Host and try again." };
   }

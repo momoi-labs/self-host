@@ -73,7 +73,7 @@ export function Settings({ section }: { section: SettingsSection }) {
       </PageHeader>
       <PaneGrid aria-label="Settings" flow="masonry" defaultLayout={layout} onLayoutChange={saveLayout}>
         <AuditHistory id="audit-history" size={6} />
-        <ApiKeys id="api-keys" size={6} />
+        <ApiKeys id="api-keys" size={12} />
         <ApplicationDefaults id="applications" size={6} />
         <NativeBuildLimits id="native-build-limits" size={6} />
         <HostAccess id="host-access" size={6} />

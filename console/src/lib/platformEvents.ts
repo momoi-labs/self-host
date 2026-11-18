@@ -10,6 +10,9 @@ export type PlatformEvent = {
   finishedAt?: string | null;
   updatedAt?: string | null;
   apiName?: string | null;
+  actorKind?: string | null;
+  via?: string | null;
+  tool?: string | null;
   description: string;
   /** Why a failed task failed. */
   error?: Report | null;
@@ -92,4 +95,10 @@ export function pageItems(page: number, pages: number): (number | "gap")[] {
     else if (items[items.length - 1] !== "gap") items.push("gap");
   }
   return items;
+}
+
+export function eventSource(event: Pick<PlatformEvent, "actorKind" | "via">): "MCP" | "Agent" | null {
+  if (event.via === "mcp") return "MCP";
+  if (event.actorKind === "agent") return "Agent";
+  return null;
 }

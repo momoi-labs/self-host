@@ -121,6 +121,8 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .alert-causes li { margin-block-start: var(--spacing-xs); }
 .alert-causes li::marker { font-variant-numeric: tabular-nums; }
 
+fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+
 /* The KPI row on the Overview. kiso sizes the tile; how many fit per row is
    the page's call. */
 .stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
@@ -595,6 +597,15 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 }
 .grid-pane-body:not(:has(> .form)) > .table-wrap[data-frame="none"] { margin-inline: calc(-1 * var(--presentation-panel-padding)); }
 .grid-pane-body:not(:has(> .form)) > .table-wrap[data-frame="none"]:last-child { margin-block-end: calc(-1 * var(--presentation-panel-padding)); }
+.key-table { container-type: inline-size; }
+.key-details { display: none; }
+.key-date { white-space: nowrap; }
+.key-details dl { display: grid; grid-template-columns: auto 1fr; gap: var(--spacing-2xs) var(--spacing-sm); margin: var(--spacing-2xs) 0 0; }
+.key-details dd { margin: 0; }
+@container (max-width: 48rem) {
+  .key-table .key-secondary { display: none; }
+  .key-table .key-details { display: block; }
+}
 /* A checkbox that qualifies the save sits on the buttons' line. */
 .form-actions-buttons > .check { align-self: center; }
 /* A switch in a KV list sits at the row's end, level with its label. */

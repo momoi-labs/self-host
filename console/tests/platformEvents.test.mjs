@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { eventActionLabel, eventSubjectHref, filterEvents, eventUpdatedAt, pageItems } from "../src/lib/platformEvents.ts";
+import { eventActionLabel, eventSource, eventSubjectHref, filterEvents, eventUpdatedAt, pageItems } from "../src/lib/platformEvents.ts";
 
 test("resource links target existing console pages by stable ID", () => {
   assert.equal(eventSubjectHref({ kind: "application", id: "app-123", name: "renamed" }), "/console/#app-app-123");
@@ -48,4 +48,12 @@ test("platform work reads as what it does, and an unknown action never as undefi
   assert.equal(eventActionLabel({ action: "prune", subject: platform }), "Remove unused data");
   assert.equal(eventSubjectHref(platform), "/console/#settings/scheduled-tasks");
   assert.equal(eventActionLabel({ action: "archive", subject: { kind: "gadget", id: "g", name: "g" } }), "Archive gadget");
+});
+
+test("an event names MCP or an agent key as its source, and nothing for a person or the system", () => {
+  assert.equal(eventSource({ actorKind: "agent", via: "mcp" }), "MCP");
+  assert.equal(eventSource({ actorKind: "agent", via: "api" }), "Agent");
+  assert.equal(eventSource({ actorKind: "person", via: "api" }), null);
+  assert.equal(eventSource({ actorKind: "system" }), null);
+  assert.equal(eventSource({}), null);
 });
