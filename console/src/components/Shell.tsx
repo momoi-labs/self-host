@@ -17,9 +17,8 @@ import {
 } from "@momoi-labs/kiso-react";
 
 import { logout } from "../lib/api.js";
-import { statusTone } from "../lib/status.js";
 import { useTheme } from "../lib/theme.js";
-import type { App, Environment, FailingWorkload } from "../lib/types.js";
+import type { FailingWorkload } from "../lib/types.js";
 import { Icon } from "./Icon.js";
 import { BrandSymbol, Lockup } from "./Logo.js";
 
@@ -37,8 +36,6 @@ export function Shell({
   crumb,
   parent,
   dnsSuffix,
-  apps,
-  environments,
   healthy,
   degraded = false,
   failing = [],
@@ -52,16 +49,12 @@ export function Shell({
   events = { href: "/console/#events", active: false },
   host,
   settings = { href: "/console/#settings", active: false },
-  application,
-  virtualMachine,
   children,
 }: {
   crumb: string;
   /** The list the current screen belongs to, linked between Console and it. */
   parent?: Destination & { label: string };
   dnsSuffix: string | null;
-  apps: App[];
-  environments: Environment[];
   healthy: boolean;
   /** The daemon answers but a workload is down; the line names it and opens it. */
   degraded?: boolean;
@@ -77,15 +70,12 @@ export function Shell({
   /** Absent while the Operator has allowed nothing on the Host. */
   host?: Destination;
   settings?: Destination;
-  application: (app: App) => Destination;
-  virtualMachine: (machine: Environment) => Destination;
   children: ReactNode;
 }) {
   const [theme, setTheme] = useTheme();
   // Below 1024px the sidebar is a drawer; any way out of it closes it,
   // including the create menu, which opens in a portal of its own.
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const applications = apps.filter((app) => !app.managed_postgres);
 
   const navigate = (destination: Destination) => {
     setDrawerOpen(false);
@@ -132,18 +122,6 @@ export function Shell({
             },
           ],
         },
-        ...(applications.length ? [{
-          label: "Applications",
-          destinations: applications.map((app) => ({
-            ...application(app), label: app.name, leading: <StatusDot status={app.status} />,
-          })),
-        }] : []),
-        ...(environments.length ? [{
-          label: "Virtual machines",
-          destinations: environments.map((machine) => ({
-            ...virtualMachine(machine), label: machine.config.name, leading: <StatusDot status={machine.state} />,
-          })),
-        }] : []),
         { destinations: [{ ...settings, label: "Settings", leading: <Icon name="gear" /> }] },
       ]}
       header={
@@ -249,10 +227,4 @@ function failedLabel(failing: FailingWorkload[]): string {
     databases ? `${databases} ${databases === 1 ? "database" : "databases"}` : null,
   ].filter(Boolean);
   return parts.length ? `${parts.join(" and ")} failed` : "Degraded";
-}
-
-/** A resource's state, read out by screen readers since the color says it to everyone else. */
-function StatusDot({ status }: { status: string }) {
-  const tone = statusTone(status);
-  return <Dot variant={tone} className={tone === "neutral" ? "subtle" : undefined} role="img" aria-label={status} aria-hidden={false} />;
 }

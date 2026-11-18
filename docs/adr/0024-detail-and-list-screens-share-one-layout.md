@@ -134,11 +134,10 @@ Provisioning, Ready, pulsing; the screen opens on the run when one starts.
 The same screen fits a phone without a second layout. Below 700px the
 navigation moves to a bar at the bottom of the screen (kiso's
 `phoneNavigation="bottom"`): the first four destinations, then More for the
-rest, the Applications, the virtual machines and the footer. The top bar shows
-the brand, the health dot and the Platform version. Between 700px and 1023px
-the sidebar opens as a drawer from a menu button instead. Applications and
-virtual machines are navigation groups like any other, so both layouts list
-them without console code of their own. The detail card
+rest and the footer. The top bar shows the brand, the health dot and the
+Platform version. Between 700px and 1023px the sidebar opens as a drawer from
+a menu button instead. Both layouts come from the same navigation groups, so
+the console writes no code of its own for them. The detail card
 shows each tab as a section with its own header, one open at a time (kiso's
 `Tabs sections`), because a strip of five triggers does not fit 390px. At
 720px and below the header row keeps the status badges, which wrap, and the

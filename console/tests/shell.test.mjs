@@ -24,58 +24,34 @@ await build({
 });
 const { Shell } = await import(pathToFileURL(join(outDir, "Shell.mjs")));
 
-function render(apps, environments, selected = "", dnsSuffix = "home.lan") {
+function render(selected = "", dnsSuffix = "home.lan") {
   return renderToStaticMarkup(createElement(Shell, {
     crumb: "Overview", dnsSuffix, healthy: true, version: "0.4.0",
-    apps, environments,
-    overview: { href: "/console/", active: !selected },
-    application: app => ({ href: `/console/#app-${app.id}`, active: selected === app.id }),
-    virtualMachine: vm => ({ href: `/console/#virtual-machine-${vm.id}`, active: selected === vm.id }),
+    overview: { href: "/console/", active: selected === "overview" },
     children: null,
   }));
 }
-const app = { id: "photos", name: "Photos", status: "running" };
-const vm = { id: "workspace", config: { name: "Workspace" }, state: "stopped" };
 
-test("empty inventory has no resource headings or placeholder", () => {
-  const html = render([], []);
-  assert.doesNotMatch(html, /Applications|Virtual machines|None yet|No resources/);
+test("the sidebar lists pages, not applications or virtual machines", () => {
+  const html = render();
+  assert.doesNotMatch(html, /Applications|Virtual machines|#app-|#virtual-machine-/);
+  assert.ok(html.indexOf("Custom images") < html.indexOf("Settings"));
+  assert.match(html, /href="\/console\/#dns"/);
+});
+
+test("the current destination is marked", () => {
+  assert.match(render("overview"), /aria-current="page"[^>]*>.*Overview/);
 });
 
 test("the header shows the running Host version", () => {
-  const html = render([], []);
+  const html = render();
   assert.match(html, /Healthy/);
   assert.match(html, /v0\.4\.0/);
 });
 
-test("VM-only inventory hides Applications and links to the VM", () => {
-  const html = render([], [vm], vm.id);
-  assert.doesNotMatch(html, /Applications/);
-  assert.match(html, /Virtual machines/);
-  assert.match(html, /href="\/console\/#virtual-machine-workspace"/);
-  assert.match(html, /aria-current="page"[^>]*>.*Workspace/);
-  assert.match(html, /data-variant="neutral"/);
-});
-
-test("apps-only inventory hides Virtual machines", () => {
-  const html = render([app], []);
-  assert.match(html, /Applications/);
-  assert.match(html, /href="\/console\/#app-photos"/);
-  assert.doesNotMatch(html, /Virtual machines/);
-});
-
-test("both types stay separate, with status dots and shortcuts first", () => {
-  const html = render([{ ...app, status: "failed" }], [{ ...vm, state: "running" }]);
-  assert.ok(html.indexOf("Custom images") < html.indexOf("Applications"));
-  assert.ok(html.indexOf("Applications") < html.indexOf("Virtual machines"));
-  assert.match(html, /data-variant="danger"/);
-  assert.match(html, /href="\/console\/#dns"/);
-  assert.match(html, /href="\/console\/#virtual-machine-workspace"/);
-});
-
 test("the breadcrumb root names the DNS suffix and falls back to Console", () => {
-  assert.match(render([], []), /<a[^>]*href="\/console\/"[^>]*>home\.lan<\/a>/);
-  const unset = render([], [], "", null);
+  assert.match(render(), /<a[^>]*href="\/console\/"[^>]*>home\.lan<\/a>/);
+  const unset = render("", null);
   assert.match(unset, /<a[^>]*href="\/console\/"[^>]*>Console<\/a>/);
   assert.doesNotMatch(unset, /console-dns/);
 });
