@@ -117,6 +117,10 @@ Other components above live in `console/src/components/`.
   card's last child. A `GridPane` body is not, so `console.css` applies the
   same `--pixel-footer-clip` to the body when a form or a flush table ends it.
   Kiso has no rule for this case, so it is product CSS.
+- A detail screen's `.detail-tabs` card is the only panel that casts a
+  shadow. Its `Tabs` take `data-shadow-style="none"`, a nested appearance
+  scope, so the panels, diagram nodes and log views in a tab keep their frame
+  and drop the cast.
 - Kiso suggests a no-results `EmptyState` with Clear filters. The console
   keeps a plain "No X match your filters." row, per `skills/add-page/SKILL.md`.
 

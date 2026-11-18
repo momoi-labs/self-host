@@ -130,7 +130,9 @@ Rules:
 - `Glance` from `console/src/components/Glance.js` is the only metrics surface
   a detail screen gets. No meters card, no resources tab: the per-container
   breakdown belongs on the Overview.
-- One `.detail-tabs` card. Not a split.
+- One `.detail-tabs` card. Not a split. Its `Tabs` take
+  `data-shadow-style="none"`, so a panel inside a tab keeps its frame and
+  casts no shadow.
 - A log or terminal panel takes `className="detail-logs"` or
   `"detail-pane"` so it reaches the card's edges.
 - The tab already names the panel. Do not caption the panel with the same

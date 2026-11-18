@@ -334,7 +334,7 @@ export function AppDetail({
       {/* One card for the configuration and for whatever the Application
           prints, the way the machine's screen already worked. */}
       <Card className="detail-tabs">
-        <Tabs sections
+        <Tabs sections data-shadow-style="none"
           value={tab}
           onValueChange={(next) => {
             setTab(next);
