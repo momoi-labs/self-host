@@ -86,8 +86,6 @@ export function App() {
       crumb={crumb}
       parent={parent}
       dnsSuffix={domain}
-      apps={apps}
-      environments={environments}
       healthy={healthy}
       degraded={degraded}
       failing={failing}
@@ -95,7 +93,7 @@ export function App() {
       version={version}
       overview={{
         href: "/console/",
-        active: view.view === "overview",
+        active: view.view === "overview" || view.view === "environments" || (view.view === "app" && !!app && !app.managed_postgres),
         onClick: () => go({ view: "overview", id: null }),
       }}
       dns={{ href: "/console/#dns", active: view.view === "dns", onClick: () => go({ view: "dns", id: null }) }}
@@ -110,11 +108,6 @@ export function App() {
         active: view.view === "databases" || view.view === "database-new" || !!app?.managed_postgres,
         onClick: () => go({ view: "databases", id: null }),
       }}
-      virtualMachine={(machine) => ({
-        href: `/console/#virtual-machine-${machine.id}`,
-        active: view.view === "environments" && view.id === machine.id,
-        onClick: () => go({ view: "environments", id: machine.id }),
-      })}
       customImages={{
         href: "/console/#custom-images",
         active: view.view === "custom-images" || view.view === "custom-image",
@@ -126,11 +119,6 @@ export function App() {
         active: view.view === "settings",
         onClick: () => go({ view: "settings", id: "general" }),
       }}
-      application={(candidate) => ({
-        href: `/console/#app-${candidate.id}`,
-        active: view.view === "app" && view.id === candidate.id,
-        onClick: () => go({ view: "app", id: candidate.id }),
-      })}
     >
       {/* The id is a hook for console.css: the detail panel sizes itself
           differently from a scrolling page. */}

@@ -91,6 +91,9 @@ Other components above live in `console/src/components/`.
 - Use stepped chart lines, dot fills, compact chart layout and inline
   legends. Keep existing product-specific chart legend visibility.
 - The sidebar is collapsible. `ApplicationShell` puts the toggle in the header, before the breadcrumb.
+- The sidebar lists pages, not records. Applications and virtual machines open
+  from the Overview's tables, and their detail screens mark Overview as the
+  current destination. A database's screen marks Databases.
 - Settings is the last navigation group, so the rail and the phone More sheet
   list it as other destinations. The header ends with the account button. It
   opens a `Popover` with the identity, `ThemeSelector` and Sign out. A
