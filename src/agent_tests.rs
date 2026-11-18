@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 use crate::{
-    build_app_with_vm_runtime,
+    audit, build_app_with_vm_runtime,
     dns_records::FakeZone,
     docker::FakeDocker,
     environments::FakeVmRuntime,
@@ -344,6 +344,166 @@ async fn whoami_names_an_agent_key() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(whoami["kind"], "agent");
     assert_eq!(whoami["label"], "claude");
+}
+
+async fn rpc(app: &Router, key: &str, method: &str, params: Value) -> (StatusCode, Value) {
+    call(
+        app,
+        "POST",
+        "/mcp",
+        key,
+        json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}),
+        tailnet(NODE_A),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn mcp_lists_the_allowed_tools_and_runs_them_as_the_agent() {
+    let (app, store) = setup().await;
+    let id = deploy_blog(&app).await;
+    let key = agent_key(&app, json!({"label": "claude", "kind": "agent"})).await;
+
+    let (status, answer) = rpc(
+        &app,
+        &key,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(answer["result"]["protocolVersion"], "2025-06-18");
+
+    let (_, answer) = rpc(&app, &key, "tools/list", json!({})).await;
+    let names: Vec<&str> = answer["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"set_routes"), "{names:?}");
+    assert!(!names.contains(&"delete_app"), "{names:?}");
+
+    let (_, answer) = rpc(
+        &app,
+        &key,
+        "tools/call",
+        json!({"name": "set_routes", "arguments": {"id": id, "aliases": ["docs.home.lan"]}}),
+    )
+    .await;
+    assert_eq!(answer["result"]["isError"], false, "{answer}");
+    let (_, saved) = call(
+        &app,
+        "GET",
+        &format!("/apps/id/{id}"),
+        ROOT,
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(saved["aliases"], json!(["docs.home.lan"]), "{saved}");
+    let events = audit::read(&store).await.unwrap();
+    let event = events
+        .iter()
+        .find(|event| event.api_name.as_deref() == Some("claude"))
+        .expect("the tool call is in the audit log");
+    assert_eq!(event.actor_kind.as_deref(), Some("agent"));
+    assert_eq!(event.via.as_deref(), Some("mcp"));
+    assert_eq!(event.tool.as_deref(), Some("set_routes"));
+
+    let (_, answer) = rpc(
+        &app,
+        &key,
+        "tools/call",
+        json!({"name": "delete_app", "arguments": {"id": id}}),
+    )
+    .await;
+    assert_eq!(answer["result"]["isError"], true);
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("403"), "{text}");
+}
+
+#[tokio::test]
+async fn update_app_refuses_an_unknown_field_and_names_set_routes() {
+    let (app, _) = setup().await;
+    let id = deploy_blog(&app).await;
+    let key = agent_key(&app, json!({"label": "claude", "kind": "agent"})).await;
+
+    let (_, answer) = rpc(
+        &app,
+        &key,
+        "tools/call",
+        json!({"name": "update_app", "arguments": {"id": id, "aliases": "teste.home.lan"}}),
+    )
+    .await;
+    assert_eq!(answer["result"]["isError"], true, "{answer}");
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("aliases") && text.contains("set_routes"),
+        "{text}"
+    );
+    assert!(!text.starts_with("422"), "{text}");
+    let (_, saved) = call(
+        &app,
+        "GET",
+        &format!("/apps/id/{id}"),
+        ROOT,
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(saved["aliases"], json!([]), "{saved}");
+}
+
+#[tokio::test]
+async fn mcp_answers_only_on_the_tailnet_name_and_its_own_origin() {
+    let (app, _) = setup().await;
+    let key = agent_key(&app, json!({"label": "claude", "kind": "agent"})).await;
+    let request = |origin: &str| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "application/json")
+            .header("host", "host.tail1.ts.net:8443")
+            .header("origin", origin)
+            .body(Body::from(
+                json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}).to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(tailnet(NODE_A).unwrap());
+        request
+    };
+    let status = |request: Request<Body>| {
+        let app = app.clone();
+        async move { app.oneshot(request).await.unwrap().status() }
+    };
+    assert_eq!(
+        status(request("https://evil.example")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(request("https://host.tail1.ts.net")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(request("https://host.tail1.ts.net:8443")).await,
+        StatusCode::OK
+    );
+    let mut without_host = request("https://host.tail1.ts.net:8443");
+    without_host.headers_mut().remove("host");
+    *without_host.uri_mut() = "https://host.tail1.ts.net:8443/mcp".parse().unwrap();
+    assert_eq!(status(without_host).await, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/mcp",
+        ROOT,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
