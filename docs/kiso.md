@@ -28,7 +28,7 @@ rules. All entry points use it.
 | Component | Purpose |
 | --- | --- |
 | `Shell` | Console navigation, health and the account menu |
-| `BrandSymbol`, `Lockup` | The self-host brand: the lockup in the sidebar bar (`shellLayout`) with the DNS suffix under it, inside the bar, as sewa shows its address. The sidebar bar has the accent surface, the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. The lockup sits in a box of that size, centered like the rail mark, with the DNS suffix below it. The shell uses `headerVariant="default"`, so the rail keeps the mark and the header bar line meets the sidebar bar line. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
+| `BrandSymbol`, `Lockup` | The self-host brand: the lockup alone in the sidebar bar (`shellLayout`), the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The sidebar bar has the accent surface and a 3px `--color-primary` stripe at its bottom edge, in the sidebar and the rail. Kiso has no 3px token. The stripe is an inset shadow, and the bar pads by its height, so the lockup and the rail mark center in the area above it. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. Kiso's brand inset assumes a `--size-control-xs` mark, so the sidebar sets its own inset for the larger mark, minus the 1px rail border, which has no token. The shell uses `headerVariant="default"`, so the rail keeps the mark and the header bar line meets the sidebar bar line. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
 | `AppForm`, `NativeAppForm`, `PostgresFields` | Application and database configuration |
 | `CustomImageEditor`, `EnvironmentEditor` | Image and virtual machine configuration |
 | `Glance` | Detail-page metrics |
@@ -78,8 +78,13 @@ Other components above live in `console/src/components/`.
   default-size header set to the page width, full page width and start
   alignment. The console uses the default header variant. Login and setup
   keep the floating header, because they have no sidebar. The default header
-  size gives the bar sewa's height, so the sidebar bar fits the lockup and the
-  DNS suffix.
+  size gives the bar sewa's height.
+- The DNS suffix is the breadcrumb root, in mono, and links to the console
+  home. Without a suffix the root reads "Console". Kiso raises muted text to
+  the foreground color in the header over glass panels, so the suffix is not
+  grey. Below 720px the breadcrumb shows only the current page, so the phone
+  header shows the suffix after the symbol. The drawer shows it under the
+  lockup.
 - Use solid pixel frames, small corners, no corner marks, soft
   shadows with a hard outer shadow, glass panels, landing bands inside the
   frame and a quiet construction background inside and outside the frame.

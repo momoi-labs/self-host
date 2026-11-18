@@ -54,15 +54,29 @@
 
 .console-brand { --brand-lockup-height: calc(var(--size-control-sm) * 415 / 512); min-width: 0; }
 .console-brand-full { display: grid; min-width: 0; line-height: 1.15; }
-.console-shell .sidebar-header { background: var(--color-accent-surface); }
+.console-shell { --console-stripe: 3px; }
+.console-shell .sidebar-header { background: var(--color-accent-surface); box-shadow: inset 0 calc(-1 * var(--console-stripe)) 0 var(--color-primary); }
+.console-shell.app-shell[data-shell-layout] > .sidebar {
+  --app-shell-brand-inset: calc((var(--size-touch-min) + 2 * var(--spacing-md) - 1px - var(--size-control-sm)) / 2);
+}
+.console-shell.app-shell[data-shell-layout] > .sidebar > .sidebar-header { padding-block-end: var(--console-stripe); }
 .console-dns { font-family: var(--font-mono); }
 @media (min-width: 1024px) {
-  .console-shell > .sidebar > .sidebar-header .console-brand-full { position: relative; height: var(--size-control-sm); align-content: center; }
-  .console-shell > .sidebar > .sidebar-header .console-dns { position: absolute; inset-inline: 0; top: calc(50% + var(--brand-lockup-height) / 2); }
+  .console-shell > .sidebar > .sidebar-header .console-brand-full { height: var(--size-control-sm); align-content: center; }
+  .console-shell > .sidebar > .sidebar-header .console-dns { display: none; }
 }
 .console-brand-compact { display: none; }
 .app-shell-phone-brand .console-brand-full { display: none; }
-.app-shell-phone-brand .console-brand-compact { display: block; }
+.app-shell-phone-brand .console-brand-compact { display: flex; align-items: center; gap: var(--spacing-sm); min-width: 0; }
+@media not all and (max-width: 720px) {
+  .console-brand-compact .console-dns { display: none; }
+}
+.console-shell [data-slot="breadcrumb"], .console-shell .breadcrumb > li:first-child { min-width: 0; }
+.console-shell .breadcrumb { flex-wrap: nowrap; }
+.console-shell .breadcrumb > li:first-child > .console-dns { display: block; }
+@media (pointer: coarse) {
+  .console-shell .breadcrumb > li:first-child > .console-dns { line-height: var(--size-touch-min); }
+}
 
 /* Public device setup, reached by IP before DNS or CA trust is configured. */
 .device-setup { width: 100%; max-width: 840px; margin-inline: auto; padding: var(--spacing-xl); }
