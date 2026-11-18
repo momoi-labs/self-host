@@ -544,38 +544,74 @@ impl StateStore for FileStateStore {
 
     async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, StoreError> {
         self.query(|conn| {
-            let mut statement =
-                conn.prepare("SELECT id, label, created_at FROM api_keys ORDER BY rowid DESC")?;
+            let mut statement = conn.prepare(
+                "SELECT id, label, created_at, kind, scopes, expires_at, node_id, last_used_at, revoked_at
+                 FROM api_keys ORDER BY rowid DESC",
+            )?;
             let rows = statement.query_map([], |row| {
+                let scopes: Option<String> = row.get(4)?;
                 Ok(ApiKeyRecord {
                     id: row.get(0)?,
                     label: row.get(1)?,
                     created_at: row.get(2)?,
+                    kind: row.get(3)?,
+                    scopes: scopes.and_then(|s| serde_json::from_str(&s).ok()),
+                    expires_at: row.get(5)?,
+                    node_id: row.get(6)?,
+                    last_used_at: row.get(7)?,
+                    revoked_at: row.get(8)?,
                 })
             })?;
             rows.collect()
         })
     }
 
-    async fn create_api_key(&self, id: &str, label: &str) -> Result<(), StoreError> {
+    async fn create_api_key(&self, key: &ApiKeyRecord) -> Result<(), StoreError> {
+        let scopes = key
+            .scopes
+            .as_ref()
+            .map(|scopes| serde_json::to_string(scopes).expect("strings serialize"));
         self.transaction(|tx| {
             tx.execute(
-                "INSERT INTO api_keys (id, label, created_at) VALUES (?1, ?2, ?3)",
-                params![id, label, now_text()],
+                "INSERT INTO api_keys (id, label, created_at, kind, scopes, expires_at, node_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    key.id,
+                    key.label,
+                    now_text(),
+                    key.kind,
+                    scopes,
+                    key.expires_at,
+                    key.node_id
+                ],
             )
             .map_err(|e| db_error(&self.db_path(), e))?;
             Ok(())
         })
     }
 
-    async fn revoke_api_key(&self, id: &str) -> Result<(), StoreError> {
+    async fn revoke_api_key(&self, id: &str, at: &str) -> Result<(), StoreError> {
         self.transaction(|tx| {
-            let removed = tx
-                .execute("DELETE FROM api_keys WHERE id = ?1", [id])
+            let revoked = tx
+                .execute(
+                    "UPDATE api_keys SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+                    params![id, at],
+                )
                 .map_err(|e| db_error(&self.db_path(), e))?;
-            if removed == 0 {
+            if revoked == 0 {
                 return Err(StoreError::NotFound(id.to_string()));
             }
+            Ok(())
+        })
+    }
+
+    async fn touch_api_key(&self, id: &str, at: &str) -> Result<(), StoreError> {
+        self.transaction(|tx| {
+            tx.execute(
+                "UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1",
+                params![id, at],
+            )
+            .map_err(|e| db_error(&self.db_path(), e))?;
             Ok(())
         })
     }
@@ -1125,7 +1161,15 @@ mod tests {
         });
         store.insert_application(&app).await.unwrap();
         store.set_env(&app.id, "TOKEN", "value").await.unwrap();
-        store.create_api_key("key-1", "laptop").await.unwrap();
+        store
+            .create_api_key(&ApiKeyRecord {
+                id: "key-1".into(),
+                label: "laptop".into(),
+                kind: "human".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         store
             .put_record("dns-record", "nas/A", r#"{"name":"nas"}"#)
             .await

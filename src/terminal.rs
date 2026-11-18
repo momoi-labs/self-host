@@ -591,6 +591,18 @@ mod tests {
     async fn fixture(development: bool) -> (String, FakeDocker, tokio::task::JoinHandle<()>) {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
+        crate::agent_tests::insert_key(
+            &store,
+            "agentkey0000-secret",
+            crate::store::ApiKeyRecord {
+                label: "claude".into(),
+                kind: "agent".into(),
+                scopes: Some(vec!["read".into(), "apps:write".into()]),
+                expires_at: Some(crate::auth::days_from_now(30)),
+                ..Default::default()
+            },
+        )
+        .await;
         let app = ApplicationRecord {
             id: "sample".into(),
             name: "sample".into(),
@@ -669,6 +681,7 @@ mod tests {
         let (url, docker, server) = fixture(false).await;
         for request in [
             json!({"key":"wrong", "container":"owned", "cols":80,"rows":24}),
+            json!({"key":"agentkey0000-secret", "container":"owned", "cols":80,"rows":24}),
             json!({"key":"test-key", "container":"foreign", "cols":80,"rows":24}),
             json!({"key":"test-key", "container":"owned", "cols":0,"rows":24}),
         ] {

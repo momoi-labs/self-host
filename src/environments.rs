@@ -934,6 +934,12 @@ pub(crate) async fn action<S: StateStore>(
     } else {
         action.clone()
     };
+    if effective_action == "delete" && !crate::audit::allows(crate::auth::Scope::Delete) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "This key lacks the 'delete' scope that deleting a virtual machine needs",
+        );
+    }
     if effective_action == "delete"
         && request.confirm_name.as_deref() != Some(record.config.name.as_str())
     {

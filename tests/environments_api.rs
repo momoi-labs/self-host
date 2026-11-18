@@ -699,11 +699,14 @@ impl StateStore for FailOnceStore {
     async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>, StoreError> {
         self.inner.list_api_keys().await
     }
-    async fn create_api_key(&self, id: &str, label: &str) -> Result<(), StoreError> {
-        self.inner.create_api_key(id, label).await
+    async fn create_api_key(&self, key: &ApiKeyRecord) -> Result<(), StoreError> {
+        self.inner.create_api_key(key).await
     }
-    async fn revoke_api_key(&self, id: &str) -> Result<(), StoreError> {
-        self.inner.revoke_api_key(id).await
+    async fn revoke_api_key(&self, id: &str, at: &str) -> Result<(), StoreError> {
+        self.inner.revoke_api_key(id, at).await
+    }
+    async fn touch_api_key(&self, id: &str, at: &str) -> Result<(), StoreError> {
+        self.inner.touch_api_key(id, at).await
     }
     async fn list_records(&self, kind: &str) -> Result<Vec<String>, StoreError> {
         self.inner.list_records(kind).await

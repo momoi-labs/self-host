@@ -10,6 +10,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio_stream::StreamExt;
 
 use crate::error::ErrorReport;
@@ -18,6 +19,7 @@ use rand::Rng;
 
 pub mod apps;
 pub mod audit;
+pub mod auth;
 pub mod bootstrap;
 pub mod certificates;
 pub mod collection;
@@ -263,10 +265,11 @@ fn build_platform_with_native<S: StateStore>(
             capture_source_authorization::<S>,
         ));
 
-    let api_routes = Router::new()
+    let authenticated = Router::new()
         .merge(postgres::api::router::<S>())
         .merge(postgres::backups_api::router::<S>())
         .route("/health", get(health::<S>))
+        .route("/whoami", get(whoami))
         .route("/tailnet", get(tailnet_status))
         .route(
             "/native/capabilities",
@@ -397,7 +400,9 @@ fn build_platform_with_native<S: StateStore>(
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key::<S>,
-        ))
+        ));
+
+    let api_routes = authenticated
         // These routes authenticate their first WebSocket frame before opening
         // a PTY or the Host's screen: a browser cannot put a Bearer header on
         // an upgrade.
@@ -1309,6 +1314,9 @@ async fn http_readiness(
 }
 
 #[cfg(test)]
+mod agent_tests;
+
+#[cfg(test)]
 mod http_readiness_tests {
     use super::*;
     use std::net::SocketAddr;
@@ -1587,6 +1595,26 @@ async fn update_app<S: StateStore>(
         Ok(app) => app,
         Err(error) => return deploy_error_response(error),
     };
+    if !audit::allows(auth::Scope::Host) {
+        let current_mounts = host_mounts(current.compose.as_deref().unwrap_or_default());
+        let reaches_host = if matches!(body.runtime, Some(Runtime::Native(_))) {
+            Some("a native runtime")
+        } else if current.git.is_some() || body.git.is_some() {
+            Some("a Git source")
+        } else if body.compose.as_deref().is_some_and(|compose| {
+            match (host_mounts(compose), &current_mounts) {
+                (Some(next), Some(current)) => !next.is_subset(current),
+                _ => true,
+            }
+        }) {
+            Some("a Host mount")
+        } else {
+            None
+        };
+        if let Some(reason) = reaches_host {
+            return needs_host(reason);
+        }
+    }
     match postgres::metadata(&state.store, &id).await {
         Ok(Some(_)) => return postgres::api::failure(postgres::Error::Conflict("Use the managed PostgreSQL controls; its version, storage and credentials cannot be replaced through Application configuration".into())),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
@@ -1888,6 +1916,22 @@ async fn deploy_app<S: StateStore>(
     Json(body): Json<DeployApplicationRequest>,
 ) -> Response {
     let is_native = matches!(body.runtime, Some(Runtime::Native(_)));
+    let reaches_host = if is_native {
+        Some("a native runtime")
+    } else if body.git.is_some() {
+        Some("a Git source")
+    } else if !body.path.is_empty() {
+        Some("a Host path")
+    } else if host_mounts(&body.compose).is_none_or(|mounts| !mounts.is_empty()) {
+        Some("a Host mount")
+    } else {
+        None
+    };
+    if let Some(reason) = reaches_host
+        && !audit::allows(auth::Scope::Host)
+    {
+        return needs_host(reason);
+    }
     let options = apps::DeployOptions {
         hostname: body.hostname,
         aliases: body.aliases,
@@ -2275,6 +2319,9 @@ async fn set_env_record<S: StateStore>(
     body: SetEnvRequest,
 ) -> Response {
     let name = app.name.clone();
+    if !audit::allows(auth::Scope::Host) && mounts_read_variables(&app) {
+        return needs_host("a Variable that a mount path reads");
+    }
     match postgres::managed_variable(&state.store, &app.id, &body.key).await {
         Ok(true) => {
             return postgres::api::failure(postgres::Error::Conflict(
@@ -2347,6 +2394,9 @@ async fn unset_env_record<S: StateStore>(
     key: String,
 ) -> Response {
     let name = app.name.clone();
+    if !audit::allows(auth::Scope::Host) && mounts_read_variables(&app) {
+        return needs_host("a Variable that a mount path reads");
+    }
     match postgres::managed_variable(&state.store, &app.id, &key).await {
         Ok(true) => {
             return postgres::api::failure(postgres::Error::Conflict(
@@ -2634,13 +2684,32 @@ fn logs_error_response(err: &apps::LogsError) -> Response {
 #[derive(Deserialize)]
 struct CreateKeyRequest {
     label: String,
+    #[serde(default)]
+    kind: Option<auth::Kind>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    #[serde(default)]
+    expires_in_days: Option<Value>,
+    #[serde(default)]
+    node_id: Option<String>,
 }
+
+const AGENT_DEFAULT_DAYS: i64 = 30;
+const AGENT_MAX_DAYS: i64 = 365;
 
 #[derive(Serialize)]
 struct ApiKeyResponse {
     id: String,
     label: String,
     created_at: String,
+    kind: auth::Kind,
+    scopes: Vec<auth::Scope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_used_at: Option<String>,
     /// The Platform's own key, which `init` made and cannot be revoked.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     primary: bool,
@@ -2648,28 +2717,61 @@ struct ApiKeyResponse {
 
 #[derive(Serialize)]
 struct CreateKeyResponse {
-    id: String,
-    label: String,
-    created_at: String,
-    key: String,
+    #[serde(flatten)]
+    key: ApiKeyResponse,
+    #[serde(rename = "key")]
+    secret: String,
+}
+
+fn key_scopes(record: &store::ApiKeyRecord) -> std::collections::BTreeSet<auth::Scope> {
+    match &record.scopes {
+        None => auth::Scope::ALL.into_iter().collect(),
+        Some(names) => names.iter().filter_map(|n| auth::Scope::parse(n)).collect(),
+    }
+}
+
+fn key_kind(record: &store::ApiKeyRecord) -> auth::Kind {
+    if record.kind == "agent" {
+        auth::Kind::Agent
+    } else {
+        auth::Kind::Human
+    }
+}
+
+fn describe_key(record: store::ApiKeyRecord) -> ApiKeyResponse {
+    ApiKeyResponse {
+        kind: key_kind(&record),
+        scopes: key_scopes(&record).into_iter().collect(),
+        id: record.id,
+        label: record.label,
+        created_at: record.created_at,
+        expires_at: record.expires_at,
+        node_id: record.node_id,
+        last_used_at: record.last_used_at,
+        primary: false,
+    }
 }
 
 async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> Response {
     match state.store.list_api_keys().await {
         Ok(keys) => {
-            // The Platform's own key leads the list under the name it acts as.
+            let root = auth::Principal::root();
             let body: Vec<ApiKeyResponse> = std::iter::once(ApiKeyResponse {
                 id: audit::ADMIN.into(),
                 label: audit::ADMIN.into(),
                 created_at: String::new(),
+                kind: root.kind,
+                scopes: root.scopes.into_iter().collect(),
+                expires_at: None,
+                node_id: None,
+                last_used_at: None,
                 primary: true,
             })
-            .chain(keys.into_iter().map(|k| ApiKeyResponse {
-                id: k.id,
-                label: k.label,
-                created_at: k.created_at,
-                primary: false,
-            }))
+            .chain(
+                keys.into_iter()
+                    .filter(|k| k.revoked_at.is_none())
+                    .map(describe_key),
+            )
             .collect();
             (StatusCode::OK, Json(body)).into_response()
         }
@@ -2677,20 +2779,96 @@ async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
     }
 }
 
+fn unprocessable(message: impl Into<String>) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorReport::plain(message.into())),
+    )
+        .into_response()
+}
+
 async fn create_key<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     Json(body): Json<CreateKeyRequest>,
 ) -> Response {
-    if audit::reserved_actor(&body.label) {
+    let label = body.label.trim().to_owned();
+    if audit::reserved_actor(&label) {
+        return unprocessable(format!(
+            "'{label}' is reserved: admin is the Platform's own key and system is what it does on its own"
+        ));
+    }
+    if label.is_empty() {
+        return unprocessable("Name the key");
+    }
+    let keys = match state.store.list_api_keys().await {
+        Ok(keys) => keys,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    };
+    if keys
+        .iter()
+        .any(|k| k.revoked_at.is_none() && k.label.eq_ignore_ascii_case(&label))
+    {
         return (
-            StatusCode::UNPROCESSABLE_ENTITY,
+            StatusCode::CONFLICT,
             Json(ErrorReport::plain(format!(
-                "'{}' is reserved: admin is the Platform's own key and system is what it does on its own",
-                body.label.trim()
+                "A key named '{label}' exists. Pick another name, so the history can tell them apart"
             ))),
         )
             .into_response();
     }
+    let kind = body.kind.unwrap_or(auth::Kind::Human);
+    let scopes: std::collections::BTreeSet<auth::Scope> = match (&body.scopes, kind) {
+        (None, auth::Kind::Agent) => auth::Scope::AGENT_DEFAULT.into_iter().collect(),
+        (None, auth::Kind::Human) => auth::Scope::ALL.into_iter().collect(),
+        (Some(names), _) => {
+            let mut scopes = std::collections::BTreeSet::new();
+            for name in names {
+                match auth::Scope::parse(name) {
+                    Some(scope) => scopes.insert(scope),
+                    None => return unprocessable(format!("'{name}' is not a scope")),
+                };
+            }
+            scopes
+        }
+    };
+    if !scopes.contains(&auth::Scope::Read) {
+        return unprocessable("Every key needs the 'read' scope, which /mcp and /whoami answer to");
+    }
+    if kind == auth::Kind::Agent
+        && let Some(scope) = scopes
+            .iter()
+            .find(|scope| !auth::Scope::AGENT_ALLOWED.contains(scope))
+    {
+        return unprocessable(format!(
+            "An agent key cannot hold '{}'. Agent keys may hold {}",
+            scope.name(),
+            auth::Scope::AGENT_ALLOWED
+                .iter()
+                .map(|scope| scope.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let days = match (&body.expires_in_days, kind) {
+        (None | Some(Value::Null), auth::Kind::Agent) => Some(AGENT_DEFAULT_DAYS),
+        (None | Some(Value::Null), auth::Kind::Human) => None,
+        (Some(Value::String(never)), auth::Kind::Human) if never == "never" => None,
+        (Some(Value::String(never)), auth::Kind::Agent) if never == "never" => {
+            return unprocessable(format!(
+                "An agent key must expire, in at most {AGENT_MAX_DAYS} days"
+            ));
+        }
+        (Some(Value::Number(n)), _) => match n.as_i64() {
+            Some(days) if days >= 1 => Some(days),
+            _ => return unprocessable("Expiry is a whole number of days, at least 1"),
+        },
+        _ => return unprocessable("Expiry is a number of days or \"never\""),
+    };
+    if kind == auth::Kind::Agent && days.is_some_and(|days| days > AGENT_MAX_DAYS) {
+        return unprocessable(format!("An agent key lasts at most {AGENT_MAX_DAYS} days"));
+    }
+    let node_id = body.node_id.filter(|node| !node.trim().is_empty());
+
     let key_bytes: [u8; 32] = rand::rng().random();
     let key: String = key_bytes.iter().map(|b| format!("{b:02x}")).collect();
     let id = format!("sk-{}", &key[..12]);
@@ -2704,13 +2882,22 @@ async fn create_key<S: StateStore>(
     {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error);
     }
-    match state.store.create_api_key(&id, &body.label).await {
+    let record = store::ApiKeyRecord {
+        id,
+        label,
+        created_at: auth::now(),
+        kind: kind.name().into(),
+        scopes: Some(scopes.iter().map(|s| s.name().to_owned()).collect()),
+        expires_at: days.map(auth::days_from_now),
+        node_id,
+        last_used_at: None,
+        revoked_at: None,
+    };
+    match state.store.create_api_key(&record).await {
         Ok(()) => {
             let response = CreateKeyResponse {
-                id,
-                label: body.label,
-                created_at: "now".into(),
-                key,
+                key: describe_key(record),
+                secret: key,
             };
             (StatusCode::CREATED, Json(response)).into_response()
         }
@@ -2731,13 +2918,42 @@ async fn revoke_key<S: StateStore>(
         )
             .into_response();
     }
-    match state.store.revoke_api_key(&id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+    match state.store.revoke_api_key(&id, &auth::now()).await {
+        Ok(()) => {
+            if let Err(error) = state
+                .store
+                .store_state(&format!("api_key_digest:{id}"), "")
+                .await
+            {
+                tracing::warn!(%error, key = %id, "could not clear a revoked key's digest");
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(StoreError::NotFound(_)) => {
             error_response(StatusCode::NOT_FOUND, &StoreError::NotFound("key".into()))
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
+}
+
+#[derive(Serialize)]
+struct WhoamiResponse {
+    label: String,
+    kind: auth::Kind,
+    scopes: Vec<auth::Scope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<String>,
+}
+
+async fn whoami() -> Response {
+    let principal = audit::principal().unwrap_or_else(auth::Principal::root);
+    Json(WhoamiResponse {
+        label: principal.label,
+        kind: principal.kind,
+        scopes: principal.scopes.into_iter().collect(),
+        expires_at: principal.expires_at,
+    })
+    .into_response()
 }
 
 async fn tailnet_status() -> Response {
@@ -2775,11 +2991,77 @@ fn deploy_error_response(err: DeployError) -> Response {
     error_response(status, &err)
 }
 
+fn host_mounts(compose: &str) -> Option<std::collections::BTreeSet<String>> {
+    if compose.trim().is_empty() {
+        return Some(Default::default());
+    }
+    let definition = compose_app::ComposeDefinition::parse(compose).ok()?;
+    let mut found = std::collections::BTreeSet::new();
+    for service in &definition.services {
+        for (index, mount) in service.mounts.iter().enumerate() {
+            if let Some(written) = definition.mount_as_written(&service.name, index) {
+                found.insert(format!("{} {written}", service.name));
+            } else if mount.kind == compose_app::MountKind::Host {
+                let access = if mount.read_only { "ro" } else { "rw" };
+                found.insert(format!(
+                    "{} {}:{}:{access}",
+                    service.name, mount.source, mount.target
+                ));
+            }
+        }
+    }
+    Some(found)
+}
+
+fn mounts_read_variables(app: &apps::ApplicationRecord) -> bool {
+    let compose = app.compose.as_deref().unwrap_or_default();
+    compose_app::ComposeDefinition::parse(compose).map_or(
+        !compose.trim().is_empty(),
+        |definition| {
+            definition.services.iter().any(|service| {
+                (0..service.mounts.len())
+                    .any(|index| definition.mount_as_written(&service.name, index).is_some())
+            })
+        },
+    )
+}
+
+fn needs_host(reason: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorReport::plain(format!(
+            "This key lacks the 'host' scope that {reason} needs"
+        ))),
+    )
+        .into_response()
+}
+
+fn unauthorized(message: &str) -> Response {
+    (StatusCode::UNAUTHORIZED, Json(ErrorReport::plain(message))).into_response()
+}
+
 async fn require_api_key<S: StateStore>(
     state: axum::extract::State<AppState<S>>,
     req: Request,
     next: Next,
 ) -> Response {
+    let Some(key) = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned)
+    else {
+        return unauthorized("invalid api key");
+    };
+    let arrival = req.extensions().get::<tailnet::Arrival>().cloned();
+    let via = req
+        .extensions()
+        .get::<auth::Via>()
+        .cloned()
+        .unwrap_or(auth::Via::Api);
+
     let expected_key = state
         .store
         .get_api_key()
@@ -2787,41 +3069,113 @@ async fn require_api_key<S: StateStore>(
         .ok()
         .flatten()
         .unwrap_or_default();
-
-    let auth_header = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    if let Some(key) = auth_header.filter(|key| !key.is_empty()) {
-        if !expected_key.is_empty() && constant_time_eq(key, &expected_key) {
-            return audit::ACTOR
-                .scope(Some(audit::ADMIN.into()), next.run(req))
-                .await;
+    let mut principal = if !expected_key.is_empty() && constant_time_eq(&key, &expected_key) {
+        auth::Principal::root()
+    } else {
+        match resolve_key(&state.store, &key, arrival.as_ref()).await {
+            Ok(principal) => principal,
+            Err(message) => return unauthorized(message),
         }
-        use sha2::{Digest, Sha256};
-        let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
-        if let Ok(keys) = state.store.list_api_keys().await {
-            for candidate in keys {
-                if let Ok(Some(expected)) = state
-                    .store
-                    .get_state(&format!("api_key_digest:{}", candidate.id))
-                    .await
-                    && constant_time_eq(&digest, &expected)
-                {
-                    return audit::ACTOR
-                        .scope(Some(candidate.label), next.run(req))
-                        .await;
-                }
-            }
-        }
+    };
+    principal.via = via;
+
+    let route = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str().to_owned())
+        .unwrap_or_default();
+    let needed = auth::required(req.method(), &route);
+    if !principal.allows(needed) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorReport::plain(format!(
+                "This key lacks the '{}' scope that {} {route} needs",
+                needed.name(),
+                req.method()
+            ))),
+        )
+            .into_response();
     }
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(ErrorReport::plain("invalid api key")),
-    )
-        .into_response()
+    let actor = Some(principal.label.clone());
+    audit::PRINCIPAL
+        .scope(principal, audit::ACTOR.scope(actor, next.run(req)))
+        .await
+}
+
+async fn resolve_key<S: StateStore>(
+    store: &S,
+    key: &str,
+    arrival: Option<&tailnet::Arrival>,
+) -> Result<auth::Principal, &'static str> {
+    const INVALID: &str = "invalid api key";
+    let prefix = key.get(..12).ok_or(INVALID)?;
+    let id = format!("sk-{prefix}");
+    let record = store
+        .find_api_key(&id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or(INVALID)?;
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let expected = store
+        .get_state(&format!("api_key_digest:{id}"))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if expected.is_empty() || !constant_time_eq(&digest, &expected) {
+        return Err(INVALID);
+    }
+    if record.revoked_at.is_some() {
+        return Err("this api key was revoked");
+    }
+    let now = auth::now();
+    if record
+        .expires_at
+        .as_deref()
+        .is_some_and(|at| at <= now.as_str())
+    {
+        return Err("this api key expired");
+    }
+    let kind = key_kind(&record);
+    let node = if kind == auth::Kind::Agent || record.node_id.is_some() {
+        let Some(arrival) = arrival else {
+            return Err(if kind == auth::Kind::Agent {
+                "agent keys work only on the Host's tailnet name"
+            } else {
+                "this api key works only from its tailnet device"
+            });
+        };
+        let found = arrival
+            .nodes
+            .node_of(arrival.peer)
+            .await
+            .ok_or("this api key works only from a device on the tailnet")?;
+        if record.node_id.as_ref().is_some_and(|bound| *bound != found) {
+            return Err("this api key works only from its tailnet device");
+        }
+        Some(found)
+    } else {
+        None
+    };
+    if record
+        .last_used_at
+        .as_deref()
+        .is_none_or(|at| at < auth::seconds_ago(60).as_str())
+        && let Err(error) = store.touch_api_key(&id, &now).await
+    {
+        tracing::warn!(%error, key = %id, "could not record when a key was last used");
+    }
+    Ok(auth::Principal {
+        label: record.label.clone(),
+        kind,
+        scopes: key_scopes(&record),
+        key_id: Some(id),
+        expires_at: record.expires_at.clone(),
+        node,
+        via: auth::Via::Api,
+    })
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {

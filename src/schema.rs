@@ -16,12 +16,12 @@ use rusqlite::{Connection, Transaction};
 use crate::store::StoreError;
 
 /// The version this binary writes and the highest it reads.
-pub const CURRENT: u32 = 1;
+pub const CURRENT: u32 = 2;
 
 type Migration = fn(&Transaction) -> rusqlite::Result<()>;
 
 /// Index `i` upgrades a database at version `i` to version `i + 1`.
-const MIGRATIONS: &[Migration] = &[v1_initial];
+const MIGRATIONS: &[Migration] = &[v1_initial, v2_scoped_keys];
 
 /// Brings `conn` to [`CURRENT`], one migration and one transaction at a time.
 pub fn migrate(conn: &mut Connection, path: &Path) -> Result<(), StoreError> {
@@ -95,6 +95,17 @@ fn v1_initial(tx: &Transaction) -> rusqlite::Result<()> {
              body         TEXT NOT NULL CHECK (json_valid(body))
          );
          CREATE INDEX audit_events_updated_at ON audit_events (updated_at);",
+    )
+}
+
+fn v2_scoped_keys(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE api_keys ADD COLUMN kind TEXT NOT NULL DEFAULT 'human';
+         ALTER TABLE api_keys ADD COLUMN scopes TEXT CHECK (scopes IS NULL OR json_valid(scopes));
+         ALTER TABLE api_keys ADD COLUMN expires_at TEXT;
+         ALTER TABLE api_keys ADD COLUMN node_id TEXT;
+         ALTER TABLE api_keys ADD COLUMN last_used_at TEXT;
+         ALTER TABLE api_keys ADD COLUMN revoked_at TEXT;",
     )
 }
 

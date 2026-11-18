@@ -39,6 +39,15 @@ pub fn reserved_actor(label: &str) -> bool {
     label.eq_ignore_ascii_case(ADMIN) || label.eq_ignore_ascii_case("system")
 }
 tokio::task_local! { pub static EVENT_ID: Option<String>; }
+tokio::task_local! { pub static PRINCIPAL: crate::auth::Principal; }
+
+pub fn principal() -> Option<crate::auth::Principal> {
+    PRINCIPAL.try_with(Clone::clone).ok()
+}
+
+pub fn allows(scope: crate::auth::Scope) -> bool {
+    principal().is_none_or(|principal| principal.allows(scope))
+}
 
 pub fn event_id() -> Option<String> {
     EVENT_ID.try_with(Clone::clone).ok().flatten()
@@ -95,6 +104,14 @@ pub struct Event {
     /// Stages the worker actually began, with bounded, credential-free output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<RunProgress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -135,6 +152,21 @@ pub fn event(
     description: impl Into<String>,
 ) -> Event {
     let at = timestamp();
+    let caller = principal();
+    let actor_kind = match &caller {
+        Some(principal) => Some(principal.kind.name().to_owned()),
+        None if api_name.is_none() => Some("system".to_owned()),
+        None => None,
+    };
+    let via = caller.as_ref().map(|principal| match &principal.via {
+        crate::auth::Via::Api => "api".to_owned(),
+        crate::auth::Via::Mcp(_) => "mcp".to_owned(),
+    });
+    let tool = caller.as_ref().and_then(|principal| match &principal.via {
+        crate::auth::Via::Api => None,
+        crate::auth::Via::Mcp(tool) => Some(tool.clone()),
+    });
+    let node = caller.and_then(|principal| principal.node);
     Event {
         id: event_id().unwrap_or_else(|| format!("event-{:032x}", rand::random::<u128>())),
         action: action.into(),
@@ -157,6 +189,10 @@ pub fn event(
         error: None,
         changes: None,
         progress: None,
+        actor_kind,
+        via,
+        tool,
+        node,
     }
 }
 
@@ -225,6 +261,18 @@ impl Journal {
                 }
                 if existing.started_at.is_none() {
                     existing.started_at = event.started_at;
+                }
+                if existing.actor_kind.is_none() {
+                    existing.actor_kind = event.actor_kind;
+                }
+                if existing.via.is_none() {
+                    existing.via = event.via;
+                }
+                if existing.tool.is_none() {
+                    existing.tool = event.tool;
+                }
+                if existing.node.is_none() {
+                    existing.node = event.node;
                 }
                 existing
             }
