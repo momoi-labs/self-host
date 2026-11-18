@@ -124,6 +124,10 @@ Other components above live in `console/src/components/`.
   shadow. Its `Tabs` take `data-shadow-style="none"`, a nested appearance
   scope, so the panels, diagram nodes and log views in a tab keep their frame
   and drop the cast.
+- A table that would scroll sideways drops its secondary columns below a
+  container width and shows them in the row, as `data-interfaces.md` orders.
+  Events hides Actor and Last updated below 56rem and lists them under the
+  action. Kiso has no column priority, so this is product CSS.
 - Kiso suggests a no-results `EmptyState` with Clear filters. The console
   keeps a plain "No X match your filters." row, per `skills/add-page/SKILL.md`.
 

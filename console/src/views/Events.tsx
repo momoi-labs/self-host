@@ -22,8 +22,9 @@ const statuses: PlatformEvent["status"][] = ["pending", "running", "completed", 
 const dayFormat = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 const timeFormat = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 
-function Timestamp({ value }: { value: string }) {
+function Timestamp({ value, inline = false }: { value: string; inline?: boolean }) {
   const at = new Date(value);
+  if (inline) return <time dateTime={value}>{dayFormat.format(at)} {timeFormat.format(at)}</time>;
   return <time dateTime={value}>{dayFormat.format(at)}<span className="events-secondary mono">{timeFormat.format(at)}</span></time>;
 }
 
@@ -107,7 +108,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
           </Select>
           {filtered ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); turnTo(1); }}>Clear filters</Button> : null}
         </div>
-        <TableFrame data-fill="false">
+        <TableFrame data-fill="false" className="events-table">
           <div className="table-scroll" ref={scroller}>
             <Table aria-label="Platform events">
               <TableHeader><TableRow>
@@ -133,6 +134,10 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
                     {eventActionLabel(event)}
                   </button>
                   {event.status === "failed" && event.error ? <span className="events-secondary events-reason">{event.error.error}</span> : null}
+                  <dl className="events-secondary events-row-details">
+                    <dt>Actor</dt><dd><Actor event={event} /></dd>
+                    <dt>Updated</dt><dd><Timestamp value={eventUpdatedAt(event)} inline /></dd>
+                  </dl>
                 </TableCell>
                 <TableCell>{subjectLink(event.subject)}<span className="events-secondary">
                   {eventSubjectKindLabel(event.subject)}

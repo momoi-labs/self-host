@@ -20,6 +20,13 @@
 .events-row-pending td:not(.events-status) { color: var(--color-muted-foreground); }
 .events-row[data-state="selected"] td { background: var(--color-selected); }
 .events-reason { color: var(--color-danger); overflow-wrap: anywhere; }
+.events-table { container-type: inline-size; }
+.events-table .events-row-details { display: none; grid-template-columns: auto minmax(0, 1fr); gap: var(--spacing-2xs) var(--spacing-sm); margin-block-end: 0; }
+.events-row-details dd { margin: 0; overflow-wrap: anywhere; }
+@container (max-width: 56rem) {
+  .events-table :is(th, td):nth-child(n + 4) { display: none; }
+  .events-table .events-row-details { display: grid; }
+}
 .events-row[data-state="selected"] .events-reason { color: inherit; }
 .events-secondary { display: block; font-size: var(--type-size-metadata); color: var(--color-muted-foreground); margin-block-start: var(--spacing-xs); }
 .events-subject { color: var(--color-primary); text-decoration: underline; text-underline-offset: 3px; }
