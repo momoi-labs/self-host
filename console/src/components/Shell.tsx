@@ -9,6 +9,10 @@ import {
   BreadcrumbSeparator,
   Button,
   Dot,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Separator,
   ThemeSelector,
 } from "@momoi-labs/kiso-react";
 
@@ -139,26 +143,8 @@ export function Shell({
             ...virtualMachine(machine), label: machine.config.name, leading: <StatusDot status={machine.state} />,
           })),
         }] : []),
+        { destinations: [{ ...settings, label: "Settings", leading: <Icon name="gear" /> }] },
       ]}
-      footer={
-        <div className="sidebar-controls">
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-current={settings.active ? "page" : undefined}
-            // Tells the drawer and the More sheet to close, as a link would.
-            data-shell-navigate=""
-            onClick={() => navigate(settings)}
-          >
-            <Icon name="gear" />
-            Settings
-          </Button>
-          <ThemeSelector theme={theme} onChange={setTheme} />
-          <Button variant="ghost" size="sm" className="btn-icon" aria-label="Lock" title="Lock" onClick={logout}>
-            <Icon name="lock" />
-          </Button>
-        </div>
-      }
       header={
         <>
           <Breadcrumb>
@@ -226,6 +212,23 @@ export function Shell({
               </span>
             )}
           </span>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="btn-icon" aria-label="Open account menu" title="Account">
+                <Icon name="user-circle" size="md" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="account-menu" aria-label="Account">
+              <span className="menu-label t-caps">Admin</span>
+              <Separator className="menu-separator" />
+              <ThemeSelector theme={theme} onChange={setTheme} />
+              <Separator className="menu-separator" />
+              <Button variant="ghost" size="sm" onClick={logout}>
+                <Icon name="sign-out" />
+                Sign out
+              </Button>
+            </PopoverContent>
+          </Popover>
         </>
       }
     >
