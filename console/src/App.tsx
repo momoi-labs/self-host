@@ -120,88 +120,84 @@ export function App() {
         onClick: () => go({ view: "settings", id: "general" }),
       }}
     >
-      {/* The id is a hook for console.css: the detail panel sizes itself
-          differently from a scrolling page. */}
-      <section className="page" id="detail" aria-live="polite">
-        {view.view === "dns" ? (
-          <Dns applications={apps} machines={environments}
-            onOpenApplication={id => go({ view: "app", id })}
-            onOpenVirtualMachine={id => go({ view: "environments", id })} />
-        ) : view.view === "events" ? (
-          <EventsPage onOpenSubject={(subject) => {
-            if (subject.kind === "api-key") { go({ view: "settings", id: "api-keys" }); return; }
-            if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
-            if (subject.kind === "platform") { go({ view: "settings", id: "scheduled-tasks" }); return; }
-            go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
-          }} />
-        ) : view.view === "routes" ? (
-          <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} onDeploy={() => go({ view: "new", id: null })} />
-        ) : view.view === "databases" ? (
-          <Databases apps={apps} ready={ready} reload={reload} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
-        ) : view.view === "database-new" ? (
-          <NewDatabase reload={reload} onCancel={() => go({ view: "databases", id: null })} onCreated={(id) => go({ view: "app", id })} />
-        ) : view.view === "settings" ? (
-          <Settings section={view.id} />
-        ) : view.view === "host" ? (
-          <Host onOpenSettings={() => go({ view: "settings", id: "host" })} />
-        ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
-          <Environments
-            metrics={metrics}
-            mode={view.view === "environment-new" ? "new" : "detail"}
-            selected={view.id}
-            onOpen={(id) =>
-              go(id ? { view: "environments", id } : { view: "overview", id: null })
-            }
-          />
-        ) : view.view === "custom-images" || view.view === "custom-image" ? (
-          <CustomImages
-            listing={view.view === "custom-images"}
-            selected={view.id}
-            onOpen={(id) => go({ view: "custom-image", id })}
-            onList={() => go({ view: "custom-images", id: null })}
-          />
-        ) : view.view === "new" ? (
-          <NewApp
-            dnsSuffix={dnsSuffix}
-            reload={reload}
-            onCancel={() => go({ view: "overview", id: null })}
-            onCreated={(created) =>
-              go(
-                created
-                  ? { view: "app", id: created.id }
-                  : { view: "overview", id: null },
-              )
-            }
-          />
-        ) : app?.managed_postgres ? (
-          <ManagedPostgres key={app.id} app={app} apps={apps} metrics={metrics} reload={reload} onRemoved={() => go({ view: "databases", id: null })} onOpenApp={(id) => go({ view: "app", id })} />
-        ) : app ? (
-          <AppDetail
-            key={app.id}
-            app={app}
-            apps={apps}
-            formRevision={signature(app)}
-            dnsSuffix={dnsSuffix}
-            metrics={metrics}
-            reload={reload}
-            onRemoved={() => go({ view: "overview", id: null })}
-            onOpenApp={(id) => go({ view: "app", id })}
-          />
-        ) : (
-          <Overview
-            apps={apps}
-            environments={environments}
-            metrics={metrics}
-            onOpenApp={(id) => go({ view: "app", id })}
-            onOpenEnvironment={(id) => go({ view: "environments", id })}
-            onDeploy={() => go({ view: "new", id: null })}
-            onNewDatabase={() => go({ view: "database-new", id: null })}
-            onNewMachine={() => go({ view: "environment-new", id: null })}
-            onOpenDatabases={() => go({ view: "databases", id: null })}
-            onOpenRoutes={() => go({ view: "routes", id: null })}
-          />
-        )}
-      </section>
+      {view.view === "dns" ? (
+        <Dns applications={apps} machines={environments}
+          onOpenApplication={id => go({ view: "app", id })}
+          onOpenVirtualMachine={id => go({ view: "environments", id })} />
+      ) : view.view === "events" ? (
+        <EventsPage onOpenSubject={(subject) => {
+          if (subject.kind === "api-key") { go({ view: "settings", id: "api-keys" }); return; }
+          if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
+          if (subject.kind === "platform") { go({ view: "settings", id: "scheduled-tasks" }); return; }
+          go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
+        }} />
+      ) : view.view === "routes" ? (
+        <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} onDeploy={() => go({ view: "new", id: null })} />
+      ) : view.view === "databases" ? (
+        <Databases apps={apps} ready={ready} reload={reload} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
+      ) : view.view === "database-new" ? (
+        <NewDatabase reload={reload} onCancel={() => go({ view: "databases", id: null })} onCreated={(id) => go({ view: "app", id })} />
+      ) : view.view === "settings" ? (
+        <Settings section={view.id} />
+      ) : view.view === "host" ? (
+        <Host onOpenSettings={() => go({ view: "settings", id: "host" })} />
+      ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
+        <Environments
+          metrics={metrics}
+          mode={view.view === "environment-new" ? "new" : "detail"}
+          selected={view.id}
+          onOpen={(id) =>
+            go(id ? { view: "environments", id } : { view: "overview", id: null })
+          }
+        />
+      ) : view.view === "custom-images" || view.view === "custom-image" ? (
+        <CustomImages
+          listing={view.view === "custom-images"}
+          selected={view.id}
+          onOpen={(id) => go({ view: "custom-image", id })}
+          onList={() => go({ view: "custom-images", id: null })}
+        />
+      ) : view.view === "new" ? (
+        <NewApp
+          dnsSuffix={dnsSuffix}
+          reload={reload}
+          onCancel={() => go({ view: "overview", id: null })}
+          onCreated={(created) =>
+            go(
+              created
+                ? { view: "app", id: created.id }
+                : { view: "overview", id: null },
+            )
+          }
+        />
+      ) : app?.managed_postgres ? (
+        <ManagedPostgres key={app.id} app={app} apps={apps} metrics={metrics} reload={reload} onRemoved={() => go({ view: "databases", id: null })} onOpenApp={(id) => go({ view: "app", id })} />
+      ) : app ? (
+        <AppDetail
+          key={app.id}
+          app={app}
+          apps={apps}
+          formRevision={signature(app)}
+          dnsSuffix={dnsSuffix}
+          metrics={metrics}
+          reload={reload}
+          onRemoved={() => go({ view: "overview", id: null })}
+          onOpenApp={(id) => go({ view: "app", id })}
+        />
+      ) : (
+        <Overview
+          apps={apps}
+          environments={environments}
+          metrics={metrics}
+          onOpenApp={(id) => go({ view: "app", id })}
+          onOpenEnvironment={(id) => go({ view: "environments", id })}
+          onDeploy={() => go({ view: "new", id: null })}
+          onNewDatabase={() => go({ view: "database-new", id: null })}
+          onNewMachine={() => go({ view: "environment-new", id: null })}
+          onOpenDatabases={() => go({ view: "databases", id: null })}
+          onOpenRoutes={() => go({ view: "routes", id: null })}
+        />
+      )}
       {/* A run is watched on the Overview's table or the machine's own
           screen; the toast only says how it ended, wherever the Operator
           went meanwhile. */}

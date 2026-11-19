@@ -24,9 +24,9 @@ await build({
 });
 const { Shell } = await import(pathToFileURL(join(outDir, "Shell.mjs")));
 
-function render(selected = "", dnsSuffix = "home.lan") {
+function render(selected = "", dnsSuffix = "home.lan", degraded = false) {
   return renderToStaticMarkup(createElement(Shell, {
-    crumb: "Overview", dnsSuffix, healthy: true, version: "0.4.0",
+    crumb: "Overview", dnsSuffix, healthy: true, degraded, version: "0.4.0",
     overview: { href: "/console/", active: selected === "overview" },
     children: null,
   }));
@@ -43,10 +43,9 @@ test("the current destination is marked", () => {
   assert.match(render("overview"), /aria-current="page"[^>]*>.*Overview/);
 });
 
-test("the header shows the running Host version", () => {
-  const html = render();
-  assert.match(html, /Healthy/);
-  assert.match(html, /v0\.4\.0/);
+test("a degraded Host marks Overview in the navigation", () => {
+  assert.doesNotMatch(render(), /Overview<\/span><span[^>]*class="dot/);
+  assert.match(render("", "home.lan", true), /Overview<\/span>.*class="dot warning dot-pulse".*Degraded/);
 });
 
 test("the breadcrumb root names the DNS suffix and falls back to Console", () => {

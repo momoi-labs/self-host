@@ -5,8 +5,8 @@ contracts own the shared rules.
 
 ## Contracts
 
-- Packages in `console/`: `@momoi-labs/kiso-react` 0.32.0 and
-  `@momoi-labs/kiso` 1.10.0, resolved in `console/package-lock.json`.
+- Packages in `console/`: `@momoi-labs/kiso-react` 0.33.0 and
+  `@momoi-labs/kiso` 1.11.0, resolved in `console/package-lock.json`.
 - Contracts: `console/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 
 ## Paths
@@ -27,8 +27,8 @@ rules. All entry points use it.
 
 | Component | Purpose |
 | --- | --- |
-| `Shell` | Console navigation, health and the account menu |
-| `BrandSymbol`, `Lockup` | The self-host brand: the lockup alone in the sidebar bar (`shellLayout`), the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The sidebar bar has the accent surface and a 3px `--color-primary` stripe at its bottom edge, in the sidebar and the rail. Kiso has no 3px token. The stripe is an inset shadow, and the bar pads by its height, so the lockup and the rail mark center in the area above it. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. Kiso's brand inset assumes a `--size-control-xs` mark, so the sidebar sets its own inset for the larger mark, minus the 1px rail border, which has no token. The shell uses `headerVariant="default"`, so the rail keeps the mark and the header bar line meets the sidebar bar line. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
+| `Shell` | The console's `ConsoleShell`: navigation, breadcrumb, and the account menu with health and version |
+| `BrandSymbol`, `Lockup` | The self-host brand: the lockup alone in the sidebar bar (`shellLayout`), the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The sidebar bar, its stripe and the brand inset are Kiso's `shellLayout`. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
 | `AppForm`, `NativeAppForm`, `PostgresFields` | Application and database configuration |
 | `CustomImageEditor`, `EnvironmentEditor` | Image and virtual machine configuration |
 | `Glance` | Detail-page metrics |
@@ -79,31 +79,28 @@ Other components above live in `console/src/components/`.
   alignment. The console uses the default header variant. Login and setup
   keep the floating header, because they have no sidebar. The default header
   size gives the bar sewa's height.
-- The DNS suffix is the breadcrumb root, in mono, and links to the console
+- The DNS suffix is the breadcrumb root and links to the console
   home. Without a suffix the root reads "Console". Kiso raises muted text to
   the foreground color in the header over glass panels, so the suffix is not
-  grey. Below 720px the breadcrumb shows only the current page, so the phone
-  header shows the suffix after the symbol. The drawer shows it under the
-  lockup.
+  grey. Below 700px the breadcrumb shows only the current page. The sidebar
+  and the drawer show the suffix under the lockup.
 - Use solid pixel frames, small corners, no corner marks, hard shadows,
   glass panels, landing bands inside the frame and a quiet construction
   background inside and outside the frame.
 - Use stepped chart lines, dot fills, compact chart layout and inline
   legends. Keep existing product-specific chart legend visibility.
-- The sidebar is collapsible. `ApplicationShell` puts the toggle in the header, before the breadcrumb.
-  The nav icons keep the torii's center x when the sidebar collapses and
-  expands. Kiso centers them in the rail, so they would move 10px. From
-  1024px the links start at the brand inset plus half the difference
-  between the mark and the icon size, less the sidebar padding. Kiso has no
-  token for this, so it is product CSS.
+- The shell is `ConsoleShell`: a collapsible sidebar with the toggle in the
+  header, before the breadcrumb. Below 1024px the navigation opens in a
+  drawer at every width. ConsoleShell has no bottom navigation.
 - The sidebar lists pages, not records. Applications and virtual machines open
   from the Overview's tables, and their detail screens mark Overview as the
   current destination. A database's screen marks Databases.
-- Settings is the last navigation group, so the rail and the phone More sheet
-  list it as other destinations. The header ends with the account button. It
-  opens a `Popover` with the identity, `ThemeSelector` and Sign out. A
-  `DropdownMenu` would not do: its keyboard focus moves only between menu
-  items, so the theme buttons would be out of reach.
+- Settings is the last navigation group. The header ends with ConsoleShell's
+  account button. Its `Popover` holds the identity, `ThemeSelector` and Sign
+  out. The identity also carries the health line and the Host version,
+  because ConsoleShell's header has no slot for them. When a workload is
+  down, the line links to it, and Overview in the navigation shows a warning
+  dot.
 - Use Kiso's `Card` paint layer for shaped shadows. A table that is its own
   panel sits in `TableFrame`, never in a hand-written `div.table-wrap`. Other native frames
   need `PanelShadow` as their first child, as documented in the installed

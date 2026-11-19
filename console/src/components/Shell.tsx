@@ -1,20 +1,5 @@
-import { useState, type ReactNode } from "react";
-import {
-  ApplicationShell,
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-  Button,
-  Dot,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-  Separator,
-  ThemeSelector,
-} from "@momoi-labs/kiso-react";
+import type { MouseEvent, ReactNode } from "react";
+import { ConsoleShell, Dot } from "@momoi-labs/kiso-react";
 
 import { logout } from "../lib/api.js";
 import { useTheme } from "../lib/theme.js";
@@ -30,7 +15,8 @@ export type Destination = {
 };
 
 /**
- * The console's frame: the sidebar, the breadcrumb and the health indicator.
+ * The console's frame: the sidebar, the breadcrumb and the account menu,
+ * which carries the health indicator.
  */
 export function Shell({
   crumb,
@@ -73,91 +59,61 @@ export function Shell({
   children: ReactNode;
 }) {
   const [theme, setTheme] = useTheme();
-  // Below 1024px the sidebar is a drawer; any way out of it closes it,
-  // including the create menu, which opens in a portal of its own.
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const navigate = (destination: Destination) => {
-    setDrawerOpen(false);
-    if (destination.onClick) destination.onClick();
-    else window.location.assign(destination.href);
-  };
+  const versionLabel = version ? (
+    <>
+      <span className="muted" aria-hidden="true">·</span>
+      <span className="muted mono">v{version}</span>
+    </>
+  ) : null;
 
   return (
-    <ApplicationShell
-      className="console-shell"
-      phoneNavigation="bottom"
-      collapsible
-      togglePlacement="header"
-      shellLayout
-      headerVariant="default"
+    <ConsoleShell
       brandMark={<BrandSymbol />}
-      drawerOpen={drawerOpen}
-      onDrawerOpenChange={setDrawerOpen}
       brand={
-        <div className="console-brand">
-          <div className="console-brand-full">
-            <Lockup />
-            {dnsSuffix ? <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span> : null}
-          </div>
-          <div className="console-brand-compact">
-            <BrandSymbol label="self-host" />
-            {dnsSuffix ? <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span> : null}
-          </div>
-        </div>
+        <span className="console-brand">
+          <Lockup />
+          {dnsSuffix ? <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span> : null}
+        </span>
       }
       navigation={[
         {
           destinations: [
-            { ...overview, label: "Overview", leading: <Icon name="chart" /> },
+            {
+              ...overview,
+              label: "Overview",
+              leading: <Icon name="chart" />,
+              trailing: degraded ? <><Dot variant="warning" pulse /><span className="offscreen">Degraded</span></> : undefined,
+            },
             { ...databases, label: "Databases", leading: <Icon name="database" /> },
             { ...routes, label: "Routes", leading: <Icon name="route" /> },
             { ...dns, label: "DNS", leading: <Icon name="globe" /> },
             { ...events, label: "Events", leading: <Icon name="history" /> },
             ...(host ? [{ ...host, label: "Host", leading: <Icon name="screen" /> }] : []),
-            {
-              ...customImages,
-              label: "Custom images",
-              leading: <Icon name="box" />,
-            },
+            { ...customImages, label: "Custom images", leading: <Icon name="box" /> },
           ],
         },
         { destinations: [{ ...settings, label: "Settings", leading: <Icon name="gear" /> }] },
       ]}
-      header={
-        <>
-          <Breadcrumb>
-            <BreadcrumbList>
-              <BreadcrumbItem>
-                <BreadcrumbLink href="/console/" className={dnsSuffix ? "console-dns t-metadata truncate" : undefined}>
-                  {dnsSuffix ?? "Console"}
-                </BreadcrumbLink>
-              </BreadcrumbItem>
-              <BreadcrumbSeparator />
-              {parent ? (
-                <>
-                  <BreadcrumbItem>
-                    <BreadcrumbLink
-                      href={parent.href}
-                      onClick={(event) => {
-                        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                        event.preventDefault();
-                        navigate(parent);
-                      }}
-                    >
-                      {parent.label}
-                    </BreadcrumbLink>
-                  </BreadcrumbItem>
-                  <BreadcrumbSeparator />
-                </>
-              ) : null}
-              <BreadcrumbItem>
-                <BreadcrumbPage>{crumb}</BreadcrumbPage>
-              </BreadcrumbItem>
-            </BreadcrumbList>
-          </Breadcrumb>
-          <span className="grow" />
-          <span className="row t-label">
+      breadcrumb={[
+        { label: dnsSuffix ?? "Console", href: "/console/" },
+        ...(parent
+          ? [{
+              label: parent.label,
+              href: parent.href,
+              onClick: (event: MouseEvent<HTMLAnchorElement>) => {
+                if (!parent.onClick || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                parent.onClick();
+              },
+            }]
+          : []),
+        { label: crumb },
+      ]}
+      account={{
+        identity: (
+          <span className="account-identity">
+            <span>Admin</span>
             {degraded ? (
               <button
                 type="button"
@@ -167,54 +123,25 @@ export function Shell({
                 onClick={() => { if (failing[0]) onOpenFailing?.(failing[0].id); }}
               >
                 <Dot variant="warning" pulse />
-                <span className="health-word">{failedLabel(failing)}</span>
-                {version ? (
-                  <>
-                    <span className="muted health-sep" aria-hidden="true">·</span>
-                    <span className="muted mono">v{version}</span>
-                  </>
-                ) : null}
+                <span>{failedLabel(failing)}</span>
+                {versionLabel}
               </button>
             ) : (
-              <span
-                className="health-link"
-                title="The daemon answering on this Host"
-              >
+              <span className="health-link" title="The daemon answering on this Host">
                 <Dot variant={healthy ? "success" : "neutral"} />
-                <span className="muted health-word">
-                  {healthy ? "Healthy" : "Checking health…"}
-                </span>
-                {version ? (
-                  <>
-                    <span className="muted health-sep" aria-hidden="true">·</span>
-                    <span className="muted mono">v{version}</span>
-                  </>
-                ) : null}
+                <span>{healthy ? "Healthy" : "Checking health…"}</span>
+                {versionLabel}
               </span>
             )}
           </span>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm" className="btn-icon" aria-label="Open account menu" title="Account">
-                <Icon name="user-circle" size="md" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="account-menu" aria-label="Account">
-              <span className="menu-label t-caps">Admin</span>
-              <Separator className="menu-separator" />
-              <ThemeSelector theme={theme} onChange={setTheme} />
-              <Separator className="menu-separator" />
-              <Button variant="ghost" size="sm" onClick={logout}>
-                <Icon name="sign-out" />
-                Sign out
-              </Button>
-            </PopoverContent>
-          </Popover>
-        </>
-      }
+        ),
+        theme,
+        onThemeChange: setTheme,
+        onSignOut: logout,
+      }}
     >
       {children}
-    </ApplicationShell>
+    </ConsoleShell>
   );
 }
 

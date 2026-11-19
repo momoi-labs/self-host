@@ -977,7 +977,7 @@ export function Environments({
                 }
               />
             </TabsContent>
-            <TabsContent value="run" className="detail-run">
+            <TabsContent value="run" className="detail-pane">
               <LastRun
                 run={run}
                 operation={operation}

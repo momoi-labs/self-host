@@ -364,7 +364,7 @@ export function AppDetail({
           <TabsContent value="configuration">
             <AppForm key={formRevision} app={app} apps={apps} dnsSuffix={dnsSuffix} onSubmit={save} onReload={reload} />
           </TabsContent>
-          {app.git ? <TabsContent value="last-update" className="detail-run">
+          {app.git ? <TabsContent value="last-update" className="detail-pane">
             <GitBuildRun event={lastBuild} error={eventsError} busy={gitBusy} onRetry={() => setTab("configuration")} />
           </TabsContent> : null}
           {app.runtime?.kind !== "native" ? <TabsContent value="deployments"><DeploymentHistory app={app} reload={reload} /></TabsContent> : null}

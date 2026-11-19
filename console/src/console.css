@@ -52,66 +52,18 @@
   :root:not([data-theme]) .brand-on-dark { display: block !important; }
 }
 
-.console-brand { --brand-lockup-height: calc(var(--size-control-sm) * 415 / 512); min-width: 0; }
-.console-brand-full { display: grid; min-width: 0; line-height: 1.15; }
-.console-shell { --console-stripe: 3px; }
-.console-shell .sidebar-header { background: var(--color-accent-surface); box-shadow: inset 0 calc(-1 * var(--console-stripe)) 0 var(--color-primary); }
-.console-shell.app-shell[data-shell-layout] > .sidebar {
-  --app-shell-brand-inset: calc((var(--size-touch-min) + 2 * var(--spacing-md) - 1px - var(--size-control-sm)) / 2);
-}
-.console-shell.app-shell[data-shell-layout] > .sidebar > .sidebar-header { padding-block-end: var(--console-stripe); }
-@media (min-width: 1024px) {
-  .console-shell.app-shell[data-shell-layout] > .sidebar .sidebar-link-with-icon {
-    justify-content: flex-start;
-    padding-inline-start: calc(var(--app-shell-brand-inset) + (var(--size-control-sm) - var(--size-icon-sm)) / 2 - var(--spacing-sm));
-  }
-}
+.console-brand { --brand-lockup-height: calc(var(--size-control-sm) * 415 / 512); display: grid; min-width: 0; line-height: 1.15; }
 .console-dns { font-family: var(--font-mono); }
-@media (min-width: 1024px) {
-  .console-shell > .sidebar > .sidebar-header .console-brand-full { height: var(--size-control-sm); align-content: center; }
-  .console-shell > .sidebar > .sidebar-header .console-dns { display: none; }
-}
-.console-brand-compact { display: none; }
-.app-shell-phone-brand .console-brand-full { display: none; }
-.app-shell-phone-brand .console-brand-compact { display: flex; align-items: center; gap: var(--spacing-sm); min-width: 0; }
-@media not all and (max-width: 720px) {
-  .console-brand-compact .console-dns { display: none; }
-}
-.console-shell [data-slot="breadcrumb"], .console-shell .breadcrumb > li:first-child { min-width: 0; }
-.console-shell .breadcrumb { flex-wrap: nowrap; }
-.console-shell .breadcrumb > li:first-child > .console-dns { display: block; }
-@media (pointer: coarse) {
-  .console-shell .breadcrumb > li:first-child > .console-dns { line-height: var(--size-touch-min); }
-}
 
 /* Public device setup, reached by IP before DNS or CA trust is configured. */
 .device-setup { width: 100%; max-width: 840px; margin-inline: auto; padding: var(--spacing-xl); }
 .device-setup .card-content { min-width: 0; }
 .setup-command { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* The health indicator doubles as the way to show platform services. */
+.account-identity { display: grid; gap: var(--spacing-xs); }
 .health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); padding: 0; border: 0; background: none; font: inherit; color: inherit; }
-@media (min-width: 700px) {
-  .topbar .health-link { padding-inline-end: var(--spacing-sm); }
-}
-/* Degraded, the line is the way to what failed. */
 button.health-link:not(:disabled) { cursor: pointer; }
 button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: underline; text-underline-offset: 3px; }
-/* On a phone the top bar keeps the page name, the health dot and the version.
-   The trail and the health word give way first; the dot's title still says it. */
-@media (max-width: 720px) {
-  .console-shell .breadcrumb { min-width: 0; flex-wrap: nowrap; }
-  .console-shell .breadcrumb > li:not(:last-child) { display: none; }
-  .console-shell .breadcrumb > li:last-child { min-width: 0; }
-  .console-shell .breadcrumb [aria-current="page"] { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .console-shell [data-slot="breadcrumb"] { min-width: 0; }
-  .health-link .health-word, .health-link .health-sep { display: none; }
-}
-/* Below 700px the bottom bar takes the navigation and the header shows the
-   brand, and the page's own title already names where you are. */
-@media (max-width: 699px) {
-  .console-shell .topbar [data-slot="breadcrumb"] { display: none; }
-}
 
 /* The cause chain under a failure (ADR-0010). Numbered, because the order is
    the point: each line is one layer further from the Platform and closer to
@@ -240,13 +192,6 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 .logview [data-slot="log-view-line"] { white-space: pre; min-height: 1lh; }
 /* Terminal block art needs adjoining cells, without text line spacing. */
 .logview .log-block-art { font-family: "Courier New", monospace; line-height: 1; letter-spacing: 0; }
-
-/* The custom Events layout needs a flexible main column too. */
-.app-shell > main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.topbar { flex-shrink: 0; }
-/* Keep charts and scrollable tables inside the available page width. */
-#detail { min-width: 0; grid-template-columns: minmax(0, 1fr); }
-#detail > .stack { grid-template-columns: minmax(0, 1fr); }
 
 /* Per-platform DNS instructions: a stack of disclosures, not a stack of
    cards, because only one of them is ever relevant to the reader. */
@@ -441,7 +386,6 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .storage-list { margin: 0; padding-inline-start: var(--spacing-lg); color: var(--color-muted-foreground); font-size: var(--type-size-label); }
 .storage-list li { margin-block-start: var(--spacing-xs); }
 
-
 /* The textarea keeps native editing; the layer underneath only paints YAML. */
 .yaml-editor { position: relative; min-width: 0; background: var(--color-card); border-radius: var(--radius-md); }
 .yaml-editor .compose-editor, .yaml-highlight { font-family: var(--font-mono); font-size: var(--type-size-label); line-height: var(--type-line-height-normal); tab-size: 2; white-space: pre; }
@@ -486,8 +430,8 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 /* A log in a tab or a run reaches its card's edges as one plain surface.
    kiso drops its border and ticks there; the theme's pixel corners would
    still step its fill and outline. */
-:is(.detail-tabs .logview, .logview-flush) { background: var(--color-neutral-950); box-shadow: none; }
-:is(.detail-tabs .logview, .logview-flush)::before { content: none; }
+.logview-flush { background: var(--color-neutral-950); box-shadow: none; }
+.logview-flush::before { content: none; }
 .detail-log-pane > :not(:last-child) { flex: none; padding: var(--spacing-lg); }
 .detail-log-pane > :last-child { flex: 1; min-height: 0; }
 /* Application output can contain long package-manager progress lines. Keep
@@ -515,8 +459,6 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .advanced > summary { cursor: pointer; font-weight: 600; padding-block: var(--spacing-sm); }
 .advanced[open] > summary { margin-block-end: var(--spacing-md); }
 
-.detail-tabs li { overflow-wrap: anywhere; }
-
 /* A detail screen's Summary: a few sections read top to bottom, each a
    caption and one line or one table. It is the tab a screen opens on, so it
    says the state of the record before the form is asked to. */
@@ -537,15 +479,7 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 /* The machine's last run is a workspace: the title with its state, then a
    split that takes the rest of the panel, the steps as kiso's StepList on
    the left and the selected step's output as a LogView on the right. The
-   panel gives up its padding so the split reaches the card's edges. Below
-   1024px the panel has no height, so the output opens under the step's row
-   instead. `:not([hidden])`, because a display of our own would otherwise
-   beat the `hidden` the tab you left keeps, and a hidden panel that is still
-   a flex block takes the card's one row from the tab you opened. */
-.detail-tabs [role="tabpanel"].detail-run:not([hidden]) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
-@media (max-width: 1023px) {
-  .detail-tabs [role="tabpanel"].detail-run:not([hidden]) { display: block; overflow: visible; }
-}
+   panel gives up its padding so the split reaches the card's edges. */
 .run { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .run-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--spacing-md); padding: var(--spacing-xl) var(--spacing-xl) var(--spacing-lg); }
 .run-head p { margin: 0; }
@@ -579,10 +513,6 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
-
-.account-menu { display: grid; gap: var(--spacing-xs); min-width: 12rem; padding: var(--spacing-xs); }
-.account-menu > .theme-row { padding-inline: var(--spacing-sm); }
-.account-menu > [data-slot="button"] { justify-content: start; }
 
 /* A change to the settings, as the confirmation and the event read it:
    a git-style diff, one removed and one added line per setting. */
