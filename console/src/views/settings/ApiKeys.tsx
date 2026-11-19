@@ -19,7 +19,6 @@ import {
   EmptyStateDescription,
   EmptyStateTitle,
   FormField,
-  GridPane,
   Label,
   RadioGroup,
   RadioGroupItem,
@@ -40,7 +39,9 @@ import { Icon } from "../../components/Icon.js";
 import type { PaneProps } from "./General.js";
 import { api, failureOf, readJson, requireKey } from "../../lib/api.js";
 import { formatAgo } from "../../lib/format.js";
+import { apiKeysQuery } from "../../lib/queries.js";
 import type { ApiKey, TailnetStatus } from "../../lib/types.js";
+import { SettingCard } from "./SettingCard.js";
 
 const noKeys: ApiKey[] = [];
 
@@ -65,11 +66,8 @@ function day(iso: string) {
 }
 
 /** The API keys card of Settings. It is wide: a table needs the room. */
-export function ApiKeys({ id, size }: PaneProps) {
-  const { data: keys = noKeys, isSuccess, refetch: load } = useQuery({
-    queryKey: ["api-keys"],
-    queryFn: ({ signal }) => readJson<ApiKey[]>("/api-keys", signal),
-  });
+export function ApiKeys({ id }: PaneProps) {
+  const { data: keys = noKeys, isSuccess, refetch: load } = useQuery(apiKeysQuery);
   const empty = isSuccess && !keys.length;
   const { data: tailnet } = useQuery({
     queryKey: ["tailnet"],
@@ -148,7 +146,7 @@ export function ApiKeys({ id, size }: PaneProps) {
   const createdOn = (key: ApiKey) => (key.created_at ? day(key.created_at) : <span className="muted">At init</span>);
 
   return (
-    <GridPane id={id} size={size} title="API keys" actions={
+    <SettingCard id={id} title="API keys" actions={
       <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
         <Icon name="plus" />
         New key
@@ -328,6 +326,6 @@ export function ApiKeys({ id, size }: PaneProps) {
           </form>
         </DialogContent>
       </Dialog>
-    </GridPane>
+    </SettingCard>
   );
 }

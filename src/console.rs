@@ -94,7 +94,7 @@ fn serve_asset(path: &str, content_type: &str) -> Response<Body> {
 async fn api_keys_redirect() -> Response<Body> {
     Response::builder()
         .status(StatusCode::TEMPORARY_REDIRECT)
-        .header(header::LOCATION, "/console/#settings/api-keys")
+        .header(header::LOCATION, "/console/#settings/access/api-keys")
         .body(Body::empty())
         .unwrap()
 }

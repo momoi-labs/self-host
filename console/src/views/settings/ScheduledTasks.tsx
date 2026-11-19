@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Button, GridPane, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusBadge, Switch,
+  Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusBadge, Switch,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
@@ -9,6 +9,7 @@ import { api, asReport, failureOf, readJson } from "../../lib/api.js";
 import { formatAgo } from "../../lib/format.js";
 import { useToast } from "../../components/Toasts.js";
 import type { PaneProps } from "./General.js";
+import { SettingCard } from "./SettingCard.js";
 
 type Every = "day" | "week";
 
@@ -47,7 +48,7 @@ function localWeekday(utcHour: number): string {
  * each turned on or off, on a day or a week, at an hour. A run is a task like
  * any other, so its outcome is in Events (#201).
  */
-export function ScheduledTasks({ id, size }: PaneProps) {
+export function ScheduledTasks({ id }: PaneProps) {
   const notify = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const { data: schedules = noSchedules, refetch } = useQuery({
@@ -88,7 +89,7 @@ export function ScheduledTasks({ id, size }: PaneProps) {
   }
 
   return (
-    <GridPane id={id} size={size} title="Scheduled tasks">
+    <SettingCard id={id} title="Scheduled tasks">
       <p className="muted t-label">Work the Platform runs on its own. Each run is a task, and its outcome is in Events.</p>
       <TableFrame frame="none">
         <div className="table-scroll">
@@ -150,6 +151,6 @@ export function ScheduledTasks({ id, size }: PaneProps) {
           </Table>
         </div>
       </TableFrame>
-    </GridPane>
+    </SettingCard>
   );
 }

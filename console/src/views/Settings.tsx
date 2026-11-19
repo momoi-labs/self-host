@@ -1,88 +1,178 @@
-import { useEffect } from "react";
+import { useEffect, useRef, type ComponentType, type MouseEvent } from "react";
 import {
+  Badge,
+  Navigation,
+  NavigationItem,
+  NavigationLink,
+  NavigationList,
   PageHeader,
   PageHeaderTitle,
-  PaneGrid,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@momoi-labs/kiso-react";
 
 import { GitConnectionsSettings } from "../components/GitConnections.js";
-import { useStoredLayout } from "../lib/useStoredLayout.js";
+import { Icon, type IconName } from "../components/Icon.js";
+import {
+  settingsHash,
+  settingsPath,
+  settingsSections,
+  useSettingsFailures,
+  type SettingId,
+  type SettingsSectionId,
+} from "../lib/settingsSections.js";
 import { ApiKeys } from "./settings/ApiKeys.js";
 import { BackupStorage, MaintenanceWindow } from "./settings/Backups.js";
-import { DnsSetup, YourHost } from "./settings/DnsSetup.js";
+import { YourHost } from "./settings/DnsSetup.js";
 import { ApplicationDefaults, AuditHistory, HostAccess, NativeBuildLimits } from "./settings/General.js";
 import { PublicCertificates } from "./settings/PublicCertificates.js";
 import { ScheduledTasks } from "./settings/ScheduledTasks.js";
 
-export type SettingsSection = "general" | "api-keys" | "backup-storage" | "dns-setup" | "git-connections" | "host" | "public-certificates" | "scheduled-tasks";
-
-export const settingsSections: readonly SettingsSection[] = ["general", "api-keys", "backup-storage", "dns-setup", "git-connections", "host", "public-certificates", "scheduled-tasks"];
-
-export function isSettingsSection(value: string): value is SettingsSection {
-  return (settingsSections as readonly string[]).includes(value);
-}
-
-/** The pane a section's link scrolls to. */
-const paneFor: Record<SettingsSection, string> = {
-  general: "audit-history",
-  "api-keys": "api-keys",
-  "backup-storage": "backup-storage",
-  "dns-setup": "dns-setup",
-  "git-connections": "git-connections",
-  host: "host-access",
-  "public-certificates": "public-certificates",
-  "scheduled-tasks": "scheduled-tasks",
+const cards: Record<SettingId, ComponentType<{ id: string }>> = {
+  applications: ApplicationDefaults,
+  "native-build-limits": NativeBuildLimits,
+  "audit-history": AuditHistory,
+  "api-keys": ApiKeys,
+  host: HostAccess,
+  "git-connections": GitConnectionsSettings,
+  "your-host": YourHost,
+  "public-certificates": PublicCertificates,
+  "backup-storage": BackupStorage,
+  "maintenance-window": MaintenanceWindow,
+  "scheduled-tasks": ScheduledTasks,
 };
 
-/**
- * Everything the Operator configures about the Platform itself, one pane per
- * group, packed so a short pane does not wait for the tallest one beside it.
- * The Operator can move and resize the panes, and this browser keeps the
- * arrangement. The URL fragment names a section, so a link scrolls to its
- * pane.
- */
-export function Settings({ section }: { section: SettingsSection }) {
-  const [layout, saveLayout] = useStoredLayout("settings");
+const icons: Record<SettingsSectionId, IconName> = {
+  general: "gear",
+  access: "key",
+  network: "globe",
+  backups: "clock",
+};
+
+function plainClick(event: MouseEvent) {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
+
+function revealSetting(setting: SettingId) {
+  document.getElementById(`setting-${setting}`)?.scrollIntoView({ block: "start" });
+}
+
+export function Settings({ id, onOpen }: { id: string; onOpen: (id: string) => void }) {
+  const path = settingsPath(id) ?? { section: "general", setting: null };
+  const failures = useSettingsFailures();
+  const root = useRef<HTMLDivElement>(null);
+  const mounted = useRef(false);
+
   useEffect(() => {
-    if (section === "general") return;
-    const card = document.querySelector<HTMLElement>(`[data-pane-id="${paneFor[section]}"]`);
-    const grid = card?.parentElement;
-    if (!card || !grid) return;
-    // The cards load their data after this runs and the page grows under the
-    // scroll, so the card is brought back each time the grid grows, until the
-    // page settles or the Operator scrolls on their own.
-    const observer = new ResizeObserver(() => card.scrollIntoView({ block: "start" }));
-    observer.observe(grid);
+    const first = !mounted.current;
+    mounted.current = true;
+    if (!path.setting) {
+      if (!first) root.current?.scrollIntoView({ block: "start" });
+      return;
+    }
+    const setting = path.setting;
+    const section = document.getElementById(`settings-${path.section}`);
+    if (!section) return;
+    const observer = new ResizeObserver(() => revealSetting(setting));
+    observer.observe(section);
     const stop = () => observer.disconnect();
-    const timer = window.setTimeout(stop, 2000);
-    const events = ["wheel", "touchstart", "keydown"] as const;
+    const timer = window.setTimeout(stop, 10_000);
+    const events = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
     for (const event of events) window.addEventListener(event, stop, { once: true });
     return () => {
       stop();
       window.clearTimeout(timer);
       for (const event of events) window.removeEventListener(event, stop);
     };
-  }, [section]);
+  }, [path.section, path.setting]);
+
+  function open(target: string) {
+    return (event: MouseEvent) => {
+      if (!plainClick(event)) return;
+      event.preventDefault();
+      const next = settingsPath(target);
+      if (next?.setting && target === id) revealSetting(next.setting);
+      else onOpen(target);
+    };
+  }
+
+  const marker = (section: SettingsSectionId) =>
+    failures[section] ? (
+      <Badge variant="danger">
+        {failures[section]}
+        <span className="offscreen"> failing</span>
+      </Badge>
+    ) : null;
 
   return (
     <>
-      <PageHeader>
+      <PageHeader ref={root} className="settings-page">
         <PageHeaderTitle>Settings</PageHeaderTitle>
       </PageHeader>
-      <PaneGrid aria-label="Settings" flow="masonry" defaultLayout={layout} onLayoutChange={saveLayout}>
-        <AuditHistory id="audit-history" size={6} />
-        <ApiKeys id="api-keys" size={12} />
-        <ApplicationDefaults id="applications" size={6} />
-        <NativeBuildLimits id="native-build-limits" size={6} />
-        <HostAccess id="host-access" size={6} />
-        <YourHost id="your-host" size={6} />
-        <GitConnectionsSettings id="git-connections" size={12} />
-        <ScheduledTasks id="scheduled-tasks" size={12} />
-        <BackupStorage id="backup-storage" size={6} />
-        <MaintenanceWindow id="maintenance-window" size={6} />
-        <PublicCertificates id="public-certificates" size={6} />
-        <DnsSetup id="dns-setup" size={6} />
-      </PaneGrid>
+      <div className="settings-frame">
+        <div className="settings-layout">
+          <Navigation aria-label="Settings sections" className="settings-nav">
+            <NavigationList>
+              {settingsSections.map((section) => {
+                const target = settingsHash({ section: section.id, setting: null }).slice(10);
+                return (
+                  <NavigationItem key={section.id}>
+                    <NavigationLink href={`/console/#settings/${target}`} active={section.id === path.section} onClick={open(target)}>
+                      <Icon name={icons[section.id]} />
+                      <span className="grow truncate">{section.title}</span>
+                      {marker(section.id)}
+                    </NavigationLink>
+                    {section.id === path.section ? (
+                      <NavigationList className="settings-nav-settings">
+                        {section.settings.map((setting) => {
+                          const link = settingsHash({ section: section.id, setting: setting.id }).slice(10);
+                          return (
+                            <NavigationItem key={setting.id}>
+                              <NavigationLink href={`/console/#settings/${link}`} onClick={open(link)}>
+                                <span className="grow truncate">{setting.title}</span>
+                              </NavigationLink>
+                            </NavigationItem>
+                          );
+                        })}
+                      </NavigationList>
+                    ) : null}
+                  </NavigationItem>
+                );
+              })}
+            </NavigationList>
+          </Navigation>
+          <div className="settings-select">
+            <Select value={path.section} onValueChange={(section) => onOpen(section)}>
+              <SelectTrigger aria-label="Settings section">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {settingsSections.map((section) => (
+                  <SelectItem key={section.id} value={section.id}>
+                    <span className="settings-select-item">
+                      {section.title}
+                      {marker(section.id)}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="settings-sections">
+            {settingsSections.map((section) => (
+              <section key={section.id} id={`settings-${section.id}`} className="settings-section" aria-label={section.title} hidden={section.id !== path.section}>
+                {section.settings.map((setting) => {
+                  const Card = cards[setting.id];
+                  return <Card key={setting.id} id={setting.id} />;
+                })}
+              </section>
+            ))}
+          </div>
+        </div>
+      </div>
     </>
   );
 }

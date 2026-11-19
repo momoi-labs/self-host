@@ -1,11 +1,13 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Badge } from "@momoi-labs/kiso-react";
 
 import { OperationOutcomes } from "./components/OperationOutcomes.js";
 import { Shell } from "./components/Shell.js";
 import { useMetrics } from "./lib/useMetrics.js";
 import { useEnvironments } from "./lib/useEnvironments.js";
 import { settingsQuery } from "./lib/queries.js";
+import { useSettingsFailures } from "./lib/settingsSections.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
 import { Dns } from "./views/Dns.js";
@@ -30,6 +32,8 @@ export function App() {
   // The Host is in the menu only while the Operator allows something on it.
   const settings = useQuery(settingsQuery).data;
   const manageHost = !!(settings?.remoteScreen.effective || settings?.hostTerminal.effective);
+  const failures = useSettingsFailures();
+  const settingsFailing = failures.general + failures.access + failures.network + failures.backups;
 
   const app =
     view.view === "app"
@@ -118,6 +122,7 @@ export function App() {
         href: "/console/#settings",
         active: view.view === "settings",
         onClick: () => go({ view: "settings", id: "general" }),
+        trailing: settingsFailing ? <Badge variant="danger">{settingsFailing}<span className="offscreen"> failing</span></Badge> : undefined,
       }}
     >
       {view.view === "dns" ? (
@@ -126,9 +131,9 @@ export function App() {
           onOpenVirtualMachine={id => go({ view: "environments", id })} />
       ) : view.view === "events" ? (
         <EventsPage onOpenSubject={(subject) => {
-          if (subject.kind === "api-key") { go({ view: "settings", id: "api-keys" }); return; }
+          if (subject.kind === "api-key") { go({ view: "settings", id: "access/api-keys" }); return; }
           if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
-          if (subject.kind === "platform") { go({ view: "settings", id: "scheduled-tasks" }); return; }
+          if (subject.kind === "platform") { go({ view: "settings", id: "backups/scheduled-tasks" }); return; }
           go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
         }} />
       ) : view.view === "routes" ? (
@@ -138,9 +143,9 @@ export function App() {
       ) : view.view === "database-new" ? (
         <NewDatabase reload={reload} onCancel={() => go({ view: "databases", id: null })} onCreated={(id) => go({ view: "app", id })} />
       ) : view.view === "settings" ? (
-        <Settings section={view.id} />
+        <Settings id={view.id} onOpen={(id) => go({ view: "settings", id })} />
       ) : view.view === "host" ? (
-        <Host onOpenSettings={() => go({ view: "settings", id: "host" })} />
+        <Host onOpenSettings={() => go({ view: "settings", id: "access/host" })} />
       ) : view.view === "environment-new" || (view.view === "environments" && view.id) ? (
         <Environments
           metrics={metrics}

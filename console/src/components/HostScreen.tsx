@@ -137,7 +137,7 @@ export function HostScreen() {
           </EmptyStateDescription>
           <EmptyStateActions>
             {host && host.screen.supported && !host.screen.allowed ? (
-              <Button variant="primary" onClick={() => window.location.assign("/console/#settings/host")}>Open Settings</Button>
+              <Button variant="primary" onClick={() => window.location.assign("/console/#settings/access/host")}>Open Settings</Button>
             ) : (
               <Button variant="primary" onClick={start} disabled={blocked !== null}>Connect</Button>
             )}
