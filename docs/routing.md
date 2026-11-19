@@ -139,7 +139,7 @@ forward frames over the upgraded connection.
 
 ## Certificate challenge boundary
 
-W2 can install its HTTP-01 handler with
+W2 can install its HTTP-01 handler (DNS-01 orders never reach it) with
 `proxy::Bound::with_challenge_router(axum::Router)` before `run`. The router
 receives the original request, including its Hostname and full challenge
 path, on both HTTP and HTTPS. The default router returns `404` for every

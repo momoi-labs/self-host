@@ -164,13 +164,19 @@ pub(crate) fn validate_rule(rule: &RouteRule) -> Result<(), RouteError> {
     Ok(())
 }
 
+pub fn legacy_console_hostname(console_hostname: &str) -> Option<String> {
+    console_hostname
+        .strip_prefix("console.")
+        .map(|suffix| format!("admin.{suffix}"))
+}
+
 /// Checks persisted rules before the Application is written. Explicit `/`
 /// rules replace that Application's automatic root route. Other Applications
 /// may share the Hostname when their hostname/path keys are different.
 pub fn validate_rules(
     app: &ApplicationRecord,
     others: &[ApplicationRecord],
-    admin_hostname: &str,
+    console_hostname: &str,
 ) -> Result<(), RouteError> {
     if app.publication == Publication::Unpublished {
         return if app.route_rules.is_empty() && app.redirects.is_empty() {
@@ -192,7 +198,11 @@ pub fn validate_rules(
             )));
         }
     }
-    if hostnames(app).contains(&admin_hostname) {
+    let legacy = legacy_console_hostname(console_hostname);
+    if hostnames(app)
+        .iter()
+        .any(|name| *name == console_hostname || Some(*name) == legacy.as_deref())
+    {
         return Err(RouteError::Invalid(
             "the management Hostname is reserved for the Platform".into(),
         ));
@@ -510,7 +520,7 @@ mod tests {
             }];
             assert!(
                 matches!(
-                    validate_rules(&record, &[], "admin.example.invalid"),
+                    validate_rules(&record, &[], "console.example.invalid"),
                     Err(RouteError::Invalid(_))
                 ),
                 "{path}"
@@ -522,7 +532,7 @@ mod tests {
                 ..good.clone()
             }];
             assert!(
-                validate_rules(&record, &[], "admin.example.invalid").is_err(),
+                validate_rules(&record, &[], "console.example.invalid").is_err(),
                 "{target}"
             );
         }
@@ -537,7 +547,7 @@ mod tests {
                 ..good.clone()
             }];
             assert!(
-                validate_rules(&record, &[], "admin.example.invalid").is_err(),
+                validate_rules(&record, &[], "console.example.invalid").is_err(),
                 "{host}"
             );
         }
@@ -546,7 +556,7 @@ mod tests {
                 target: Some(target.parse().unwrap()),
                 ..good.clone()
             }];
-            validate_rules(&record, &[], "admin.example.invalid").unwrap();
+            validate_rules(&record, &[], "console.example.invalid").unwrap();
         }
     }
 
@@ -555,21 +565,21 @@ mod tests {
         let mut root = app("a", "blog.example.invalid", &[]);
         let mut paths = app("b", "paths.example.invalid", &[]);
         paths.route_rules = vec![rule("blog.example.invalid", "/app", 8081)];
-        validate_rules(&paths, &[root.clone()], "admin.example.invalid").unwrap();
+        validate_rules(&paths, &[root.clone()], "console.example.invalid").unwrap();
         assert!(hostnames(&paths).contains(&"blog.example.invalid"));
         assert!(!automatic_hostnames(&paths).contains(&"blog.example.invalid"));
         root.route_rules = vec![rule("blog.example.invalid", "/", 8082)];
-        validate_rules(&root, &[paths.clone()], "admin.example.invalid").unwrap();
+        validate_rules(&root, &[paths.clone()], "console.example.invalid").unwrap();
         paths
             .route_rules
             .push(rule("blog.example.invalid", "/", 8083));
         assert!(matches!(
-            validate_rules(&paths, &[root], "admin.example.invalid"),
+            validate_rules(&paths, &[root], "console.example.invalid"),
             Err(RouteError::Conflict(_))
         ));
         paths.route_rules = vec![rule("blog.example.invalid", "/app", 8081); 2];
         assert!(matches!(
-            validate_rules(&paths, &[], "admin.example.invalid"),
+            validate_rules(&paths, &[], "console.example.invalid"),
             Err(RouteError::Conflict(_))
         ));
     }
@@ -580,15 +590,15 @@ mod tests {
         for path in [CHALLENGE_PREFIX, "/.well-known/acme-challenge/token"] {
             record.route_rules = vec![rule("blog.example.invalid", path, 8080)];
             assert!(matches!(
-                validate_rules(&record, &[], "admin.example.invalid"),
+                validate_rules(&record, &[], "console.example.invalid"),
                 Err(RouteError::Invalid(_))
             ));
         }
-        record.route_rules = vec![rule("admin.example.invalid", "/console", 8080)];
-        assert!(validate_rules(&record, &[], "admin.example.invalid").is_err());
+        record.route_rules = vec![rule("console.example.invalid", "/console", 8080)];
+        assert!(validate_rules(&record, &[], "console.example.invalid").is_err());
         record.route_rules = vec![rule("blog.example.invalid", "/app", 8080)];
         record.publication = Publication::Unpublished;
-        assert!(validate_rules(&record, &[], "admin.example.invalid").is_err());
+        assert!(validate_rules(&record, &[], "console.example.invalid").is_err());
         assert!(hostnames(&record).is_empty());
     }
 
@@ -601,20 +611,20 @@ mod tests {
         };
         let mut record = app("a", "blog.example.invalid", &[]);
         record.redirects = vec![redirect("^https://blog\\.example\\.invalid/old$")];
-        validate_rules(&record, &[], "admin.example.invalid").unwrap();
+        validate_rules(&record, &[], "console.example.invalid").unwrap();
         record.redirects = vec![redirect("^https://(")];
         assert!(matches!(
-            validate_rules(&record, &[], "admin.example.invalid"),
+            validate_rules(&record, &[], "console.example.invalid"),
             Err(RouteError::Invalid(_))
         ));
         record.redirects = vec![redirect("^x$"); MAX_REDIRECTS + 1];
         assert!(matches!(
-            validate_rules(&record, &[], "admin.example.invalid"),
+            validate_rules(&record, &[], "console.example.invalid"),
             Err(RouteError::Invalid(_))
         ));
         record.redirects = vec![redirect("^x$")];
         record.publication = Publication::Unpublished;
-        assert!(validate_rules(&record, &[], "admin.example.invalid").is_err());
+        assert!(validate_rules(&record, &[], "console.example.invalid").is_err());
     }
 
     #[test]

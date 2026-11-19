@@ -199,7 +199,7 @@ See [Native Applications](native-applications.md).
 W2 stores its explicit configuration, ACME account credentials, status and
 atomic certificate/key bundles under `state/certificates`. Directories are
 `0700`; private files are `0600`. With no public configuration, local-CA mode
-continues to work. Each configured hostname gets its own HTTP-01 order.
+continues to work. Each configured hostname gets its own order: DNS-01 inside a saved deSEC zone, HTTP-01 elsewhere.
 
 SNI selects an exact public certificate or a local certificate whose SAN
 covers the requested name. Unknown SNI, an expired certificate or a configured

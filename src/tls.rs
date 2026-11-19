@@ -233,6 +233,39 @@ fn generate_certificates_in(dir: &Path, dns_suffix: &str) -> Result<(), TlsError
         .map_err(|e| TlsError::ConfigWrite(format!("write CA cert: {e}")))?;
     write_private_key(&ca_key_path, &ca_key.serialize_pem())?;
 
+    write_leaf(dir, dns_suffix, &ca_cert, &ca_key, now)
+}
+
+pub(crate) fn reissue_leaf_in(dir: &Path, dns_suffix: &str) -> Result<(), TlsError> {
+    let read = |name: &str| {
+        std::fs::read_to_string(dir.join(name))
+            .map_err(|e| TlsError::ExistingCertificates(format!("read {name}: {e}")))
+    };
+    let ca_key = KeyPair::from_pem(&read("ca-key.pem")?)
+        .map_err(|e| TlsError::ExistingCertificates(format!("parse ca-key.pem: {e}")))?;
+    let ca_cert = CertificateParams::from_ca_cert_pem(&read("ca.pem")?)
+        .and_then(|params| params.self_signed(&ca_key))
+        .map_err(|e| TlsError::ExistingCertificates(format!("parse ca.pem: {e}")))?;
+    write_leaf(
+        dir,
+        dns_suffix,
+        &ca_cert,
+        &ca_key,
+        OffsetDateTime::now_utc(),
+    )?;
+    validate_certificates_in(dir, dns_suffix)
+}
+
+fn write_leaf(
+    dir: &Path,
+    dns_suffix: &str,
+    ca_cert: &rcgen::Certificate,
+    ca_key: &KeyPair,
+    now: OffsetDateTime,
+) -> Result<(), TlsError> {
+    let ten_years = Duration::days(365 * 10);
+    let key = dir.join("key.pem");
+    let cert = dir.join("cert.pem");
     let mut cert_params = CertificateParams::default();
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, format!("*.{}", dns_suffix));
@@ -250,12 +283,16 @@ fn generate_certificates_in(dir: &Path, dns_suffix: &str) -> Result<(), TlsError
     let cert_key = KeyPair::generate()
         .map_err(|e| TlsError::CertGenerationFailed(format!("generate cert key: {e}")))?;
     let cert_obj = cert_params
-        .signed_by(&cert_key, &ca_cert, &ca_key)
+        .signed_by(&cert_key, ca_cert, ca_key)
         .map_err(|e| TlsError::CertGenerationFailed(format!("sign cert: {e}")))?;
 
+    let staged = dir.join("key.pem.new");
+    let _ = std::fs::remove_file(&staged);
+    write_private_key(&staged, &cert_key.serialize_pem())?;
     std::fs::write(&cert, cert_obj.pem())
         .map_err(|e| TlsError::ConfigWrite(format!("write cert: {e}")))?;
-    write_private_key(&key, &cert_key.serialize_pem())?;
+    std::fs::rename(&staged, &key)
+        .map_err(|e| TlsError::ConfigWrite(format!("move {}: {e}", key.display())))?;
 
     Ok(())
 }

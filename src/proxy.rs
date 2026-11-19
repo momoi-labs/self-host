@@ -1,6 +1,6 @@
 //! An embedded HTTP/HTTPS proxy, replacing Traefik (ADR-0019).
 //!
-//! `admin.<suffix>` is served in-process from the console/API `Router`, with
+//! `console.<suffix>` is served in-process from the console/API `Router`, with
 //! no network hop. Every other known Hostname is reverse-proxied to a Web
 //! Target resolved by a [`Publisher`]. An unknown Hostname is a `404` that
 //! never falls through to the admin API or another Application; a known
@@ -455,12 +455,13 @@ pub struct ProxyConfig {
     pub bind_ip: IpAddr,
     pub https_port: u16,
     pub http_port: u16,
-    /// `admin.<suffix>` — dispatched to `admin_router` with no proxy hop.
-    pub admin_hostname: String,
+    /// `console.<suffix>`, dispatched to `admin_router` with no proxy hop.
+    pub console_hostname: String,
 }
 
 struct Context {
-    admin_hostname: String,
+    console_hostname: String,
+    legacy_console_hostname: Option<String>,
     tailnet: Option<(String, Arc<dyn crate::tailnet::NodeLookup>)>,
     admin_router: Router,
     challenge_router: Router,
@@ -505,7 +506,7 @@ pub async fn bind(
         .context("bind HTTP listener")?;
 
     let http_setup_router = crate::console::http_setup_router(
-        config.admin_hostname.clone(),
+        config.console_hostname.clone(),
         config.cert_path.with_file_name("ca.pem"),
     );
 
@@ -518,7 +519,10 @@ pub async fn bind(
         http_setup_router,
         limits: ConnectionLimits::default(),
         ctx: Arc::new(Context {
-            admin_hostname: config.admin_hostname,
+            legacy_console_hostname: crate::routes::legacy_console_hostname(
+                &config.console_hostname,
+            ),
+            console_hostname: config.console_hostname,
             tailnet: None,
             admin_router,
             challenge_router: Router::new(),
@@ -803,7 +807,7 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
         return serve_router(&ctx.challenge_router, req).await;
     }
 
-    if host == ctx.admin_hostname {
+    if host == ctx.console_hostname || Some(&host) == ctx.legacy_console_hostname.as_ref() {
         return serve_router(&ctx.admin_router, req).await;
     }
 
@@ -1517,7 +1521,7 @@ mod integration {
                 bind_ip: "127.0.0.1".parse().unwrap(),
                 https_port: 0,
                 http_port: 0,
-                admin_hostname: "admin.home.lan".into(),
+                console_hostname: "console.home.lan".into(),
             },
             admin_router,
             table,
@@ -1555,7 +1559,7 @@ mod integration {
         let (status, _, body) = request(
             https_addr,
             client_config(cert),
-            "admin.home.lan",
+            "console.home.lan",
             "/",
             &[],
             vec![],
@@ -1809,7 +1813,7 @@ mod integration {
             .unwrap();
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         let info: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(info["admin_hostname"], "admin.home.lan");
+        assert_eq!(info["console_hostname"], "console.home.lan");
         assert_eq!(info["dns_suffix"], "home.lan");
         assert_eq!(info.as_object().unwrap().len(), 3);
         let ca = client
@@ -1858,7 +1862,7 @@ mod integration {
         let (status, _, _) = request(
             https_addr,
             client_config(cert),
-            "admin.home.lan",
+            "console.home.lan",
             "/setup",
             &[],
             vec![],
@@ -2483,7 +2487,7 @@ mod integration {
         let table = RouteTable::new();
         table.publish(
             "a",
-            &["blog.example.invalid".into(), "admin.home.lan".into()],
+            &["blog.example.invalid".into(), "console.home.lan".into()],
             Some(target),
         );
         let admin = Router::new().fallback(|| async { "console" });
@@ -2502,7 +2506,7 @@ mod integration {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert!(response.headers().get(header::LOCATION).is_none());
-        for hostname in ["blog.example.invalid", "admin.home.lan"] {
+        for hostname in ["blog.example.invalid", "console.home.lan"] {
             let (status, _, _) = request(
                 addr,
                 client_config(cert.clone()),
@@ -2566,7 +2570,7 @@ mod integration {
         let (_, _, body) = request(
             addr,
             client_config(cert.clone()),
-            "admin.home.lan",
+            "console.home.lan",
             path,
             &[],
             vec![],
@@ -2576,7 +2580,7 @@ mod integration {
         let (_, _, body) = request(
             addr,
             client_config(cert),
-            "admin.home.lan",
+            "console.home.lan",
             "/console",
             &[],
             vec![],
@@ -2723,7 +2727,7 @@ mod integration {
         )
         .await;
         let (mut sender, mut task) = http1_over_tls(https, cert).await;
-        assert_eq!(get(&mut sender, "admin.home.lan", "/").await, b"fast");
+        assert_eq!(get(&mut sender, "console.home.lan", "/").await, b"fast");
         assert!(
             !closed_within(&mut task, IDLE / 2).await,
             "closed too early"
@@ -2752,7 +2756,7 @@ mod integration {
             let _ = conn.await;
         });
         let req = Request::builder()
-            .uri("https://admin.home.lan/")
+            .uri("https://console.home.lan/")
             .body(Full::new(Bytes::new()))
             .unwrap();
         let response = sender.send_request(req).await.unwrap();
@@ -2813,7 +2817,7 @@ mod integration {
         )
         .await;
         let (mut sender, _task) = http1_over_tls(https, cert).await;
-        assert_eq!(get(&mut sender, "admin.home.lan", "/slow").await, b"slow");
+        assert_eq!(get(&mut sender, "console.home.lan", "/slow").await, b"slow");
     }
 
     #[tokio::test]
@@ -2826,7 +2830,7 @@ mod integration {
         )
         .await;
         let (mut sender, mut task) = http1_over_tls(https, cert).await;
-        assert_eq!(get(&mut sender, "admin.home.lan", "/slow").await, b"slow");
+        assert_eq!(get(&mut sender, "console.home.lan", "/slow").await, b"slow");
         assert!(
             !closed_within(&mut task, IDLE / 2).await,
             "deadline counted from the request instead of the response"
@@ -2849,7 +2853,7 @@ mod integration {
         .await;
         let (mut sender, _task) = http1_over_tls(https, cert).await;
         assert_eq!(
-            get(&mut sender, "admin.home.lan", "/stream").await,
+            get(&mut sender, "console.home.lan", "/stream").await,
             b"xxxxxx"
         );
     }

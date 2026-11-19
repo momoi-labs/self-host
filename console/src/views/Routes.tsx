@@ -98,7 +98,7 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: 
           <li>Among that hostname's routes, the longest matching path wins. <code>/app</code> takes <code>/app/assets</code> but not <code>/apple</code>.</li>
           <li>Each Hostname and alias has a <code>/</code> route to its Application unless a path route says otherwise.</li>
           <li>A redirect answers before any of this, on the hostname and path it names.</li>
-          <li>A hostname with no route answers 404. <code>admin.{dnsSuffix}</code> always belongs to the Platform.</li>
+          <li>A hostname with no route answers 404. <code>console.{dnsSuffix}</code> always belongs to the Platform.</li>
         </ol>
       </details>
       <RouteDialog editor={editor} apps={apps} dnsSuffix={dnsSuffix} onClose={() => setEditor(null)}

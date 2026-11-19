@@ -335,23 +335,26 @@ impl Keyed for Record {
     }
 }
 
-pub(crate) async fn initialize_admin(
+pub(crate) async fn initialize_console(
     store: &impl StateStore,
     address: Ipv4Addr,
 ) -> Result<(), StoreError> {
     let mut records = load(store).await?;
-    if !records
-        .iter()
-        .any(|record| record.is("admin", RecordType::A))
-    {
-        records.push(Record {
-            name: "admin".into(),
-            record_type: RecordType::A,
-            value: address,
-            ttl: TTL,
-            description: None,
-            owner: Owner::Platform,
-        });
+    let mut changed = false;
+    for name in ["console", "admin"] {
+        if !records.iter().any(|record| record.is(name, RecordType::A)) {
+            records.push(Record {
+                name: name.into(),
+                record_type: RecordType::A,
+                value: address,
+                ttl: TTL,
+                description: None,
+                owner: Owner::Platform,
+            });
+            changed = true;
+        }
+    }
+    if changed {
         save(store, &records).await?;
     }
     Ok(())
@@ -1233,7 +1236,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_creates_an_editable_admin_that_keeps_its_address_and_can_be_deleted() {
+    async fn init_creates_editable_console_and_admin_records_that_keep_its_address_and_can_be_deleted()
+     {
         let store = FakeStateStore::new();
         let result = crate::bootstrap::BootstrapResult {
             dns_suffix: "home.lan".into(),
@@ -1258,17 +1262,19 @@ mod tests {
             zone,
         );
         let (_, inventory) = call(&app, "GET", "/dns/records", Value::Null).await;
-        assert!(inventory.as_array().unwrap().contains(&json!({
-            "name": "admin", "type": "A", "value": "192.168.1.10", "ttl": 60, "owner": "platform"
-        })));
-        let (status, error) = call(
-            &app,
-            "POST",
-            "/apps",
-            json!({"name": "admin", "image": "nginx", "hostname": "admin.home.lan"}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+        for name in ["console", "admin"] {
+            assert!(inventory.as_array().unwrap().contains(&json!({
+                "name": name, "type": "A", "value": "192.168.1.10", "ttl": 60, "owner": "platform"
+            })));
+            let (status, error) = call(
+                &app,
+                "POST",
+                "/apps",
+                json!({"name": name, "image": "nginx", "hostname": format!("{name}.home.lan")}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+        }
         let (status, updated) = call(
             &app,
             "PUT",

@@ -1,10 +1,13 @@
-//! Persistent HTTP-01 certificates for every public Hostname. Applications never receive keys.
+//! Persistent certificates for every public Hostname, through HTTP-01 or, for
+//! names inside a configured deSEC zone, DNS-01. Applications never receive keys.
 //!
 //! The Operator configures the ACME account once, in `public.json`, through
 //! the Settings screen or by hand. Which names get a certificate follows the
 //! Applications: every Hostname outside the DNS Suffix is public, plus any
 //! name the file lists. The daemon reads both again every minute, so a new
 //! Hostname or a changed account needs no restart.
+
+mod desec;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -31,6 +34,10 @@ use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 type Challenges = Arc<RwLock<HashMap<(String, String), String>>>;
 
 const RETRY_SECONDS: i64 = 3600;
+const DNS_WAIT: Duration = Duration::from_secs(600);
+const DNS_ORDER_POLL: Duration = Duration::from_secs(600);
+const DNS_POLL: Duration = Duration::from_secs(1);
+const CHALLENGE_LABEL: &str = "_acme-challenge";
 const MAX_RENEWAL_SECONDS: i64 = 30 * 24 * 3600;
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -45,7 +52,56 @@ pub struct CertificateConfig {
     /// Trust a private ACME service explicitly. Normal public CAs use system roots.
     #[serde(default)]
     pub ca_cert_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<DnsConfig>,
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsProvider {
+    Desec,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DnsConfig {
+    pub provider: DnsProvider,
+    pub zone: String,
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nameservers: Option<Vec<std::net::SocketAddr>>,
+}
+
+impl DnsConfig {
+    fn covers(&self, hostname: &str) -> bool {
+        hostname == self.zone || hostname.ends_with(&format!(".{}", self.zone))
+    }
+}
+
+#[derive(Debug)]
+enum DnsFailure {
+    Refused,
+    NotReached,
+}
+
+impl DnsFailure {
+    fn message(&self) -> &'static str {
+        match self {
+            Self::Refused => "DNS provider refused the challenge record",
+            Self::NotReached => "challenge record did not reach the nameservers",
+        }
+    }
+}
+
+impl std::fmt::Display for DnsFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for DnsFailure {}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -140,6 +196,16 @@ impl CertificateEntry {
         })
     }
 
+    fn covers(&self, name: &str) -> bool {
+        self.names.iter().any(|covered| {
+            covered == name
+                || covered.strip_prefix("*.").is_some_and(|base| {
+                    name.split_once('.')
+                        .is_some_and(|(label, parent)| !label.is_empty() && parent == base)
+                })
+        })
+    }
+
     fn valid_at(&self, now: i64) -> bool {
         self.not_before <= now && now < self.expires_at
     }
@@ -182,7 +248,11 @@ impl CertificateResolver {
                 .unwrap()
                 .get(&name)
                 .filter(|entry| entry.valid_at(now))
-                .map(|entry| entry.key.clone());
+                .map(|entry| entry.key.clone())
+                .or_else(|| self.wildcard_for(&name, now));
+        }
+        if let Some(key) = self.wildcard_for(&name, now) {
+            return Some(key);
         }
         // Any other name gets the Platform's own certificate, whether or not
         // its names cover it. A browser rejects the mismatch either way; an
@@ -190,6 +260,22 @@ impl CertificateResolver {
         // Cloudflare in "Full" mode, completes the handshake and serves the
         // Application without a public certificate.
         self.local.valid_at(now).then(|| self.local.key.clone())
+    }
+}
+
+impl CertificateResolver {
+    fn wildcard_for(&self, name: &str, now: i64) -> Option<Arc<CertifiedKey>> {
+        let parent = name.split_once('.').map(|(_, parent)| parent);
+        let managed = self.managed.read().unwrap();
+        let public = self.public.read().unwrap();
+        [Some(name), parent]
+            .into_iter()
+            .flatten()
+            .map(|base| format!("*.{base}"))
+            .filter(|wildcard| managed.contains(wildcard))
+            .filter_map(|wildcard| public.get(&wildcard))
+            .find(|entry| entry.valid_at(now) && entry.covers(name))
+            .map(|entry| entry.key.clone())
     }
 }
 
@@ -212,6 +298,8 @@ struct ManagerInner {
     challenges: Challenges,
     statuses: RwLock<BTreeMap<String, CertificateStatus>>,
     reconcile: Mutex<()>,
+    dns_wait: std::sync::atomic::AtomicU64,
+    suffix: RwLock<Option<String>>,
 }
 
 impl CertificateManager {
@@ -268,8 +356,14 @@ impl CertificateManager {
                 challenges: Arc::new(RwLock::new(HashMap::new())),
                 statuses: RwLock::new(statuses),
                 reconcile: Mutex::new(()),
+                dns_wait: std::sync::atomic::AtomicU64::new(DNS_WAIT.as_millis() as u64),
+                suffix: RwLock::new(None),
             }),
         })
+    }
+
+    pub fn set_suffix(&self, suffix: &str) {
+        *self.inner.suffix.write().unwrap() = Some(suffix.to_ascii_lowercase());
     }
 
     pub fn resolver(&self) -> Arc<CertificateResolver> {
@@ -341,12 +435,21 @@ impl CertificateManager {
     async fn reconcile_for_at(&self, hostnames: BTreeSet<String>, now: i64) -> anyhow::Result<()> {
         let _guard = self.inner.reconcile.lock().await;
         let config = read_config(&self.inner.dir)?;
+        let suffix = self.inner.suffix.read().unwrap().clone();
         let desired: BTreeSet<String> = match &config {
             Some(config) => config
                 .hostnames
                 .iter()
                 .cloned()
                 .chain(hostnames.into_iter().filter(|name| valid_hostname(name)))
+                .chain(
+                    suffix
+                        .filter(|suffix| {
+                            valid_hostname(suffix)
+                                && config.dns.as_ref().is_some_and(|dns| dns.covers(suffix))
+                        })
+                        .map(|suffix| format!("*.{suffix}")),
+                )
                 .collect(),
             None => BTreeSet::new(),
         };
@@ -380,16 +483,19 @@ impl CertificateManager {
                 Err(_) => Err(anyhow::anyhow!("ACME account request timed out")),
             };
         for hostname in due {
+            let dns = config.dns.as_ref().filter(|dns| dns.covers(&hostname));
+            let limit = match dns {
+                Some(_) => self.dns_wait() + DNS_ORDER_POLL + Duration::from_secs(120),
+                None => Duration::from_secs(120),
+            };
             let result = match &account {
-                Ok(account) => match tokio::time::timeout(
-                    Duration::from_secs(120),
-                    self.issue(account, &hostname),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(anyhow::anyhow!("ACME operation timed out")),
-                },
+                Ok(account) => {
+                    match tokio::time::timeout(limit, self.issue(account, &hostname, &config)).await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(anyhow::anyhow!("ACME operation timed out")),
+                    }
+                }
                 Err(_) => Err(anyhow::anyhow!("ACME account unavailable")),
             };
             let mut statuses = self.inner.statuses.write().unwrap();
@@ -424,15 +530,18 @@ impl CertificateManager {
                         ),
                     }
                 }
-                Err(_) => mark_failure(
-                    status,
-                    now,
-                    if account.is_err() {
-                        "ACME account unavailable"
-                    } else {
-                        "ACME issuance or renewal failed"
-                    },
-                ),
+                Err(error) => {
+                    tracing::warn!(%hostname, cause = %format!("{error:#}"), "public certificate order failed");
+                    mark_failure(
+                        status,
+                        now,
+                        match error.downcast_ref::<DnsFailure>() {
+                            Some(failure) => failure.message(),
+                            None if account.is_err() => "ACME account unavailable",
+                            None => "ACME issuance or renewal failed",
+                        },
+                    )
+                }
             }
             atomic_json(&self.inner.dir.join("status.json"), &*statuses)?;
             if status_failed(&statuses, &hostname) {
@@ -502,13 +611,63 @@ impl CertificateManager {
         Ok(account)
     }
 
-    async fn issue(&self, account: &Account, hostname: &str) -> anyhow::Result<CertificateBundle> {
+    fn dns_wait(&self) -> Duration {
+        Duration::from_millis(
+            self.inner
+                .dns_wait
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    #[cfg(test)]
+    fn set_dns_wait(&self, wait: Duration) {
+        self.inner
+            .dns_wait
+            .store(wait.as_millis() as u64, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    async fn issue(
+        &self,
+        account: &Account,
+        hostname: &str,
+        config: &CertificateConfig,
+    ) -> anyhow::Result<CertificateBundle> {
+        let dns = config.dns.as_ref().filter(|dns| dns.covers(hostname));
+        let mut published = Vec::new();
+        let result = self.order(account, hostname, dns, &mut published).await;
+        if let Some(dns) = dns
+            && let Ok(client) = desec::Desec::new(dns)
+        {
+            for subname in published {
+                if client.delete_txt(&subname).await.is_err() {
+                    tracing::warn!(%hostname, "could not remove the DNS challenge record");
+                }
+            }
+        }
+        result
+    }
+
+    async fn order(
+        &self,
+        account: &Account,
+        hostname: &str,
+        dns: Option<&DnsConfig>,
+        published: &mut Vec<String>,
+    ) -> anyhow::Result<CertificateBundle> {
         let mut cleanup = ChallengeCleanup {
             challenges: self.inner.challenges.clone(),
             keys: Vec::new(),
         };
-        let identifiers = [Identifier::Dns(hostname.to_string())];
+        let names: Vec<String> = match hostname.strip_prefix("*.") {
+            Some(base) => {
+                anyhow::ensure!(dns.is_some(), "a wildcard needs a DNS zone");
+                vec![hostname.to_string(), base.to_string()]
+            }
+            None => vec![hostname.to_string()],
+        };
+        let identifiers: Vec<Identifier> = names.iter().cloned().map(Identifier::Dns).collect();
         let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
+        let mut records: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut authorizations = order.authorizations();
         while let Some(authorization) = authorizations.next().await {
             let mut authorization = authorization?;
@@ -517,30 +676,70 @@ impl CertificateManager {
                 AuthorizationStatus::Pending => {}
                 _ => bail!("authorization unavailable"),
             }
-            let mut challenge = authorization
-                .challenge(ChallengeType::Http01)
-                .context("ACME service has no HTTP-01 challenge")?;
-            anyhow::ensure!(
-                challenge.identifier().to_string() == hostname,
-                "unexpected authorization name"
-            );
+            let mut challenge = match dns {
+                Some(_) => authorization
+                    .challenge(ChallengeType::Dns01)
+                    .context("ACME service has no DNS-01 challenge")?,
+                None => authorization
+                    .challenge(ChallengeType::Http01)
+                    .context("ACME service has no HTTP-01 challenge")?,
+            };
+            let identifier = challenge.identifier().to_string();
+            anyhow::ensure!(names.contains(&identifier), "unexpected authorization name");
             anyhow::ensure!(valid_token(&challenge.token), "invalid challenge token");
-            let key = (hostname.to_string(), challenge.token.clone());
-            self.inner.challenges.write().unwrap().insert(
-                key.clone(),
-                challenge.key_authorization().as_str().to_string(),
-            );
-            cleanup.keys.push(key);
-            challenge.set_ready().await?;
+            if dns.is_some() {
+                records
+                    .entry(identifier.trim_start_matches("*.").to_string())
+                    .or_default()
+                    .push(challenge.key_authorization().dns_value());
+            } else {
+                let key = (identifier, challenge.token.clone());
+                self.inner.challenges.write().unwrap().insert(
+                    key.clone(),
+                    challenge.key_authorization().as_str().to_string(),
+                );
+                cleanup.keys.push(key);
+                challenge.set_ready().await?;
+            }
         }
-        let retry = RetryPolicy::new().timeout(Duration::from_secs(45));
-        anyhow::ensure!(
-            order.poll_ready(&retry).await? == OrderStatus::Ready,
-            "ACME order is not ready"
-        );
+        if let Some(dns) = dns {
+            for (name, values) in &records {
+                self.publish_txt(dns, name, values, published).await?;
+            }
+            let mut authorizations = order.authorizations();
+            while let Some(authorization) = authorizations.next().await {
+                let mut authorization = authorization?;
+                if authorization.status != AuthorizationStatus::Pending {
+                    continue;
+                }
+                authorization
+                    .challenge(ChallengeType::Dns01)
+                    .context("ACME service has no DNS-01 challenge")?
+                    .set_ready()
+                    .await?;
+            }
+        }
+        let retry = RetryPolicy::new().timeout(match dns {
+            Some(_) => DNS_ORDER_POLL,
+            None => Duration::from_secs(45),
+        });
+        let status = order.poll_ready(&retry).await?;
+        if status != OrderStatus::Ready {
+            let mut problems = Vec::new();
+            let mut authorizations = order.authorizations();
+            while let Some(Ok(authorization)) = authorizations.next().await {
+                for challenge in &authorization.challenges {
+                    if let Some(problem) = &challenge.error {
+                        problems.push(format!("{problem:?}"));
+                    }
+                }
+            }
+            bail!("ACME order is {status:?}: {}", problems.join("; "));
+        }
         let key = rcgen::KeyPair::generate()?;
-        let request =
-            rcgen::CertificateParams::new(vec![hostname.to_string()])?.serialize_request(&key)?;
+        let mut params = rcgen::CertificateParams::new(names)?;
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        let request = params.serialize_request(&key)?;
         order.finalize_csr(request.der()).await?;
         let chain_pem = order.poll_certificate(&retry).await?;
         Ok(CertificateBundle {
@@ -548,6 +747,44 @@ impl CertificateManager {
             chain_pem,
             key_pem: key.serialize_pem(),
         })
+    }
+}
+
+impl CertificateManager {
+    async fn publish_txt(
+        &self,
+        dns: &DnsConfig,
+        name: &str,
+        values: &[String],
+        published: &mut Vec<String>,
+    ) -> anyhow::Result<()> {
+        let client = desec::Desec::new(dns)?;
+        let subname = match name.strip_suffix(&format!(".{}", dns.zone)) {
+            Some(label) => format!("{CHALLENGE_LABEL}.{label}"),
+            None => CHALLENGE_LABEL.to_string(),
+        };
+        let ttl = client.minimum_ttl().await;
+        published.push(subname.clone());
+        client
+            .put_txt(&subname, values, ttl)
+            .await
+            .map_err(|_| anyhow::Error::new(DnsFailure::Refused))?;
+        let servers = match &dns.nameservers {
+            Some(servers) => servers.clone(),
+            None => client
+                .nameserver_addresses()
+                .await
+                .map_err(|_| anyhow::Error::new(DnsFailure::NotReached))?,
+        };
+        desec::wait_for_txt(
+            &servers,
+            &format!("{CHALLENGE_LABEL}.{name}"),
+            values,
+            self.dns_wait(),
+            DNS_POLL,
+        )
+        .await
+        .map_err(|_| anyhow::Error::new(DnsFailure::NotReached))
     }
 }
 
@@ -573,20 +810,65 @@ pub fn read_status(dir: &Path) -> anyhow::Result<Vec<CertificateStatus>> {
         .collect())
 }
 
-/// The ACME account as the Operator sets it: the CA and the contact address.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AcmeSettings {
     pub directory_url: String,
     pub email: String,
+    #[serde(default, deserialize_with = "present")]
+    pub dns: Option<Option<DnsSettings>>,
+}
+
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DnsSettings {
+    pub provider: DnsProvider,
+    pub zone: String,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for DnsSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DnsSettings")
+            .field("zone", &self.zone)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AcmeView {
+    pub directory_url: String,
+    pub email: String,
+    pub dns: Option<DnsView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DnsView {
+    pub provider: DnsProvider,
+    pub zone: String,
+    pub token_set: bool,
 }
 
 pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 
 /// What `public.json` says about the account, or `None` while issuance is off.
-pub fn read_acme(dir: &Path) -> anyhow::Result<Option<AcmeSettings>> {
+pub fn read_acme(dir: &Path) -> anyhow::Result<Option<AcmeView>> {
     reject_symlink(dir)?;
-    Ok(read_config(dir)?.map(|config| AcmeSettings {
+    Ok(read_config(dir)?.map(|config| AcmeView {
+        dns: config.dns.as_ref().map(|dns| DnsView {
+            provider: dns.provider,
+            zone: dns.zone.clone(),
+            token_set: !dns.token.is_empty(),
+        }),
         directory_url: config.directory_url,
         email: config
             .contact
@@ -607,7 +889,29 @@ pub fn write_acme(dir: &Path, settings: &AcmeSettings) -> anyhow::Result<()> {
         "contact must be an email address"
     );
     let previous = read_config(dir)?;
+    let saved_dns = previous.as_ref().and_then(|config| config.dns.clone());
+    let dns = match &settings.dns {
+        None => saved_dns,
+        Some(None) => None,
+        Some(Some(requested)) => {
+            let token = match requested.token.as_deref().map(str::trim) {
+                Some(token) if !token.is_empty() => token.to_string(),
+                _ => saved_dns
+                    .as_ref()
+                    .map(|saved| saved.token.clone())
+                    .context("the DNS token is required")?,
+            };
+            Some(DnsConfig {
+                provider: requested.provider,
+                zone: requested.zone.trim().to_ascii_lowercase(),
+                token,
+                api_url: saved_dns.as_ref().and_then(|saved| saved.api_url.clone()),
+                nameservers: saved_dns.and_then(|saved| saved.nameservers),
+            })
+        }
+    };
     let config = validate_config(CertificateConfig {
+        dns,
         directory_url: settings.directory_url.trim().to_string(),
         contact: vec![format!("mailto:{email}")],
         hostnames: previous
@@ -758,6 +1062,13 @@ fn validate_config(mut config: CertificateConfig) -> anyhow::Result<CertificateC
         anyhow::ensure!(
             names.insert(hostname.clone()),
             "duplicate certificate hostname"
+        );
+    }
+    if let Some(dns) = &mut config.dns {
+        anyhow::ensure!(valid_hostname(&dns.zone), "invalid DNS zone");
+        anyhow::ensure!(
+            !dns.token.is_empty() && dns.token.bytes().all(|b| b.is_ascii_graphic()),
+            "invalid DNS token"
         );
     }
     for contact in &config.contact {

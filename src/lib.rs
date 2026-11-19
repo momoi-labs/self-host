@@ -56,6 +56,7 @@ pub mod settings;
 pub mod source;
 pub mod source_build_guard;
 pub mod store;
+pub mod suffix;
 pub mod tailnet;
 pub mod tasks;
 pub mod terminal;
@@ -3474,10 +3475,53 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), settings);
+        let expected = json!({"directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory", "email": "operator@example.invalid", "dns": null});
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
         let response = send(&router, "/certificates/acme", Some("test-key")).await;
         let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), settings);
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
+
+        let with_dns = json!({"directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory", "email": "operator@example.invalid", "dns": {"provider": "desec", "zone": "int.example.invalid", "token": "super-secret-token"}});
+        let response = put_json(&router, "/certificates/acme", Some("test-key"), with_dns).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("super-secret-token"));
+        let saved_dns =
+            json!({"provider": "desec", "zone": "int.example.invalid", "token_set": true});
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["dns"],
+            saved_dns
+        );
+        let response = send(&router, "/certificates/acme", Some("test-key")).await;
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("super-secret-token"));
+        let keep = json!({"directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory", "email": "operator@example.invalid", "dns": {"provider": "desec", "zone": "int.example.invalid"}});
+        let response = put_json(&router, "/certificates/acme", Some("test-key"), keep).await;
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["dns"],
+            saved_dns
+        );
+        let response = put_json(
+            &router,
+            "/certificates/acme",
+            Some("test-key"),
+            settings.clone(),
+        )
+        .await;
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["dns"],
+            saved_dns,
+            "no dns key keeps it"
+        );
+        let remove = json!({"directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory", "email": "operator@example.invalid", "dns": null});
+        let response = put_json(&router, "/certificates/acme", Some("test-key"), remove).await;
+        let bytes = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["dns"],
+            Value::Null
+        );
 
         let response = put_json(
             &router,
@@ -3514,7 +3558,7 @@ mod tests {
             .iter()
             .filter(|event| event.subject.id == "public-certificates")
             .collect();
-        assert_eq!(certificates.len(), 4, "{recorded:?}");
+        assert_eq!(certificates.len(), 8, "{recorded:?}");
         assert!(
             certificates
                 .iter()
@@ -3590,6 +3634,7 @@ mod tests {
         );
         for invalid in [
             json!({"hostname":"blog.home.lan","path_prefix":"/bad","target":"192.0.2.1:8080"}),
+            json!({"hostname":"console.home.lan","path_prefix":"/","target":"127.0.0.1:8080"}),
             json!({"hostname":"admin.home.lan","path_prefix":"/","target":"127.0.0.1:8080"}),
             json!({"hostname":"blog.home.lan","path_prefix":"/.well-known/acme-challenge","target":"127.0.0.1:8080"}),
         ] {

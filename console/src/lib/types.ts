@@ -292,6 +292,7 @@ export type Inspection = {
 export type AcmeSettings = {
   directory_url: string;
   email: string;
+  dns: { provider: "desec"; zone: string; token_set: boolean } | null;
 };
 
 /** How one public certificate stands, as `GET /certificates` reads it. Times are Unix seconds. */

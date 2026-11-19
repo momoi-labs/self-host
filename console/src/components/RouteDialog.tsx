@@ -103,8 +103,8 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
     : !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(name)
       ? "Use letters, digits and hyphens, with a dot between names."
       : where === OTHER && !name.includes(".")
-        ? "Type the whole domain, such as admin.example.com."
-        : hostname === `admin${zone}`
+        ? "Type the whole domain, such as app.example.com."
+        : hostname === `console${zone}` || hostname === `admin${zone}`
           ? `${hostname} belongs to the Platform.`
           : clash
             ? `${hostname}${prefix === "/" ? "" : prefix} already reaches ${clash.app.name}.`
@@ -155,7 +155,7 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
     }
   }
 
-  const shownHost = name ? hostname : <span className="muted">{where === OTHER ? "admin.example.com" : `name${zone}`}</span>;
+  const shownHost = name ? hostname : <span className="muted">{where === OTHER ? "app.example.com" : `name${zone}`}</span>;
   return (
     <>
       <DialogHeader>
@@ -185,7 +185,7 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
             id="route-hostname"
             label={where === OTHER ? "Hostname" : "Subdomain"}
             className="mono"
-            placeholder={where === OTHER ? "admin.example.com" : "name"}
+            placeholder={where === OTHER ? "app.example.com" : "name"}
             suffix={where === OTHER ? undefined : zone}
             value={label}
             autoFocus

@@ -70,7 +70,7 @@ Everything the Platform answers for under the DNS Suffix: the wildcard, the Reco
 _Avoid_: domain, DNS config, the resolver (that is what asks the Zone)
 
 **Record**:
-One answer in the Zone: a name under the DNS Suffix, a Record Type, a value, a TTL, an optional description and an owner. A Record with an explicit name wins over the wildcard. Owners are the Platform (the wildcard, `admin`), an Application (its Hostname and Aliases), a Virtual machine (its name), or the Operator, who creates, edits and deletes their own.
+One answer in the Zone: a name under the DNS Suffix, a Record Type, a value, a TTL, an optional description and an owner. A Record with an explicit name wins over the wildcard. Owners are the Platform (the wildcard, `console`, `admin`), an Application (its Hostname and Aliases), a Virtual machine (its name), or the Operator, who creates, edits and deletes their own.
 _Avoid_: entry, mapping, DNS rule
 
 **Record Type**:

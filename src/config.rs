@@ -112,7 +112,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         CliConfig {
-            api_base_url: "https://admin.home.lan".into(),
+            api_base_url: "https://console.home.lan".into(),
             api_key: "secret".into(),
         }
         .save()

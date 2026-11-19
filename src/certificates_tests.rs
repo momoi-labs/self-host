@@ -1,4 +1,5 @@
 use super::*;
+use axum::extract::State;
 use std::convert::Infallible;
 use std::sync::{
     Mutex as StdMutex,
@@ -27,7 +28,121 @@ struct Fixture {
     https: std::net::SocketAddr,
     http: std::net::SocketAddr,
     ca: Vec<u8>,
+    dns: Option<Arc<DnsFixture>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+const ZONE: &str = "int.example.invalid";
+const DNS_TOKEN: &str = "fixture-desec-token";
+
+struct TxtRecord {
+    values: Vec<String>,
+    written: std::time::Instant,
+}
+
+struct DnsFixture {
+    table: StdMutex<BTreeMap<String, TxtRecord>>,
+    lags: Vec<Duration>,
+    refuse: AtomicBool,
+    writes: AtomicU64,
+    last_ttl: AtomicU64,
+}
+
+impl DnsFixture {
+    fn answers(&self, server: usize, name: &str) -> Vec<String> {
+        self.table
+            .lock()
+            .unwrap()
+            .get(name)
+            .filter(|record| record.written.elapsed() >= self.lags[server])
+            .map(|record| record.values.clone())
+            .unwrap_or_default()
+    }
+
+    fn put(&self, name: &str, values: Vec<String>, written: std::time::Instant) {
+        self.table
+            .lock()
+            .unwrap()
+            .insert(name.into(), TxtRecord { values, written });
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.table.lock().unwrap().contains_key(name)
+    }
+}
+
+async fn desec_put(
+    State(dns): State<Arc<DnsFixture>>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Vec<Value>>,
+) -> (StatusCode, axum::Json<Value>) {
+    assert_eq!(
+        headers["authorization"],
+        format!("Token {DNS_TOKEN}").as_str()
+    );
+    if dns.refuse.load(Ordering::SeqCst) {
+        return (StatusCode::FORBIDDEN, axum::Json(json!({})));
+    }
+    for rrset in &body {
+        assert_eq!(rrset["type"], "TXT", "the token writes TXT only");
+        let name = format!("{}.{ZONE}", rrset["subname"].as_str().unwrap());
+        let values = rrset["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().trim_matches('"').to_string())
+            .collect();
+        dns.writes.fetch_add(1, Ordering::SeqCst);
+        dns.last_ttl
+            .store(rrset["ttl"].as_u64().unwrap(), Ordering::SeqCst);
+        dns.put(&name, values, std::time::Instant::now());
+    }
+    (StatusCode::OK, axum::Json(json!(body)))
+}
+
+async fn desec_delete(
+    State(dns): State<Arc<DnsFixture>>,
+    axum::extract::Path((_, subname)): axum::extract::Path<(String, String)>,
+) -> StatusCode {
+    dns.table
+        .lock()
+        .unwrap()
+        .remove(&format!("{subname}.{ZONE}"));
+    StatusCode::NO_CONTENT
+}
+
+async fn desec_domain() -> axum::Json<Value> {
+    axum::Json(json!({"minimum_ttl": 900}))
+}
+
+async fn serve_dns(dns: Arc<DnsFixture>, index: usize, socket: tokio::net::UdpSocket) {
+    use hickory_server::proto::op::{Message, MessageType, OpCode};
+    use hickory_server::proto::rr::{RData, Record, rdata::TXT};
+    let mut buffer = vec![0; 4096];
+    loop {
+        let (length, peer) = socket.recv_from(&mut buffer).await.unwrap();
+        let query = Message::from_vec(&buffer[..length]).unwrap();
+        let mut response = Message::new(query.id, MessageType::Response, OpCode::Query);
+        response.metadata.authoritative = true;
+        let question = query.queries[0].clone();
+        let name = question
+            .name()
+            .to_ascii()
+            .trim_end_matches('.')
+            .to_lowercase();
+        for value in dns.answers(index, &name) {
+            response.answers.push(Record::from_rdata(
+                question.name().clone(),
+                60,
+                RData::TXT(TXT::new(vec![value])),
+            ));
+        }
+        response.add_query(question);
+        socket
+            .send_to(&response.to_vec().unwrap(), peer)
+            .await
+            .unwrap();
+    }
 }
 
 impl Drop for Fixture {
@@ -40,12 +155,19 @@ impl Drop for Fixture {
 }
 
 struct AcmeOrder {
-    hostname: String,
-    token: String,
-    ready: bool,
+    names: Vec<String>,
+    tokens: Vec<String>,
+    valid: Vec<bool>,
     chain: Option<String>,
 }
+
+impl AcmeOrder {
+    fn ready(&self) -> bool {
+        self.valid.iter().all(|valid| *valid)
+    }
+}
 struct AcmeState {
+    dns_challenges: usize,
     nonce: u64,
     nonces: BTreeSet<String>,
     jwk: Option<Value>,
@@ -62,6 +184,7 @@ struct AcmeService {
     state: StdMutex<AcmeState>,
     fail: AtomicBool,
     failed_hostname: StdMutex<Option<String>>,
+    dns: Option<Arc<DnsFixture>>,
 }
 
 impl AcmeService {
@@ -90,15 +213,37 @@ impl AcmeService {
     fn order(&self, id: usize) -> Value {
         let state = self.state.lock().unwrap();
         let order = &state.orders[id];
-        let mut value = json!({"status": if order.chain.is_some() { "valid" } else if order.ready { "ready" } else { "pending" }, "identifiers":[{"type":"dns","value":order.hostname}], "authorizations":[format!("{}/authz/{id}",self.base)], "finalize":format!("{}/finalize/{id}",self.base)});
+        let identifiers: Vec<Value> = order
+            .names
+            .iter()
+            .map(|name| json!({"type":"dns","value":name}))
+            .collect();
+        let authorizations: Vec<String> = (0..order.names.len())
+            .map(|index| format!("{}/authz/{id}-{index}", self.base))
+            .collect();
+        let mut value = json!({"status": if order.chain.is_some() { "valid" } else if order.ready() { "ready" } else { "pending" }, "identifiers":identifiers, "authorizations":authorizations, "finalize":format!("{}/finalize/{id}",self.base)});
         if order.chain.is_some() {
             value["certificate"] = json!(format!("{}/certificate/{id}", self.base));
         }
         value
     }
-    fn challenge(&self, id: usize, valid: bool) -> Value {
+    fn challenge(&self, id: usize, index: usize) -> Value {
         let state = self.state.lock().unwrap();
-        json!({"type":"http-01","url":format!("{}/challenge/{id}",self.base),"status": if valid { "valid" } else { "pending" },"token":state.orders[id].token})
+        let order = &state.orders[id];
+        let kind = if self.dns.is_some() && order.names[index].ends_with(ZONE) {
+            "dns-01"
+        } else {
+            "http-01"
+        };
+        json!({"type":kind,"url":format!("{}/challenge/{id}-{index}",self.base),"status": if order.valid[index] { "valid" } else { "pending" },"token":order.tokens[index]})
+    }
+
+    fn dns_value(&self, token: &str) -> String {
+        let jwk = self.state.lock().unwrap().jwk.clone().unwrap();
+        let canonical =
+            json!({"crv":jwk["crv"],"kty":jwk["kty"],"x":jwk["x"],"y":jwk["y"]}).to_string();
+        let thumbprint = URL_SAFE_NO_PAD.encode(Sha256::digest(canonical));
+        URL_SAFE_NO_PAD.encode(Sha256::digest(format!("{token}.{thumbprint}")))
     }
     fn verified_payload(&self, url: &str, body: &[u8]) -> Value {
         let envelope: Value = serde_json::from_slice(body).unwrap();
@@ -182,15 +327,28 @@ impl AcmeService {
             {
                 return self.json(503, json!({"type":"urn:ietf:params:acme:error:serverInternal","detail":"fixture issuance unavailable"}), None);
             }
-            assert_eq!(payload["identifiers"].as_array().unwrap().len(), 1);
-            assert_eq!(payload["identifiers"][0]["type"], "dns");
+            let names: Vec<String> = payload["identifiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|identifier| {
+                    assert_eq!(identifier["type"], "dns");
+                    identifier["value"].as_str().unwrap().to_string()
+                })
+                .collect();
+            match names[0].strip_prefix("*.") {
+                Some(base) => assert_eq!(names, vec![names[0].clone(), base.to_string()]),
+                None => assert_eq!(names.len(), 1),
+            }
             let id = {
                 let mut state = self.state.lock().unwrap();
                 let id = state.orders.len();
                 state.orders.push(AcmeOrder {
-                    hostname: payload["identifiers"][0]["value"].as_str().unwrap().into(),
-                    token: format!("synthetic-token-{id}"),
-                    ready: false,
+                    tokens: (0..names.len())
+                        .map(|index| format!("synthetic-token-{id}-{index}"))
+                        .collect(),
+                    valid: vec![false; names.len()],
+                    names,
                     chain: None,
                 });
                 id
@@ -202,26 +360,61 @@ impl AcmeService {
             );
         }
         let (kind, id) = path.trim_start_matches('/').split_once('/').unwrap();
-        let id: usize = id.parse().unwrap();
+        let (id, index) = match id.split_once('-') {
+            Some((id, index)) => (id.parse().unwrap(), index.parse().unwrap()),
+            None => (id.parse::<usize>().unwrap(), 0),
+        };
         match kind {
             "authz" => {
                 assert!(payload.is_null());
-                let (name, ready) = {
+                let (name, valid) = {
                     let state = self.state.lock().unwrap();
-                    (state.orders[id].hostname.clone(), state.orders[id].ready)
+                    (
+                        state.orders[id].names[index].clone(),
+                        state.orders[id].valid[index],
+                    )
                 };
-                self.json(200, json!({"identifier":{"type":"dns","value":name},"status":if ready { "valid" } else { "pending" },"challenges":[self.challenge(id, ready)]}), None)
+                let wildcard = name.starts_with("*.");
+                self.json(200, json!({"identifier":{"type":"dns","value":name.trim_start_matches("*.")},"wildcard":wildcard,"status":if valid { "valid" } else { "pending" },"challenges":[self.challenge(id, index)]}), None)
             }
             "challenge" => {
                 assert_eq!(payload, json!({}));
-                let (name, token, jwk) = {
+                let (name, token, jwk, siblings) = {
                     let state = self.state.lock().unwrap();
+                    let order = &state.orders[id];
+                    let record = order.names[index].trim_start_matches("*.").to_string();
+                    let siblings: Vec<String> = order
+                        .names
+                        .iter()
+                        .zip(&order.tokens)
+                        .filter(|(name, _)| name.trim_start_matches("*.") == record)
+                        .map(|(_, token)| token.clone())
+                        .collect();
                     (
-                        state.orders[id].hostname.clone(),
-                        state.orders[id].token.clone(),
+                        record,
+                        order.tokens[index].clone(),
                         state.jwk.clone().unwrap(),
+                        siblings,
                     )
                 };
+                if let Some(dns) = self.dns.as_ref().filter(|_| name.ends_with(ZONE)) {
+                    let mut expected: Vec<String> =
+                        siblings.iter().map(|token| self.dns_value(token)).collect();
+                    expected.sort();
+                    for server in 0..dns.lags.len() {
+                        let mut served = dns.answers(server, &format!("_acme-challenge.{name}"));
+                        served.sort();
+                        assert_eq!(
+                            served, expected,
+                            "every nameserver serves exactly the order's values at validation"
+                        );
+                    }
+                    let mut state = self.state.lock().unwrap();
+                    state.orders[id].valid[index] = true;
+                    state.dns_challenges += 1;
+                    drop(state);
+                    return self.json(200, self.challenge(id, index), None);
+                }
                 // An independent HTTP client fetches the actual proxy's reserved path.
                 let response = reqwest::Client::new()
                     .get(format!(
@@ -265,10 +458,10 @@ impl AcmeService {
                 );
                 {
                     let mut state = self.state.lock().unwrap();
-                    state.orders[id].ready = true;
+                    state.orders[id].valid[index] = true;
                     state.challenges += 1;
                 }
-                self.json(200, self.challenge(id, true), None)
+                self.json(200, self.challenge(id, index), None)
             }
             "order" => {
                 assert!(payload.is_null());
@@ -279,14 +472,17 @@ impl AcmeService {
                     .decode(payload["csr"].as_str().unwrap())
                     .unwrap();
                 let mut csr = CertificateSigningRequestParams::from_der(&csr.into()).unwrap(); // verifies CSR signature
-                let hostname = {
+                let names = {
                     let state = self.state.lock().unwrap();
-                    assert!(state.orders[id].ready);
-                    state.orders[id].hostname.clone()
+                    assert!(state.orders[id].ready());
+                    state.orders[id].names.clone()
                 };
                 assert_eq!(
                     csr.params.subject_alt_names,
-                    vec![rcgen::SanType::DnsName(hostname.try_into().unwrap())]
+                    names
+                        .into_iter()
+                        .map(|name| rcgen::SanType::DnsName(name.try_into().unwrap()))
+                        .collect::<Vec<_>>()
                 );
                 csr.params.not_before =
                     time::OffsetDateTime::now_utc() - time::Duration::seconds(60);
@@ -310,6 +506,10 @@ static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_dns(None).await
+    }
+
+    async fn with_dns(lags: Option<Vec<Duration>>) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "self-host-certificates-{}-{}",
             std::process::id(),
@@ -351,13 +551,60 @@ impl Fixture {
         std::fs::write(dir.join("ca.pem"), local_cert.pem()).unwrap();
         let state_dir = dir.join("state/certificates");
         secure_dir(&state_dir).unwrap();
+        let mut hostnames = vec!["blog.example.invalid".into(), "alias.other.invalid".into()];
+        let mut tasks = Vec::new();
+        let mut dns_config = None;
+        let dns = match lags {
+            Some(lags) => {
+                let dns = Arc::new(DnsFixture {
+                    table: StdMutex::new(BTreeMap::new()),
+                    lags,
+                    refuse: AtomicBool::new(false),
+                    writes: AtomicU64::new(0),
+                    last_ttl: AtomicU64::new(0),
+                });
+                let mut nameservers = Vec::new();
+                for index in 0..dns.lags.len() {
+                    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                    nameservers.push(socket.local_addr().unwrap());
+                    tasks.push(tokio::spawn(serve_dns(dns.clone(), index, socket)));
+                }
+                let api = Router::new()
+                    .route("/api/v1/domains/{zone}/", get(desec_domain))
+                    .route(
+                        "/api/v1/domains/{zone}/rrsets/",
+                        axum::routing::put(desec_put),
+                    )
+                    .route(
+                        "/api/v1/domains/{zone}/rrsets/{subname}/TXT/",
+                        axum::routing::delete(desec_delete),
+                    )
+                    .with_state(dns.clone());
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let api_url = format!("http://{}", listener.local_addr().unwrap());
+                tasks.push(tokio::spawn(async move {
+                    axum::serve(listener, api).await.unwrap();
+                }));
+                hostnames.push(format!("yard.{ZONE}"));
+                dns_config = Some(DnsConfig {
+                    provider: DnsProvider::Desec,
+                    zone: ZONE.into(),
+                    token: DNS_TOKEN.into(),
+                    api_url: Some(api_url),
+                    nameservers: Some(nameservers),
+                });
+                Some(dns)
+            }
+            None => None,
+        };
         atomic_json(
             &state_dir.join("public.json"),
             &CertificateConfig {
                 directory_url: format!("https://localhost:{acme_port}/directory"),
                 contact: vec!["mailto:operator@example.invalid".into()],
-                hostnames: vec!["blog.example.invalid".into(), "alias.other.invalid".into()],
+                hostnames,
                 ca_cert_path: Some(dir.join("test-ca.pem")),
+                dns: dns_config,
             },
         )
         .unwrap();
@@ -372,7 +619,7 @@ impl Fixture {
                 bind_ip: "127.0.0.1".parse().unwrap(),
                 https_port: 0,
                 http_port: 0,
-                admin_hostname: "admin.home.lan".into(),
+                console_hostname: "console.home.lan".into(),
             },
             Router::new().route("/", get(|| async { "management" })),
             table,
@@ -393,6 +640,7 @@ impl Fixture {
             ca,
             key: ca_key,
             state: StdMutex::new(AcmeState {
+                dns_challenges: 0,
                 nonce: 0,
                 nonces: BTreeSet::new(),
                 jwk: None,
@@ -403,6 +651,7 @@ impl Fixture {
             }),
             fail: AtomicBool::new(false),
             failed_hostname: StdMutex::new(None),
+            dns: dns.clone(),
         });
         let serving = service.clone();
         let task = tokio::spawn(async move {
@@ -430,7 +679,11 @@ impl Fixture {
             https,
             http,
             ca: ca_der,
-            tasks: vec![proxy, task],
+            dns,
+            tasks: {
+                tasks.extend([proxy, task]);
+                tasks
+            },
         }
     }
 
@@ -525,7 +778,7 @@ async fn local_acme_checks_signed_requests_challenges_csr_sni_restart_and_live_r
             .is_err(),
         "missing managed certificate must refuse TLS"
     );
-    let local = fixture.peer_leaf("admin.home.lan", true).await.unwrap();
+    let local = fixture.peer_leaf("console.home.lan", true).await.unwrap();
     for name in ["unknown.other.invalid", "deep.app.home.lan"] {
         assert!(
             fixture.peer_leaf(name, true).await.is_err(),
@@ -538,7 +791,7 @@ async fn local_acme_checks_signed_requests_challenges_csr_sni_restart_and_live_r
         );
     }
     assert!(
-        fixture.peer_leaf("admin.home.lan", false).await.is_ok(),
+        fixture.peer_leaf("console.home.lan", false).await.is_ok(),
         "no SNI keeps LAN compatibility"
     );
     fixture.manager.reconcile().await.unwrap();
@@ -626,15 +879,15 @@ async fn local_acme_checks_signed_requests_challenges_csr_sni_restart_and_live_r
     for (host, path) in [
         (
             "blog.example.invalid",
-            "/.well-known/acme-challenge/synthetic-token-0",
+            "/.well-known/acme-challenge/synthetic-token-0-0",
         ),
         (
             "unknown.invalid",
-            "/.well-known/acme-challenge/synthetic-token-0",
+            "/.well-known/acme-challenge/synthetic-token-0-0",
         ),
         (
             "blog.example.invalid",
-            "/.well-known/acme-challenge/%73ynthetic-token-0",
+            "/.well-known/acme-challenge/%73ynthetic-token-0-0",
         ),
     ] {
         let response = reqwest::Client::new()
@@ -796,6 +1049,7 @@ fn certificate_config_refuses_wildcards_ips_duplicates_path_traversal_and_creden
         contact: vec![],
         hostnames: vec!["blog.example.invalid".into()],
         ca_cert_path: None,
+        dns: None,
     };
     for hostname in [
         "*.example.invalid",
@@ -1007,9 +1261,17 @@ fn acme_settings_round_trip_keep_the_files_extras_and_restart_the_account_for_a_
     let settings = AcmeSettings {
         directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory".into(),
         email: "operator@example.invalid".into(),
+        dns: None,
     };
     write_acme(&dir, &settings).unwrap();
-    assert_eq!(read_acme(&dir).unwrap(), Some(settings.clone()));
+    assert_eq!(
+        read_acme(&dir).unwrap(),
+        Some(AcmeView {
+            directory_url: settings.directory_url.clone(),
+            email: settings.email.clone(),
+            dns: None,
+        })
+    );
     let config = read_optional::<CertificateConfig>(&dir.join("public.json"))
         .unwrap()
         .unwrap();
@@ -1066,7 +1328,8 @@ fn acme_settings_round_trip_keep_the_files_extras_and_restart_the_account_for_a_
                 &dir,
                 &AcmeSettings {
                     directory_url: directory_url.into(),
-                    email: email.into()
+                    email: email.into(),
+                    dns: None,
                 }
             )
             .is_err(),
@@ -1138,4 +1401,344 @@ fn public_hostnames_are_the_applications_names_outside_the_suffix() {
             "www.example.invalid".to_string(),
         ])
     );
+}
+
+fn first_status(fixture: &Fixture, hostname: &str) -> CertificateStatus {
+    fixture
+        .manager
+        .status()
+        .into_iter()
+        .find(|status| status.hostname == hostname)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn names_in_the_zone_use_dns_01_and_leave_no_record_while_others_keep_http_01() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::ZERO])).await;
+    fixture.manager.reconcile().await.unwrap();
+    let dns = fixture.dns.as_ref().unwrap();
+    let yard = format!("yard.{ZONE}");
+    assert!(fixture.peer_leaf(&yard, true).await.is_ok());
+    assert!(
+        fixture
+            .peer_leaf("blog.example.invalid", true)
+            .await
+            .is_ok()
+    );
+    {
+        let state = fixture.service.state.lock().unwrap();
+        assert_eq!(state.dns_challenges, 1);
+        assert_eq!(state.challenges, 2, "the other two names use HTTP-01");
+    }
+    assert_eq!(dns.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(dns.last_ttl.load(Ordering::SeqCst), 900);
+    assert!(!dns.has(&format!("_acme-challenge.{yard}")));
+    assert_eq!(first_status(&fixture, &yard).state, CertificateState::Valid);
+
+    let state = fixture.dir.join("state/certificates");
+    assert_eq!(
+        read_acme(&state).unwrap().unwrap().dns,
+        Some(DnsView {
+            provider: DnsProvider::Desec,
+            zone: ZONE.into(),
+            token_set: true,
+        })
+    );
+    let view = serde_json::to_string(&read_acme(&state).unwrap()).unwrap();
+    assert!(!view.contains(DNS_TOKEN));
+    assert!(
+        !serde_json::to_string(&fixture.manager.status())
+            .unwrap()
+            .contains(DNS_TOKEN)
+    );
+    assert!(
+        !std::fs::read_to_string(state.join("status.json"))
+            .unwrap()
+            .contains(DNS_TOKEN)
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(state.join("public.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_nameserver_that_answers_late_is_waited_for() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::from_millis(2500)])).await;
+    let started = std::time::Instant::now();
+    fixture.manager.reconcile().await.unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(2500));
+    assert_eq!(
+        first_status(&fixture, &format!("yard.{ZONE}")).state,
+        CertificateState::Valid
+    );
+}
+
+#[tokio::test]
+async fn a_stale_txt_from_a_crashed_run_is_replaced_not_trusted() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::ZERO])).await;
+    let dns = fixture.dns.as_ref().unwrap();
+    let name = format!("_acme-challenge.yard.{ZONE}");
+    dns.put(
+        &name,
+        vec!["stale-value-from-a-crashed-run".into()],
+        std::time::Instant::now() - Duration::from_secs(3600),
+    );
+    fixture.manager.reconcile().await.unwrap();
+    assert_eq!(
+        first_status(&fixture, &format!("yard.{ZONE}")).state,
+        CertificateState::Valid
+    );
+    assert!(!dns.has(&name));
+}
+
+#[tokio::test]
+async fn a_record_that_never_reaches_every_nameserver_says_so_and_is_removed() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::from_secs(3600)])).await;
+    let dns = fixture.dns.as_ref().unwrap();
+    let yard = format!("yard.{ZONE}");
+    fixture.manager.set_dns_wait(Duration::from_secs(5));
+    fixture.manager.reconcile().await.unwrap();
+    let status = first_status(&fixture, &yard);
+    assert_eq!(
+        status.last_error.as_deref(),
+        Some("challenge record did not reach the nameservers")
+    );
+    assert_eq!(status.state, CertificateState::Pending);
+    assert!(!dns.has(&format!("_acme-challenge.{yard}")));
+}
+
+#[tokio::test]
+async fn a_refused_record_keeps_the_old_certificate_and_retries_in_an_hour() {
+    let yard = format!("yard.{ZONE}");
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::ZERO])).await;
+    let dns = fixture.dns.as_ref().unwrap();
+    fixture.manager.reconcile().await.unwrap();
+    let first = fixture.peer_leaf(&yard, true).await.unwrap();
+    dns.refuse.store(true, Ordering::SeqCst);
+    let renewal = first_status(&fixture, &yard).renew_at.unwrap() + 1;
+    fixture.manager.reconcile_at(renewal).await.unwrap();
+    let status = first_status(&fixture, &yard);
+    assert_eq!(
+        status.last_error.as_deref(),
+        Some("DNS provider refused the challenge record")
+    );
+    assert_eq!(status.state, CertificateState::RenewalFailed);
+    assert_eq!(status.retry_at, Some(renewal + 3600));
+    assert_eq!(fixture.peer_leaf(&yard, true).await.unwrap(), first);
+}
+
+fn wildcard_orders(fixture: &Fixture) -> Vec<Vec<String>> {
+    fixture
+        .service
+        .state
+        .lock()
+        .unwrap()
+        .orders
+        .iter()
+        .filter(|order| order.names[0].starts_with("*."))
+        .map(|order| order.names.clone())
+        .collect()
+}
+
+fn local_leaf(fixture: &Fixture) -> Vec<u8> {
+    pem::parse(std::fs::read(fixture.dir.join("cert.pem")).unwrap())
+        .unwrap()
+        .into_contents()
+}
+
+#[tokio::test]
+async fn the_suffix_inside_the_zone_gets_one_wildcard_through_a_late_nameserver() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::from_millis(2500)])).await;
+    let dns = fixture.dns.as_ref().unwrap();
+    fixture.manager.set_suffix(ZONE);
+    let started = std::time::Instant::now();
+    fixture.manager.reconcile().await.unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(2500));
+    let wildcard = format!("*.{ZONE}");
+    assert_eq!(
+        wildcard_orders(&fixture),
+        vec![vec![wildcard.clone(), ZONE.to_string()]]
+    );
+    assert_eq!(
+        first_status(&fixture, &wildcard).state,
+        CertificateState::Valid
+    );
+    assert!(!dns.has(&format!("_acme-challenge.{ZONE}")));
+    let app = fixture
+        .peer_leaf(&format!("app.{ZONE}"), true)
+        .await
+        .unwrap();
+    assert_eq!(fixture.peer_leaf(ZONE, true).await.unwrap(), app);
+    assert_eq!(
+        fixture
+            .peer_leaf(&format!("console.{ZONE}"), true)
+            .await
+            .unwrap(),
+        app
+    );
+    assert_ne!(
+        fixture
+            .peer_leaf(&format!("yard.{ZONE}"), true)
+            .await
+            .unwrap(),
+        app,
+        "a name with its own certificate keeps it"
+    );
+    assert_eq!(
+        fixture
+            .peer_leaf_unverified(&format!("deep.app.{ZONE}"))
+            .await
+            .unwrap(),
+        local_leaf(&fixture),
+        "a wildcard covers one label only"
+    );
+}
+
+#[tokio::test]
+async fn a_managed_name_without_a_valid_own_certificate_is_served_by_the_wildcard() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::ZERO])).await;
+    let yard = format!("yard.{ZONE}");
+    fixture.manager.set_suffix(ZONE);
+    fixture.manager.reconcile().await.unwrap();
+    let own = fixture.peer_leaf(&yard, true).await.unwrap();
+    let wildcard = fixture
+        .peer_leaf(&format!("app.{ZONE}"), true)
+        .await
+        .unwrap();
+    assert_ne!(own, wildcard);
+    fixture
+        .manager
+        .resolver()
+        .public
+        .write()
+        .unwrap()
+        .remove(&yard);
+    assert_eq!(fixture.peer_leaf(&yard, true).await.unwrap(), wildcard);
+}
+
+#[tokio::test]
+async fn names_in_the_suffix_get_the_lan_leaf_until_the_wildcard_is_issued() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::ZERO])).await;
+    let dns = fixture.dns.as_ref().unwrap();
+    let app = format!("app.{ZONE}");
+    let wildcard = format!("*.{ZONE}");
+    fixture.manager.set_suffix(ZONE);
+    assert_eq!(
+        fixture.peer_leaf_unverified(&app).await.unwrap(),
+        local_leaf(&fixture)
+    );
+    dns.refuse.store(true, Ordering::SeqCst);
+    let now = now();
+    fixture.manager.reconcile_at(now).await.unwrap();
+    let status = first_status(&fixture, &wildcard);
+    assert_eq!(status.state, CertificateState::Pending);
+    assert_eq!(
+        status.last_error.as_deref(),
+        Some("DNS provider refused the challenge record")
+    );
+    assert_eq!(
+        fixture.peer_leaf_unverified(&app).await.unwrap(),
+        local_leaf(&fixture)
+    );
+    dns.refuse.store(false, Ordering::SeqCst);
+    fixture
+        .manager
+        .reconcile_at(status.retry_at.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        first_status(&fixture, &wildcard).state,
+        CertificateState::Valid
+    );
+    assert_ne!(
+        fixture.peer_leaf(&app, true).await.unwrap(),
+        local_leaf(&fixture)
+    );
+}
+
+#[tokio::test]
+async fn the_wildcard_renews_at_its_renewal_time() {
+    let fixture = Fixture::with_dns(Some(vec![Duration::ZERO, Duration::ZERO])).await;
+    let app = format!("app.{ZONE}");
+    let wildcard = format!("*.{ZONE}");
+    fixture.manager.set_suffix(ZONE);
+    fixture.manager.reconcile().await.unwrap();
+    let first = fixture.peer_leaf(&app, true).await.unwrap();
+    let status = first_status(&fixture, &wildcard);
+    fixture
+        .manager
+        .reconcile_at(status.renew_at.unwrap() - 1)
+        .await
+        .unwrap();
+    assert_eq!(wildcard_orders(&fixture).len(), 1);
+    fixture
+        .manager
+        .reconcile_at(status.renew_at.unwrap() + 1)
+        .await
+        .unwrap();
+    assert_eq!(wildcard_orders(&fixture).len(), 2);
+    assert_ne!(fixture.peer_leaf(&app, true).await.unwrap(), first);
+    let renewed = first_status(&fixture, &wildcard);
+    assert_eq!(renewed.state, CertificateState::Valid);
+    assert!(renewed.renew_at > status.renew_at);
+}
+
+#[test]
+fn dns_settings_keep_the_token_replace_the_zone_and_never_show_the_token() {
+    let dir = std::env::temp_dir().join(format!(
+        "self-host-dns-settings-{}-{}",
+        std::process::id(),
+        FIXTURE_ID.fetch_add(1, Ordering::SeqCst)
+    ));
+    let settings = |dns: Option<Option<DnsSettings>>| AcmeSettings {
+        directory_url: LETS_ENCRYPT_DIRECTORY.into(),
+        email: "operator@example.invalid".into(),
+        dns,
+    };
+    let zone = |zone: &str, token: Option<&str>| {
+        Some(Some(DnsSettings {
+            provider: DnsProvider::Desec,
+            zone: zone.into(),
+            token: token.map(Into::into),
+        }))
+    };
+    assert!(write_acme(&dir, &settings(zone(ZONE, None))).is_err());
+    assert!(write_acme(&dir, &settings(zone(ZONE, Some("bad token")))).is_err());
+    assert!(write_acme(&dir, &settings(zone("not a zone", Some("secret")))).is_err());
+    write_acme(&dir, &settings(zone(ZONE, Some("secret")))).unwrap();
+    let saved = read_acme(&dir).unwrap().unwrap();
+    assert_eq!(saved.dns.unwrap().zone, ZONE);
+    assert!(
+        !serde_json::to_string(&read_acme(&dir).unwrap())
+            .unwrap()
+            .contains("secret")
+    );
+
+    write_acme(&dir, &settings(zone("other.example.invalid", None))).unwrap();
+    let config = read_config(&dir).unwrap().unwrap().dns.unwrap();
+    assert_eq!(
+        (config.zone.as_str(), config.token.as_str()),
+        ("other.example.invalid", "secret")
+    );
+
+    write_acme(&dir, &settings(None)).unwrap();
+    assert!(
+        read_config(&dir).unwrap().unwrap().dns.is_some(),
+        "absent keeps it"
+    );
+    write_acme(&dir, &settings(Some(None))).unwrap();
+    assert!(
+        read_config(&dir).unwrap().unwrap().dns.is_none(),
+        "null removes it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
