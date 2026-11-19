@@ -481,6 +481,9 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
    the left and the selected step's output as a LogView on the right. The
    panel gives up its padding so the split reaches the card's edges. */
 .run { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+@media (max-width: 1023px) {
+  .run { overflow-y: auto; }
+}
 .run-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--spacing-md); padding: var(--spacing-xl) var(--spacing-xl) var(--spacing-lg); }
 .run-head p { margin: 0; }
 .run-title { font-size: var(--type-size-title); font-weight: 600; display: flex; align-items: center; gap: var(--spacing-sm); margin-block-end: var(--spacing-2xs); }
