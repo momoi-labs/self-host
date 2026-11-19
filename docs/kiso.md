@@ -107,8 +107,9 @@ Other components above live in `console/src/components/`.
 - A list page is a `PageHeader` with a title, a one-line description and the
   primary action, then the filters, then the table. The table and its headers
   always render. Loading is `Skeleton` rows. An empty list is an `EmptyState`
-  in the table body, with an icon, a title, one sentence and an action when
-  the Operator can act. Overview's group tables follow the same rule. Only
+  in the table body, with a title and one sentence, no icon and no button.
+  The header holds the action. Overview's group tables follow the same rule.
+  Only
   Overview's empty Host is a standalone `EmptyState` in a `Card`.
 - No disabled header action. Hide an action the Operator cannot take, and let
   the empty state say why. Routes hides Add route until an Application exists.

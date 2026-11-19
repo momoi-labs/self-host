@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Button, Card, CardContent, CardHeader,
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-  EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle, FormField,
+  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField,
   KV, KVKey, KVValue, PageHeader, PageHeaderDescription, PageHeaderTitle, Search,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -122,10 +122,8 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
                 {Array.from({ length: 7 }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}
               </TableRow>)) : rows.length === 0 ? <TableRow><TableCell colSpan={7}>
                 <EmptyState variant="first-run">
-                  <EmptyStateIcon><Icon name="globe" size="lg" /></EmptyStateIcon>
                   <EmptyStateTitle>No records yet</EmptyStateTitle>
                   <EmptyStateDescription>Create a Record, or check the Zone diagnostics below.</EmptyStateDescription>
-                  <EmptyStateActions><Button variant="primary" onClick={() => open({ mode: "create" })}><Icon name="plus" />New record</Button></EmptyStateActions>
                 </EmptyState>
               </TableCell></TableRow> : visible.length === 0 ? <TableRow><TableCell colSpan={7}>No records match your filters.</TableCell></TableRow> : visible.map(row => (
                 <TableRow key={`${row.name}/${row.type}`}>

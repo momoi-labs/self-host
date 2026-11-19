@@ -8,7 +8,6 @@ import {
   EmptyState,
   EmptyStateActions,
   EmptyStateDescription,
-  EmptyStateIcon,
   EmptyStateTitle,
   PageHeader,
   PageHeaderDescription,
@@ -108,9 +107,6 @@ export function Overview({
         <Card>
           <CardContent>
             <EmptyState variant="first-run">
-              <EmptyStateIcon>
-                <Icon name="box" size="lg" />
-              </EmptyStateIcon>
               <EmptyStateTitle>Nothing running yet</EmptyStateTitle>
               <EmptyStateDescription>
                 Deploy an application or create a virtual machine, and reach it from your LAN.
@@ -160,10 +156,8 @@ export function Overview({
                     <TableRow>
                       <TableCell colSpan={5}>
                         <EmptyState variant="first-run">
-                          <EmptyStateIcon><Icon name="box" size="lg" /></EmptyStateIcon>
                           <EmptyStateTitle>No applications yet</EmptyStateTitle>
                           <EmptyStateDescription>Deploy a container image, a Git repository or a native process.</EmptyStateDescription>
-                          <EmptyStateActions><Button variant="primary" onClick={onDeploy}><Icon name="plus" />Deploy application</Button></EmptyStateActions>
                         </EmptyState>
                       </TableCell>
                     </TableRow>
@@ -257,10 +251,8 @@ export function Overview({
                     <TableRow>
                       <TableCell colSpan={3}>
                         <EmptyState variant="first-run">
-                          <EmptyStateIcon><Icon name="database" size="lg" /></EmptyStateIcon>
                           <EmptyStateTitle>No databases yet</EmptyStateTitle>
                           <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
-                          <EmptyStateActions><Button variant="primary" onClick={onNewDatabase}><Icon name="plus" />New database</Button></EmptyStateActions>
                         </EmptyState>
                       </TableCell>
                     </TableRow>
@@ -340,10 +332,8 @@ export function Overview({
                     <TableRow>
                       <TableCell colSpan={6}>
                         <EmptyState variant="first-run">
-                          <EmptyStateIcon><Icon name="screen" size="lg" /></EmptyStateIcon>
                           <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
                           <EmptyStateDescription>Create a persistent workspace with your tools and repositories, reachable over SSH.</EmptyStateDescription>
-                          <EmptyStateActions><Button variant="primary" onClick={onNewMachine}><Icon name="plus" />Create virtual machine</Button></EmptyStateActions>
                         </EmptyState>
                       </TableCell>
                     </TableRow>

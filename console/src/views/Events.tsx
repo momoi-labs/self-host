@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import {
   Badge, Button, Card, CardContent, CardHeader,
-  EmptyState, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
+  EmptyState, EmptyStateDescription, EmptyStateTitle,
   PageHeader, PageHeaderDescription, PageHeaderTitle,
   Pagination, PaginationEllipsis, PaginationNext, PaginationPage, PaginationPrevious,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, Spinner,
@@ -117,7 +117,6 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
               <TableBody>{!rows.length ? (loading ? [0, 1, 2].map(row => <TableRow key={row}>
                 {Array.from({ length: 5 }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}
               </TableRow>) : <TableRow><TableCell colSpan={5}>{error ? "Could not load events." : filtered ? "No events match your filters." : <EmptyState variant="informational">
-                <EmptyStateIcon><Icon name="history" size="lg" /></EmptyStateIcon>
                 <EmptyStateTitle>No events yet</EmptyStateTitle>
                 <EmptyStateDescription>Service and virtual machine activity will appear here.</EmptyStateDescription>
               </EmptyState>}</TableCell></TableRow>) : rows.map(event => <TableRow key={event.id} data-state={selected?.id === event.id ? "selected" : undefined}
