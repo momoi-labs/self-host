@@ -216,9 +216,6 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 .disclosure summary { cursor: pointer; font-weight: var(--type-weight-medium); }
 .disclosure[open] summary { margin-block-end: var(--spacing-md); }
 .disclosure ol, .disclosure ul { margin: 0; padding-inline-start: var(--spacing-lg); color: var(--color-muted-foreground); }
-.dns-instructions { display: grid; gap: var(--spacing-lg); min-width: 0; }
-.dns-instructions > section + section { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
-.dns-instructions p { max-width: 65ch; }
 
 /* A route reads as one address: the hostname, then its path in a quieter tone. */
 /* A card whose header carries an action beside its title: kiso's header is a
@@ -539,19 +536,34 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .changes-diff-added { color: var(--color-success, #067647); }
 .events-changes { margin: 0 0 var(--spacing-xl); }
 
-/* A pane a link scrolls to stops below the sticky header, not under it. */
-.grid-pane { scroll-margin-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); }
 /* A form that is a card's body ends in the card's rounded corners. */
 .card > .form { border-radius: inherit; }
-/* A pane holding a form gives its padding to the form, so the save bar spans the pane as it spans a card. */
-.grid-pane-body:has(> .form), .grid-pane-body:has(> .empty-frame:only-child) { padding: 0; }
 .empty-frame { border-block-start: 1px solid var(--color-border); }
-.table-toolbar:has(+ .empty-frame), .grid-pane-head:has(+ .grid-pane-body > .empty-frame:only-child) { border-bottom: 0; }
-:where([data-corner-style="pixel"]) .grid-pane > .grid-pane-body:has(> :is(.form, .table-wrap[data-frame="none"], .empty-frame):last-child) {
+.table-toolbar:has(+ .empty-frame) { border-bottom: 0; }
+.settings-page, .setting-card { scroll-margin-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); }
+.settings-frame { container-type: inline-size; }
+.settings-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); align-items: start; }
+.settings-nav { display: none; }
+.settings-nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-2xs); }
+.settings-nav .settings-nav-settings { margin-block: var(--spacing-2xs); padding-inline-start: var(--spacing-xl); }
+.settings-nav-settings .nav-item { height: auto; min-height: var(--size-control-sm); font-size: var(--type-size-label); }
+.settings-select-item { display: inline-flex; align-items: center; gap: var(--spacing-sm); }
+.settings-sections, .settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); min-width: 0; }
+.settings-section[hidden] { display: none; }
+@container (min-width: 52rem) {
+  .settings-layout { grid-template-columns: 14rem minmax(0, 1fr); }
+  .settings-nav { display: block; position: sticky; inset-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); padding-inline-start: var(--spacing-sm); }
+  .settings-select { display: none; }
+}
+.setting-card > .card-header.between { flex-wrap: wrap; }
+.setting-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-xs); }
+.setting-card > .card-body { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.setting-card > .card-body:has(> .form), .setting-card > .card-body:has(> .empty-frame:only-child) { padding: 0; }
+:where([data-corner-style="pixel"]) .setting-card > .card-body:has(> :is(.form, .table-wrap[data-frame="none"], .empty-frame):last-child) {
   clip-path: var(--appearance-footer-clip, var(--pixel-footer-clip, none));
 }
-.grid-pane-body:not(:has(> .form)) > .table-wrap[data-frame="none"] { margin-inline: calc(-1 * var(--presentation-panel-padding)); }
-.grid-pane-body:not(:has(> .form)) > .table-wrap[data-frame="none"]:last-child { margin-block-end: calc(-1 * var(--presentation-panel-padding)); }
+.setting-card > .card-body:not(:has(> .form)) > .table-wrap[data-frame="none"] { margin-inline: calc(-1 * var(--presentation-panel-padding)); }
+.setting-card > .card-body:not(:has(> .form)) > .table-wrap[data-frame="none"]:last-child { margin-block-end: calc(-1 * var(--presentation-panel-padding)); }
 .key-table { container-type: inline-size; }
 .key-details { display: none; }
 .key-date { white-space: nowrap; }

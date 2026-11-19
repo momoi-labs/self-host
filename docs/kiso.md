@@ -133,12 +133,20 @@ Other components above live in `console/src/components/`.
 - A list's `TableFrame` fits its rows. `data-fill="false"` opts out of Kiso's
   stretch for a last-child table, so Databases and Events do not fill the
   window.
-- Settings has one `Card` per group, and no frame inside it. A table in a
-  group uses `TableFrame frame="none"` and sits flush with the card edges,
-  with no search or count. Kiso clips a form footer only when the form is the
-  card's last child. A `GridPane` body is not, so `console.css` applies the
-  same `--pixel-footer-clip` to the body when a form, a flush table or an
-  empty frame ends it.
+- Settings has four sections: General, Access, Network, and Backups and
+  tasks. One section shows at a time, as one column of `Card`s, one per
+  setting. A sub-nav of Kiso `Navigation` links sits beside the column and
+  lists the open section's settings. Below a 52rem content width a `Select`
+  replaces it. `#settings/<section>/<setting>` opens a section and scrolls to
+  the card. A section with a failing setting carries a danger `Badge` count,
+  and Settings in the sidebar carries the total. Every section stays mounted,
+  so an unsaved form survives a section switch.
+- A setting card has no frame inside it. A table in a card uses
+  `TableFrame frame="none"` and sits flush with the card edges, with no
+  search or count. Kiso clips a form footer only when the form is the card's
+  last child. A card body is not, so `console.css` applies the same
+  `--pixel-footer-clip` to the body when a form, a flush table or an empty
+  frame ends it.
   Kiso has no rule for this case, so it is product CSS.
 - A detail screen's `.detail-tabs` card is the only panel that casts a
   shadow. Its `Tabs` take `data-shadow-style="none"`, a nested appearance
@@ -164,7 +172,7 @@ These map the existing screens. They do not certify a full contract audit.
 | Databases, DNS, routes, events and custom image lists | `crud`, with ADR-0024 list layout |
 | Custom image editor | `crud`, with ADR-0024 create/detail layouts |
 | Virtual machine create/detail | `crud`, `guided-flow`, with ADR-0024 layouts |
-| Settings: general, Host, DNS, certificates, API keys, scheduled tasks, backup storage, maintenance window and Git connections | `settings` |
+| Settings: General, Access, Network, and Backups and tasks sections | `settings` |
 | Login | `login-authentication`, plus `skills/add-page/login.md` |
 | Device setup | `onboarding`; outside the authenticated shell |
 | Host and standalone remote screen | No full-screen pattern; product-specific terminal and remote screen |

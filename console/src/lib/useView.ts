@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { isSettingsSection, type SettingsSection } from "../views/Settings.js";
+import { settingsHash, settingsPath } from "./settingsSections.js";
 
 export type View =
   | { view: "overview"; id: null }
@@ -15,14 +15,25 @@ export type View =
   | { view: "custom-images"; id: null }
   | { view: "environments"; id: string }
   | { view: "environment-new"; id: null }
-  | { view: "settings"; id: SettingsSection }
+  | { view: "settings"; id: string }
   | { view: "host"; id: null };
 
 const overview: View = { view: "overview", id: null };
 
+function settingsView(rest: string): View | null {
+  const path = settingsPath(rest);
+  return path ? { view: "settings", id: settingsHash(path).slice(10) } : null;
+}
+
+function settle(view: View) {
+  const hash = hashFor(view);
+  if (view.view === "settings" && hash && location.hash !== hash) history.replaceState(view, "", hash);
+}
+
 /**
  * A view named in the URL fragment, so a link into the console opens on it.
- * Settings carries its section in the fragment too: `#settings/api-keys`.
+ * Settings carries its section and setting in the fragment too:
+ * `#settings/access/api-keys`.
  */
 function fromHash(): View | null {
   const hash = location.hash;
@@ -31,8 +42,10 @@ function fromHash(): View | null {
   if (hash === "#databases") return { view: "databases", id: null };
   if (hash === "#new-database") return { view: "database-new", id: null };
   if (hash === "#settings") return { view: "settings", id: "general" };
-  if (hash.startsWith("#settings/") && isSettingsSection(hash.slice(10)))
-    return { view: "settings", id: hash.slice(10) as SettingsSection };
+  if (hash.startsWith("#settings/")) {
+    const settings = settingsView(hash.slice(10));
+    if (settings) return settings;
+  }
   if (hash === "#events") return { view: "events", id: null };
   if (hash === "#host") return { view: "host", id: null };
   if (hash === "#new") return { view: "new", id: null };
@@ -62,7 +75,7 @@ function fromHistory(): View {
   if (state?.view === "custom-image") return state;
   if (state?.view === "environments") return state;
   if (state?.view === "environment-new") return state;
-  if (state?.view === "settings") return state;
+  if (state?.view === "settings") return settingsView(state.id) ?? { view: "settings", id: "general" };
   return (
     fromHash() ??
     (new URLSearchParams(location.search).get("demo") === "environments"
@@ -77,7 +90,7 @@ function hashFor(view: View): string | undefined {
   if (view.view === "routes") return "#routes";
   if (view.view === "databases") return "#databases";
   if (view.view === "database-new") return "#new-database";
-  if (view.view === "settings") return view.id === "general" ? "#settings" : `#settings/${view.id}`;
+  if (view.view === "settings") return `#settings/${view.id}`;
   if (view.view === "app") return `#app-${view.id}`;
   if (view.view === "environments") return `#virtual-machine-${view.id}`;
   if (view.view === "environment-new") return "#new-virtual-machine";
@@ -103,7 +116,12 @@ export function useView(): [View, (next: View, options?: { replace?: boolean }) 
     // screen — a link into `#app-<id>` opens on that Application, and Back has
     // to return to it rather than to the Overview it never showed.
     if (!history.state) history.replaceState(current, "");
-    const onPop = () => setCurrent(fromHistory());
+    settle(current);
+    const onPop = () => {
+      const next = fromHistory();
+      settle(next);
+      setCurrent(next);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
     // Seeding is a first-load concern; `current` afterwards is `go`'s business.

@@ -5,7 +5,6 @@ import {
   Form,
   FormActions,
   FormField,
-  GridPane,
   Select,
   SelectContent,
   SelectItem,
@@ -22,9 +21,10 @@ import {
 
 import { Failure } from "../../components/Failure.js";
 import { api, asReport, failureOf, readJson } from "../../lib/api.js";
-import { bootstrapStatusQuery } from "../../lib/queries.js";
+import { bootstrapStatusQuery, certificatesQuery } from "../../lib/queries.js";
 import type { AcmeSettings, Certificate, Report } from "../../lib/types.js";
 import type { PaneProps } from "./General.js";
+import { SettingCard } from "./SettingCard.js";
 
 const LETS_ENCRYPT = "https://acme-v02.api.letsencrypt.org/directory";
 const LETS_ENCRYPT_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -66,7 +66,7 @@ function day(seconds: number | null): string {
  * Saving writes the account; the daemon reads it, and the Applications'
  * Hostnames, within a minute.
  */
-export function PublicCertificates({ id, size }: PaneProps) {
+export function PublicCertificates({ id }: PaneProps) {
   const queryClient = useQueryClient();
   const acmeKey = ["certificates", "acme"];
   const acme = useQuery({
@@ -75,11 +75,7 @@ export function PublicCertificates({ id, size }: PaneProps) {
   });
   const saved = acme.data ?? null;
   const enabled = saved !== null;
-  const certificates = useQuery({
-    queryKey: ["certificates"],
-    queryFn: ({ signal }) => readJson<Certificate[]>("/certificates", signal),
-    refetchInterval: 15_000,
-  });
+  const certificates = useQuery({ ...certificatesQuery, refetchInterval: 15_000 });
   const suffix = useQuery(bootstrapStatusQuery).data?.dns_suffix;
 
   const [authority, setAuthority] = useState<string>(LETS_ENCRYPT);
@@ -172,7 +168,7 @@ export function PublicCertificates({ id, size }: PaneProps) {
   const rows = certificates.data ?? noCertificates;
 
   return (
-    <GridPane id={id} size={size} title="Public certificates">
+    <SettingCard id={id} title="Public certificates">
       <Form id="public-certificates" onSubmit={(event) => void save(event)}>
         <div className="form-body">
           <p className="muted t-label">
@@ -284,6 +280,6 @@ export function PublicCertificates({ id, size }: PaneProps) {
           </div>
         </TableFrame>
       ) : null}
-    </GridPane>
+    </SettingCard>
   );
 }

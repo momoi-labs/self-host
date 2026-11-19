@@ -16,5 +16,5 @@ if (window.location.protocol === "http:" && window.location.pathname === "/setup
     </StrictMode>,
   );
 } else {
-  window.location.replace("/console/#settings/dns-setup");
+  window.location.replace("/console/#settings/network/your-host");
 }

@@ -15,7 +15,6 @@ import {
   Form,
   FormActions,
   FormField,
-  GridPane,
   Input,
   KV,
   KVKey,
@@ -34,6 +33,7 @@ import { Icon } from "../../components/Icon.js";
 import { api, failureOf } from "../../lib/api.js";
 import { settingsQuery } from "../../lib/queries.js";
 import type { Settings } from "../../lib/types.js";
+import { SettingCard } from "./SettingCard.js";
 
 const DEFAULT_RETENTION = "30d";
 
@@ -54,8 +54,7 @@ function join(amount: string, unit: Unit): string {
   return amount.trim() ? `${amount.trim()}${unit}` : "";
 }
 
-/** Where a settings pane sits on the grid: its id, and its width out of twelve. */
-export type PaneProps = { id: string; size?: number };
+export type PaneProps = { id: string };
 
 /**
  * How long the Events page keeps what happened. Precedence is PostgreSQL's:
@@ -65,7 +64,7 @@ export type PaneProps = { id: string; size?: number };
  * It is a form: Save opens a confirmation that lists every setting about to
  * move, from what to what, because a shorter retention deletes events.
  */
-export function AuditHistory({ id, size }: PaneProps) {
+export function AuditHistory({ id }: PaneProps) {
   const { data: settings, refetch } = useQuery(settingsQuery);
   const [amount, setAmount] = useState("");
   const [unit, setUnit] = useState<Unit>("d");
@@ -141,7 +140,7 @@ export function AuditHistory({ id, size }: PaneProps) {
   );
 
   return (
-    <GridPane id={id} size={size} title="Audit history">
+    <SettingCard id={id} title="Audit history">
       <Form id="general-settings" onSubmit={(event) => propose(value.trim() || null, event)}>
         <div className="form-body">
           <p className="muted t-label">How long the Events page keeps what happened.</p>
@@ -220,12 +219,12 @@ export function AuditHistory({ id, size }: PaneProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </GridPane>
+    </SettingCard>
   );
 }
 
 /** Defaults every Application follows unless it, or the request, chooses otherwise. A switch applies as soon as it is flipped. */
-export function ApplicationDefaults({ id, size }: PaneProps) {
+export function ApplicationDefaults({ id }: PaneProps) {
   const queryClient = useQueryClient();
   const { data: settings } = useQuery(settingsQuery);
   const [toggling, setToggling] = useState(false);
@@ -249,7 +248,7 @@ export function ApplicationDefaults({ id, size }: PaneProps) {
   }
 
   return (
-    <GridPane id={id} size={size} title="Applications">
+    <SettingCard id={id} title="Applications">
       <KV>
         <KVKey className="kv-setting">
           <Label htmlFor="pull-newer-images">Pull newer images</Label>
@@ -282,11 +281,11 @@ export function ApplicationDefaults({ id, size }: PaneProps) {
           <AlertDescription>{toggleError}</AlertDescription>
         </Alert>
       ) : null}
-    </GridPane>
+    </SettingCard>
   );
 }
 
-export function NativeBuildLimits({ id, size }: PaneProps) {
+export function NativeBuildLimits({ id }: PaneProps) {
   const queryClient = useQueryClient();
   const { data: settings, isError } = useQuery(settingsQuery);
   const saved = settings?.nativeBuildLimits;
@@ -312,7 +311,7 @@ export function NativeBuildLimits({ id, size }: PaneProps) {
     finally { setSaving(false); }
   }
   return (
-    <GridPane id={id} size={size} title="Native Git build limits">
+    <SettingCard id={id} title="Native Git build limits">
       <Form onSubmit={save}>
         <div className="form-body">
           <p className="muted t-label">Native Git build limits apply to all Applications on this Host. Changes apply to the next build.</p>
@@ -332,12 +331,12 @@ export function NativeBuildLimits({ id, size }: PaneProps) {
           <Button type="submit" size="sm" variant="primary" disabled={!dirty || !valid || saving}>{saving ? "Saving..." : "Save build limits"}</Button>
         </FormActions>
       </Form>
-    </GridPane>
+    </SettingCard>
   );
 }
 
 /** What the console may do on the Host itself. Off until the Operator turns it on; the switch applies at once. */
-export function HostAccess({ id, size }: PaneProps) {
+export function HostAccess({ id }: PaneProps) {
   const queryClient = useQueryClient();
   const { data: settings } = useQuery(settingsQuery);
   const [toggling, setToggling] = useState(false);
@@ -359,7 +358,7 @@ export function HostAccess({ id, size }: PaneProps) {
   }
 
   return (
-    <GridPane id={id} size={size} title="Host">
+    <SettingCard id={id} title="Host">
       <KV>
         <KVKey className="kv-setting">
           <Label htmlFor="remote-screen">Remote screen</Label>
@@ -392,6 +391,6 @@ export function HostAccess({ id, size }: PaneProps) {
           <AlertDescription>{toggleError}</AlertDescription>
         </Alert>
       ) : null}
-    </GridPane>
+    </SettingCard>
   );
 }

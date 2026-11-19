@@ -3,7 +3,7 @@ import {
   Alert, AlertDescription, Button,
   Dialog, DialogBody, DialogContent,
   DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField, GridPane,
+  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   StatusBadge, Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
@@ -14,6 +14,7 @@ import {
 } from "../lib/gitConnections.js";
 import { useGitAuthorization } from "../lib/useGitAuthorization.js";
 import { GitProviderSetup } from "./GitProviderSetup.js";
+import { SettingCard } from "../views/settings/SettingCard.js";
 
 function providerName(provider: GitProvider) {
   return provider === "github" ? "GitHub" : "GitLab";
@@ -162,7 +163,7 @@ export function GitConnectionSelector({ value, onChange, disabled }: {
   </>;
 }
 
-export function GitConnectionsSettings({ id, size }: { id: string; size?: number }) {
+export function GitConnectionsSettings({ id }: { id: string }) {
   const { connections, loading, error, refresh } = useGitConnections();
   const [dialog, setDialog] = useState<"new" | GitConnection | null>(null);
   const [disconnecting, setDisconnecting] = useState<GitConnection | null>(null);
@@ -185,7 +186,7 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
     }
   }
 
-  return <GridPane id={id} size={size} title="Git connections" actions={<>
+  return <SettingCard id={id} title="Git connections" actions={<>
     <Button size="sm" onClick={() => setSetup(true)}>Provider setup</Button>
     <Button size="sm" variant="primary" onClick={() => setDialog("new")}>Connect Git</Button>
   </>}>
@@ -215,5 +216,5 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
         <DialogFooter><Button size="sm" disabled={busy} onClick={() => setDisconnecting(null)}>Cancel</Button><Button size="sm" variant="destructive" disabled={busy} onClick={() => void disconnect()}>{busy ? "Disconnecting..." : "Disconnect"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
-  </GridPane>;
+  </SettingCard>;
 }

@@ -153,7 +153,7 @@ export function DatabaseBackups({ databaseId, databaseName, onStarted, onOpenOpe
         <AlertTitle>Set up backup storage first</AlertTitle>
         <AlertDescription>
           Backups go to one S3-compatible bucket, saved in Settings.
-          {" "}<a href="/console/#settings/backup-storage">Open Backup storage</a>
+          {" "}<a href="/console/#settings/backups/backup-storage">Open Backup storage</a>
         </AlertDescription>
       </AlertContent>
     </Alert> : null}

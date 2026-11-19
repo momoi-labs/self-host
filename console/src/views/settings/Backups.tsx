@@ -16,7 +16,6 @@ import {
   Form,
   FormActions,
   FormField,
-  GridPane,
   Label,
   Select,
   SelectContent,
@@ -31,6 +30,7 @@ import { api, asReport, failureOf } from "../../lib/api.js";
 import { backupStorageQuery, maintenanceWindowQuery } from "../../lib/queries.js";
 import type { BackupStorage as Storage, MaintenanceWindow as Window, Report } from "../../lib/types.js";
 import type { PaneProps } from "./General.js";
+import { SettingCard } from "./SettingCard.js";
 
 const emptyStorage = { endpoint: "", region: "", bucket: "", prefix: "", pathStyle: true, verifyTls: true, accessKeyId: "", secret: "" };
 
@@ -39,7 +39,7 @@ const emptyStorage = { endpoint: "", region: "", bucket: "", prefix: "", pathSty
  * Host's database backups go to. The secret key is written, never read back:
  * an empty field keeps the saved one.
  */
-export function BackupStorage({ id, size }: PaneProps) {
+export function BackupStorage({ id }: PaneProps) {
   const queryClient = useQueryClient();
   const notify = useToast();
   const { data: saved, error: loadError } = useQuery(backupStorageQuery);
@@ -103,7 +103,7 @@ export function BackupStorage({ id, size }: PaneProps) {
   const message = dirty ? "Unsaved changes." : !saved ? "Loading..." : saved.configured ? "Saved." : "Not configured. Backups cannot run without it.";
 
   return (
-    <GridPane id={id} size={size} title="Backup storage">
+    <SettingCard id={id} title="Backup storage">
       <Form onSubmit={(event: FormEvent) => void save(event)}>
         <div className="form-body">
           <p className="muted t-label">Every backup of this Host goes to this S3-compatible bucket, over HTTPS. self-host does not encrypt backups, so use a private bucket.</p>
@@ -156,7 +156,7 @@ export function BackupStorage({ id, size }: PaneProps) {
           <AlertDialogAction className="btn-danger" onClick={() => { setRemoving(false); void remove(); }}>Remove storage</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent></AlertDialog>
-    </GridPane>
+    </SettingCard>
   );
 }
 
@@ -168,7 +168,7 @@ const clock = (hour: number) => `${String(hour % 24).padStart(2, "0")}:00`;
  * The Maintenance window card of Settings: the hours, in the Host's own
  * time, in which planned database work such as a scheduled backup starts.
  */
-export function MaintenanceWindow({ id, size }: PaneProps) {
+export function MaintenanceWindow({ id }: PaneProps) {
   const queryClient = useQueryClient();
   const { data: saved, error: loadError } = useQuery(maintenanceWindowQuery);
   const [draft, setDraft] = useState({ start: 2, hours: 4 });
@@ -199,7 +199,7 @@ export function MaintenanceWindow({ id, size }: PaneProps) {
     : "Loading...";
 
   return (
-    <GridPane id={id} size={size} title="Maintenance window">
+    <SettingCard id={id} title="Maintenance window">
       <Form onSubmit={(event: FormEvent) => void save(event)}>
         <div className="form-body">
           <p className="muted t-label">The Host starts planned database work, such as scheduled backups, in these hours. Times use the Host's clock, not this browser's.</p>
@@ -219,6 +219,6 @@ export function MaintenanceWindow({ id, size }: PaneProps) {
           <Button size="sm" type="submit" variant="primary" disabled={!saved || !dirty || saving}>{saving ? "Saving..." : "Save window"}</Button>
         </FormActions>
       </Form>
-    </GridPane>
+    </SettingCard>
   );
 }

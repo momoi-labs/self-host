@@ -12,6 +12,7 @@ export type Destination = {
   href: string;
   active: boolean;
   onClick?: () => void;
+  trailing?: ReactNode;
 };
 
 /**

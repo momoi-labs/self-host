@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 
 import { api, failureOf, readJson } from "./api.js";
-import type { App, BackupSettings, BackupStorage, BackupSummary, BootstrapStatus, ConsumerDatabase, DatabaseBackup, CustomImage, DatabaseDetail, DatabaseImport, HostStatus, MaintenanceWindow, Settings } from "./types.js";
+import type { ApiKey, App, BackupSettings, BackupStorage, BackupSummary, BootstrapStatus, Certificate, ConsumerDatabase, DatabaseBackup, CustomImage, DatabaseDetail, DatabaseImport, HostStatus, MaintenanceWindow, Settings } from "./types.js";
 
 /*
  * The reads more than one screen shares. A screen that polls one of these
@@ -17,6 +17,16 @@ export const appsQuery = queryOptions({
 export const bootstrapStatusQuery = queryOptions({
   queryKey: ["bootstrap", "status"],
   queryFn: ({ signal }) => readJson<BootstrapStatus>("/bootstrap/status", signal),
+});
+
+export const apiKeysQuery = queryOptions({
+  queryKey: ["api-keys"],
+  queryFn: ({ signal }) => readJson<ApiKey[]>("/api-keys", signal),
+});
+
+export const certificatesQuery = queryOptions({
+  queryKey: ["certificates"],
+  queryFn: ({ signal }) => readJson<Certificate[]>("/certificates", signal),
 });
 
 export const settingsQuery = queryOptions({
