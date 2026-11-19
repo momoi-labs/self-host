@@ -65,8 +65,8 @@ Rules:
 - Empty state: `EmptyState variant="first-run"` when there are no records at
   all, and a plain "No things match your filters." row when a filter emptied
   it. They are different situations and say different things. Both go in the
-  table body, under the headers. The `EmptyState` has an icon, a title, one
-  sentence and an action when the Operator can act.
+  table body, under the headers. The `EmptyState` has a title and one
+  sentence, no icon and no button. The header holds the action.
 - No disabled action in the header. Hide what the Operator cannot do yet,
   and let the empty state say why.
 - A record mid-operation shows it in one line: a `StatusBadge` naming the

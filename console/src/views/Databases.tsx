@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-  EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
+  EmptyState, EmptyStateDescription, EmptyStateTitle,
   PageHeader, PageHeaderDescription, PageHeaderTitle, Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Skeleton, StatusBadge,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -75,10 +75,8 @@ export function Databases({ apps, ready, reload, onCreate, onOpen }: {
             <TableCell><Skeleton /></TableCell><TableCell><Skeleton /></TableCell><TableCell><Skeleton /></TableCell>
           </TableRow>) : !databases.length ? <TableRow><TableCell colSpan={4}>
             <EmptyState variant="first-run">
-              <EmptyStateIcon><Icon name="database" size="lg" /></EmptyStateIcon>
               <EmptyStateTitle>No databases yet</EmptyStateTitle>
               <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
-              <EmptyStateActions><Button variant="primary" onClick={onCreate}><Icon name="plus" />New database</Button></EmptyStateActions>
             </EmptyState>
           </TableCell></TableRow> : !visible.length ? <TableRow><TableCell colSpan={4}>
             No databases match your filters.

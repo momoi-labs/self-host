@@ -3,7 +3,7 @@ import {
   Alert, AlertDescription, Button,
   Dialog, DialogBody, DialogContent,
   DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-  EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle, FormField, GridPane,
+  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField, GridPane,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   StatusBadge, Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
@@ -14,7 +14,6 @@ import {
 } from "../lib/gitConnections.js";
 import { useGitAuthorization } from "../lib/useGitAuthorization.js";
 import { GitProviderSetup } from "./GitProviderSetup.js";
-import { Icon } from "./Icon.js";
 
 function providerName(provider: GitProvider) {
   return provider === "github" ? "GitHub" : "GitLab";
@@ -201,7 +200,7 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
             <TableCell className="col-tight"><Button size="sm" variant="ghost" onClick={() => setDialog(connection)}>Reconnect</Button><Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={() => { setActionError(null); setDisconnecting(connection); }}>Disconnect</Button></TableCell>
           </TableRow>)}
           {!connections.length ? <TableRow><TableCell colSpan={4}>
-            {loading ? "Loading connections..." : error ? "Could not load connections." : <EmptyState variant="first-run"><EmptyStateIcon><Icon name="branch" size="lg" /></EmptyStateIcon><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories, or use a URL for a public one.</EmptyStateDescription><EmptyStateActions><Button variant="primary" onClick={() => setDialog("new")}>Connect Git</Button></EmptyStateActions></EmptyState>}
+            {loading ? "Loading connections..." : error ? "Could not load connections." : <EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories, or use a URL for a public one.</EmptyStateDescription></EmptyState>}
           </TableCell></TableRow> : null}
         </TableBody>
       </Table></div>

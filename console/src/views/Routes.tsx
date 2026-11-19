@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Button, EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle, PageHeader, PageHeaderDescription, PageHeaderTitle,
+  Button, EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateTitle, PageHeader, PageHeaderDescription, PageHeaderTitle,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@momoi-labs/kiso-react";
 
@@ -83,7 +83,6 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: 
         onOpenApp={onOpenApp}
         empty={
           <EmptyState variant="first-run">
-            <EmptyStateIcon><Icon name="route" size="lg" /></EmptyStateIcon>
             <EmptyStateTitle>No routes yet</EmptyStateTitle>
             <EmptyStateDescription>Routes come from an Application with a Hostname, so deploy one first.</EmptyStateDescription>
             <EmptyStateActions>
