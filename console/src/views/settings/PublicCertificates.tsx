@@ -85,6 +85,8 @@ export function PublicCertificates({ id, size }: PaneProps) {
   const [authority, setAuthority] = useState<string>(LETS_ENCRYPT);
   const [directoryUrl, setDirectoryUrl] = useState(LETS_ENCRYPT);
   const [email, setEmail] = useState("");
+  const [zone, setZone] = useState("");
+  const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<Report | null>(null);
 
@@ -102,11 +104,18 @@ export function PublicCertificates({ id, size }: PaneProps) {
     setAuthority(authorityOf(url));
     setDirectoryUrl(url);
     setEmail(settings?.email ?? "");
+    setZone(settings?.dns?.zone ?? "");
+    setToken("");
   }
 
   const url = authority === "custom" ? directoryUrl.trim() : authority;
-  const dirty = !saved ? email.trim() !== "" || url !== LETS_ENCRYPT : url !== saved.directory_url || email.trim() !== saved.email;
-  const valid = email.trim().includes("@") && url.startsWith("https://");
+  const savedZone = saved?.dns?.zone ?? "";
+  const tokenSet = saved?.dns?.token_set ?? false;
+  const dirty = !saved
+    ? email.trim() !== "" || url !== LETS_ENCRYPT || zone.trim() !== "" || token !== ""
+    : url !== saved.directory_url || email.trim() !== saved.email || zone.trim() !== savedZone || token !== "";
+  const dnsValid = zone.trim() === "" || tokenSet || token.trim() !== "";
+  const valid = email.trim().includes("@") && url.startsWith("https://") && dnsValid;
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -116,7 +125,11 @@ export function PublicCertificates({ id, size }: PaneProps) {
     try {
       const response = await api("/certificates/acme", {
         method: "PUT",
-        body: JSON.stringify({ directory_url: url, email: email.trim() }),
+        body: JSON.stringify({
+          directory_url: url,
+          email: email.trim(),
+          dns: zone.trim() === "" ? null : { provider: "desec", zone: zone.trim(), ...(token.trim() ? { token: token.trim() } : {}) },
+        }),
       });
       if (!response.ok) { setError(await failureOf(response)); return; }
       const next = (await response.json()) as AcmeSettings;
@@ -151,7 +164,7 @@ export function PublicCertificates({ id, size }: PaneProps) {
   const message = dirty ? (
     <><strong>Unsaved changes.</strong> The daemon picks the account up within a minute of saving.</>
   ) : enabled ? (
-    `Saved. Every Hostname outside .${suffix ?? "the Suffix"} gets a certificate from ${authorityName}.`
+    `Saved. Every Hostname outside .${suffix ?? "the Suffix"} gets a certificate from ${authorityName}.${savedZone ? ` Names in ${savedZone} are validated through DNS.` : ""}`
   ) : (
     "Off. Hostnames outside the DNS Suffix answer with the Platform's own certificate, which only an edge proxy such as Cloudflare accepts. Save an account to turn it on."
   );
@@ -164,7 +177,8 @@ export function PublicCertificates({ id, size }: PaneProps) {
         <div className="form-body">
           <p className="muted t-label">
             Certificates from a public CA for the Hostnames a browser cannot trust the Platform's own CA for.
-            Their public DNS must point at this Host, and the CA must reach port 80.
+            Names in the DNS zone below are validated through DNS and need no open port. Other Hostnames need public
+            DNS that points at this Host, and the CA must reach port 80.
           </p>
           <Select value={authority} disabled={acme.data === undefined || saving} onValueChange={(next) => {
             // Radix answers a value set before its items mounted with an empty
@@ -202,6 +216,29 @@ export function PublicCertificates({ id, size }: PaneProps) {
             disabled={acme.data === undefined || saving}
             onChange={(event) => setEmail(event.target.value)}
             hint="The CA writes here before a certificate it issued expires unrenewed. Saving accepts its terms of service."
+          />
+          <FormField
+            id="acme-dns-zone"
+            label="DNS zone"
+            className="mono"
+            placeholder="int.example.com"
+            autoComplete="off"
+            value={zone}
+            disabled={acme.data === undefined || saving}
+            onChange={(event) => setZone(event.target.value)}
+            hint="Optional. A zone hosted at deSEC. Hostnames inside it get a certificate without port 80. Clear it to turn DNS validation off."
+          />
+          <FormField
+            id="acme-dns-token"
+            label="deSEC token"
+            type="password"
+            className="mono"
+            autoComplete="new-password"
+            placeholder={tokenSet ? "Saved. Type to replace it." : ""}
+            value={token}
+            disabled={acme.data === undefined || saving || zone.trim() === ""}
+            onChange={(event) => setToken(event.target.value)}
+            hint="A token limited to TXT records in that zone. The Platform never shows it again."
           />
           {error ? <Failure failure={error} /> : null}
           {acme.error ? <Failure failure={acme.error} actionLabel="Retry" onAction={() => void acme.refetch()} /> : null}

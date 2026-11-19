@@ -119,7 +119,7 @@ there for a script, at the console's origin with the Operator's API key as a
 Bearer token (ADR-0025; the rename through `PUT` is ADR-0026).
 
 ```sh
-KEY=...; ORIGIN=https://admin.home.lan
+KEY=...; ORIGIN=https://console.home.lan
 curl -s -H "Authorization: Bearer $KEY" $ORIGIN/dns/records
 curl -s -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"name":"nas","type":"A","value":"192.168.1.30","description":"the NAS"}' \
@@ -140,7 +140,7 @@ name, type and value, sorted by name and then value. `owner` says who holds
 it:
 
 - `platform`: the wildcard, as `*` with one Record per published Host
-  address, and `admin`.
+  address, `console`, and the legacy alias `admin`.
 - `application`: an Application's Hostname or Alias, with `application_id`.
   Derived from the Application; there is nothing to edit here.
 - `virtual-machine`: a machine's name, with `virtual_machine_id`, present
@@ -153,9 +153,9 @@ answers `201` and the Record. **`PUT /dns/records/{name}/{type}`** with
 `description` left out is cleared, not kept. An optional `"name"` moves the
 Record to that name, under the same checks a new one gets, and the old name
 falls back to the wildcard. **`DELETE /dns/records/{name}/{type}`**
-answers `204`. `admin` is an ordinary Record: `PUT` and `DELETE` work on it,
-and after a delete the wildcard answers `admin.<suffix>` with the Host's
-address.
+answers `204`. `console` and `admin` are ordinary Records: `PUT` and
+`DELETE` work on them, and after a delete the wildcard answers the name with
+the Host's address.
 
 Refusals carry `{"error", "caused_by"}` and say which rule refused:
 
@@ -173,6 +173,34 @@ name a Record holds either, and their errors name the Record. Every create,
 edit and delete is an audit event on subject kind `dns-record` with the
 Record's key (`nas/A`) as its id; `GET /events` shows them as `create`,
 `configure` and `delete`.
+
+## Changing the DNS Suffix
+
+Stop the Platform, preview, then run the change:
+
+```bash
+self-host change-suffix int.example.com --dry-run
+self-host change-suffix int.example.com
+```
+
+The dry run prints every change and writes nothing. It also works while the
+Platform runs. The real run refuses while the Platform runs. It first copies
+`state/`, `dns.json`, `config.json` and `certs/` to a sibling directory named
+`<data dir>.before-suffix-<old>-<time>` and prints the path. If the copy fails,
+nothing changes.
+
+It rewrites the stored suffix, `dns.json`, every Application Hostname, alias
+and route rule that ends in the old suffix, machine hostnames and their SSH
+and web addresses, and the CLI's `api_base_url`. It reissues the LAN leaf
+from the same CA, so devices that trust the CA need no new trust step.
+Records are relative and answer under the new suffix at the next start.
+Names outside the old suffix are left alone, and the old suffix stops
+answering at once: there is no alias for it.
+
+It does not rewrite variables or redirects. It lists the ones that mention the
+old suffix as warnings, by name only. Afterwards, run `self-host setup-dns`,
+start the Platform, and point each device's DNS for the new suffix at the
+Host. To undo, stop the Platform and copy the saved directory back.
 
 ## Backup
 

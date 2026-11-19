@@ -101,10 +101,13 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    when the answer is no, which is the signal `KeepAlive` acts on, and takes
    the VM down with it when launchd stops the job.
 6. Runs `self-host init`, which brings up the Platform Infra and detects the
-   LAN address. `SELF_HOST_IP` overrides the detection.
+   LAN address. `SELF_HOST_IP` overrides the detection. If the Operator
+   answered yes to the public DNS zone question, it then saves the zone and
+   the deSEC token the same way the Settings card does
+   ([public suffix mode](public-certificates.md#public-suffix-mode)).
 7. Writes `/etc/resolver/<suffix>` so the Mac resolves its own Hostnames.
 8. Runs `self-host trust-ca`, so the Host's own browser opens
-   `https://admin.<suffix>` without a warning. The System Keychain refuses
+   `https://console.<suffix>` without a warning. The System Keychain refuses
    this over SSH, where nobody can authorize it; the installer then warns and
    carries on. For browser trust, run the command in Terminal in the Mac's
    graphical session and approve the system prompt. Retrying over SSH or
@@ -115,7 +118,7 @@ curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.s
    certificate and hostname verification without requiring `SSL_CERT_FILE`
    or System Keychain trust. If no local CA exists, it uses system trust.
    Each Consumer trusts the same CA once with `self-host trust-ca --from
-   admin.<suffix> --fingerprint <sha256>`, using the fingerprint
+   console.<suffix> --fingerprint <sha256>`, using the fingerprint
    `self-host init` printed. A macOS Consumer needs graphical authorization
    for its own System Keychain. Managed Macs can receive the CA through MDM.
 9. Installs `/Library/LaunchDaemons/dev.momoi.self-host.plist`: the Platform,

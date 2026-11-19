@@ -30,7 +30,7 @@ Facts about the image below were observed on September 5, 2026 with
 
 ## Deploy through the console
 
-1. Open `https://admin.<suffix>` and choose **Deploy application**.
+1. Open `https://console.<suffix>` and choose **Deploy application**.
 2. Name: `hermes`. Definition: **Compose file**. Paste:
 
    ```yaml
@@ -80,7 +80,7 @@ The Platform's certificate is signed by its own CA. Each Consumer trusts it
 once, using the fingerprint `self-host init` printed on the Host:
 
 ```sh
-self-host trust-ca --from admin.<suffix> --fingerprint <sha256>
+self-host trust-ca --from console.<suffix> --fingerprint <sha256>
 ```
 
 Accepting the browser warning instead works for a look, but not for a

@@ -112,7 +112,7 @@ flowchart LR
 | Virtual machines | No | Yes, on Apple Silicon with macOS 13 or later |
 | DNS server and Zone | Yes. `setup-dns` configures systemd-resolved, other resolvers need manual setup | Yes. `setup-dns` writes `/etc/resolver` |
 | HTTP and HTTPS proxy, local CA | Yes | Yes |
-| Public certificates (ACME) | Yes, needs public DNS and inbound port 80 | Yes, needs public DNS and inbound port 80 |
+| Public certificates (ACME) | Yes, needs public DNS and inbound port 80, or a deSEC zone for DNS validation | Yes, same needs |
 | Platform starts at boot | Not set up by the installer. Add a systemd unit yourself | Yes. The installer installs LaunchDaemons, so no login is needed |
 
 - Native Applications on macOS are an MVP. The
@@ -185,7 +185,7 @@ self-host setup-dns # Linux with systemd-resolved; the macOS installer does this
 self-host trust-ca # trust the Platform CA; the macOS installer does this
 ```
 
-Then open `https://admin.<your-dns-suffix>`, which is `https://admin.home.lan`
+Then open `https://console.<your-dns-suffix>`, which is `https://console.home.lan`
 by default.
 
 `init` generates a random API key and saves it for the console and the CLI. To
@@ -346,7 +346,7 @@ macOS installer would set that machine up as a Host:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | SELF_HOST_BINARY_ONLY=1 bash
-self-host trust-ca --from admin.home.lan --fingerprint <sha256-from-host>
+self-host trust-ca --from console.home.lan --fingerprint <sha256-from-host>
 ```
 
 Get the fingerprint that `self-host init` prints through a trusted channel. The

@@ -16,7 +16,7 @@ export type RecordRow = DnsRecord & {
   origin: string;
   originHref: string | null;
   editable: boolean;
-  /** Whether the edit dialog offers a new name. `admin` keeps its own, so
+  /** Whether the edit dialog offers a new name. `console` and `admin` keep their own, so
    *  the row stays where the Operator looks for it. */
   renamable: boolean;
 };
@@ -35,10 +35,7 @@ export function recordRows(
     } else {
       const application = applications.find(app => app.id === record.application_id);
       const machine = machines.find(vm => vm.id === record.virtual_machine_id);
-      // `admin` is an ordinary Record `init` created; the Operator edits it
-      // by hand when the Host's address moves (ADR-0025). The wildcard is
-      // rebuilt from the interfaces and has nothing to edit.
-      const admin = record.owner === "platform" && record.name === "admin";
+      const consoleRecord = record.owner === "platform" && (record.name === "console" || record.name === "admin");
       rows.set(key, {
         ...record,
         values: [record.value],
@@ -48,13 +45,13 @@ export function recordRows(
           ? application?.name ?? record.application_id ?? "Unavailable"
           : record.owner === "virtual-machine"
             ? machine?.config.name ?? record.virtual_machine_id ?? "Unavailable"
-            : record.name === "*" ? "Wildcard" : admin ? "admin" : "Operator",
+            : record.name === "*" ? "Wildcard" : consoleRecord ? record.name : "Operator",
         originHref: record.owner === "application" && record.application_id
           ? `/console/#app-${record.application_id}`
           : record.owner === "virtual-machine" && record.virtual_machine_id
             ? `/console/#virtual-machine-${record.virtual_machine_id}`
             : null,
-        editable: record.owner === "operator" || admin,
+        editable: record.owner === "operator" || consoleRecord,
         renamable: record.owner === "operator",
       });
     }

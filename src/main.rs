@@ -80,6 +80,21 @@ enum Command {
     },
     /// Configure persistent Host DNS on Linux with systemd-resolved
     SetupDns,
+    #[command(hide = true)]
+    PublicZone {
+        #[arg(long)]
+        zone: String,
+        #[arg(long)]
+        email: String,
+    },
+    /// Move an initialized Host to a new DNS Suffix while the Platform is stopped
+    ChangeSuffix {
+        /// The new DNS Suffix, for example int.example.com
+        suffix: String,
+        /// Print every change and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Remove everything the Platform created on this Host: Applications,
     /// their data and images, Virtual machines, native Applications, the data
     /// directory, the CA in the trust store and the host DNS routing
@@ -414,6 +429,18 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Command::PublicZone { zone, email }) => {
+            if let Err(e) = run_public_zone_command(zone, email) {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::ChangeSuffix { suffix, dry_run }) => {
+            if let Err(e) = run_change_suffix_command(&suffix, dry_run).await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
         Some(Command::Uninstall { force }) => {
             if let Err(e) = run_uninstall_command(force).await {
                 eprintln!("Error: {e:?}");
@@ -450,6 +477,79 @@ fn native_result(result: anyhow::Result<()>) {
     }
 }
 
+fn run_public_zone_command(zone: String, email: String) -> anyhow::Result<()> {
+    let mut token = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut token)
+        .context("read the deSEC token from standard input")?;
+    let settings = self_host::certificates::AcmeSettings {
+        directory_url: self_host::certificates::LETS_ENCRYPT_DIRECTORY.into(),
+        email,
+        dns: Some(Some(self_host::certificates::DnsSettings {
+            provider: self_host::certificates::DnsProvider::Desec,
+            zone,
+            token: Some(token),
+        })),
+    };
+    self_host::certificates::write_acme(&file_store::state_dir().join("certificates"), &settings)?;
+    println!("Saved the public DNS zone. The deSEC token is stored at mode 0600.");
+    Ok(())
+}
+
+async fn run_change_suffix_command(suffix: &str, dry_run: bool) -> anyhow::Result<()> {
+    let config_dir = self_host::paths::platform_config_dir();
+    let state = file_store::state_dir();
+    if dry_run {
+        let store = FileStateStore::read_only(&state)?;
+        let plan = self_host::suffix::plan(&store, &config_dir, suffix).await?;
+        print_suffix_plan(&plan);
+        println!("Dry run: nothing was written.");
+        return Ok(());
+    }
+    let store =
+        FileStateStore::open(&state).context("stop the Platform before changing the DNS Suffix")?;
+    let plan = self_host::suffix::plan(&store, &config_dir, suffix).await?;
+    print_suffix_plan(&plan);
+    let backup = self_host::suffix::backup(&config_dir, &plan.old)
+        .context("could not copy the state; nothing was changed")?;
+    println!("Copied the state to {}", backup.display());
+    self_host::suffix::apply(&store, &config_dir, &plan)
+        .await
+        .with_context(|| {
+            format!(
+                "the change stopped part way; restore from {}",
+                backup.display()
+            )
+        })?;
+    println!("The DNS Suffix is now {}.", plan.new);
+    println!("Next:");
+    println!(
+        "  1. Run 'self-host setup-dns' so the Host resolves {}.",
+        plan.new
+    );
+    println!(
+        "  2. Start the Platform. The console answers on https://console.{}.",
+        plan.new
+    );
+    println!(
+        "  3. Point each device's DNS for {} at this Host.",
+        plan.new
+    );
+    if !plan.warnings.is_empty() {
+        println!("  4. Edit the variables and redirects named in the warnings above.");
+    }
+    Ok(())
+}
+
+fn print_suffix_plan(plan: &self_host::suffix::Plan) {
+    println!("Change the DNS Suffix from {} to {}:", plan.old, plan.new);
+    for change in &plan.changes {
+        println!("  {change}");
+    }
+    for warning in &plan.warnings {
+        println!("  warning: {warning}");
+    }
+}
+
 async fn run_setup_dns_command() -> anyhow::Result<()> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("setup-dns currently supports Linux with systemd-resolved and macOS only");
@@ -472,7 +572,7 @@ async fn run_setup_dns_command() -> anyhow::Result<()> {
         // reports the state instead of failing the saved setup.
         let nameserver = self_host::host_dns::host_nameserver(&host_ip)?;
         if tokio::net::TcpStream::connect(nameserver).await.is_ok() {
-            println!("Verifying that admin.{suffix} resolves through the Platform DNS...");
+            println!("Verifying that console.{suffix} resolves through the Platform DNS...");
             self_host::host_dns::check(&suffix, &host_ip)
                 .await
                 .map_err(|e| anyhow::anyhow!("DNS settings were saved, but verification failed: {e}. Check that the Platform DNS is running, then retry 'self-host setup-dns'."))?;
@@ -537,7 +637,7 @@ async fn run_init_command(
         save_cli_config_values(dns_suffix, &api_key)?;
         println!("Platform is already initialized with DNS Suffix '{dns_suffix}'.");
         println!("Existing DNS, TLS and routing configuration is consistent.");
-        println!("CLI config points to https://admin.{dns_suffix}.");
+        println!("CLI config points to https://console.{dns_suffix}.");
 
         // Bootstrap completes on a Host with no Docker, leaving the Platform
         // configured but unable to run anything. Running init again is how the
@@ -1490,7 +1590,7 @@ fn cli_config_from_bootstrap(result: &BootstrapResult) -> CliConfig {
 
 fn cli_config(dns_suffix: &str, api_key: &str) -> CliConfig {
     CliConfig {
-        api_base_url: format!("https://admin.{dns_suffix}"),
+        api_base_url: format!("https://console.{dns_suffix}"),
         api_key: api_key.to_string(),
     }
 }
@@ -1644,9 +1744,8 @@ async fn run_api_server(
         metrics.clone(),
     );
 
-    // Log the admin dashboard URL if we know the DNS suffix.
     if let Ok(Some(dns_suffix)) = store.get_state("dns_suffix").await {
-        info!("admin dashboard: https://admin.{dns_suffix}");
+        info!("console: https://console.{dns_suffix}");
         #[cfg(target_os = "linux")]
         if let Ok(Some(host_ip)) = store.get_state("host_ip").await
             && let Err(error) = self_host::host_dns::check(&dns_suffix, &host_ip).await
@@ -1721,13 +1820,14 @@ async fn serve_proxy(
         &self_host::tls::key_path(),
     )
     .context("load persisted certificates")?;
+    certificates.set_suffix(&dns_suffix);
     let config = self_host::proxy::ProxyConfig {
         cert_path: self_host::tls::cert_path(),
         key_path: self_host::tls::key_path(),
         bind_ip: std::net::IpAddr::from([0, 0, 0, 0]),
         https_port: env_port("SELF_HOST_PROXY_HTTPS_PORT", 443),
         http_port: env_port("SELF_HOST_PROXY_HTTP_PORT", 80),
-        admin_hostname: format!("admin.{dns_suffix}"),
+        console_hostname: format!("console.{dns_suffix}"),
     };
     let ports = format!("{} and {}", config.https_port, config.http_port);
 
@@ -2175,14 +2275,14 @@ mod tests {
     #[test]
     fn remote_ca_url_accepts_a_hostname_or_base_url() {
         assert_eq!(
-            remote_ca_url("admin.home.lan").unwrap(),
-            "https://admin.home.lan/ca.pem"
+            remote_ca_url("console.home.lan").unwrap(),
+            "https://console.home.lan/ca.pem"
         );
         assert_eq!(
-            remote_ca_url("https://admin.home.lan/").unwrap(),
-            "https://admin.home.lan/ca.pem"
+            remote_ca_url("https://console.home.lan/").unwrap(),
+            "https://console.home.lan/ca.pem"
         );
-        assert!(remote_ca_url("http://admin.home.lan").is_err());
+        assert!(remote_ca_url("http://console.home.lan").is_err());
     }
 
     #[test]
@@ -2198,7 +2298,7 @@ mod tests {
 
         let config = cli_config_from_bootstrap(&result);
 
-        assert_eq!(config.api_base_url, "https://admin.home.lan");
+        assert_eq!(config.api_base_url, "https://console.home.lan");
         assert_eq!(config.api_key, "secret");
     }
 }

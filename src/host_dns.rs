@@ -181,7 +181,7 @@ pub fn install(suffix: &str, _host_ip: &str) -> anyhow::Result<()> {
 
 pub async fn check(suffix: &str, host_ip: &str) -> anyhow::Result<()> {
     let expected: IpAddr = host_ip.parse()?;
-    let name = format!("admin.{suffix}");
+    let name = format!("console.{suffix}");
     let addresses = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         tokio::net::lookup_host((name.as_str(), 443)),
@@ -204,7 +204,7 @@ mod tests {
     fn rejects_values_that_could_inject_systemd_directives() {
         assert!(service_unit("home.lan\nExecStart=bad", "192.168.1.74").is_err());
         assert!(service_unit("home.lan", "192.168.1.74\nExecStart=bad").is_err());
-        assert!(service_unit("home.lan", "admin.home.lan").is_err());
+        assert!(service_unit("home.lan", "console.home.lan").is_err());
     }
 
     #[test]
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn the_nameserver_is_loopback_on_macos_and_the_host_ip_elsewhere() {
         if !cfg!(target_os = "macos") {
-            assert!(host_nameserver("admin.home.lan").is_err());
+            assert!(host_nameserver("console.home.lan").is_err());
         }
         let nameserver = host_nameserver("192.0.2.10").unwrap();
         assert_eq!(nameserver.port(), 53);

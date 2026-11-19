@@ -166,7 +166,7 @@ fn validate_configuration(dns_suffix: &str) -> Result<(), BootstrapError> {
     }
 
     // The console's route is not a file any more: the Platform answers
-    // `admin.<suffix>` from the same process that serves this check.
+    // `console.<suffix>` from the same process that serves this check.
     Ok(())
 }
 
@@ -184,7 +184,7 @@ pub async fn persist_bootstrap_state(
         .host_ip
         .parse()
         .map_err(|_| BootstrapError::InvalidHostIp(result.host_ip.clone()))?;
-    crate::dns_records::initialize_admin(store, address).await?;
+    crate::dns_records::initialize_console(store, address).await?;
     store.store_state("api_key", &result.api_key).await?;
     store.store_state("dns_suffix", &result.dns_suffix).await?;
     store.store_state("host_ip", &result.host_ip).await?;
@@ -248,7 +248,7 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
     println!("  https://<name>.{}", result.dns_suffix);
     println!();
     println!("--- Admin Dashboard ---");
-    println!("  https://admin.{}", result.dns_suffix);
+    println!("  https://console.{}", result.dns_suffix);
     println!();
 
     let setup_host = if result.host_ip.contains(':') {
@@ -269,7 +269,7 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
             println!();
             println!("  Set up another Linux/macOS machine:");
             println!(
-                "  curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash && self-host trust-ca --from admin.{} --fingerprint '{}'",
+                "  curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | bash && self-host trust-ca --from console.{} --fingerprint '{}'",
                 result.dns_suffix, fingerprint
             );
         }
@@ -313,7 +313,7 @@ pub fn print_bootstrap_instructions(result: &BootstrapResult) {
         "Consumer traffic enters on port 443 (HTTPS) and 80 (device setup and HTTPS redirects)."
     );
     println!(
-        "Operator API is on port {OPERATOR_API_PORT}, on loopback only. Other machines use https://admin.{}.",
+        "Operator API is on port {OPERATOR_API_PORT}, on loopback only. Other machines use https://console.{}.",
         result.dns_suffix
     );
     println!();

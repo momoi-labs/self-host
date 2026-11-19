@@ -120,7 +120,7 @@ async fn root_redirect() -> Response<Body> {
 
 /// Public instructions for a device that has not configured DNS or CA trust.
 /// Only the proxy's plain HTTP listener mounts this router.
-pub fn http_setup_router(admin_hostname: String, ca_path: std::path::PathBuf) -> Router {
+pub fn http_setup_router(console_hostname: String, ca_path: std::path::PathBuf) -> Router {
     Router::new()
         .route(
             "/setup",
@@ -129,7 +129,7 @@ pub fn http_setup_router(admin_hostname: String, ca_path: std::path::PathBuf) ->
         .route("/setup/info", get(http_setup_info))
         .route("/console/assets/{*path}", get(http_setup_asset))
         .route("/console/{icon}", get(http_setup_icon))
-        .with_state((admin_hostname, ca_path.clone()))
+        .with_state((console_hostname, ca_path.clone()))
         .nest("/setup", crate::public_ca_router(ca_path))
 }
 
@@ -157,7 +157,7 @@ async fn http_setup_icon(axum::extract::Path(icon): axum::extract::Path<String>)
 }
 
 async fn http_setup_info(
-    axum::extract::State((admin_hostname, ca_path)): axum::extract::State<(
+    axum::extract::State((console_hostname, ca_path)): axum::extract::State<(
         String,
         std::path::PathBuf,
     )>,
@@ -168,8 +168,8 @@ async fn http_setup_info(
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
         axum::Json(serde_json::json!({
-            "dns_suffix": admin_hostname.strip_prefix("admin.").unwrap_or(&admin_hostname),
-            "admin_hostname": admin_hostname,
+            "dns_suffix": console_hostname.strip_prefix("console.").unwrap_or(&console_hostname),
+            "console_hostname": console_hostname,
             "fingerprint": fingerprint,
         })),
     ))
@@ -192,7 +192,7 @@ mod tests {
             std::process::id(),
             rand::random::<u64>()
         ));
-        let router = super::http_setup_router("admin.home.lan".into(), path.clone());
+        let router = super::http_setup_router("console.home.lan".into(), path.clone());
         for invalid_ca in [false, true] {
             if invalid_ca {
                 std::fs::write(&path, "not a certificate").unwrap();
@@ -214,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn setup_listener_serves_the_favicons_only() {
-        let router = super::http_setup_router("admin.home.lan".into(), "missing.pem".into());
+        let router = super::http_setup_router("console.home.lan".into(), "missing.pem".into());
         for (path, status, content_type) in [
             (
                 "/console/favicon.svg",

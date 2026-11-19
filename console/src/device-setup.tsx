@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button, Card, CardContent, PageHeader, PageHeaderDescription, PageHeaderTitle } from "@momoi-labs/kiso-react";
 import "./console.css";
 
-type SetupInfo = { admin_hostname: string; dns_suffix: string; fingerprint: string };
+type SetupInfo = { console_hostname: string; dns_suffix: string; fingerprint: string };
 type Platform = "" | "macos" | "linux";
 
 function quote(value: string): string {
@@ -127,7 +127,7 @@ export function DeviceSetup() {
                     <Command label="CLI installation" text="curl -fsSL https://raw.githubusercontent.com/momoi-labs/self-host/main/install.sh | SELF_HOST_BINARY_ONLY=1 bash" />
                   </details>
                   {platform === "macos" ? <p>Run this in Terminal in the Mac's graphical session and approve the system prompt. An SSH session cannot complete this step.</p> : null}
-                  <Command label="Certificate trust" text={`self-host trust-ca --from ${quote(info.admin_hostname)} --fingerprint ${quote(info.fingerprint)}`} />
+                  <Command label="Certificate trust" text={`self-host trust-ca --from ${quote(info.console_hostname)} --fingerprint ${quote(info.fingerprint)}`} />
                   <p className="muted t-label">Fully restart your browsers after installing the CA.</p>
                 </>
               ) : <p className="muted t-label">Choose your operating system above to see the commands.</p>}
@@ -139,7 +139,7 @@ export function DeviceSetup() {
             <div className="stack-sm">
               <h2 className="t-h3">3. Open the console</h2>
               <p>After DNS and certificate trust are configured, open:</p>
-              <a href={`https://${info.admin_hostname}`}>{`https://${info.admin_hostname}`}</a>
+              <a href={`https://${info.console_hostname}`}>{`https://${info.console_hostname}`}</a>
             </div>
           </CardContent></Card>
         </>

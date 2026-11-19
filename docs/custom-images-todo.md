@@ -120,7 +120,7 @@ into the generated images. Keep the prototype's configurable mise dependencies.
 - [x] Use the normal Platform DNS, HTTPS and console for local testing. The
   temporary preview runner has been retired. Applications use
   `https://<application>.prototype.lan`, and the console uses
-  `https://admin.prototype.lan/console/`.
+  `https://console.prototype.lan/console/`.
 - [ ] Verify browser certificate trust and terminal paste after local setup.
   HTTP on a container IP does not provide the Clipboard API. HTTPS must have a
   trusted certificate; bypassing a certificate warning is not the setup.

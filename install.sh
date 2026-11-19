@@ -18,6 +18,10 @@
 #   SELF_HOST_BINARY_ONLY    set to 1 to install binaries without Host setup
 #   SELF_HOST_DATA_DIR       where the Platform keeps its data
 #                            (default ~/.config/self-host)
+#   SELF_HOST_PUBLIC_ZONE    public DNS zone on deSEC; set, even empty, to skip
+#                            the question (default: ask, answer no)
+#   SELF_HOST_ACME_EMAIL     Let's Encrypt contact for the public zone
+#   SELF_HOST_DESEC_TOKEN_FILE  file that holds the deSEC token
 #
 set -euo pipefail
 
@@ -43,6 +47,10 @@ fi
 RUNTIME="${SELF_HOST_RUNTIME:-}"
 COLIMA_CPU="${SELF_HOST_COLIMA_CPU:-4}"
 COLIMA_MEMORY="${SELF_HOST_COLIMA_MEMORY:-6}"
+PUBLIC_ZONE="${SELF_HOST_PUBLIC_ZONE:-}"
+ACME_EMAIL="${SELF_HOST_ACME_EMAIL:-}"
+DESEC_TOKEN_FILE="${SELF_HOST_DESEC_TOKEN_FILE:-}"
+DESEC_TOKEN=""
 
 # Resolvers for the Colima VM. Any non-empty list frees port 53 on the Mac;
 # these match the upstreams the Platform forwards to (ADR-0017).
@@ -82,14 +90,17 @@ main() {
 		exit 0
 	fi
 
+	ask_public_zone
+
 	case "$(detect_os)" in
 		darwin) bootstrap_macos ;;
 		linux)
 			if [ "${SELF_HOST_NATIVE:-}" = "1" ]; then
 				install_native_supervision
 			fi
+			save_public_zone
 			echo
-			echo "Next: self-host init && self-host serve"
+			echo "Next: self-host init --dns ${DNS_SUFFIX} && self-host serve"
 			echo "Platform daemon startup on Linux is not set up by this installer."
 			echo "Neither is the bridged network for Virtual machines: that is"
 			echo "vmnet, which is macOS only. Lima on Linux bridges another way."
@@ -315,6 +326,7 @@ bootstrap_macos() {
 	wait_for_docker
 
 	init_platform
+	save_public_zone
 
 	configure_resolver
 
@@ -330,9 +342,9 @@ bootstrap_macos() {
 	echo
 	echo "The Platform is supervised by launchd and starts at boot without a login."
 	if [ -n "$CA_TRUSTED" ]; then
-		echo "  Console:   https://admin.${DNS_SUFFIX} (this Host already trusts the CA)"
+		echo "  Console:   https://console.${DNS_SUFFIX} (this Host already trusts the CA)"
 	else
-		echo "  Console:   https://admin.${DNS_SUFFIX} (untrusted CA here; see the warning above)"
+		echo "  Console:   https://console.${DNS_SUFFIX} (untrusted CA here; see the warning above)"
 	fi
 	echo "  Machines:  bridged on $(lan_interface) through ${VMNET_SOCKET}"
 	echo "  Logs:      $home/Library/Logs/self-host/"
@@ -711,6 +723,58 @@ wait_for_docker() {
 	exit 1
 }
 
+ask_public_zone() {
+	if [ -z "${SELF_HOST_PUBLIC_ZONE+set}" ] && (exec </dev/tty) 2>/dev/null; then
+		local answer suffix
+		echo
+		echo "By default the Platform signs its own certificates with a local CA,"
+		echo "and each device has to trust that CA."
+		read -rp "Use a public DNS zone for trusted certificates instead? [y/N] " answer </dev/tty
+		case "$answer" in
+			[yY]*) ;;
+			*) return 0 ;;
+		esac
+		echo "deSEC (desec.io) is the only supported DNS provider. Create a token"
+		echo "there limited to TXT writes in your zone; nothing else needs it."
+		read -rp "Public DNS zone on deSEC (for example int.example.com): " PUBLIC_ZONE </dev/tty
+		read -rp "Email for Let's Encrypt: " ACME_EMAIL </dev/tty
+		read -rsp "deSEC token (not shown): " DESEC_TOKEN </dev/tty
+		echo
+		if [ -z "${SELF_HOST_DNS:-}" ]; then
+			read -rp "DNS suffix [${PUBLIC_ZONE}]: " suffix </dev/tty
+			DNS_SUFFIX="${suffix:-$PUBLIC_ZONE}"
+		fi
+	fi
+	[ -n "$PUBLIC_ZONE" ] || return 0
+	if [ -n "${SELF_HOST_PUBLIC_ZONE:-}" ] && [ -z "${SELF_HOST_DNS:-}" ]; then
+		DNS_SUFFIX="$PUBLIC_ZONE"
+	fi
+	if [ -z "$ACME_EMAIL" ]; then
+		echo "the public zone needs an email for Let's Encrypt; set SELF_HOST_ACME_EMAIL" >&2
+		exit 1
+	fi
+	if [ -z "$DESEC_TOKEN" ] && [ ! -r "$DESEC_TOKEN_FILE" ]; then
+		echo "the public zone needs a deSEC token; set SELF_HOST_DESEC_TOKEN_FILE" >&2
+		exit 1
+	fi
+	case "$DNS_SUFFIX" in
+		"$PUBLIC_ZONE" | *".$PUBLIC_ZONE") ;;
+		*)
+			echo "${DNS_SUFFIX} is outside ${PUBLIC_ZONE}: names under it keep the local CA." >&2
+			;;
+	esac
+}
+
+save_public_zone() {
+	[ -n "$PUBLIC_ZONE" ] || return 0
+	if [ -n "$DESEC_TOKEN" ]; then
+		printf '%s' "$DESEC_TOKEN" | "$INSTALL_DIR/$BINARY" public-zone --zone "$PUBLIC_ZONE" --email "$ACME_EMAIL"
+	else
+		"$INSTALL_DIR/$BINARY" public-zone --zone "$PUBLIC_ZONE" --email "$ACME_EMAIL" <"$DESEC_TOKEN_FILE"
+	fi
+	DESEC_TOKEN=""
+}
+
 # `init` writes the CA and the API key; running it again would mint new ones
 # and break every machine that trusts the old CA. A CLI config is what a
 # finished init leaves behind, so its presence is the signal to skip.
@@ -760,7 +824,7 @@ lan_interface() {
 
 # The Platform serves the console and every Application over HTTPS, signed by
 # the CA that `init` created. Trusting it here is what makes the Host's own
-# browser open https://admin.<suffix> without a warning; Consumers trust it
+# browser open https://console.<suffix> without a warning; Consumers trust it
 # with `self-host trust-ca --from ... --fingerprint ...`.
 #
 # The System Keychain refuses this where no one can authorize it, over SSH for

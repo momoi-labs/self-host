@@ -1,8 +1,9 @@
 # Public certificates
 
-The Platform issues one HTTP-01 certificate for every Hostname outside the
-DNS Suffix: an Application's Hostname, its aliases and the Hostnames of its
-route rules. Names under the Suffix keep the Platform's own CA. The ACME
+The Platform issues one public certificate for every Hostname outside the
+DNS Suffix, through HTTP-01 or, inside a saved deSEC zone, DNS-01: an Application's Hostname, its aliases and the Hostnames of its
+route rules. Names under the Suffix keep the Platform's own CA, unless the
+Suffix is inside the saved zone (public suffix mode, below). The ACME
 account and the private keys live in Platform State; an Application never
 receives them. Issuance is off until the Operator saves an account.
 
@@ -18,8 +19,8 @@ The API behind the card:
 
 | Request | Result |
 | --- | --- |
-| `GET /certificates/acme` | `{"directory_url", "email"}`, or `null` while issuance is off. |
-| `PUT /certificates/acme` with that body | Saves the account. The directory must be `https://`. |
+| `GET /certificates/acme` | `{"directory_url", "email", "dns"}`, or `null` while issuance is off. `dns` is `null` or `{"provider", "zone", "token_set"}`. The token is never returned. |
+| `PUT /certificates/acme` with `directory_url`, `email` and optional `dns` | Saves the account. The directory must be `https://`. `dns` absent keeps the saved zone, `null` removes it, and a missing `token` keeps the saved one. |
 | `DELETE /certificates/acme` | Turns issuance off. Certificates and the account stay on disk. |
 | `GET /certificates` | One status per managed Hostname (below). |
 
@@ -46,7 +47,72 @@ by hand, with mode `0600`, which is how a private ACME test CA is configured:
 empty or absent. `ca_cert_path` is a PEM trust anchor for a private CA; the
 Platform verifies the ACME service's HTTPS certificate either way. Saving
 from the card keeps both. Hostnames must be explicit DNS names. Wildcards, IP
-addresses, duplicates and paths are refused.
+addresses, duplicates and paths are refused. The only wildcard is the one
+public suffix mode derives from the DNS Suffix.
+
+## DNS validation
+
+A Hostname inside a zone saved in Settings is validated with DNS-01. It needs
+no inbound port 80. Hostnames outside the zone keep HTTP-01. The provider is
+deSEC, and each Hostname outside the DNS Suffix gets its own certificate.
+
+Set it up:
+
+1. Delegate the zone to deSEC, for example `int.momoi.cloud` with
+   `ns1.desec.io` and `ns2.desec.org`.
+2. In deSEC, create a token limited to TXT records in that domain.
+3. In Settings, Public certificates, fill in DNS zone and deSEC token, then
+   save. The saved card shows that a token is set and never shows it.
+
+Saved by hand, the file adds a `dns` object. The file keeps mode `0600`:
+
+```json
+{
+  "directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory",
+  "contact": ["mailto:operator@example.invalid"],
+  "dns": {"provider": "desec", "zone": "int.momoi.cloud", "token": "<token>"}
+}
+```
+
+For each order the Platform writes `_acme-challenge.<hostname>` with a `PUT`,
+which replaces any stale record. It then asks every authoritative nameserver
+directly, never a recursive resolver, and waits up to 10 minutes until all of
+them serve the value. The order poll also waits up to 10 minutes. It sends a
+`DELETE` after the order and does not wait for removal.
+
+Two card errors are fixed text. "DNS provider refused the challenge record"
+means deSEC rejected the write, usually a wrong token or zone. "Challenge
+record did not reach the nameservers" means a nameserver never served it
+within 10 minutes.
+
+Why every nameserver: in the test zone `ns1` served a new TXT in about 3
+seconds, while `ns2` lagged about 4 minutes and served a deleted TXT 2 minutes
+after removal. A recursive resolver also cached a negative answer. See
+[ADR-0036](adr/0036-public-certificates-can-use-dns-01-through-desec.md) for
+this and for why deSEC and not Cloudflare: a Cloudflare token covers the whole
+zone and child zones need Enterprise, while a deSEC token can be limited to
+TXT in one domain.
+
+## Public suffix mode
+
+When the saved zone equals or contains the DNS Suffix, for example zone
+`momoi.cloud` or `int.momoi.cloud` with Suffix `int.momoi.cloud`, the Platform
+orders one certificate for `*.int.momoi.cloud` and `int.momoi.cloud`. It
+serves that certificate for every name one label under the Suffix:
+Applications, aliases, route rules, `console` and `admin`. `GET /certificates`
+lists it as `*.int.momoi.cloud`.
+
+- Both identifiers share `_acme-challenge.<suffix>`. The Platform writes both
+  values into one TXT record set and waits for every nameserver to serve both.
+- Before the first issuance and after a failure, names under the Suffix get
+  the LAN leaf from the local CA. Devices that trust the CA keep working.
+- A name two labels down, such as `a.b.int.momoi.cloud`, is not covered by a
+  wildcard and keeps the LAN leaf.
+- An explicit Hostname with its own saved certificate keeps it.
+
+The installer can turn this on: it asks whether to use a public DNS zone, and
+the answer defaults to no. See
+[ADR-0038](adr/0038-a-suffix-inside-the-public-zone-gets-one-wildcard.md).
 
 ## State and renewal
 
@@ -54,9 +120,9 @@ The authoritative `state/certificates` directory holds:
 
 | File | Contents |
 | --- | --- |
-| `public.json` | CA directory, contact and managed Hostnames |
+| `public.json` | CA directory, contact, managed Hostnames and the optional DNS zone and token |
 | `account.json` | CA directory and serialized ACME account credentials |
-| `<hostname>.json` | One certificate chain and its matching private key |
+| `<hostname>.json` | One certificate chain and its matching private key, `*.<suffix>.json` for the wildcard |
 | `status.json` | Expiry, renewal, attempts, retry times and errors |
 
 Directories have mode `0700`. Files have mode `0600`. The Platform replaces
@@ -86,6 +152,9 @@ An explicitly managed public Hostname receives only its exact saved
 certificate. A missing, expired or not-yet-valid certificate refuses the TLS
 handshake. The proxy does not replace it with the LAN wildcard.
 
+In public suffix mode, a name one label under the Suffix receives the public
+wildcard while it is valid, and the LAN leaf otherwise.
+
 Every other name, and a client without SNI, receives the Platform's own
 certificate, whether or not its names cover the one asked for. A browser
 reaching the Host directly rejects the mismatch, as it would have rejected a
@@ -113,7 +182,9 @@ cargo test --lib proxy::
 
 The disposable local HTTPS ACME service checks ES256 request signatures,
 nonces, account identifiers, request URLs, HTTP-01 responses and CSR
-signatures. It issues separate certificates for independent names and an
+signatures. A fake deSEC API and a DNS responder share one record table, so
+tests cover a nameserver that answers late, a stale TXT from a crashed run, a
+record that never arrives, and a refused write. It issues separate certificates for independent names and an
 alias through the real proxy listeners. Tests cover actual TLS handshakes,
 live replacement, restart persistence, failure retention, hourly backoff,
 expiry refusal and file permissions. No production Host or public DNS is

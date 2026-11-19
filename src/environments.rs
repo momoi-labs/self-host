@@ -465,7 +465,10 @@ pub async fn running_ids<S: StateStore>(store: &S) -> Vec<String> {
         .collect()
 }
 
-async fn save<S: StateStore>(store: &S, records: &[EnvironmentRecord]) -> Result<(), String> {
+pub(crate) async fn save<S: StateStore>(
+    store: &S,
+    records: &[EnvironmentRecord],
+) -> Result<(), String> {
     MACHINES
         .replace_all(store, records)
         .await

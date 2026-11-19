@@ -230,7 +230,8 @@ async fn generated_hostname(
     id: &str,
     suffix: &str,
 ) -> Result<String, DeployError> {
-    let mut occupied = std::collections::HashSet::from([format!("admin.{suffix}")]);
+    let mut occupied =
+        std::collections::HashSet::from([format!("console.{suffix}"), format!("admin.{suffix}")]);
     for app in store.list_applications().await? {
         occupied.extend(
             crate::routes::hostnames(&app)
@@ -340,7 +341,7 @@ pub(crate) async fn validate_routing(
     crate::routes::validate_rules(
         record,
         &store.list_applications().await?,
-        &format!("admin.{suffix}"),
+        &format!("console.{suffix}"),
     )
     .map_err(DeployError::Route)?;
 

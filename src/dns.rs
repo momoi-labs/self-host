@@ -754,7 +754,7 @@ mod tests {
         let (mut server, address, zone) =
             local_server(upstream(&[unavailable.local_addr().unwrap()])).await;
         crate::dns_records::rebuild(&store, &zone).await.unwrap();
-        let (response, answers) = a_answers(address, "admin.home.lan.").await;
+        let (response, answers) = a_answers(address, "console.home.lan.").await;
         assert_eq!(answers, vec![Ipv4Addr::new(192, 0, 2, 30)]);
         assert_eq!(response.answers[0].ttl, 60);
         assert_eq!(
@@ -765,7 +765,7 @@ mod tests {
         zone.publish("*", Ipv4Addr::new(192, 0, 2, 40)).await;
         assert_eq!(zone.addresses().await, vec![Ipv4Addr::new(192, 0, 2, 40)]);
         assert_eq!(
-            a_answers(address, "admin.home.lan.").await.1,
+            a_answers(address, "console.home.lan.").await.1,
             vec![Ipv4Addr::new(192, 0, 2, 30)]
         );
         server.shutdown_gracefully().await.unwrap();
@@ -867,7 +867,7 @@ mod tests {
         let (mut server, address, _) =
             local_server(upstream(&[unavailable.local_addr().unwrap()])).await;
         for tcp in [false, true] {
-            for name in ["admin.home.lan.", "nested.app.home.lan.", "APP.HOME.LAN."] {
+            for name in ["console.home.lan.", "nested.app.home.lan.", "APP.HOME.LAN."] {
                 let response =
                     exchange(address, &query(name, RecordType::A, Some(1232)), tcp).await;
                 assert_eq!(response.response_code, ResponseCode::NoError);
