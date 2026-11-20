@@ -5,8 +5,8 @@ contracts own the shared rules.
 
 ## Contracts
 
-- Packages in `console/`: `@momoi-labs/kiso-react` 0.34.0 and
-  `@momoi-labs/kiso` 1.12.0, resolved in `console/package-lock.json`.
+- Packages in `console/`: `@momoi-labs/kiso-react` 0.35.0 and
+  `@momoi-labs/kiso` 1.12.1, resolved in `console/package-lock.json`.
 - Contracts: `console/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 
 ## Paths
@@ -89,8 +89,9 @@ Other components above live in `console/src/components/`.
 - Use straight chart lines, no chart fill, the standard chart layout and
   table legends. Keep existing product-specific chart legend visibility.
 - The shell is `ConsoleShell`: a collapsible sidebar with the toggle in the
-  header, before the breadcrumb. Below 1024px the navigation opens in a
-  drawer at every width. ConsoleShell has no bottom navigation.
+  header, before the breadcrumb. From 700px to 1023px the navigation opens
+  in a drawer. Below 700px it moves to ConsoleShell's bottom navigation: the
+  first four destinations, then More for the rest.
 - The sidebar lists pages, not records. Applications and virtual machines open
   from the Overview's tables, and their detail screens mark Overview as the
   current destination. A database's screen marks Databases.
