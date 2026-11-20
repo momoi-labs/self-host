@@ -5,10 +5,8 @@ import {
   Badge, Button,
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
-  EmptyState, EmptyStateDescription, EmptyStateTitle,
-  PageHeader, PageHeaderDescription, PageHeaderTitle,
-  Search, Skeleton,
-  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  ListPage, Search,
+  TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { CustomImageEditor } from "../components/CustomImageEditor.js";
@@ -97,70 +95,54 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
 
   if (listing) return (
     <>
-      <PageHeader actions={
-        <Button size="sm" variant="primary" onClick={() => onOpen(null)}><Icon name="plus" />New image</Button>
-      }>
-        <PageHeaderTitle>Custom images</PageHeaderTitle>
-        <PageHeaderDescription>Saved images and their latest build on this Host.</PageHeaderDescription>
-      </PageHeader>
+      <ListPage title="Custom images" action={{ label: "New image", icon: <Icon name="plus" />, onClick: () => onOpen(null) }}
+        state={!loaded && !loadFailure ? "loading" : images.length || loadFailure ? "ready" : "empty"}
+        empty={{ title: "No custom images yet", text: "Choose your mise dependencies and build your first custom image." }}
+        count={loaded ? `${visible.length} of ${images.length} images` : "No images loaded"}
+        filters={<div className="list-filters">
+          <Search aria-label="Search by name" placeholder="Search by name..." value={query}
+            onChange={(event) => setQuery(event.target.value)} />
+          {query ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
+        </div>}>
+        <TableHeader><TableRow>
+          <TableHead scope="col">Name</TableHead>
+          <TableHead scope="col">Dependencies</TableHead>
+          <TableHead scope="col">Image</TableHead>
+          <TableHead scope="col">Status</TableHead>
+          <TableHead scope="col">Actions</TableHead>
+        </TableRow></TableHeader>
+        <TableBody>
+          {!loaded ? <TableRow><TableCell colSpan={5}>Could not load images.</TableCell></TableRow>
+            : !visible.length ? <TableRow><TableCell colSpan={5} className="muted">No images match your filters.</TableCell></TableRow> : visible.map((image) => (
+            <TableRow key={image.id} tabIndex={0} role="button" aria-label={`Open ${image.name}`}
+              onClick={() => onOpen(image.id)} onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                onOpen(image.id);
+              }}>
+              <TableCell>
+                <span className="row">{image.name}{image.platform ? <Badge variant="neutral">Platform</Badge> : null}</span>
+              </TableCell>
+              <TableCell className="mono">
+                {image.dockerfile ? <span className="muted">Custom Dockerfile</span>
+                  : image.dependencies.map((dep) => `${dep.tool}@${dep.version}`).join(", ")}
+              </TableCell>
+              <TableCell className="mono">{image.image}</TableCell>
+              <TableCell><StatusBadge tone={buildTone(image)} pulse={image.status === "building"}>{buildLabel(image)}</StatusBadge></TableCell>
+              <TableCell onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                <Button type="button" size="sm" variant="ghost" className="btn-danger-ghost"
+                  aria-label={`Delete ${image.name}`} disabled={!!deleting || !!deleteReason(image)}
+                  onClick={() => setConfirming(image)}>
+                  {deleting === image.id ? "Deleting..." : "Delete"}
+                </Button>
+                {deleteReason(image) ? <span className="muted t-label">{deleteReason(image)}</span> : null}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </ListPage>
       {loadFailure ? <Failure failure={loadFailure} /> : null}
       {failure ? <Failure failure={failure} /> : null}
-      <div className="list-filters">
-        <Search aria-label="Search by name" placeholder="Search by name..." value={query}
-          onChange={(event) => setQuery(event.target.value)} />
-        {query ? <Button size="sm" variant="ghost" onClick={() => setQuery("")}>Clear filters</Button> : null}
-      </div>
-      <div className="stack custom-image-list">
-        <TableFrame aria-busy={!loaded && !loadFailure}>
-          <div className="table-scroll">
-            <Table aria-label="Custom images">
-              <TableHeader><TableRow>
-                <TableHead scope="col">Name</TableHead>
-                <TableHead scope="col">Dependencies</TableHead>
-                <TableHead scope="col">Image</TableHead>
-                <TableHead scope="col">Status</TableHead>
-                <TableHead scope="col">Actions</TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {!loaded ? (loadFailure ? <TableRow><TableCell colSpan={5}>Could not load images.</TableCell></TableRow> : [0, 1, 2].map((row) => <TableRow key={row}>
-                  {Array.from({ length: 5 }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}
-                </TableRow>)) : !images.length ? <TableRow><TableCell colSpan={5}>
-                  <EmptyState variant="first-run">
-                    <EmptyStateTitle>No custom images yet</EmptyStateTitle>
-                    <EmptyStateDescription>Choose your mise dependencies and build your first custom image.</EmptyStateDescription>
-                  </EmptyState>
-                </TableCell></TableRow> : !visible.length ? <TableRow><TableCell colSpan={5} className="muted">No images match your filters.</TableCell></TableRow> : visible.map((image) => (
-                  <TableRow key={image.id} tabIndex={0} role="button" aria-label={`Open ${image.name}`}
-                    onClick={() => onOpen(image.id)} onKeyDown={(event) => {
-                      if (event.key !== "Enter" && event.key !== " ") return;
-                      event.preventDefault();
-                      onOpen(image.id);
-                    }}>
-                    <TableCell>
-                      <span className="row">{image.name}{image.platform ? <Badge variant="neutral">Platform</Badge> : null}</span>
-                    </TableCell>
-                    <TableCell className="mono">
-                      {image.dockerfile ? <span className="muted">Custom Dockerfile</span>
-                        : image.dependencies.map((dep) => `${dep.tool}@${dep.version}`).join(", ")}
-                    </TableCell>
-                    <TableCell className="mono">{image.image}</TableCell>
-                    <TableCell><StatusBadge tone={buildTone(image)} pulse={image.status === "building"}>{buildLabel(image)}</StatusBadge></TableCell>
-                    <TableCell onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-                      <Button type="button" size="sm" variant="ghost" className="btn-danger-ghost"
-                        aria-label={`Delete ${image.name}`} disabled={!!deleting || !!deleteReason(image)}
-                        onClick={() => setConfirming(image)}>
-                        {deleting === image.id ? "Deleting..." : "Delete"}
-                      </Button>
-                      {deleteReason(image) ? <span className="muted t-label">{deleteReason(image)}</span> : null}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-          <p className="table-footer">{loaded ? `${visible.length} of ${images.length} images` : loadFailure ? "No images loaded" : "Loading images..."}</p>
-        </TableFrame>
-      </div>
       {confirmDialog}
     </>
   );

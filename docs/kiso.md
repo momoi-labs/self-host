@@ -104,15 +104,20 @@ Other components above live in `console/src/components/`.
   panel sits in `TableFrame`, never in a hand-written `div.table-wrap`. Other native frames
   need `PanelShadow` as their first child, as documented in the installed
   tokens.
-- A list page is a `PageHeader` with a title, a one-line description and the
-  primary action, then the filters, then the table. The table and its headers
-  always render. Loading is `Skeleton` rows. An empty list is an `EmptyState`
-  in the table body, with a title and one sentence, no icon and no button.
-  The header holds the action. Overview's group tables follow the same rule.
-  Only
-  Overview's empty Host is a standalone `EmptyState` in a `Card`.
+- A list page is Kiso's `ListPage`: the title and the primary action, then
+  the filters, then the table, with the count in its footer. Loading is
+  `Skeleton`. An empty list is the header and one `Card` with the
+  `EmptyState`, edge to edge: no filters, no table, no count. The
+  `EmptyState` has a title and one sentence, no icon and no button. A filter
+  that empties a non-empty list keeps the table and shows a "No X match your
+  filters." row. Events has no header action and ListPage requires one, so
+  Events writes the same markup by hand.
+- An `EmptyState` touches its frame. In an Overview group or a route table,
+  it replaces the table under the toolbar. In a tab with other content, it
+  sits alone in a `Card`, where the table would be.
 - No disabled header action. Hide an action the Operator cannot take, and let
-  the empty state say why. Routes hides Add route until an Application exists.
+  the empty state say why. Routes offers Deploy application until an
+  Application exists.
 - A list's `TableFrame` fits its rows. `data-fill="false"` opts out of Kiso's
   stretch for a last-child table, so Databases and Events do not fill the
   window.

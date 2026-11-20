@@ -1,13 +1,12 @@
 import { useState } from "react";
 import {
-  Button, EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateTitle, PageHeader, PageHeaderDescription, PageHeaderTitle,
-  Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Button, ListPage, Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../components/Icon.js";
 import { RedirectDialog, type RedirectEditor } from "../components/RedirectDialog.js";
 import { RouteDialog, type RouteEditor } from "../components/RouteDialog.js";
-import { RouteTable, type RedirectEntry } from "../components/RouteTable.js";
+import { RouteRows, type RedirectEntry } from "../components/RouteTable.js";
 import { useToast } from "../components/Toasts.js";
 import { isPublished, kindLabel, redirectDraft, redirectFrom, redirectTo, routesOf } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
@@ -45,52 +44,41 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: 
     redirectDraft(rule) ? setEditor({ app, redirect: index }) : setRedirectEditor({ app, index });
   const filtering = query.trim() !== "" || application !== "all" || kind !== "all";
   const clear = () => { setQuery(""); setApplication("all"); setKind("all"); };
-  const add = published.length ? (
-    <Button size="sm" variant="primary" onClick={() => setEditor({ app: null })}>
-      <Icon name="plus" />Add route
-    </Button>
-  ) : null;
 
   return (
     <>
-      <PageHeader actions={add}>
-        <PageHeaderTitle>Routes</PageHeaderTitle>
-        <PageHeaderDescription>Every hostname and path the HTTP proxy answers, and the Application it reaches.</PageHeaderDescription>
-      </PageHeader>
-      <div className="list-filters">
-        <Search aria-label="Search routes" placeholder="Search routes..." value={query} onChange={(event) => setQuery(event.target.value)} />
-        <Select value={application} onValueChange={setApplication}>
-          <SelectTrigger aria-label="Filter by application"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All applications</SelectItem>
-            {published.map((app) => <SelectItem key={app.id} value={app.id}>{app.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <Select value={kind} onValueChange={setKind}>
-          <SelectTrigger aria-label="Filter by type"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
-            {Object.entries(kindLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
-            <SelectItem value="redirect">Redirect</SelectItem>
-          </SelectContent>
-        </Select>
-        {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
-      </div>
-      <RouteTable routes={visible} redirects={redirects} total={total} ready={ready} showApplication
-        onEditRedirect={editRedirect}
-        reload={reload}
-        onEdit={(route) => setEditor({ app: route.app, route })}
-        onOpenApp={onOpenApp}
-        empty={
-          <EmptyState variant="first-run">
-            <EmptyStateTitle>No routes yet</EmptyStateTitle>
-            <EmptyStateDescription>Routes come from an Application with a Hostname, so deploy one first.</EmptyStateDescription>
-            <EmptyStateActions>
-              <Button variant="primary" onClick={onDeploy}><Icon name="plus" />Deploy an application</Button>
-            </EmptyStateActions>
-          </EmptyState>
-        } />
-      <details className="disclosure">
+      <ListPage title="Routes"
+        action={published.length ? { label: "Add route", icon: <Icon name="plus" />, onClick: () => setEditor({ app: null }) }
+          : { label: "Deploy application", icon: <Icon name="plus" />, onClick: onDeploy }}
+        state={!ready ? "loading" : total ? "ready" : "empty"}
+        empty={{ title: "No routes yet", text: "Routes come from an Application with a Hostname, so deploy one first." }}
+        count={`${visible.length + redirects.length} of ${total} routes`}
+        filters={<div className="list-filters">
+          <Search aria-label="Search routes" placeholder="Search routes..." value={query} onChange={(event) => setQuery(event.target.value)} />
+          <Select value={application} onValueChange={setApplication}>
+            <SelectTrigger aria-label="Filter by application"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All applications</SelectItem>
+              {published.map((app) => <SelectItem key={app.id} value={app.id}>{app.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={kind} onValueChange={setKind}>
+            <SelectTrigger aria-label="Filter by type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All types</SelectItem>
+              {Object.entries(kindLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+              <SelectItem value="redirect">Redirect</SelectItem>
+            </SelectContent>
+          </Select>
+          {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
+        </div>}>
+        <RouteRows routes={visible} redirects={redirects} ready showApplication
+          onEditRedirect={editRedirect}
+          reload={reload}
+          onEdit={(route) => setEditor({ app: route.app, route })}
+          onOpenApp={onOpenApp} />
+      </ListPage>
+      {!ready || total ? <details className="disclosure">
         <summary>How the proxy picks a route</summary>
         <ol>
           <li>It matches the hostname, in any letter case.</li>
@@ -99,7 +87,7 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: 
           <li>A redirect answers before any of this, on the hostname and path it names.</li>
           <li>A hostname with no route answers 404. <code>console.{dnsSuffix}</code> always belongs to the Platform.</li>
         </ol>
-      </details>
+      </details> : null}
       <RouteDialog editor={editor} apps={apps} dnsSuffix={dnsSuffix} onClose={() => setEditor(null)}
         onPattern={(app) => { setEditor(null); setRedirectEditor({ app }); }}
         onSaved={(message) => {

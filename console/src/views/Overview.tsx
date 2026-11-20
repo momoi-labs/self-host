@@ -140,7 +140,12 @@ export function Overview({
                 Deploy application
               </Button>
             </div>
-            <div className="table-scroll">
+            {applications.length === 0 ? (
+              <EmptyState variant="first-run">
+                <EmptyStateTitle>No applications yet</EmptyStateTitle>
+                <EmptyStateDescription>Deploy a container image, a Git repository or a native process.</EmptyStateDescription>
+              </EmptyState>
+            ) : <div className="table-scroll">
               <Table aria-label="Applications">
                 <TableHeader>
                   <TableRow>
@@ -152,16 +157,7 @@ export function Overview({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {applications.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5}>
-                        <EmptyState variant="first-run">
-                          <EmptyStateTitle>No applications yet</EmptyStateTitle>
-                          <EmptyStateDescription>Deploy a container image, a Git repository or a native process.</EmptyStateDescription>
-                        </EmptyState>
-                      </TableCell>
-                    </TableRow>
-                  ) : visibleApps.length === 0 ? (
+                  {visibleApps.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={5} className="muted">No applications match your search.</TableCell>
                     </TableRow>
@@ -218,7 +214,7 @@ export function Overview({
                   )}
                 </TableBody>
               </Table>
-            </div>
+            </div>}
           </TableFrame>
 
           <TableFrame>
@@ -237,7 +233,12 @@ export function Overview({
                 New database
               </Button>
             </div>
-            <div className="table-scroll">
+            {databases.length === 0 ? (
+              <EmptyState variant="first-run">
+                <EmptyStateTitle>No databases yet</EmptyStateTitle>
+                <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
+              </EmptyState>
+            ) : <div className="table-scroll">
               <Table aria-label="Databases">
                 <TableHeader>
                   <TableRow>
@@ -247,16 +248,7 @@ export function Overview({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {databases.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={3}>
-                        <EmptyState variant="first-run">
-                          <EmptyStateTitle>No databases yet</EmptyStateTitle>
-                          <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
-                        </EmptyState>
-                      </TableCell>
-                    </TableRow>
-                  ) : visibleDatabases.length === 0 ? (
+                  {visibleDatabases.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={3} className="muted">No databases match your search.</TableCell>
                     </TableRow>
@@ -296,7 +288,7 @@ export function Overview({
                   )}
                 </TableBody>
               </Table>
-            </div>
+            </div>}
           </TableFrame>
 
           <TableFrame>
@@ -315,7 +307,12 @@ export function Overview({
                 Create virtual machine
               </Button>
             </div>
-            <div className="table-scroll">
+            {environments.length === 0 ? (
+              <EmptyState variant="first-run">
+                <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
+                <EmptyStateDescription>Create a persistent workspace with your tools and repositories, reachable over SSH.</EmptyStateDescription>
+              </EmptyState>
+            ) : <div className="table-scroll">
               <Table aria-label="Virtual machines">
                 <TableHeader>
                   <TableRow>
@@ -328,16 +325,7 @@ export function Overview({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {environments.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6}>
-                        <EmptyState variant="first-run">
-                          <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
-                          <EmptyStateDescription>Create a persistent workspace with your tools and repositories, reachable over SSH.</EmptyStateDescription>
-                        </EmptyState>
-                      </TableCell>
-                    </TableRow>
-                  ) : machines.length === 0 ? (
+                  {machines.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={6} className="muted">
                         No virtual machines match your search.
@@ -407,7 +395,7 @@ export function Overview({
                   )}
                 </TableBody>
               </Table>
-            </div>
+            </div>}
           </TableFrame>
         </div>
       )}

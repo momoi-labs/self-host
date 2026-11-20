@@ -3,10 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Button, Card, CardContent, CardHeader,
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField,
-  KV, KVKey, KVValue, PageHeader, PageHeaderDescription, PageHeaderTitle, Search,
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton,
-  Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  FormField, KV, KVKey, KVValue, ListPage, Search,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { Failure } from "../components/Failure.js";
@@ -91,64 +90,52 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
 
   return (
     <>
-      <PageHeader actions={<Button size="sm" variant="primary" onClick={() => open({ mode: "create" })}><Icon name="plus" />New record</Button>}>
-        <PageHeaderTitle>DNS</PageHeaderTitle>
-        <PageHeaderDescription>Names the Platform answers for, and the Records you manage.</PageHeaderDescription>
-      </PageHeader>
+      <ListPage title="DNS" action={{ label: "New record", icon: <Icon name="plus" />, onClick: () => open({ mode: "create" }) }}
+        state={inventory === null && !records.error ? "loading" : rows.length || records.error ? "ready" : "empty"}
+        empty={{ title: "No records yet", text: "Create a Record, or check the Zone diagnostics below." }}
+        count={inventory === null ? "No records loaded" : `${visible.length} of ${rows.length} records`}
+        filters={<div className="list-filters">
+          <Search aria-label="Search records" placeholder="Search records..." value={query} onChange={event => setQuery(event.target.value)} />
+          <Select value={owner} onValueChange={setOwner}>
+            <SelectTrigger aria-label="Filter record owner"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All owners</SelectItem>
+              <SelectItem value="platform">Platform</SelectItem>
+              <SelectItem value="application">Application</SelectItem>
+              <SelectItem value="virtual-machine">Virtual machine</SelectItem>
+              <SelectItem value="operator">Operator</SelectItem>
+            </SelectContent>
+          </Select>
+          {filtering ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setOwner("all"); }}>Clear filters</Button> : null}
+        </div>}>
+        <TableHeader><TableRow>
+          <TableHead>Name</TableHead><TableHead>Record Type</TableHead><TableHead>Value</TableHead>
+          <TableHead>TTL</TableHead><TableHead>Owner</TableHead><TableHead>Origin</TableHead><TableHead>Actions</TableHead>
+        </TableRow></TableHeader>
+        <TableBody>
+          {inventory === null ? <TableRow><TableCell colSpan={7}>Could not load records.</TableCell></TableRow>
+            : visible.length === 0 ? <TableRow><TableCell colSpan={7}>No records match your filters.</TableCell></TableRow> : visible.map(row => (
+            <TableRow key={`${row.name}/${row.type}`}>
+              <TableCell className="mono">{row.name}</TableCell>
+              <TableCell>{row.type}</TableCell>
+              <TableCell className="mono">{row.values.map(address => <div key={address}>{address}</div>)}</TableCell>
+              <TableCell>{row.ttl} s</TableCell>
+              <TableCell>{row.owner === "platform" ? "Platform" : row.owner === "application" ? "Application" : row.owner === "virtual-machine" ? "Virtual machine" : "Operator"}</TableCell>
+              <TableCell>{row.originHref ? <a href={row.originHref} onClick={event => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                if (row.owner === "application" && row.application_id) onOpenApplication(row.application_id);
+                else if (row.virtual_machine_id) onOpenVirtualMachine(row.virtual_machine_id);
+              }}>{row.origin}</a> : row.origin}</TableCell>
+              <TableCell>{row.editable ? <div className="row">
+                <Button size="sm" variant="ghost" aria-label={`Edit ${row.name}`} onClick={() => open({ mode: "edit", record: row })}>Edit</Button>
+                <Button size="sm" variant="ghost" className="btn-danger-ghost" aria-label={`Delete ${row.name}`} onClick={() => open({ mode: "delete", record: row })}>Delete</Button>
+              </div> : null}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </ListPage>
       {loadFailure ? <Failure failure={loadFailure} actionLabel="Retry" onAction={refresh} /> : null}
-      <div className="list-filters">
-        <Search aria-label="Search records" placeholder="Search records..." value={query} onChange={event => setQuery(event.target.value)} />
-        <Select value={owner} onValueChange={setOwner}>
-          <SelectTrigger aria-label="Filter record owner"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All owners</SelectItem>
-            <SelectItem value="platform">Platform</SelectItem>
-            <SelectItem value="application">Application</SelectItem>
-            <SelectItem value="virtual-machine">Virtual machine</SelectItem>
-            <SelectItem value="operator">Operator</SelectItem>
-          </SelectContent>
-        </Select>
-        {filtering ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setOwner("all"); }}>Clear filters</Button> : null}
-      </div>
-      <TableFrame aria-busy={inventory === null && !records.error}>
-        <div className="table-scroll">
-          <Table aria-label="DNS records">
-            <TableHeader><TableRow>
-              <TableHead>Name</TableHead><TableHead>Record Type</TableHead><TableHead>Value</TableHead>
-              <TableHead>TTL</TableHead><TableHead>Owner</TableHead><TableHead>Origin</TableHead><TableHead>Actions</TableHead>
-            </TableRow></TableHeader>
-            <TableBody>
-              {inventory === null ? (records.error ? <TableRow><TableCell colSpan={7}>Could not load records.</TableCell></TableRow> : [0, 1, 2].map(row => <TableRow key={row}>
-                {Array.from({ length: 7 }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}
-              </TableRow>)) : rows.length === 0 ? <TableRow><TableCell colSpan={7}>
-                <EmptyState variant="first-run">
-                  <EmptyStateTitle>No records yet</EmptyStateTitle>
-                  <EmptyStateDescription>Create a Record, or check the Zone diagnostics below.</EmptyStateDescription>
-                </EmptyState>
-              </TableCell></TableRow> : visible.length === 0 ? <TableRow><TableCell colSpan={7}>No records match your filters.</TableCell></TableRow> : visible.map(row => (
-                <TableRow key={`${row.name}/${row.type}`}>
-                  <TableCell className="mono">{row.name}</TableCell>
-                  <TableCell>{row.type}</TableCell>
-                  <TableCell className="mono">{row.values.map(address => <div key={address}>{address}</div>)}</TableCell>
-                  <TableCell>{row.ttl} s</TableCell>
-                  <TableCell>{row.owner === "platform" ? "Platform" : row.owner === "application" ? "Application" : row.owner === "virtual-machine" ? "Virtual machine" : "Operator"}</TableCell>
-                  <TableCell>{row.originHref ? <a href={row.originHref} onClick={event => {
-                    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                    event.preventDefault();
-                    if (row.owner === "application" && row.application_id) onOpenApplication(row.application_id);
-                    else if (row.virtual_machine_id) onOpenVirtualMachine(row.virtual_machine_id);
-                  }}>{row.origin}</a> : row.origin}</TableCell>
-                  <TableCell>{row.editable ? <div className="row">
-                    <Button size="sm" variant="ghost" aria-label={`Edit ${row.name}`} onClick={() => open({ mode: "edit", record: row })}>Edit</Button>
-                    <Button size="sm" variant="ghost" className="btn-danger-ghost" aria-label={`Delete ${row.name}`} onClick={() => open({ mode: "delete", record: row })}>Delete</Button>
-                  </div> : null}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-        <p className="table-footer"><span>{inventory === null ? (records.error ? "No records loaded" : "Loading records...") : `${visible.length} of ${rows.length} records`}</span></p>
-      </TableFrame>
       <Card>
         <CardHeader><h2 className="t-caps">Zone diagnostics</h2></CardHeader>
         <CardContent>

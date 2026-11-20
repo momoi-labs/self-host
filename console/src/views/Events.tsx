@@ -94,7 +94,10 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
       <PageHeaderDescription>Activity across your services and virtual machines.</PageHeaderDescription>
     </PageHeader>
     {error && <div className="events-error" role="alert"><span>{error}</span>{onRetry && <Button size="sm" onClick={onRetry}>Retry</Button>}</div>}
-    <div className={`events-layout${selected ? " events-layout-open" : ""}`}>
+    {!events.length && !loading && !error ? <div className="events-layout"><Card><CardContent><EmptyState variant="informational">
+      <EmptyStateTitle>No events yet</EmptyStateTitle>
+      <EmptyStateDescription>Service and virtual machine activity will appear here.</EmptyStateDescription>
+    </EmptyState></CardContent></Card></div> : <div className={`events-layout${selected ? " events-layout-open" : ""}`}>
       <div className="events-list">
         <div className="list-filters">
           <Search aria-label="Filter by service" placeholder="Search services or virtual machines..."
@@ -116,10 +119,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
               </TableRow></TableHeader>
               <TableBody>{!rows.length ? (loading ? [0, 1, 2].map(row => <TableRow key={row}>
                 {Array.from({ length: 5 }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}
-              </TableRow>) : <TableRow><TableCell colSpan={5}>{error ? "Could not load events." : filtered ? "No events match your filters." : <EmptyState variant="informational">
-                <EmptyStateTitle>No events yet</EmptyStateTitle>
-                <EmptyStateDescription>Service and virtual machine activity will appear here.</EmptyStateDescription>
-              </EmptyState>}</TableCell></TableRow>) : rows.map(event => <TableRow key={event.id} data-state={selected?.id === event.id ? "selected" : undefined}
+              </TableRow>) : <TableRow><TableCell colSpan={5}>{error ? "Could not load events." : "No events match your filters."}</TableCell></TableRow>) : rows.map(event => <TableRow key={event.id} data-state={selected?.id === event.id ? "selected" : undefined}
                 className={`events-row events-row-${event.status}`} onClick={click => {
                   if (click.target instanceof Element && click.target.closest("a")) return;
                   selectedButton.current = click.currentTarget.querySelector("button");
@@ -183,7 +183,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
           </CardContent>
         </Card>
       </aside>}
-    </div>
+    </div>}
   </div>;
 }
 

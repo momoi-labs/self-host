@@ -41,6 +41,31 @@ export function RouteTable({ routes, redirects = [], total, ready = true, showAp
   /** Where the Hostname is changed, when this screen can go there. */
   onRename?: () => void;
 }) {
+  return (
+    <TableFrame aria-busy={!ready}>
+      {toolbar}
+      {ready && total === 0 ? empty : <>
+        <Table aria-label="Routes">
+          <RouteRows routes={routes} redirects={redirects} ready={ready} showApplication={showApplication} reload={reload}
+            onEdit={onEdit} onEditRedirect={onEditRedirect} onOpenApp={onOpenApp} onRename={onRename} />
+        </Table>
+        <p className="table-footer" role="status"><span>{ready ? `${routes.length + redirects.length} of ${total} routes` : "Loading routes..."}</span></p>
+      </>}
+    </TableFrame>
+  );
+}
+
+export function RouteRows({ routes, redirects, ready, showApplication, reload, onEdit, onEditRedirect, onOpenApp, onRename }: {
+  routes: Route[];
+  redirects: RedirectEntry[];
+  ready: boolean;
+  showApplication?: boolean;
+  reload: () => Promise<unknown>;
+  onEdit: (route: Route) => void;
+  onEditRedirect?: (entry: RedirectEntry) => void;
+  onOpenApp?: (id: string) => void;
+  onRename?: () => void;
+}) {
   const notify = useToast();
   const [removing, setRemoving] = useState<Route | null>(null);
   const [unredirecting, setUnredirecting] = useState<RedirectEntry | null>(null);
@@ -76,89 +101,81 @@ export function RouteTable({ routes, redirects = [], total, ready = true, showAp
     </a>
   );
   return (
-    <TableFrame aria-busy={!ready}>
-      {toolbar}
-      <div className="table-scroll">
-        <Table aria-label="Routes">
-          <TableHeader>
-            <TableRow>
-              <TableHead scope="col">Route</TableHead>
-              {showApplication ? <TableHead scope="col">Application</TableHead> : null}
-              <TableHead scope="col">Type</TableHead>
-              <TableHead scope="col">Target</TableHead>
-              <TableHead scope="col">HTTP</TableHead>
-              <TableHead scope="col" className="col-tight">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {!ready ? [0, 1, 2].map((row) => (
-              <TableRow key={row}>{Array.from({ length: columns }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}</TableRow>
-            )) : total === 0 ? (
-              <TableRow><TableCell colSpan={columns}>{empty}</TableCell></TableRow>
-            ) : routes.length === 0 && redirects.length === 0 ? (
-              <TableRow><TableCell colSpan={columns}>No routes match your filters.</TableCell></TableRow>
-            ) : routes.map((route) => (
-              <TableRow key={route.key}>
-                <TableCell>
-                  <span className="mono">{route.hostname}<span className="route-path">{route.path}</span></span>
-                </TableCell>
-                {showApplication ? (
-                  <TableCell>{appLink(route.app)}</TableCell>
-                ) : null}
-                <TableCell><Badge variant="neutral"><Icon name={kindIcon[route.kind]} />{kindLabel[route.kind]}</Badge></TableCell>
-                <TableCell className="mono muted">{route.target ?? targetLabel(route.app)}{route.path !== "/" && !route.stripPrefix ? route.path : ""}</TableCell>
-                <TableCell>
-                  {/* The probe reads the Web Target; a rule that names its own target is not checked. */}
-                  {route.target ? <span className="muted">Not checked</span> : <HttpStatus id={route.app.id} status={route.app.status} />}
-                </TableCell>
-                <TableCell className="col-tight">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for ${urlOf(route)}`}><Icon name="more" /></Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      {showApplication ? <DropdownMenuItem onSelect={() => onOpenApp?.(route.app.id)}>Open {route.app.name}</DropdownMenuItem> : null}
-                      <DropdownMenuItem onSelect={() => void navigator.clipboard?.writeText(urlOf(route))}>Copy URL</DropdownMenuItem>
-                      {route.kind === "hostname" ? (
-                        onRename ? <DropdownMenuItem onSelect={onRename}>Change in Configuration</DropdownMenuItem> : null
-                      ) : (
-                        <>
-                          <DropdownMenuItem onSelect={() => onEdit(route)}>Edit route</DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem className="is-danger" onSelect={() => setRemoving(route)}>Remove route</DropdownMenuItem>
-                        </>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            ))}
-            {ready ? redirects.map((entry) => { const { app, rule, index } = entry; return (
-              <TableRow key={`redirect:${app.id}:${index}`}>
-                <TableCell><span className="mono">{redirectFrom(rule)}</span></TableCell>
-                {showApplication ? <TableCell>{appLink(app)}</TableCell> : null}
-                <TableCell><Badge variant="neutral"><Icon name={kindIcon.redirect} />Redirect</Badge></TableCell>
-                <TableCell className="mono muted">→ {redirectTo(rule)}</TableCell>
-                <TableCell><Badge variant="neutral">{rule.permanent ? "301 Permanent" : "302 Temporary"}</Badge></TableCell>
-                <TableCell className="col-tight">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for redirect ${redirectFrom(rule)}`}><Icon name="more" /></Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      {showApplication ? <DropdownMenuItem onSelect={() => onOpenApp?.(app.id)}>Open {app.name}</DropdownMenuItem> : null}
-                      <DropdownMenuItem onSelect={() => onEditRedirect?.(entry)}>Edit route</DropdownMenuItem>
+    <>
+      <TableHeader>
+        <TableRow>
+          <TableHead scope="col">Route</TableHead>
+          {showApplication ? <TableHead scope="col">Application</TableHead> : null}
+          <TableHead scope="col">Type</TableHead>
+          <TableHead scope="col">Target</TableHead>
+          <TableHead scope="col">HTTP</TableHead>
+          <TableHead scope="col" className="col-tight">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {!ready ? [0, 1, 2].map((row) => (
+          <TableRow key={row}>{Array.from({ length: columns }, (_, cell) => <TableCell key={cell}><Skeleton /></TableCell>)}</TableRow>
+        )) : routes.length === 0 && redirects.length === 0 ? (
+          <TableRow><TableCell colSpan={columns}>No routes match your filters.</TableCell></TableRow>
+        ) : routes.map((route) => (
+          <TableRow key={route.key}>
+            <TableCell>
+              <span className="mono">{route.hostname}<span className="route-path">{route.path}</span></span>
+            </TableCell>
+            {showApplication ? (
+              <TableCell>{appLink(route.app)}</TableCell>
+            ) : null}
+            <TableCell><Badge variant="neutral"><Icon name={kindIcon[route.kind]} />{kindLabel[route.kind]}</Badge></TableCell>
+            <TableCell className="mono muted">{route.target ?? targetLabel(route.app)}{route.path !== "/" && !route.stripPrefix ? route.path : ""}</TableCell>
+            <TableCell>
+              {/* The probe reads the Web Target; a rule that names its own target is not checked. */}
+              {route.target ? <span className="muted">Not checked</span> : <HttpStatus id={route.app.id} status={route.app.status} />}
+            </TableCell>
+            <TableCell className="col-tight">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for ${urlOf(route)}`}><Icon name="more" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {showApplication ? <DropdownMenuItem onSelect={() => onOpenApp?.(route.app.id)}>Open {route.app.name}</DropdownMenuItem> : null}
+                  <DropdownMenuItem onSelect={() => void navigator.clipboard?.writeText(urlOf(route))}>Copy URL</DropdownMenuItem>
+                  {route.kind === "hostname" ? (
+                    onRename ? <DropdownMenuItem onSelect={onRename}>Change in Configuration</DropdownMenuItem> : null
+                  ) : (
+                    <>
+                      <DropdownMenuItem onSelect={() => onEdit(route)}>Edit route</DropdownMenuItem>
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem className="is-danger" onSelect={() => setUnredirecting(entry)}>Remove route</DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            ); }) : null}
-          </TableBody>
-        </Table>
-      </div>
-      <p className="table-footer" role="status"><span>{ready ? `${routes.length + redirects.length} of ${total} routes` : "Loading routes..."}</span></p>
+                      <DropdownMenuItem className="is-danger" onSelect={() => setRemoving(route)}>Remove route</DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </TableCell>
+          </TableRow>
+        ))}
+        {ready ? redirects.map((entry) => { const { app, rule, index } = entry; return (
+          <TableRow key={`redirect:${app.id}:${index}`}>
+            <TableCell><span className="mono">{redirectFrom(rule)}</span></TableCell>
+            {showApplication ? <TableCell>{appLink(app)}</TableCell> : null}
+            <TableCell><Badge variant="neutral"><Icon name={kindIcon.redirect} />Redirect</Badge></TableCell>
+            <TableCell className="mono muted">→ {redirectTo(rule)}</TableCell>
+            <TableCell><Badge variant="neutral">{rule.permanent ? "301 Permanent" : "302 Temporary"}</Badge></TableCell>
+            <TableCell className="col-tight">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for redirect ${redirectFrom(rule)}`}><Icon name="more" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {showApplication ? <DropdownMenuItem onSelect={() => onOpenApp?.(app.id)}>Open {app.name}</DropdownMenuItem> : null}
+                  <DropdownMenuItem onSelect={() => onEditRedirect?.(entry)}>Edit route</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="is-danger" onSelect={() => setUnredirecting(entry)}>Remove route</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </TableCell>
+          </TableRow>
+        ); }) : null}
+      </TableBody>
       <AlertDialog open={removing !== null} onOpenChange={(open) => { if (!open) setRemoving(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>Remove route</AlertDialogTitle></AlertDialogHeader>
@@ -188,6 +205,6 @@ export function RouteTable({ routes, redirects = [], total, ready = true, showAp
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </TableFrame>
+    </>
   );
 }
