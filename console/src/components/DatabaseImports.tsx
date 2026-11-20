@@ -6,6 +6,8 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
+  Card,
+  CardContent,
   Checkbox,
   Dialog,
   DialogBody,
@@ -260,7 +262,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
       </DialogContent>
     </Dialog>
 
-    {!loading && !imports.length && !uploads.length && !failure ? <EmptyState variant="first-run"><EmptyStateTitle>No imports yet</EmptyStateTitle></EmptyState> : null}
+    {!loading && !imports.length && !uploads.length && !failure ? <Card><CardContent><EmptyState variant="first-run"><EmptyStateTitle>No imports yet</EmptyStateTitle></EmptyState></CardContent></Card> : null}
 
     {loading || imports.length || uploads.length ? <TableFrame><div className="table-scroll"><Table aria-label="Database imports" aria-busy={loading} className="imports-table">
       <colgroup><col className="imports-when" /><col className="imports-app" /><col /><col className="imports-result" /><col className="imports-objects" /></colgroup>

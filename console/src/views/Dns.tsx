@@ -91,7 +91,7 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
   return (
     <>
       <ListPage title="DNS" action={{ label: "New record", icon: <Icon name="plus" />, onClick: () => open({ mode: "create" }) }}
-        state={inventory === null && !records.error ? "loading" : rows.length || records.error ? "ready" : "empty"}
+        state={inventory === null && !records.error ? "loading" : rows.length || inventory === null ? "ready" : "empty"}
         empty={{ title: "No records yet", text: "Create a Record, or check the Zone diagnostics below." }}
         count={inventory === null ? "No records loaded" : `${visible.length} of ${rows.length} records`}
         filters={<div className="list-filters">

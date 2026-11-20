@@ -96,7 +96,7 @@ export function CustomImages({ listing, selected, onOpen, onList }: {
   if (listing) return (
     <>
       <ListPage title="Custom images" action={{ label: "New image", icon: <Icon name="plus" />, onClick: () => onOpen(null) }}
-        state={!loaded && !loadFailure ? "loading" : images.length || loadFailure ? "ready" : "empty"}
+        state={!loaded && !loadFailure ? "loading" : images.length || !loaded ? "ready" : "empty"}
         empty={{ title: "No custom images yet", text: "Choose your mise dependencies and build your first custom image." }}
         count={loaded ? `${visible.length} of ${images.length} images` : "No images loaded"}
         filters={<div className="list-filters">
