@@ -53,7 +53,6 @@
 }
 
 .console-brand { --brand-lockup-height: calc(var(--size-control-sm) * 415 / 512); display: grid; min-width: 0; line-height: 1.15; }
-.console-dns { font-family: var(--font-mono); }
 
 /* Public device setup, reached by IP before DNS or CA trust is configured. */
 .device-setup { width: 100%; max-width: 840px; margin-inline: auto; padding: var(--spacing-xl); }

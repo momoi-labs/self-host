@@ -24,7 +24,7 @@ const appearance = {
   "data-corner-marks": "none",
   "data-corner-size": "small",
   "data-mark-size": "medium",
-  "data-visual-style": "editorial",
+  "data-visual-style": "default",
   "data-app-shell": "inset",
   "data-header-variant": "default",
   "data-header-size": "default",

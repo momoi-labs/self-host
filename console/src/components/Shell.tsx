@@ -68,7 +68,6 @@ export function Shell({
       brand={
         <span className="console-brand">
           <Lockup />
-          {dnsSuffix ? <span className="console-dns t-metadata muted truncate">{dnsSuffix}</span> : null}
         </span>
       }
       navigation={[
