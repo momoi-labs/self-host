@@ -74,21 +74,20 @@ Other components above live in `console/src/components/`.
 - Default to light. A saved light, dark or system selection takes precedence
   before first paint. System removes `data-theme` and follows the OS.
 - Use the tangerine accent, the warm neutral, the accent as primary, Inter,
-  default presentation, the default shell with automatic outer chrome, a
-  default-size header set to the page width, full page width and start
-  alignment. The console uses the default header variant. Login and setup
-  keep the floating header, because they have no sidebar. The default header
-  size gives the bar sewa's height.
+  editorial presentation, the inset shell with automatic outer chrome and a
+  full brand bar, a default-size header set to the page width, full page
+  width and start alignment. The console uses the default header variant.
+  Login and setup keep the floating header, because they have no sidebar.
+  The default header size gives the bar sewa's height.
 - The DNS suffix is the breadcrumb root and links to the console
-  home. Without a suffix the root reads "Console". Kiso raises muted text to
-  the foreground color in the header over glass panels, so the suffix is not
-  grey. Below 700px the breadcrumb shows only the current page. The sidebar
-  and the drawer show the suffix under the lockup.
-- Use solid pixel frames, small corners, no corner marks, hard shadows,
-  glass panels, landing bands inside the frame and a quiet construction
+  home. Without a suffix the root reads "Console". Below 700px the
+  breadcrumb shows only the current page. The sidebar and the drawer show
+  the suffix under the lockup.
+- Use solid pixel frames, small corners, no corner marks, no shadows,
+  solid panels, landing bands inside the frame and a quiet construction
   background inside and outside the frame.
-- Use stepped chart lines, dot fills, compact chart layout and inline
-  legends. Keep existing product-specific chart legend visibility.
+- Use straight chart lines, no chart fill, the standard chart layout and
+  table legends. Keep existing product-specific chart legend visibility.
 - The shell is `ConsoleShell`: a collapsible sidebar with the toggle in the
   header, before the breadcrumb. Below 1024px the navigation opens in a
   drawer at every width. ConsoleShell has no bottom navigation.
