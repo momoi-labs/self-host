@@ -74,15 +74,15 @@ Other components above live in `console/src/components/`.
 - Default to light. A saved light, dark or system selection takes precedence
   before first paint. System removes `data-theme` and follows the OS.
 - Use the tangerine accent, the warm neutral, the accent as primary, Inter,
-  editorial presentation, the inset shell with automatic outer chrome and a
+  default presentation, the inset shell with automatic outer chrome and a
   full brand bar, a default-size header set to the page width, full page
   width and start alignment. The console uses the default header variant.
   Login and setup keep the floating header, because they have no sidebar.
   The default header size gives the bar sewa's height.
 - The DNS suffix is the breadcrumb root and links to the console
   home. Without a suffix the root reads "Console". Below 700px the
-  breadcrumb shows only the current page. The sidebar and the drawer show
-  the suffix under the lockup.
+  breadcrumb shows only the current page. The lockup stands alone, with no
+  suffix under it.
 - Use solid pixel frames, small corners, no corner marks, no shadows,
   solid panels, landing bands inside the frame and a quiet construction
   background inside and outside the frame.
