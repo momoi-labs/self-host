@@ -5,8 +5,8 @@ contracts own the shared rules.
 
 ## Contracts
 
-- Packages in `console/`: `@momoi-labs/kiso-react` 0.33.0 and
-  `@momoi-labs/kiso` 1.11.0, resolved in `console/package-lock.json`.
+- Packages in `console/`: `@momoi-labs/kiso-react` 0.34.0 and
+  `@momoi-labs/kiso` 1.12.0, resolved in `console/package-lock.json`.
 - Contracts: `console/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 
 ## Paths
@@ -27,7 +27,7 @@ rules. All entry points use it.
 
 | Component | Purpose |
 | --- | --- |
-| `Shell` | The console's `ConsoleShell`: navigation, breadcrumb, and the account menu with health and version |
+| `Shell` | The console's `ConsoleShell`: navigation, breadcrumb, the health status with the version, and the account menu |
 | `BrandSymbol`, `Lockup` | The self-host brand: the lockup alone in the sidebar bar (`shellLayout`), the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The sidebar bar, its stripe and the brand inset are Kiso's `shellLayout`. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
 | `AppForm`, `NativeAppForm`, `PostgresFields` | Application and database configuration |
 | `CustomImageEditor`, `EnvironmentEditor` | Image and virtual machine configuration |
@@ -95,11 +95,10 @@ Other components above live in `console/src/components/`.
   from the Overview's tables, and their detail screens mark Overview as the
   current destination. A database's screen marks Databases.
 - Settings is the last navigation group. The header ends with ConsoleShell's
-  account button. Its `Popover` holds the identity, `ThemeSelector` and Sign
-  out. The identity also carries the health line and the Host version,
-  because ConsoleShell's header has no slot for them. When a workload is
-  down, the line links to it, and Overview in the navigation shows a warning
-  dot.
+  `status`, the health line and the Host version, then the account button.
+  Its `Popover` holds the identity, `ThemeSelector` and Sign out. When a
+  workload is down, the status links to it, and Overview in the navigation
+  shows a warning dot.
 - Use Kiso's `Card` paint layer for shaped shadows. A table that is its own
   panel sits in `TableFrame`, never in a hand-written `div.table-wrap`. Other native frames
   need `PanelShadow` as their first child, as documented in the installed

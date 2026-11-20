@@ -15,8 +15,8 @@ export type Destination = {
 };
 
 /**
- * The console's frame: the sidebar, the breadcrumb and the account menu,
- * which carries the health indicator.
+ * The console's frame: the sidebar, the breadcrumb, the health status and
+ * the account menu.
  */
 export function Shell({
   crumb,
@@ -60,12 +60,7 @@ export function Shell({
 }) {
   const [theme, setTheme] = useTheme();
 
-  const versionLabel = version ? (
-    <>
-      <span className="muted" aria-hidden="true">·</span>
-      <span className="muted mono">v{version}</span>
-    </>
-  ) : null;
+  const versionLabel = version ? <span className="muted mono">v{version}</span> : null;
 
   return (
     <ConsoleShell
@@ -110,31 +105,27 @@ export function Shell({
           : []),
         { label: crumb },
       ]}
+      status={degraded ? (
+        <button
+          type="button"
+          className="health-link"
+          title={failing.length ? `The daemon answers, but ${failedLabel(failing).toLowerCase()}. Open it.` : "The daemon answers, but some workloads are down."}
+          disabled={!failing.length || !onOpenFailing}
+          onClick={() => { if (failing[0]) onOpenFailing?.(failing[0].id); }}
+        >
+          <Dot variant="warning" pulse />
+          <span>{failedLabel(failing)}</span>
+          {versionLabel}
+        </button>
+      ) : (
+        <span className="health-link" title="The daemon answering on this Host">
+          <Dot variant={healthy ? "success" : "neutral"} />
+          <span>{healthy ? "Healthy" : "Checking health…"}</span>
+          {versionLabel}
+        </span>
+      )}
       account={{
-        identity: (
-          <span className="account-identity">
-            <span>Admin</span>
-            {degraded ? (
-              <button
-                type="button"
-                className="health-link"
-                title={failing.length ? `The daemon answers, but ${failedLabel(failing).toLowerCase()}. Open it.` : "The daemon answers, but some workloads are down."}
-                disabled={!failing.length || !onOpenFailing}
-                onClick={() => { if (failing[0]) onOpenFailing?.(failing[0].id); }}
-              >
-                <Dot variant="warning" pulse />
-                <span>{failedLabel(failing)}</span>
-                {versionLabel}
-              </button>
-            ) : (
-              <span className="health-link" title="The daemon answering on this Host">
-                <Dot variant={healthy ? "success" : "neutral"} />
-                <span>{healthy ? "Healthy" : "Checking health…"}</span>
-                {versionLabel}
-              </span>
-            )}
-          </span>
-        ),
+        identity: "Admin",
         theme,
         onThemeChange: setTheme,
         onSignOut: logout,

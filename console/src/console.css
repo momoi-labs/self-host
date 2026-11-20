@@ -60,7 +60,6 @@
 .device-setup .card-content { min-width: 0; }
 .setup-command { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.account-identity { display: grid; gap: var(--spacing-xs); }
 .health-link { display: inline-flex; align-items: center; gap: var(--spacing-sm); padding: 0; border: 0; background: none; font: inherit; color: inherit; }
 button.health-link:not(:disabled) { cursor: pointer; }
 button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: underline; text-underline-offset: 3px; }
