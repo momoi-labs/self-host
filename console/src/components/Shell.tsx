@@ -114,7 +114,8 @@ export function Shell({
           onClick={() => { if (failing[0]) onOpenFailing?.(failing[0].id); }}
         >
           <Dot variant="warning" pulse />
-          <span>{failedLabel(failing)}</span>
+          <span className="health-label">{failedLabel(failing)}</span>
+          <span className="health-label-short">{failing.length ? `${failing.length} failed` : "Degraded"}</span>
           {versionLabel}
         </button>
       ) : (
