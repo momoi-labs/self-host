@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+  Button, Card, CardContent, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
   EmptyState, EmptyStateTitle, FormField, PageHeader, PageHeaderTitle, RadioGroup, RadioGroupItem, Search, Skeleton,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusBadge,
@@ -69,15 +69,15 @@ export function DatabaseConnections({ app, apps, connections, loading, busy, fai
     <PageHeader actions={<Button size="sm" variant="primary" disabled={busy || loading || app.status !== "running"} onClick={() => { setConsumer(""); setVariable("DATABASE_URL"); setDatabaseMode("new"); setDatabaseName(null); setExisting(""); setEditor("connect"); }}><Icon name="plus" />Connect application</Button>}>
       <PageHeaderTitle asChild><h2 className="t-h2">Connected applications</h2></PageHeaderTitle>
     </PageHeader>
-    <div className="list-filters">
+    {!loading && !connections.length ? null : <div className="list-filters">
       <Search aria-label="Search connections" placeholder="Search connections..." value={query} onChange={(event) => setQuery(event.target.value)} />
       <Select value={status} onValueChange={setStatus}><SelectTrigger aria-label="Filter connection status"><SelectValue /></SelectTrigger><SelectContent>
         <SelectItem value="all">All statuses</SelectItem>
         {Array.from(new Set(connections.map((connection) => connection.status))).sort().map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
       </SelectContent></Select>
       {query || status !== "all" ? <Button size="sm" variant="ghost" onClick={() => { setQuery(""); setStatus("all"); }}>Clear filters</Button> : null}
-    </div>
-    {!loading && !connections.length ? <EmptyState variant="first-run"><EmptyStateTitle>No connections</EmptyStateTitle></EmptyState> : <TableFrame><div className="table-scroll"><Table aria-label="Database connections" aria-busy={loading}>
+    </div>}
+    {!loading && !connections.length ? <Card><CardContent><EmptyState variant="first-run"><EmptyStateTitle>No connections</EmptyStateTitle></EmptyState></CardContent></Card> : <TableFrame><div className="table-scroll"><Table aria-label="Database connections" aria-busy={loading}>
       <TableHeader><TableRow><TableHead>Application</TableHead><TableHead>Database</TableHead><TableHead>Variable</TableHead><TableHead>Status</TableHead><TableHead className="col-tight">Actions</TableHead></TableRow></TableHeader>
       <TableBody>{loading ? <TableRow>{[0, 1, 2, 3, 4].map((cell) => <TableCell key={cell}><Skeleton /></TableCell>)}</TableRow> : visible.length ? visible.map((connection) => <TableRow key={connection.id} aria-selected={selected?.id === connection.id}>
         <TableCell><div className="stack-xs"><strong>{appName(connection)}</strong><span className="muted">{apps.find((candidate) => candidate.id === connection.consumer_application_id)?.runtime?.kind === "native" ? "Native process" : "Container"}</span></div></TableCell>

@@ -30,30 +30,29 @@ not apply. Say so rather than forcing it.
 ## A list screen
 
 ```tsx
-<PageHeader actions={<Button size="sm" variant="primary"><Icon name="plus" />New thing</Button>}>
-  <PageHeaderTitle>Things</PageHeaderTitle>
-  <PageHeaderDescription>One sentence on what these are.</PageHeaderDescription>
-</PageHeader>
-<div className="list-filters">
-  <Search aria-label="Search things" placeholder="Search things…" value={query}
-    onChange={(event) => setQuery(event.target.value)} />
-  {/* any extra filter goes here */}
-  {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
-</div>
-<TableFrame>
-  <div className="table-scroll"><Table>…</Table></div>
-  <p className="table-footer"><span>{visible.length} of {all.length} things</span></p>
-</TableFrame>
+<ListPage title="Things" action={{ label: "New thing", icon: <Icon name="plus" />, onClick: create }}
+  state={!ready ? "loading" : all.length ? "ready" : "empty"}
+  empty={{ title: "No things yet", text: "One sentence on what to do." }}
+  count={`${visible.length} of ${all.length} things`}
+  filters={<div className="list-filters">
+    <Search aria-label="Search things" placeholder="Search things…" value={query}
+      onChange={(event) => setQuery(event.target.value)} />
+    {/* any extra filter goes here */}
+    {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
+  </div>}>
+  <TableHeader>…</TableHeader>
+  <TableBody>…</TableBody>
+</ListPage>
 ```
 
 Rules:
 
-- The create action goes in `PageHeader`'s `actions` slot. Not in the filter
-  row. Narrowing a list and adding to it are opposite intentions.
+- The create action is `ListPage`'s `action`. Not in the filter row.
+  Narrowing a list and adding to it are opposite intentions.
 - Search comes first in the filter row and grows.
 - "Clear filters" renders only once something is filtered. A permanent one is
   a button that does nothing most of the time.
-- The count goes in `.table-footer`, not above the table.
+- The count is `ListPage`'s `count`, in the table footer.
 - A table that is its own panel sits in kiso's `TableFrame`, on a list
   screen, in a tab or in a dialog. Never write `<div className="table-wrap">`
   by hand: the frame also renders the layer that paints the panel's shadow,
@@ -62,11 +61,12 @@ Rules:
   one.
 - Creating a small record (a DNS record, an API key) is a dialog, not a card
   parked above the table. A record with a recipe gets a create screen.
-- Empty state: `EmptyState variant="first-run"` when there are no records at
-  all, and a plain "No things match your filters." row when a filter emptied
-  it. They are different situations and say different things. Both go in the
-  table body, under the headers. The `EmptyState` has a title and one
-  sentence, no icon and no button. The header holds the action.
+- Empty state: with no records at all, `ListPage` shows the header and one
+  `Card` with the `EmptyState`, edge to edge, and nothing else. When a filter
+  emptied the list, keep the table and show a plain "No things match your
+  filters." row. They are different situations and say different things.
+  The `EmptyState` has a title and one sentence, no icon and no button. The
+  header holds the action.
 - No disabled action in the header. Hide what the Operator cannot do yet,
   and let the empty state say why.
 - A record mid-operation shows it in one line: a `StatusBadge` naming the

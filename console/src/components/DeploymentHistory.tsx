@@ -2,7 +2,7 @@ import { Fragment, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-  Button, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+  Button, Card, CardContent, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
   EmptyState, EmptyStateTitle, FormField, KV, KVKey, KVValue,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, StatusBadge,
@@ -102,6 +102,9 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
     {app.git || isImageApp(app) ? <DeployTrigger app={app} /> : null}
     {error ? <Failure failure={error} /> : null}
     {loadError && entries.length ? <Failure failure={loadError} actionLabel="Retry" onAction={retry} /> : null}
+    {!loading && !loadError && !entries.length ? <Card><CardContent>
+      <EmptyState variant="first-run"><EmptyStateTitle>No deployments yet</EmptyStateTitle></EmptyState>
+    </CardContent></Card> : <>
     <div className="list-filters">
       <Search aria-label="Search deployments" placeholder="Search deployments..." value={query} onChange={(event) => setQuery(event.target.value)} />
       <Select value={status} onValueChange={setStatus}>
@@ -126,8 +129,6 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
         <TableCell><Skeleton /></TableCell><TableCell><Skeleton /></TableCell>
       </TableRow>) : loadError && !entries.length ? <TableRow><TableCell colSpan={3}>
         <Failure failure={loadError} actionLabel="Retry" onAction={retry} />
-      </TableCell></TableRow> : !entries.length ? <TableRow><TableCell colSpan={3}>
-        <EmptyState variant="first-run"><EmptyStateTitle>No deployments yet</EmptyStateTitle></EmptyState>
       </TableCell></TableRow> : !visible.length ? <TableRow><TableCell colSpan={3}>
         No deployments match your filters.
       </TableCell></TableRow> : visible.map((entry) => <TableRow key={entry.id}>
@@ -148,6 +149,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
         </DropdownMenu></TableCell>
       </TableRow>)}</TableBody>
     </Table></div><p className="table-footer" role="status"><span>{loading ? "Loading deployments..." : `${visible.length} of ${entries.length} deployments`}</span>{busy ? <span>Recovering...</span> : null}</p></TableFrame>
+    </>}
     <Dialog open={!!details} onOpenChange={(open) => { if (!open) setSelected(null); }}>
       <DialogContent><DialogHeader><DialogTitle>Deployment details</DialogTitle>
         <DialogDescription>{details ? new Date(details.created_at).toLocaleString() : ""}</DialogDescription>

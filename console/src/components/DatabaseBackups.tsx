@@ -6,6 +6,8 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
+  Card,
+  CardContent,
   Checkbox,
   EmptyState,
   EmptyStateTitle,
@@ -193,7 +195,7 @@ export function DatabaseBackups({ databaseId, databaseName, onStarted, onOpenOpe
       </FormActions>
     </Form>
 
-    {!loading && !list.length && !backups.error ? <EmptyState variant="first-run"><EmptyStateTitle>No backups yet</EmptyStateTitle></EmptyState> : null}
+    {!loading && !list.length && !backups.error ? <Card><CardContent><EmptyState variant="first-run"><EmptyStateTitle>No backups yet</EmptyStateTitle></EmptyState></CardContent></Card> : null}
 
     {loading || list.length ? <TableFrame><div className="table-scroll"><Table aria-label="Backups of this server" aria-busy={loading}>
       <TableHeader><TableRow>
