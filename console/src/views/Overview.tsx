@@ -11,6 +11,7 @@ import {
   PageHeader,
   PageHeaderTitle,
   Search,
+  Skeleton,
   Sparkline,
   StepBar,
   Table,
@@ -47,6 +48,7 @@ function sourceOf(app: App): string {
 }
 
 export function Overview({
+  ready,
   apps,
   environments,
   metrics,
@@ -58,6 +60,7 @@ export function Overview({
   onOpenDatabases,
   onOpenRoutes,
 }: {
+  ready: boolean;
   apps: App[];
   environments: Environment[];
   metrics: Metrics | null;
@@ -96,11 +99,17 @@ export function Overview({
 
   return (
     <>
-      <PageHeader actions={empty ? <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} /> : undefined}>
+      <PageHeader actions={ready && empty ? <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} /> : undefined}>
         <PageHeaderTitle>Overview</PageHeaderTitle>
       </PageHeader>
 
-      {empty ? (
+      {!ready ? (
+        <Card>
+          <CardContent>
+            <Skeleton />
+          </CardContent>
+        </Card>
+      ) : empty ? (
         <Card>
           <CardContent>
             <EmptyState variant="first-run">

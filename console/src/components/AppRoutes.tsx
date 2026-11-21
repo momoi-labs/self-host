@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Button, Card, CardContent, CardHeader, CardTitle,
-  EmptyState, EmptyStateTitle, KV, KVKey, KVValue, Label, Search, Switch,
+  EmptyState, EmptyStateDescription, EmptyStateTitle, KV, KVKey, KVValue, Label, Search, Switch,
 } from "@momoi-labs/kiso-react";
 
 import { asReport } from "../lib/api.js";
@@ -68,8 +68,8 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
         toolbar={
           <div className="table-toolbar panel-toolbar">
             <h2 className="section-title">Routes</h2>
-            <Search aria-label="Search routes" containerClassName="section-search" placeholder="Search routes…"
-              value={query} onChange={(event) => setQuery(event.target.value)} />
+            {routes.length + redirects.length ? <Search aria-label="Search routes" containerClassName="section-search" placeholder="Search routes…"
+              value={query} onChange={(event) => setQuery(event.target.value)} /> : null}
             <Button size="sm" variant="ghost" className="panel-action" disabled={busy} onClick={() => setEditor({ app })}>
               <Icon name="plus" />
               Add route
@@ -78,7 +78,7 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
         }
         onEdit={(route) => setEditor({ app, route })}
         onRename={onRename}
-        empty={<EmptyState variant="first-run"><EmptyStateTitle>No routes</EmptyStateTitle></EmptyState>} />
+        empty={<div className="empty-frame"><EmptyState variant="first-run"><EmptyStateTitle>No routes</EmptyStateTitle><EmptyStateDescription>Add a route to reach this Application at another hostname or path.</EmptyStateDescription></EmptyState></div>} />
       <Card>
         <CardHeader><CardTitle>Proxy</CardTitle></CardHeader>
         <CardContent>

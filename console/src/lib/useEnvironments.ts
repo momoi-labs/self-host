@@ -11,6 +11,7 @@ const noEnvironments: Environment[] = [];
  */
 export function useEnvironments(): {
   environments: Environment[];
+  ready: boolean;
   reload: () => Promise<void>;
 } {
   /*
@@ -20,12 +21,12 @@ export function useEnvironments(): {
    * tab, is not in this copy yet, and a list that stops asking shows a machine
    * as running long after it was deleted.
    */
-  const { data = noEnvironments, refetch } = useQuery({
+  const { data, refetch } = useQuery({
     queryKey: ["environments"],
     queryFn: ({ signal }) => readJson<Environment[]>("/virtual-machines", signal),
     refetchInterval: (query) =>
       query.state.data?.some((one) => one.operation?.status === "running") ? 2000 : 5000,
   });
 
-  return { environments: data, reload: async () => { await refetch(); } };
+  return { environments: data ?? noEnvironments, ready: data !== undefined, reload: async () => { await refetch(); } };
 }

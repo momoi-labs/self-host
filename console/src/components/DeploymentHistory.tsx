@@ -4,7 +4,7 @@ import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   Button, Card, CardContent, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-  EmptyState, EmptyStateTitle, FormField, KV, KVKey, KVValue,
+  EmptyState, EmptyStateDescription, EmptyStateTitle, FormField, KV, KVKey, KVValue,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, StatusBadge,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
@@ -103,7 +103,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
     {error ? <Failure failure={error} /> : null}
     {loadError && entries.length ? <Failure failure={loadError} actionLabel="Retry" onAction={retry} /> : null}
     {!loading && !loadError && !entries.length ? <Card><CardContent>
-      <EmptyState variant="first-run"><EmptyStateTitle>No deployments yet</EmptyStateTitle></EmptyState>
+      <EmptyState variant="first-run"><EmptyStateTitle>No deployments yet</EmptyStateTitle><EmptyStateDescription>Each deploy of this Application appears here.</EmptyStateDescription></EmptyState>
     </CardContent></Card> : <>
     <div className="list-filters">
       <Search aria-label="Search deployments" placeholder="Search deployments..." value={query} onChange={(event) => setQuery(event.target.value)} />
