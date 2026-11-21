@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import {
   PageHeader,
-  PageHeaderDescription,
   PageHeaderTitle,
   PaneGrid,
 } from "@momoi-labs/kiso-react";
@@ -66,10 +65,9 @@ export function Settings({ section }: { section: SettingsSection }) {
   }, [section]);
 
   return (
-    <div className="stack">
+    <>
       <PageHeader>
         <PageHeaderTitle>Settings</PageHeaderTitle>
-        <PageHeaderDescription>How the Platform runs, who can reach it, and how devices find it.</PageHeaderDescription>
       </PageHeader>
       <PaneGrid aria-label="Settings" flow="masonry" defaultLayout={layout} onLayoutChange={saveLayout}>
         <AuditHistory id="audit-history" size={6} />
@@ -85,6 +83,6 @@ export function Settings({ section }: { section: SettingsSection }) {
         <PublicCertificates id="public-certificates" size={6} />
         <DnsSetup id="dns-setup" size={6} />
       </PaneGrid>
-    </div>
+    </>
   );
 }

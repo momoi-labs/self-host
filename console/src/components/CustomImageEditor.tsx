@@ -302,7 +302,6 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
       <>
         <PageHeader>
           <PageHeaderTitle>New image</PageHeaderTitle>
-          <PageHeaderDescription>Save your image's dependencies and build it on this Host.</PageHeaderDescription>
         </PageHeader>
         {loadFailure ? <Failure failure={loadFailure} /> : null}
         <Card className="form-page">

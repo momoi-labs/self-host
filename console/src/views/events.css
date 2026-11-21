@@ -1,5 +1,4 @@
-.events-page { min-width: 0; }
-.events-layout { display: grid; gap: var(--spacing-xl); margin-block-start: var(--spacing-xl); align-items: start; }
+.events-layout { display: grid; gap: var(--spacing-xl); align-items: start; }
 .events-layout-open { grid-template-columns: minmax(0, 1fr) minmax(280px, 32%); }
 .events-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); align-content: start; min-width: 0; }
 .events-row { cursor: pointer; }

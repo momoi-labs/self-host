@@ -66,7 +66,11 @@ Rules:
   emptied the list, keep the table and show a plain "No things match your
   filters." row. They are different situations and say different things.
   The `EmptyState` has a title and one sentence, no icon and no button. The
-  header holds the action.
+  header holds the action. In a group with a title row (an Overview group, a
+  Settings pane), put the `EmptyState` in a `div.empty-frame` under the title
+  and drop the search and the table header.
+- A list or create header has no `PageHeaderDescription`. The title and one
+  action, nothing else.
 - No disabled action in the header. Hide what the Operator cannot do yet,
   and let the empty state say why.
 - A record mid-operation shows it in one line: a `StatusBadge` naming the
@@ -175,7 +179,6 @@ make them look alike for its own sake.
 ```tsx
 <PageHeader>
   <PageHeaderTitle>New thing</PageHeaderTitle>
-  <PageHeaderDescription>One sentence on what you are about to make.</PageHeaderDescription>
 </PageHeader>
 <Card className="form-page">
   <Form onSubmit={create}>

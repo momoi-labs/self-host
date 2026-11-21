@@ -112,9 +112,17 @@ Other components above live in `console/src/components/`.
   that empties a non-empty list keeps the table and shows a "No X match your
   filters." row. Events has no header action and ListPage requires one, so
   Events writes the same markup by hand.
-- An `EmptyState` touches its frame. In an Overview group or a route table,
-  it replaces the table under the toolbar. In a tab with other content, it
-  sits alone in a `Card`, where the table would be.
+- An `EmptyState` touches its frame on all four sides. In an Overview group
+  or a Settings pane, the group keeps only its title row and the
+  `EmptyState` in a `div.empty-frame`: no search, no table header. The frame
+  draws the divider under the title, so the stripes start at the title row.
+  In a tab with other content, it sits alone in a `Card`, where the table
+  would be.
+- A screen header is the title and at most one action. No
+  `PageHeaderDescription` on list, create, Host, Events or Settings screens,
+  so every title sits where the Kiso CRUD puts it. When all of Overview is
+  empty, Create sits in the header and the card holds only the
+  `EmptyState`.
 - No disabled header action. Hide an action the Operator cannot take, and let
   the empty state say why. Routes offers Deploy application until an
   Application exists.
@@ -125,7 +133,8 @@ Other components above live in `console/src/components/`.
   group uses `TableFrame frame="none"` and sits flush with the card edges,
   with no search or count. Kiso clips a form footer only when the form is the
   card's last child. A `GridPane` body is not, so `console.css` applies the
-  same `--pixel-footer-clip` to the body when a form or a flush table ends it.
+  same `--pixel-footer-clip` to the body when a form, a flush table or an
+  empty frame ends it.
   Kiso has no rule for this case, so it is product CSS.
 - A detail screen's `.detail-tabs` card is the only panel that casts a
   shadow. Its `Tabs` take `data-shadow-style="none"`, a nested appearance
