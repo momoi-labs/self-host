@@ -317,8 +317,11 @@ transparency logs.
 Create the key in the console, under Settings > API keys. Choose the kind
 Agent. An agent key has scopes, expires in 30 days by default and in 365 days
 at most, and can be bound to one tailnet device. It cannot manage keys or
-settings, read secrets, reach the Host's disk or delete anything. The console
-login refuses it. Then, on a machine on the tailnet:
+settings, read secrets, reach the Host's disk or delete anything, unless you
+give it the `host` scope. That scope is off by default. It lets the key change
+bind mounts, read secrets and edit Git sources on the Host, and it adds the MCP
+tool `update_source`, which changes a Git Application's source (such as a build
+arg) and rebuilds it. The console login refuses an agent key. Then, on a machine on the tailnet:
 
 ```bash
 export SELF_HOST_AGENT_KEY=...   # shown once, when the key is created

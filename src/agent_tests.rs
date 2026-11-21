@@ -666,3 +666,145 @@ async fn retrying_a_failed_delete_needs_the_delete_scope() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
+
+async fn insert_git_app(store: &FakeStateStore) {
+    let git: crate::source::GitSource = serde_json::from_value(json!({
+        "repository": "https://git.example.invalid/yard.git",
+        "git_ref": "main",
+        "build_args": {"PG_YARD_EXTRA_CA": "pem-body", "KEEP": "me"},
+        "build_target": "runtime"
+    }))
+    .unwrap();
+    store
+        .insert_application(&crate::apps::ApplicationRecord {
+            id: "yard".into(),
+            name: "yard".into(),
+            hostname: "yard.home.lan".into(),
+            aliases: vec![],
+            image: "self-host-yard:built".into(),
+            status: crate::apps::STATUS_RUNNING.into(),
+            source: crate::apps::SOURCE_GIT.into(),
+            git: Some(git),
+            git_build: None,
+            last_error: None,
+            compose: None,
+            web_service: None,
+            web_port: None,
+            web_target_port: Some(20001),
+            development: None,
+            runtime: Default::default(),
+            publication: Default::default(),
+            variable_delivery: crate::store::VariableDelivery::Referenced,
+            route_rules: Vec::new(),
+            redirects: Vec::new(),
+            rewrite_host: None,
+            network_policy: Default::default(),
+        })
+        .await
+        .unwrap();
+}
+
+async fn host_agent_key(app: &Router) -> String {
+    agent_key(
+        app,
+        json!({"label": "claude", "kind": "agent", "scopes": ["read", "apps:write", "host"]}),
+    )
+    .await
+}
+
+async fn tool_names(app: &Router, key: &str) -> Vec<String> {
+    let (_, answer) = rpc(app, key, "tools/list", json!({})).await;
+    answer["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn update_source_removes_one_build_arg_and_keeps_the_rest() {
+    let (app, store) = setup().await;
+    insert_git_app(&store).await;
+    let key = host_agent_key(&app).await;
+    assert!(
+        tool_names(&app, &key)
+            .await
+            .contains(&"update_source".to_owned())
+    );
+
+    let (_, answer) = rpc(
+        &app,
+        &key,
+        "tools/call",
+        json!({"name": "update_source", "arguments": {"id": "yard", "build_args": {"PG_YARD_EXTRA_CA": null}}}),
+    )
+    .await;
+    assert_eq!(answer["result"]["isError"], false, "{answer}");
+    let output = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !output.contains("pem-body") && !output.contains("\"me\""),
+        "{output}"
+    );
+    let task_id = answer["result"]["structuredContent"]["task_id"]
+        .as_str()
+        .unwrap();
+
+    let queued = crate::collection::TASKS.list(&store).await.unwrap();
+    let task = queued
+        .iter()
+        .find(|task| task.id == task_id)
+        .expect("the rebuild is queued");
+    assert_eq!(task.api_name.as_deref(), Some("claude"));
+    let crate::tasks::Work::BuildGitApplication { pending } = &task.work else {
+        panic!("expected a git build, got {:?}", task.work);
+    };
+    let git = &pending.source;
+    assert_eq!(git.build_args.len(), 1);
+    assert_eq!(git.build_args["KEEP"], "me");
+    assert_eq!(git.git_ref, "main");
+    assert_eq!(git.build_target.as_deref(), Some("runtime"));
+    assert_eq!(git.repository, "https://git.example.invalid/yard.git");
+}
+
+#[tokio::test]
+async fn update_source_refuses_unknown_fields() {
+    let (app, store) = setup().await;
+    insert_git_app(&store).await;
+    let key = host_agent_key(&app).await;
+    let (_, answer) = rpc(
+        &app,
+        &key,
+        "tools/call",
+        json!({"name": "update_source", "arguments": {"id": "yard", "image": "nginx"}}),
+    )
+    .await;
+    assert_eq!(answer["result"]["isError"], true, "{answer}");
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("image") && text.contains("update_source"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_key_without_host_neither_sees_nor_uses_update_source() {
+    let (app, store) = setup().await;
+    insert_git_app(&store).await;
+    let key = agent_key(&app, json!({"label": "claude", "kind": "agent"})).await;
+    assert!(
+        !tool_names(&app, &key)
+            .await
+            .contains(&"update_source".to_owned())
+    );
+    let (_, answer) = rpc(
+        &app,
+        &key,
+        "tools/call",
+        json!({"name": "update_source", "arguments": {"id": "yard", "build_args": {"KEEP": null}}}),
+    )
+    .await;
+    assert_eq!(answer["result"]["isError"], true, "{answer}");
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("403"), "{text}");
+}

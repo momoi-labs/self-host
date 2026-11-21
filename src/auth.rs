@@ -37,12 +37,13 @@ impl Scope {
         Scope::Delete,
         Scope::Admin,
     ];
-    pub const AGENT_ALLOWED: [Scope; 5] = [
+    pub const AGENT_ALLOWED: [Scope; 6] = [
         Scope::Read,
         Scope::AppsWrite,
         Scope::DnsWrite,
         Scope::DatabasesWrite,
         Scope::VmsWrite,
+        Scope::Host,
     ];
     pub const AGENT_DEFAULT: [Scope; 4] = [
         Scope::Read,

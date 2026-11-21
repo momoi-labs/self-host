@@ -103,6 +103,12 @@ const TOOLS: &[Tool] = &[
         input: update_input,
     },
     Tool {
+        name: "update_source",
+        description: "Change the Git source of a Git Application and rebuild it. A field left out keeps its value. In build_args and build_secrets, a name set to a string is added or replaced, a name set to null is removed, and other names stay. A null credential id, revision, compose_path or build_target clears it. Build input values are never returned. Returns a task id.",
+        scope: Scope::AppsWrite,
+        input: source_input,
+    },
+    Tool {
         name: "start_app",
         description: "Start an Application. Returns a task id.",
         scope: Scope::AppsWrite,
@@ -264,6 +270,83 @@ fn update_input() -> Value {
         "required": ["id"],
         "additionalProperties": false
     })
+}
+
+const SOURCE_FIELDS: &[&str] = &[
+    "repository",
+    "git_ref",
+    "revision",
+    "context",
+    "dockerfile",
+    "compose_path",
+    "credential_id",
+    "registry_credential_id",
+    "build_target",
+    "strict_build",
+];
+
+fn source_input() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string" },
+            "repository": { "type": "string" },
+            "git_ref": { "type": "string" },
+            "revision": { "type": ["string", "null"] },
+            "context": { "type": "string" },
+            "dockerfile": { "type": "string" },
+            "compose_path": { "type": ["string", "null"] },
+            "build_args": { "type": "object", "additionalProperties": { "type": ["string", "null"] } },
+            "build_secrets": { "type": "object", "additionalProperties": { "type": ["string", "null"] } },
+            "credential_id": { "type": ["string", "null"] },
+            "registry_credential_id": { "type": ["string", "null"] },
+            "build_target": { "type": ["string", "null"] },
+            "strict_build": { "type": "boolean" }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+    })
+}
+
+fn merge_source(current: &Value, args: &Value) -> Value {
+    let mut source = current.as_object().cloned().unwrap_or_default();
+    for (field, value) in args.as_object().into_iter().flatten() {
+        match field.as_str() {
+            "build_args" | "build_secrets" => {
+                let mut inputs = source
+                    .get(field)
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                for (name, input) in value.as_object().into_iter().flatten() {
+                    if input.is_null() {
+                        inputs.remove(name);
+                    } else {
+                        inputs.insert(name.clone(), input.clone());
+                    }
+                }
+                source.insert(field.clone(), Value::Object(inputs));
+            }
+            field if SOURCE_FIELDS.contains(&field) => {
+                source.insert(field.to_owned(), value.clone());
+            }
+            _ => {}
+        }
+    }
+    Value::Object(source)
+}
+
+fn hide_build_inputs(mut body: Value) -> Value {
+    if let Some(git) = body.get_mut("git").and_then(Value::as_object_mut) {
+        for field in ["build_args", "build_secrets"] {
+            if let Some(inputs) = git.get_mut(field).and_then(Value::as_object_mut) {
+                for value in inputs.values_mut() {
+                    *value = Value::String("[hidden]".into());
+                }
+            }
+        }
+    }
+    body
 }
 
 fn set_env_input() -> Value {
@@ -457,6 +540,27 @@ fn request_for(tool: &str, args: &Value) -> Result<Call, String> {
                 Some(without(args, &["id"])),
             )
         }
+        "update_source" => {
+            let known = source_input();
+            let unknown: Vec<&str> = args
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(field, _)| field.as_str())
+                .filter(|field| known["properties"].get(field).is_none())
+                .collect();
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "update_source does not take {}. update_source takes id, repository, git_ref, revision, context, dockerfile, compose_path, build_args, build_secrets, credential_id, registry_credential_id, build_target and strict_build.",
+                    unknown.join(", ")
+                ));
+            }
+            call(
+                Method::GET,
+                format!("/apps/id/{}", segment(args, "id")?),
+                None,
+            )
+        }
         "start_app" | "stop_app" | "restart_app" => {
             let action = tool.trim_end_matches("_app");
             call(
@@ -614,6 +718,7 @@ pub async fn handle(State(api): State<Router>, request: Request) -> Response {
             let tools: Vec<Value> = TOOLS
                 .iter()
                 .filter(|tool| crate::audit::allows(tool.scope))
+                .filter(|tool| tool.name != "update_source" || crate::audit::allows(Scope::Host))
                 .map(|tool| {
                     json!({
                         "name": tool.name,
@@ -673,6 +778,9 @@ impl Caller {
         if !status.is_success() {
             return tool_error(&failure(status, &body));
         }
+        if tool == "update_source" {
+            return self.update_source(tool, args, &call.path, &body).await;
+        }
         let body = match tool {
             "list_databases" => Value::Array(
                 body.as_array()
@@ -694,6 +802,24 @@ impl Caller {
             _ => body,
         };
         tool_result(body)
+    }
+
+    async fn update_source(&self, tool: &str, args: &Value, path: &str, current: &Value) -> Value {
+        let Some(git) = current.get("git").filter(|git| git.is_object()) else {
+            return tool_error(
+                "this Application has no Git source; update_source needs a Git Application",
+            );
+        };
+        let put = call(
+            Method::PUT,
+            path.to_owned(),
+            Some(json!({ "git": merge_source(git, args) })),
+        );
+        let (status, body) = self.send(tool, &put).await;
+        if !status.is_success() {
+            return tool_error(&failure(status, &body));
+        }
+        tool_result(hide_build_inputs(body))
     }
 
     async fn wait(&self, tool: &str, args: &Value, call: Call) -> Value {
