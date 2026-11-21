@@ -1,5 +1,48 @@
 # self-host
 
+## 0.21.0
+
+### Minor Changes
+
+- 53d9803: `self-host change-suffix <new>` moves an initialized Host to a new DNS Suffix
+  while the Platform is stopped. It copies the state first, then rewrites
+  Application and machine names, the DNS config, the CLI config and the local
+  certificate. `--dry-run` prints every change and writes nothing.
+- 53d9803: The console answers on `console.<suffix>` on every new Host. `admin.<suffix>`
+  stays as a legacy alias with the same answer, certificate and routing, and an
+  Application still cannot take either name. The CLI, the installer and the
+  trust-ca instructions use `console.<suffix>`.
+- 53d9803: Public certificates can be validated through DNS-01 with deSEC. Settings has a
+  DNS zone and a deSEC token field. Hostnames inside the zone get their
+  certificate with no inbound port 80, and the token never leaves Platform
+  State. Hostnames outside the zone keep HTTP-01.
+- 53d9803: The installer asks whether to use a public DNS zone on deSEC for trusted
+  certificates. The answer defaults to no. Scripted installs set
+  `SELF_HOST_PUBLIC_ZONE`, `SELF_HOST_ACME_EMAIL` and
+  `SELF_HOST_DESEC_TOKEN_FILE` instead.
+- 53d9803: When the saved deSEC zone contains the DNS Suffix, the Platform orders one
+  Let's Encrypt wildcard for the Suffix and serves it for every name one label
+  under it, the console included. Names keep the local CA certificate until the
+  wildcard is issued and after a failed renewal.
+
+### Patch Changes
+
+- 3144d0d: The console uses Kiso's console shell. Health and the Host version stay in
+  the header, left of the account menu, and Overview in the navigation shows a
+  warning dot when a workload is down. From 700px to 1023px the navigation
+  opens in a drawer. On phones it is a bar at the bottom of the screen, with
+  More for the destinations that do not fit.
+- e49692a: Every empty list in the console matches the Kiso CRUD empty screen: a title
+  and one sentence in a striped frame that fills its card, with no search,
+  filter or table header until the list has rows. Lists wait for their data
+  before they show an empty state. On phones, list filters stay on one line and
+  each Overview group shows a short "New" button beside its title.
+- 4185379: Settings has four sections: General, Access, Network, and Backups and tasks.
+  On a wide screen a sidebar lists them, and the title and sidebar stay in place
+  while the cards scroll. On narrower screens a select picks the section. The
+  Settings text now describes what each setting does on the Platform, and
+  schedule run times stay on one line.
+
 ## 0.20.0
 
 ### Minor Changes
