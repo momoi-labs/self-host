@@ -138,10 +138,7 @@ export function Overview({
                 value={appSearch}
                 onChange={(event) => setAppSearch(event.target.value)}
               /> : null}
-              <Button size="sm" variant="ghost" className="panel-action" onClick={onDeploy}>
-                <Icon name="plus" />
-                Deploy application
-              </Button>
+              <GroupAction label="Deploy application" object="application" onClick={onDeploy} />
             </div>
             {applications.length === 0 ? (
               <div className="empty-frame">
@@ -232,10 +229,7 @@ export function Overview({
                 value={databaseSearch}
                 onChange={(event) => setDatabaseSearch(event.target.value)}
               /> : null}
-              <Button size="sm" variant="ghost" className="panel-action" onClick={onNewDatabase}>
-                <Icon name="plus" />
-                New database
-              </Button>
+              <GroupAction label="New database" object="database" onClick={onNewDatabase} />
             </div>
             {databases.length === 0 ? (
               <div className="empty-frame">
@@ -307,10 +301,7 @@ export function Overview({
                 value={machineSearch}
                 onChange={(event) => setMachineSearch(event.target.value)}
               /> : null}
-              <Button size="sm" variant="ghost" className="panel-action" onClick={onNewMachine}>
-                <Icon name="plus" />
-                Create virtual machine
-              </Button>
+              <GroupAction label="Create virtual machine" object="virtual machine" onClick={onNewMachine} />
             </div>
             {environments.length === 0 ? (
               <div className="empty-frame">
@@ -416,6 +407,16 @@ export function Overview({
  * Platform's proxy and DNS handled. The reading is the answer; the panels
  * below are where anything deeper gets inspected.
  */
+function GroupAction({ label, object, onClick }: { label: string; object: string; onClick: () => void }) {
+  return (
+    <Button size="sm" variant="ghost" className="panel-action" onClick={onClick}>
+      <Icon name="plus" />
+      <span className="panel-action-full">{label}</span>
+      <span className="panel-action-short">New<span className="panel-action-object"> {object}</span></span>
+    </Button>
+  );
+}
+
 function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabases, onOpenRoutes }: {
   apps: App[];
   databases: App[];
