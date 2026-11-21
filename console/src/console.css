@@ -550,10 +550,14 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .settings-select-item { display: inline-flex; align-items: center; gap: var(--spacing-sm); }
 .settings-sections, .settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); min-width: 0; }
 .settings-section[hidden] { display: none; }
+.page:has(> .settings-frame) { container-type: inline-size; display: grid; grid-template-rows: auto 1fr; }
 @container (min-width: 70rem) {
-  .settings-layout { grid-template-columns: 14rem minmax(0, 1fr); }
-  .settings-nav { display: block; position: sticky; inset-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); padding-inline-start: var(--spacing-sm); }
+  .settings-layout { grid-template-columns: 14rem minmax(0, 1fr); height: 100%; }
+  .settings-nav { display: block; padding-inline-start: var(--spacing-sm); }
   .settings-select { display: none; }
+  .settings-frame { min-height: 0; }
+  .settings-sections { height: 100%; overflow-y: auto; }
+  .setting-card { scroll-margin-block-start: 0; }
 }
 .setting-card > .card-header.between { flex-wrap: wrap; }
 .setting-card > .card-header { padding-block-end: var(--presentation-panel-gap); border-block-end: 1px solid var(--color-border); }

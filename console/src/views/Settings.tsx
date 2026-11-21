@@ -64,13 +64,17 @@ export function Settings({ id, onOpen }: { id: string; onOpen: (id: string) => v
   const path = settingsPath(id) ?? { section: "general", setting: null };
   const failures = useSettingsFailures();
   const root = useRef<HTMLDivElement>(null);
+  const sections = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
 
   useEffect(() => {
     const first = !mounted.current;
     mounted.current = true;
     if (!path.setting) {
-      if (!first) root.current?.scrollIntoView({ block: "start" });
+      if (!first) {
+        root.current?.scrollIntoView({ block: "start" });
+        sections.current?.scrollTo({ top: 0 });
+      }
       return;
     }
     const setting = path.setting;
@@ -161,7 +165,7 @@ export function Settings({ id, onOpen }: { id: string; onOpen: (id: string) => v
               </SelectContent>
             </Select>
           </div>
-          <div className="settings-sections">
+          <div ref={sections} className="settings-sections">
             {settingsSections.map((section) => (
               <section key={section.id} id={`settings-${section.id}`} className="settings-section" aria-label={section.title} hidden={section.id !== path.section}>
                 {section.settings.map((setting) => {
