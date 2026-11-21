@@ -555,6 +555,24 @@ fn request_for(tool: &str, args: &Value) -> Result<Call, String> {
                     unknown.join(", ")
                 ));
             }
+            for field in ["build_args", "build_secrets"] {
+                let Some(inputs) = args.get(field) else {
+                    continue;
+                };
+                let Some(inputs) = inputs.as_object() else {
+                    return Err(format!(
+                        "{field} must be an object of names to strings, or null to remove a name"
+                    ));
+                };
+                if let Some((name, _)) = inputs
+                    .iter()
+                    .find(|(_, input)| !input.is_string() && !input.is_null())
+                {
+                    return Err(format!(
+                        "{field}.{name} must be a string, or null to remove it"
+                    ));
+                }
+            }
             call(
                 Method::GET,
                 format!("/apps/id/{}", segment(args, "id")?),

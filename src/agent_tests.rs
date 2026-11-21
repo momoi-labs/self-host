@@ -788,6 +788,46 @@ async fn update_source_refuses_unknown_fields() {
 }
 
 #[tokio::test]
+async fn update_source_refuses_build_inputs_that_are_not_strings() {
+    let (app, store) = setup().await;
+    insert_git_app(&store).await;
+    let key = host_agent_key(&app).await;
+    for (arguments, field) in [
+        (
+            json!({"id": "yard", "build_args": {"PIN": 123456}}),
+            "build_args.PIN",
+        ),
+        (
+            json!({"id": "yard", "build_secrets": {"npm": 987654}}),
+            "build_secrets.npm",
+        ),
+        (
+            json!({"id": "yard", "build_args": "PIN=1"}),
+            "build_args must",
+        ),
+        (
+            json!({"id": "yard", "build_secrets": ["npm"]}),
+            "build_secrets must",
+        ),
+    ] {
+        let (_, answer) = rpc(
+            &app,
+            &key,
+            "tools/call",
+            json!({"name": "update_source", "arguments": arguments}),
+        )
+        .await;
+        assert_eq!(answer["result"]["isError"], true, "{answer}");
+        let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains(field), "{text}");
+        assert!(
+            !text.contains("123456") && !text.contains("987654"),
+            "{text}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_agent_key_without_host_neither_sees_nor_uses_update_source() {
     let (app, store) = setup().await;
     insert_git_app(&store).await;
