@@ -353,8 +353,8 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .import-upload .meter-label > :first-child { display: none; }
 .import-upload .meter-label > :last-child { max-width: none; }
 /* The import dialog's steps scroll on a short screen; its buttons stay put. */
-.import-dialog > form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
-.import-dialog > form > [data-slot="dialog-body"] { overflow-y: auto; min-height: 0; }
+:is(.import-dialog, .key-dialog) > form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+:is(.import-dialog, .key-dialog) > form > [data-slot="dialog-body"] { overflow-y: auto; min-height: 0; }
 /* The import form's pg_dump command, there when asked for. */
 .import-howto > summary { cursor: pointer; font-size: var(--type-size-label); }
 .import-howto[open] > summary { margin-block-end: var(--spacing-sm); }

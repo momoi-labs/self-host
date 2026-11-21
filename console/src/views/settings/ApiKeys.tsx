@@ -235,7 +235,7 @@ export function ApiKeys({ id }: PaneProps) {
           if (!open) setError(null);
         }}
       >
-        <DialogContent>
+        <DialogContent className="key-dialog">
           <DialogHeader>
             <DialogTitle>New API key</DialogTitle>
             <DialogDescription>
