@@ -24,7 +24,7 @@ import { Host } from "./views/Host.js";
 
 export function App() {
   const { apps, dnsSuffix, domain, healthy, degraded, failing, version, ready, reload } = usePlatform();
-  const { environments } = useEnvironments();
+  const { environments, ready: environmentsReady } = useEnvironments();
   const metrics = useMetrics();
   const [view, go] = useView();
   // The Host is in the menu only while the Operator allows something on it.
@@ -186,6 +186,7 @@ export function App() {
         />
       ) : (
         <Overview
+          ready={ready && environmentsReady}
           apps={apps}
           environments={environments}
           metrics={metrics}

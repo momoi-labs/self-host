@@ -83,7 +83,7 @@ export function usePlatform(): Platform {
     failing: health.data?.failing ?? noFailing,
     degraded: health.data?.status === "degraded",
     version: health.data?.version ?? null,
-    ready: apps.isFetched,
+    ready: apps.data !== undefined,
     reload,
   };
 }
