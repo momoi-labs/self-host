@@ -16,9 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
   EmptyState,
-  EmptyStateActions,
   EmptyStateDescription,
-  EmptyStateIcon,
   EmptyStateTitle,
   FormField,
   GridPane,
@@ -68,10 +66,11 @@ function day(iso: string) {
 
 /** The API keys card of Settings. It is wide: a table needs the room. */
 export function ApiKeys({ id, size }: PaneProps) {
-  const { data: keys = noKeys, refetch: load } = useQuery({
+  const { data: keys = noKeys, isSuccess, refetch: load } = useQuery({
     queryKey: ["api-keys"],
     queryFn: ({ signal }) => readJson<ApiKey[]>("/api-keys", signal),
   });
+  const empty = isSuccess && !keys.length;
   const { data: tailnet } = useQuery({
     queryKey: ["tailnet"],
     queryFn: ({ signal }) => readJson<TailnetStatus>("/tailnet", signal),
@@ -155,7 +154,7 @@ export function ApiKeys({ id, size }: PaneProps) {
         New key
       </Button>
     }>
-      <p className="muted t-label">Keys people, the CLI and AI agents use to reach the API. Agent keys work only on the tailnet name.</p>
+      {empty ? null : <p className="muted t-label">Keys people, the CLI and AI agents use to reach the API. Agent keys work only on the tailnet name.</p>}
       {created ? (
         <Alert variant="info">
           <Icon name="info" size="md" />
@@ -166,7 +165,12 @@ export function ApiKeys({ id, size }: PaneProps) {
         </Alert>
       ) : null}
 
-      <TableFrame frame="none" className="key-table">
+      {empty ? (
+        <div className="empty-frame"><EmptyState variant="first-run">
+          <EmptyStateTitle>No API keys yet</EmptyStateTitle>
+          <EmptyStateDescription>A key lets a person, the CLI or an AI agent reach the API.</EmptyStateDescription>
+        </EmptyState></div>
+      ) : <TableFrame frame="none" className="key-table">
         <div className="table-scroll">
           <Table>
             <TableHeader>
@@ -183,21 +187,7 @@ export function ApiKeys({ id, size }: PaneProps) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {keys.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7}>
-                    <EmptyState variant="first-run">
-                      <EmptyStateIcon><Icon name="key" size="lg" /></EmptyStateIcon>
-                      <EmptyStateTitle>No API keys yet</EmptyStateTitle>
-                      <EmptyStateDescription>A key lets a person, the CLI or an AI agent reach the API.</EmptyStateDescription>
-                      <EmptyStateActions>
-                        <Button variant="primary" onClick={() => setCreating(true)}><Icon name="plus" />New key</Button>
-                      </EmptyStateActions>
-                    </EmptyState>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                keys.map((key) => (
+              {keys.map((key) => (
                   <TableRow key={key.id}>
                     <TableCell>
                       <div>{key.primary ? <>{key.label} <span className="muted t-label">Platform key, made by init</span></> : key.label}</div>
@@ -234,12 +224,11 @@ export function ApiKeys({ id, size }: PaneProps) {
                       )}
                     </TableCell>
                   </TableRow>
-                ))
-              )}
+                ))}
             </TableBody>
           </Table>
         </div>
-      </TableFrame>
+      </TableFrame>}
 
       <Dialog
         open={creating}

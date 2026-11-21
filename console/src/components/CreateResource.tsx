@@ -39,6 +39,7 @@ export function CreateResource({
     <>
       <Button
         ref={trigger}
+        size="sm"
         variant="primary"
         aria-haspopup="dialog"
         aria-expanded={open}

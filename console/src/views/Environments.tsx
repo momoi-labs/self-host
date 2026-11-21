@@ -771,10 +771,6 @@ export function Environments({
       <>
         <PageHeader>
           <PageHeaderTitle>New virtual machine</PageHeaderTitle>
-          <PageHeaderDescription>
-            A workspace of your own on this Host, with the tools you pick and a
-            service you can reach by name.
-          </PageHeaderDescription>
         </PageHeader>
         <Card className="form-page">
           <EnvironmentEditor

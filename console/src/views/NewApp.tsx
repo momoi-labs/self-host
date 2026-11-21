@@ -1,7 +1,6 @@
 import {
   Card,
   PageHeader,
-  PageHeaderDescription,
   PageHeaderTitle,
 } from "@momoi-labs/kiso-react";
 
@@ -74,9 +73,6 @@ export function NewApp({
     <>
       <PageHeader>
         <PageHeaderTitle>New application</PageHeaderTitle>
-        <PageHeaderDescription>
-          Deploy a container or native process.
-        </PageHeaderDescription>
       </PageHeader>
       <Card className="form-page">
         <AppForm dnsSuffix={dnsSuffix} onSubmit={deploy} onCancel={onCancel} />

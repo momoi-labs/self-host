@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Button, Card, EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle,
-  Lifecycle, PageHeader, PageHeaderDescription, PageHeaderTitle, Skeleton, StatusBadge, TerminalIcon,
+  Lifecycle, PageHeader, PageHeaderTitle, Skeleton, StatusBadge, TerminalIcon,
 } from "@momoi-labs/kiso-react";
 
 import { Icon } from "../components/Icon.js";
@@ -27,12 +27,11 @@ export function Host({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   return (
     <>
-      <div className="between">
-        <PageHeader>
-          <PageHeaderTitle>Host</PageHeaderTitle>
-          <PageHeaderDescription>The machine the Platform runs on.</PageHeaderDescription>
-        </PageHeader>
-        {screen ? (
+      {screen ? (
+        <div className="between">
+          <PageHeader>
+            <PageHeaderTitle>Host</PageHeaderTitle>
+          </PageHeader>
           <Lifecycle
             status={
               <StatusBadge tone={screen.listening ? "success" : "neutral"}>
@@ -41,8 +40,12 @@ export function Host({ onOpenSettings }: { onOpenSettings: () => void }) {
             }
             actions={<Button size="sm" onClick={openScreen}><Icon name="screen" />Open screen</Button>}
           />
-        ) : null}
-      </div>
+        </div>
+      ) : (
+        <PageHeader>
+          <PageHeaderTitle>Host</PageHeaderTitle>
+        </PageHeader>
+      )}
       {/* One pane, so no tab bar: a lone tab is not a choice. */}
       <Card className="detail-tabs">
         {!host ? (

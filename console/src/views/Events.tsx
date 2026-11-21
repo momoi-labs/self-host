@@ -3,7 +3,7 @@ import type { MouseEvent } from "react";
 import {
   Badge, Button, Card, CardContent, CardHeader,
   EmptyState, EmptyStateDescription, EmptyStateTitle,
-  PageHeader, PageHeaderDescription, PageHeaderTitle,
+  PageHeader, PageHeaderTitle,
   Pagination, PaginationEllipsis, PaginationNext, PaginationPage, PaginationPrevious,
   Search, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Skeleton, Spinner,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -88,16 +88,15 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
     </a> : <span title="This resource is no longer available">{subject.service ?? subject.name}</span>;
   };
 
-  return <div className="events-page">
+  return <>
     <PageHeader>
       <PageHeaderTitle>Events</PageHeaderTitle>
-      <PageHeaderDescription>Activity across your services and virtual machines.</PageHeaderDescription>
     </PageHeader>
     {error && <div className="events-error" role="alert"><span>{error}</span>{onRetry && <Button size="sm" onClick={onRetry}>Retry</Button>}</div>}
-    {!events.length && !loading && !error ? <div className="events-layout"><Card><CardContent><EmptyState variant="informational">
+    {!events.length && !loading && !error ? <Card><CardContent><EmptyState variant="informational">
       <EmptyStateTitle>No events yet</EmptyStateTitle>
       <EmptyStateDescription>Service and virtual machine activity will appear here.</EmptyStateDescription>
-    </EmptyState></CardContent></Card></div> : <div className={`events-layout${selected ? " events-layout-open" : ""}`}>
+    </EmptyState></CardContent></Card> : <div className={`events-layout${selected ? " events-layout-open" : ""}`}>
       <div className="events-list">
         <div className="list-filters">
           <Search aria-label="Filter by service" placeholder="Search services or virtual machines..."
@@ -184,7 +183,7 @@ export function Events({ events, onOpenSubject, loading = false, error = null, o
         </Card>
       </aside>}
     </div>}
-  </div>;
+  </>;
 }
 
 function Actor({ event }: { event: PlatformEvent }) {

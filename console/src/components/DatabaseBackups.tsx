@@ -10,7 +10,7 @@ import {
   CardContent,
   Checkbox,
   EmptyState,
-  EmptyStateTitle,
+  EmptyStateDescription, EmptyStateTitle,
   Form,
   FormActions,
   FormField,
@@ -195,7 +195,7 @@ export function DatabaseBackups({ databaseId, databaseName, onStarted, onOpenOpe
       </FormActions>
     </Form>
 
-    {!loading && !list.length && !backups.error ? <Card><CardContent><EmptyState variant="first-run"><EmptyStateTitle>No backups yet</EmptyStateTitle></EmptyState></CardContent></Card> : null}
+    {!loading && !list.length && !backups.error ? <Card><CardContent><EmptyState variant="first-run"><EmptyStateTitle>No backups yet</EmptyStateTitle><EmptyStateDescription>Backups appear here after the first one runs.</EmptyStateDescription></EmptyState></CardContent></Card> : null}
 
     {loading || list.length ? <TableFrame><div className="table-scroll"><Table aria-label="Backups of this server" aria-busy={loading}>
       <TableHeader><TableRow>

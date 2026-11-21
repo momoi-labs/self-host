@@ -6,11 +6,9 @@ import {
   Card,
   CardContent,
   EmptyState,
-  EmptyStateActions,
   EmptyStateDescription,
   EmptyStateTitle,
   PageHeader,
-  PageHeaderDescription,
   PageHeaderTitle,
   Search,
   Sparkline,
@@ -98,9 +96,8 @@ export function Overview({
 
   return (
     <>
-      <PageHeader>
+      <PageHeader actions={empty ? <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} /> : undefined}>
         <PageHeaderTitle>Overview</PageHeaderTitle>
-        <PageHeaderDescription>What runs on this Host, and how much of it is in use.</PageHeaderDescription>
       </PageHeader>
 
       {empty ? (
@@ -111,9 +108,6 @@ export function Overview({
               <EmptyStateDescription>
                 Deploy an application or create a virtual machine, and reach it from your LAN.
               </EmptyStateDescription>
-              <EmptyStateActions>
-                <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} />
-              </EmptyStateActions>
             </EmptyState>
           </CardContent>
         </Card>
@@ -128,23 +122,25 @@ export function Overview({
           <TableFrame>
             <div className="table-toolbar panel-toolbar">
               <h2 className="section-title">Applications</h2>
-              <Search
+              {applications.length ? <Search
                 aria-label="Search applications"
                 containerClassName="section-search"
                 placeholder="Search applications…"
                 value={appSearch}
                 onChange={(event) => setAppSearch(event.target.value)}
-              />
+              /> : null}
               <Button size="sm" variant="ghost" className="panel-action" onClick={onDeploy}>
                 <Icon name="plus" />
                 Deploy application
               </Button>
             </div>
             {applications.length === 0 ? (
-              <EmptyState variant="first-run">
-                <EmptyStateTitle>No applications yet</EmptyStateTitle>
-                <EmptyStateDescription>Deploy a container image, a Git repository or a native process.</EmptyStateDescription>
-              </EmptyState>
+              <div className="empty-frame">
+                <EmptyState variant="first-run">
+                  <EmptyStateTitle>No applications yet</EmptyStateTitle>
+                  <EmptyStateDescription>Deploy a container image, a Git repository or a native process.</EmptyStateDescription>
+                </EmptyState>
+              </div>
             ) : <div className="table-scroll">
               <Table aria-label="Applications">
                 <TableHeader>
@@ -220,24 +216,25 @@ export function Overview({
           <TableFrame>
             <div className="table-toolbar panel-toolbar">
               <h2 className="section-title">Databases</h2>
-              <Search
+              {databases.length ? <Search
                 aria-label="Search databases"
                 containerClassName="section-search"
                 placeholder="Search databases…"
                 value={databaseSearch}
-                disabled={!databases.length}
                 onChange={(event) => setDatabaseSearch(event.target.value)}
-              />
+              /> : null}
               <Button size="sm" variant="ghost" className="panel-action" onClick={onNewDatabase}>
                 <Icon name="plus" />
                 New database
               </Button>
             </div>
             {databases.length === 0 ? (
-              <EmptyState variant="first-run">
-                <EmptyStateTitle>No databases yet</EmptyStateTitle>
-                <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
-              </EmptyState>
+              <div className="empty-frame">
+                <EmptyState variant="first-run">
+                  <EmptyStateTitle>No databases yet</EmptyStateTitle>
+                  <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
+                </EmptyState>
+              </div>
             ) : <div className="table-scroll">
               <Table aria-label="Databases">
                 <TableHeader>
@@ -294,24 +291,25 @@ export function Overview({
           <TableFrame>
             <div className="table-toolbar panel-toolbar">
               <h2 className="section-title">Virtual machines</h2>
-              <Search
+              {environments.length ? <Search
                 aria-label="Search virtual machines"
                 containerClassName="section-search"
                 placeholder="Search machines…"
                 value={machineSearch}
-                disabled={!environments.length}
                 onChange={(event) => setMachineSearch(event.target.value)}
-              />
+              /> : null}
               <Button size="sm" variant="ghost" className="panel-action" onClick={onNewMachine}>
                 <Icon name="plus" />
                 Create virtual machine
               </Button>
             </div>
             {environments.length === 0 ? (
-              <EmptyState variant="first-run">
-                <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
-                <EmptyStateDescription>Create a persistent workspace with your tools and repositories, reachable over SSH.</EmptyStateDescription>
-              </EmptyState>
+              <div className="empty-frame">
+                <EmptyState variant="first-run">
+                  <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
+                  <EmptyStateDescription>Create a persistent workspace with your tools and repositories, reachable over SSH.</EmptyStateDescription>
+                </EmptyState>
+              </div>
             ) : <div className="table-scroll">
               <Table aria-label="Virtual machines">
                 <TableHeader>

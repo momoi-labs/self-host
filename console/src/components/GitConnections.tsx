@@ -169,6 +169,7 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
+  const empty = !loading && !error && !connections.length;
 
   async function disconnect() {
     if (!disconnecting || busy) return;
@@ -188,9 +189,9 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
     <Button size="sm" onClick={() => setSetup(true)}>Provider setup</Button>
     <Button size="sm" variant="primary" onClick={() => setDialog("new")}>Connect Git</Button>
   </>}>
-    <p className="muted t-label">Saved access for importing and updating applications.</p>
+    {empty ? null : <p className="muted t-label">Saved access for importing and updating applications.</p>}
     {error ? <Alert variant="error"><AlertDescription>{error}</AlertDescription><Button size="sm" onClick={() => void refresh()}>Retry</Button></Alert> : null}
-    <TableFrame frame="none">
+    {empty ? <div className="empty-frame"><EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories, or use a URL for a public one.</EmptyStateDescription></EmptyState></div> : <TableFrame frame="none">
       <div className="table-scroll"><Table>
         <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
         <TableBody>
@@ -200,11 +201,11 @@ export function GitConnectionsSettings({ id, size }: { id: string; size?: number
             <TableCell className="col-tight"><Button size="sm" variant="ghost" onClick={() => setDialog(connection)}>Reconnect</Button><Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={() => { setActionError(null); setDisconnecting(connection); }}>Disconnect</Button></TableCell>
           </TableRow>)}
           {!connections.length ? <TableRow><TableCell colSpan={4}>
-            {loading ? "Loading connections..." : error ? "Could not load connections." : <EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories, or use a URL for a public one.</EmptyStateDescription></EmptyState>}
+            {loading ? "Loading connections..." : "Could not load connections."}
           </TableCell></TableRow> : null}
         </TableBody>
       </Table></div>
-    </TableFrame>
+    </TableFrame>}
     {dialog ? <GitConnectionDialog open connection={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onSaved={() => {}} /> : null}
     {setup ? <GitProviderSetup open onClose={() => setSetup(false)} /> : null}
     <Dialog open={Boolean(disconnecting)} onOpenChange={(open) => { if (!open && !busy) setDisconnecting(null); }}>
