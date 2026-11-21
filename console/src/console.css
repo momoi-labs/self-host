@@ -608,6 +608,7 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .table .cell-name { white-space: nowrap; }
 .schedule-when { display: inline-flex; gap: var(--spacing-sm); align-items: center; }
 .schedule-when > [data-slot="select-trigger"] { width: auto; flex: none; }
+.schedule-time { white-space: nowrap; }
 
 /* A button group can lead with the primary action. Kiso's group paints every
    button as a card, so the primary one takes its own colors back. */

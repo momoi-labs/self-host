@@ -133,11 +133,11 @@ export function ScheduledTasks({ id }: PaneProps) {
                       </Select>
                     </span>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="schedule-time">
                     {schedule.running ? <StatusBadge tone="success" pulse>Running</StatusBadge>
                       : schedule.last_run_at ? formatAgo(schedule.last_run_at) : <span className="muted">Never</span>}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="schedule-time">
                     {schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })
                       : <span className="muted">Off</span>}
                   </TableCell>
