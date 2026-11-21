@@ -67,7 +67,7 @@ pub fn prune_subject() -> Subject {
 const BUILTINS: &[Builtin] = &[Builtin {
     id: "prune",
     title: "Remove unused data",
-    description: "Runs prune: removes what removed Applications left behind and builds no deployment keeps.",
+    description: "Removes data left by deleted Applications, and builds that no current or kept deployment uses.",
     every: Every::Week,
     hour: 3,
     action: "prune",

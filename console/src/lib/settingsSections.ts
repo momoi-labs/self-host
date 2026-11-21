@@ -26,7 +26,7 @@ export const settingsSections = [
     id: "network",
     title: "Network",
     settings: [
-      { id: "your-host", title: "Your host" },
+      { id: "your-host", title: "Your Host" },
       { id: "public-certificates", title: "Public certificates" },
     ],
   },

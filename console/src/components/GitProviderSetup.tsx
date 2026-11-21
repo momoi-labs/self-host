@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import {
   Alert, AlertDescription, Button, Dialog, DialogBody, DialogContent,
-  DialogDescription, DialogFooter, DialogHeader, DialogTitle, FormField,
+  DialogFooter, DialogHeader, DialogTitle, FormField,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@momoi-labs/kiso-react";
 import {
@@ -68,7 +68,7 @@ export function GitProviderSetup({ open, initialProvider = "github", onClose, on
 
   return <Dialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
     <DialogContent>
-      <DialogHeader><DialogTitle>Configure Git providers</DialogTitle><DialogDescription>One-time setup for this Host. Applications and their draft settings stay in place.</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>Configure Git providers</DialogTitle></DialogHeader>
       <form onSubmit={(event) => {
         if (provider === "gitlab") void saveGitlab(event);
         else { event.preventDefault(); event.stopPropagation(); registerGithub(); }
@@ -81,7 +81,7 @@ export function GitProviderSetup({ open, initialProvider = "github", onClose, on
             }}><SelectTrigger id="git-setup-provider"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="github">GitHub</SelectItem><SelectItem value="gitlab">GitLab</SelectItem></SelectContent></Select>
           </FormField>
           {loadError ? <Alert variant="error"><AlertDescription>{loadError}</AlertDescription><Button size="sm" type="button" onClick={() => void refresh()}>Retry</Button></Alert> : null}
-          <FormField id="git-setup-console" label="Console URL" type="url" required value={consoleUrl} disabled={busy} onChange={(event) => setConsoleUrl(event.target.value)} hint="Use this console's HTTPS address. HTTP is supported on localhost only." />
+          <FormField id="git-setup-console" label="Console URL" type="url" required value={consoleUrl} disabled={busy} onChange={(event) => setConsoleUrl(event.target.value)} hint="Use this console's HTTPS address, or HTTP on localhost." />
           {provider === "github" ? <>
             {integrations?.github.configured ? <p className="muted">GitHub App <strong>{integrations.github.app_slug}</strong> is configured. Replacing it requires removing its saved connections first.</p> : <p className="muted">Create a GitHub App, then choose which repositories it can read when connecting an account.</p>}
             <FormField id="git-setup-organization" label="GitHub organization (optional)" value={organization} disabled={busy} onChange={(event) => setOrganization(event.target.value)} placeholder="Leave empty for your personal account" />

@@ -84,8 +84,8 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
         <CardContent>
           <KV>
             <KVKey className="kv-setting">
-              <Label htmlFor="route-rewrite-host">Send the target address as Host</Label>
-              <p className="muted t-label">For an app that refuses any Host but its loopback address.</p>
+              <Label htmlFor="route-rewrite-host">Use the target address as the HTTP Host header</Label>
+              <p className="muted t-label">For an Application that answers only to its loopback address.</p>
             </KVKey>
             <KVValue className="kv-switch">
               <Switch id="route-rewrite-host" checked={rewriteHost} disabled={busy || toggling || !settings}

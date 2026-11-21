@@ -90,7 +90,7 @@ export function ScheduledTasks({ id }: PaneProps) {
 
   return (
     <SettingCard id={id} title="Scheduled tasks">
-      <p className="muted t-label">Work the Platform runs on its own. Each run is a task, and its outcome is in Events.</p>
+      <p className="muted t-label">View each Task's result in Events.</p>
       <TableFrame frame="none">
           <Table aria-label="Scheduled tasks">
             <TableHeader>
@@ -126,7 +126,7 @@ export function ScheduledTasks({ id }: PaneProps) {
                         </SelectContent>
                       </Select>
                       <Select value={String(schedule.hour)} disabled={busy === schedule.id} onValueChange={(hour) => void save(schedule, { hour: Number(hour) })}>
-                        <SelectTrigger aria-label="At"><SelectValue /></SelectTrigger>
+                        <SelectTrigger aria-label="Run time in your browser's time zone"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           {hours.map((hour) => <SelectItem key={hour} value={String(hour)}>{localHour(hour)}</SelectItem>)}
                         </SelectContent>

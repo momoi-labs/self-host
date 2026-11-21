@@ -57,7 +57,7 @@ function join(amount: string, unit: Unit): string {
 export type PaneProps = { id: string };
 
 /**
- * How long the Events page keeps what happened. Precedence is PostgreSQL's:
+ * Precedence is PostgreSQL's:
  * the daemon flag outranks what is saved here, and what is saved here
  * outranks the default.
  *
@@ -136,18 +136,17 @@ export function AuditHistory({ id }: PaneProps) {
   ) : retention?.source === "operator" ? (
     `Saved. Events are kept for ${retention.effective}.`
   ) : (
-    `Using the default. Events are kept for ${DEFAULT_RETENTION}.`
+    "Using the default of 30 days."
   );
 
   return (
     <SettingCard id={id} title="Audit history">
       <Form id="general-settings" onSubmit={(event) => propose(value.trim() || null, event)}>
         <div className="form-body">
-          <p className="muted t-label">How long the Events page keeps what happened.</p>
           <FormField
             id="audit-events-max-age"
             label="Keep audit events for"
-            hint="At least one day. Events older than this are deleted on the next change to the history, so a shorter value deletes them as soon as it is saved."
+            hint="At least 24 hours. Saving deletes events older than this right away."
           >
             <div className="settings-duration">
               <Input
@@ -165,7 +164,7 @@ export function AuditHistory({ id }: PaneProps) {
                 disabled={pinned || settings == null}
                 onValueChange={(next) => setUnit(next as Unit)}
               >
-                <SelectTrigger aria-label="Unit"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label="Time unit"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {units.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
                 </SelectContent>
@@ -252,7 +251,7 @@ export function ApplicationDefaults({ id }: PaneProps) {
       <KV>
         <KVKey className="kv-setting">
           <Label htmlFor="pull-newer-images">Pull newer images</Label>
-          <p className="muted t-label">Restart and Save and redeploy pull each image from its registry first.</p>
+          <p className="muted t-label">By default, "Restart" and "Save and redeploy" pull each image from its registry first.</p>
         </KVKey>
         <KVValue className="kv-switch">
           <Switch
@@ -263,8 +262,8 @@ export function ApplicationDefaults({ id }: PaneProps) {
           />
         </KVValue>
         <KVKey className="kv-setting">
-          <Label htmlFor="rewrite-host">Send the target address as Host</Label>
-          <p className="muted t-label">For apps that refuse any Host but their loopback address.</p>
+          <Label htmlFor="rewrite-host">Use the target address as the HTTP Host header</Label>
+          <p className="muted t-label">For Applications that answer only to their loopback address.</p>
         </KVKey>
         <KVValue className="kv-switch">
           <Switch
@@ -314,15 +313,15 @@ export function NativeBuildLimits({ id }: PaneProps) {
     <SettingCard id={id} title="Native Git build limits">
       <Form onSubmit={save}>
         <div className="form-body">
-          <p className="muted t-label">Native Git build limits apply to all Applications on this Host. Changes apply to the next build.</p>
+          <p className="muted t-label">These limits apply to the next native Git build of any Application on this Host.</p>
           {error || isError || (settings && !saved) ? <Alert variant="error"><AlertDescription>{error ?? "Could not read native build limits. Check the Host configuration."}</AlertDescription></Alert> : null}
-          <FormField id="native-source-limit" label="Source size limit (MiB)" hint="Total checkout file size before build.">
+          <FormField id="native-source-limit" label="Source size limit (MiB)" hint="Total size of source files in the build context.">
             <Input id="native-source-limit" type="number" min="0.000001" step="any" value={draft.source} disabled={!settings || saving} onChange={event => { setDraft({ ...draft, source: event.target.value }); setDirty(true); }} />
           </FormField>
-          <FormField id="native-files-limit" label="Source file limit">
+          <FormField id="native-files-limit" label="Source file count limit">
             <Input id="native-files-limit" type="number" min="1" step="1" value={draft.files} disabled={!settings || saving} onChange={event => { setDraft({ ...draft, files: event.target.value }); setDirty(true); }} />
           </FormField>
-          <FormField id="native-payload-limit" label="Build payload limit (MiB)" hint="Includes encoded source and configuration. Allow room beyond the source size.">
+          <FormField id="native-payload-limit" label="Build payload limit (MiB)" hint="Set this above the source size limit to allow for encoded source and configuration.">
             <Input id="native-payload-limit" type="number" min="0.000001" step="any" value={draft.payload} disabled={!settings || saving} onChange={event => { setDraft({ ...draft, payload: event.target.value }); setDirty(true); }} />
           </FormField>
         </div>
@@ -362,7 +361,7 @@ export function HostAccess({ id }: PaneProps) {
       <KV>
         <KVKey className="kv-setting">
           <Label htmlFor="remote-screen">Remote screen</Label>
-          <p className="muted t-label">Open the Mac's screen from the Host page, in a window of its own. The Mac still asks for one of its accounts.</p>
+          <p className="muted t-label">Open the Mac's screen in a separate window from the Host page and sign in with a Mac account.</p>
         </KVKey>
         <KVValue className="kv-switch">
           <Switch
@@ -374,7 +373,7 @@ export function HostAccess({ id }: PaneProps) {
         </KVValue>
         <KVKey className="kv-setting">
           <Label htmlFor="host-terminal">Host terminal</Label>
-          <p className="muted t-label">A shell on the Host as the account the Platform runs under, root on a Linux Host that runs it as root. It can do anything that account can.</p>
+          <p className="muted t-label">Allow a shell with the Platform account's full permissions, including root on Linux if the Platform runs as root.</p>
         </KVKey>
         <KVValue className="kv-switch">
           <Switch
