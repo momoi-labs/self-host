@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Button,
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateTitle,
   Form,
   FormActions,
   FormField,
@@ -246,38 +249,35 @@ export function PublicCertificates({ id }: PaneProps) {
         </FormActions>
       </Form>
 
-      {enabled ? (
+      {enabled && certificates.isSuccess && rows.length === 0 ? (
+        <div className="empty-frame"><EmptyState variant="first-run">
+          <EmptyStateTitle>No public Hostnames yet</EmptyStateTitle>
+          <EmptyStateDescription>Give an Application a Hostname outside .{suffix ?? "the Suffix"} and it shows here within a minute.</EmptyStateDescription>
+        </EmptyState></div>
+      ) : enabled && rows.length ? (
         <TableFrame frame="none">
-          <div className="table-scroll">
-            <Table aria-label="Public certificates">
-              <TableHeader>
-                <TableRow>
-                  <TableHead scope="col">Hostname</TableHead>
-                  <TableHead scope="col">Status</TableHead>
-                  <TableHead scope="col">Expires</TableHead>
-                  <TableHead scope="col">Renews</TableHead>
-                  <TableHead scope="col">Last error</TableHead>
+          <Table aria-label="Public certificates">
+            <TableHeader>
+              <TableRow>
+                <TableHead scope="col">Hostname</TableHead>
+                <TableHead scope="col">Status</TableHead>
+                <TableHead scope="col">Expires</TableHead>
+                <TableHead scope="col">Renews</TableHead>
+                <TableHead scope="col">Last error</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((certificate) => (
+                <TableRow key={certificate.hostname}>
+                  <TableCell className="mono">{certificate.hostname}</TableCell>
+                  <TableCell><StatusBadge tone={tone[certificate.state]}>{label[certificate.state]}</StatusBadge></TableCell>
+                  <TableCell>{day(certificate.expires_at)}</TableCell>
+                  <TableCell>{day(certificate.renew_at)}</TableCell>
+                  <TableCell className="muted">{certificate.last_error ?? ""}</TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="muted">
-                      No public Hostnames yet. Give an Application a Hostname outside .{suffix ?? "the Suffix"} and it shows here within a minute.
-                    </TableCell>
-                  </TableRow>
-                ) : rows.map((certificate) => (
-                  <TableRow key={certificate.hostname}>
-                    <TableCell className="mono">{certificate.hostname}</TableCell>
-                    <TableCell><StatusBadge tone={tone[certificate.state]}>{label[certificate.state]}</StatusBadge></TableCell>
-                    <TableCell>{day(certificate.expires_at)}</TableCell>
-                    <TableCell>{day(certificate.renew_at)}</TableCell>
-                    <TableCell className="muted">{certificate.last_error ?? ""}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+              ))}
+            </TableBody>
+          </Table>
         </TableFrame>
       ) : null}
     </SettingCard>
