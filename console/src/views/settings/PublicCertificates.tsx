@@ -165,7 +165,7 @@ export function PublicCertificates({ id }: PaneProps) {
   ) : enabled ? (
     `Saved. Every Hostname outside .${suffix ?? "the Suffix"} gets a certificate from ${authorityName}.${savedZone ? ` Names in ${savedZone} are validated through DNS.` : ""}`
   ) : (
-    "Off. Hostnames outside the DNS Suffix answer with the Platform's own certificate, which only an edge proxy such as Cloudflare accepts. Save an account to turn it on."
+    "Save an ACME account to turn this on. Until then, browsers reject the certificate of Hostnames outside the DNS Suffix."
   );
 
   const rows = certificates.data ?? noCertificates;
@@ -175,9 +175,8 @@ export function PublicCertificates({ id }: PaneProps) {
       <Form id="public-certificates" onSubmit={(event) => void save(event)}>
         <div className="form-body">
           <p className="muted t-label">
-            Certificates from a public CA for the Hostnames a browser cannot trust the Platform's own CA for.
-            Names in the DNS zone below are validated through DNS and need no open port. Other Hostnames need public
-            DNS that points at this Host, and the CA must reach port 80.
+            Hostnames in the DNS zone below validate through DNS. Other Hostnames need public DNS that points to this
+            Host and port 80 open to the CA.
           </p>
           <Select value={authority} disabled={acme.data === undefined || saving} onValueChange={(next) => {
             // Radix answers a value set before its items mounted with an empty
@@ -214,7 +213,7 @@ export function PublicCertificates({ id }: PaneProps) {
             value={email}
             disabled={acme.data === undefined || saving}
             onChange={(event) => setEmail(event.target.value)}
-            hint="The CA writes here before a certificate it issued expires unrenewed. Saving accepts its terms of service."
+            hint="Saving shares this email with the CA and accepts its terms of service."
           />
           <FormField
             id="acme-dns-zone"
@@ -225,7 +224,7 @@ export function PublicCertificates({ id }: PaneProps) {
             value={zone}
             disabled={acme.data === undefined || saving}
             onChange={(event) => setZone(event.target.value)}
-            hint="Optional. A zone hosted at deSEC. Hostnames inside it get a certificate without port 80. Clear it to turn DNS validation off."
+            hint="Optional deSEC zone for validation without port 80. Clear it to use port 80 instead."
           />
           <FormField
             id="acme-dns-token"
@@ -237,7 +236,7 @@ export function PublicCertificates({ id }: PaneProps) {
             value={token}
             disabled={acme.data === undefined || saving || zone.trim() === ""}
             onChange={(event) => setToken(event.target.value)}
-            hint="A token limited to TXT records in that zone. The Platform never shows it again."
+            hint="A deSEC token limited to TXT records in this zone. It is not shown again after saving."
           />
           {error ? <Failure failure={error} /> : null}
           {acme.error ? <Failure failure={acme.error} actionLabel="Retry" onAction={() => void acme.refetch()} /> : null}

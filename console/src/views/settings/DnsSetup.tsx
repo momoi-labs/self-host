@@ -25,8 +25,8 @@ export function YourHost({ id }: PaneProps) {
   const hostAddresses = settings?.host_addresses ?? [];
 
   return (
-    <SettingCard id={id} title="Your host">
-      <p className="muted t-label">What a device on the LAN uses as its DNS server.</p>
+    <SettingCard id={id} title="Your Host">
+      <p className="muted t-label">Use this Host IP as the DNS server on your LAN devices.</p>
       <KV>
         <KVKey>Host IP</KVKey>
         <KVValue>{hostIp || (settings === undefined ? "Loading…" : "Unavailable")}</KVValue>
@@ -36,7 +36,7 @@ export function YourHost({ id }: PaneProps) {
             <KVValue>{hostAddresses.join(", ")}</KVValue>
           </>
         ) : null}
-        <KVKey>DNS suffix</KVKey>
+        <KVKey>DNS Suffix</KVKey>
         <KVValue>{suffix || (settings === undefined ? "Loading…" : "Unavailable")}</KVValue>
       </KV>
       {hostIp ? (

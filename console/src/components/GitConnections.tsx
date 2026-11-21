@@ -87,7 +87,7 @@ export function GitConnectionDialog({ open, connection, onClose, onSaved }: {
     <DialogContent>
       <DialogHeader>
         <DialogTitle>{connection ? "Reconnect Git" : "Connect Git"}</DialogTitle>
-        <DialogDescription>Authorize access in your provider, then reuse it when importing and updating applications.</DialogDescription>
+        <DialogDescription>Allow this Host to read repositories from your Git provider when importing and updating Applications.</DialogDescription>
       </DialogHeader>
         <DialogBody>
           <FormField id="git-connection-name" label="Connection name (optional)" autoFocus maxLength={120}
@@ -103,7 +103,7 @@ export function GitConnectionDialog({ open, connection, onClose, onSaved }: {
               <SelectContent><SelectItem value="github">GitHub</SelectItem><SelectItem value="gitlab">GitLab</SelectItem></SelectContent>
             </Select>
           </FormField>
-          {tokenOnly ? <p className="muted">Update this connection's saved token. To use provider authorization, create a new connection.</p> : integrationsLoading ? <p className="muted" role="status">Loading provider setup...</p> : integrationError ? <Alert variant="error"><AlertDescription>{integrationError}</AlertDescription><Button type="button" size="sm" onClick={() => void refreshIntegrations()}>Retry</Button></Alert> : !configured ? <p className="muted">{providerName(provider)} needs one-time setup on this Host. Your application draft stays in place.</p> : !sameConsole ? <Alert variant="error"><AlertDescription>Open the console at {integrationConsole} to authorize this provider. Its callback must return to the same origin.</AlertDescription></Alert> : <p className="muted">Choose the account and repositories to allow in the provider's popup.</p>}
+          {tokenOnly ? <p className="muted">Update this connection's saved token. To use provider authorization, create a new connection.</p> : integrationsLoading ? <p className="muted" role="status">Loading provider setup...</p> : integrationError ? <Alert variant="error"><AlertDescription>{integrationError}</AlertDescription><Button type="button" size="sm" onClick={() => void refreshIntegrations()}>Retry</Button></Alert> : !configured ? <p className="muted">Set up {providerName(provider)} on this Host before connecting an account.</p> : !sameConsole ? <Alert variant="error"><AlertDescription>Open the console at {integrationConsole} to authorize this provider. Its callback must return to the same origin.</AlertDescription></Alert> : <p className="muted">Choose the account and repositories to allow in the provider's popup.</p>}
           {!tokenOnly && !connection && provider === "github" && configured && sameConsole && !integrationsLoading && !integrationError ? <Button size="sm" type="button" variant="ghost" disabled={working} onClick={() => connect(true)}>App already installed? Use existing access</Button> : null}
           {authorization.busy ? <p className="muted" role="status">{authorization.phase === "completing" ? "Confirming authorization... Keep the popup open." : `Finish authorization in the ${providerName(provider)} popup.`}</p> : null}
           {allowToken ? <details className="disclosure" open={advanced} onToggle={(event) => setAdvanced(event.currentTarget.open)}>
@@ -192,7 +192,7 @@ export function GitConnectionsSettings({ id }: { id: string }) {
   </>}>
     {empty ? null : <p className="muted t-label">Saved access for importing and updating applications.</p>}
     {error ? <Alert variant="error"><AlertDescription>{error}</AlertDescription><Button size="sm" onClick={() => void refresh()}>Retry</Button></Alert> : null}
-    {empty ? <div className="empty-frame"><EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories, or use a URL for a public one.</EmptyStateDescription></EmptyState></div> : <TableFrame frame="none">
+    {empty ? <div className="empty-frame"><EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose repositories, or import a public repository by URL when you create an Application.</EmptyStateDescription></EmptyState></div> : <TableFrame frame="none">
       <Table>
         <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
         <TableBody>

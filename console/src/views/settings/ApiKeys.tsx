@@ -46,9 +46,9 @@ import { SettingCard } from "./SettingCard.js";
 const noKeys: ApiKey[] = [];
 
 const agentScopes = [
-  { value: "read", label: "Read", description: "Applications, databases, DNS, events and logs. Every key needs it." },
-  { value: "apps:write", label: "Configure Applications", description: "Deploy, update, start, stop and change routes and variables." },
-  { value: "dns:write", label: "Change DNS records", description: "Add and edit records. Deleting needs a person." },
+  { value: "read", label: "Read", description: "Required read access to Applications, databases, DNS, events and logs." },
+  { value: "apps:write", label: "Configure Applications", description: "Deploy, update, start or stop Applications and change their routes and Application Variables." },
+  { value: "dns:write", label: "Change DNS Records", description: "Add and edit DNS Records. Only a Person key can delete one." },
   { value: "databases:write", label: "Manage databases", description: "Create servers and connections, start backups." },
   { value: "vms:write", label: "Manage virtual machines", description: "Create, start and stop machines." },
 ];
@@ -152,7 +152,7 @@ export function ApiKeys({ id }: PaneProps) {
         New key
       </Button>
     }>
-      {empty ? null : <p className="muted t-label">Keys people, the CLI and AI agents use to reach the API. Agent keys work only on the tailnet name.</p>}
+      {empty ? null : <p className="muted t-label">Agent keys work only on this Host's tailnet name.</p>}
       {created ? (
         <Alert variant="info">
           <Icon name="info" size="md" />
@@ -240,8 +240,8 @@ export function ApiKeys({ id }: PaneProps) {
                 onChange={(event) => setLabel(event.target.value)}
               />
               <RadioGroup label="Kind" variant="tiles" value={kind} onValueChange={chooseKind}>
-                <RadioGroupItem value="agent" label="Agent" description="An AI agent. Works only on the tailnet name, and cannot delete or open the console." />
-                <RadioGroupItem value="human" label="Person" description="A person or the CLI. Full access." />
+                <RadioGroupItem value="agent" label="Agent" description="For AI agents on the tailnet name. They cannot open the console or delete Applications, DNS Records, databases, VMs or custom images." />
+                <RadioGroupItem value="human" label="Person" description="Full access, for a person or the CLI." />
               </RadioGroup>
               {kind === "agent" ? (
                 <fieldset className="field">
@@ -277,7 +277,7 @@ export function ApiKeys({ id }: PaneProps) {
               {kind === "agent" ? (
                 tailnet?.name ? (
                   <Select value={device} onValueChange={setDevice}>
-                    <FormField id="key-device" label="Only from this device" hint="A key bound to one tailnet device is refused from any other.">
+                    <FormField id="key-device" label="Allowed tailnet device" hint="Pick a device to limit the key to it.">
                       <SelectTrigger><SelectValue /></SelectTrigger>
                     </FormField>
                     <SelectContent>

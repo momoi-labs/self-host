@@ -100,30 +100,30 @@ export function BackupStorage({ id }: PaneProps) {
     finally { setWorking(null); }
   }
 
-  const message = dirty ? "Unsaved changes." : !saved ? "Loading..." : saved.configured ? "Saved." : "Not configured. Backups cannot run without it.";
+  const message = dirty ? "Unsaved changes." : !saved ? "Loading..." : saved.configured ? "Saved." : "Configure Backup storage before running Backups.";
 
   return (
     <SettingCard id={id} title="Backup storage">
       <Form onSubmit={(event: FormEvent) => void save(event)}>
         <div className="form-body">
-          <p className="muted t-label">Every backup of this Host goes to this S3-compatible bucket, over HTTPS. self-host does not encrypt backups, so use a private bucket.</p>
+          <p className="muted t-label">Database Backups go to this S3-compatible bucket over HTTPS. self-host does not encrypt them, so use a private bucket.</p>
           {loadError ? <Failure failure={asReport(loadError)} /> : null}
           {failure ? <Failure failure={failure} /> : null}
           <FormField id="backup-storage-endpoint" label="Endpoint" className="mono" placeholder="https://s3.example.com" value={draft.endpoint} disabled={disabled}
-            hint="An HTTPS address. Leave it empty for AWS S3." onChange={(event) => change({ endpoint: event.target.value })} />
+            hint="Use an HTTPS address, or leave this field empty for AWS S3." onChange={(event) => change({ endpoint: event.target.value })} />
           <FormField id="backup-storage-region" label="Region" className="mono" placeholder="us-east-1" value={draft.region} required disabled={disabled}
             onChange={(event) => change({ region: event.target.value })} />
           <FormField id="backup-storage-bucket" label="Bucket" className="mono" value={draft.bucket} required disabled={disabled}
-            hint="The bucket must exist. self-host does not create it." onChange={(event) => change({ bucket: event.target.value })} />
+            hint="Create the bucket before saving these settings." onChange={(event) => change({ bucket: event.target.value })} />
           <FormField id="backup-storage-prefix" label="Prefix" className="mono" placeholder="backups/home" value={draft.prefix} disabled={disabled}
-            hint="A folder inside the bucket. Use one per Host when Hosts share a bucket." onChange={(event) => change({ prefix: event.target.value })} />
+            hint="Use a separate folder path for each Host that shares this bucket." onChange={(event) => change({ prefix: event.target.value })} />
           <div className="field">
             <div className="check">
               <Checkbox id="backup-storage-path-style" checked={draft.pathStyle} disabled={disabled} aria-describedby="backup-storage-path-style-help"
                 onCheckedChange={(checked) => change({ pathStyle: checked === true })} />
               <Label htmlFor="backup-storage-path-style">Path-style addresses</Label>
             </div>
-            <small className="field-hint" id="backup-storage-path-style-help">Most S3-compatible services need it. Turn it off for a service that puts the bucket in the hostname.</small>
+            <small className="field-hint" id="backup-storage-path-style-help">Turn this off if your service puts the bucket name in the hostname.</small>
           </div>
           <div className="field">
             <div className="check">
@@ -133,11 +133,11 @@ export function BackupStorage({ id }: PaneProps) {
             </div>
             <small className="field-hint" id="backup-storage-verify-tls-help">Turn it off only for a bucket on your own network with a self-signed certificate.</small>
           </div>
-          <FormField id="backup-storage-access-key" label="Access key id" className="mono" autoComplete="off" value={draft.accessKeyId} required disabled={disabled}
+          <FormField id="backup-storage-access-key" label="Access key ID" className="mono" autoComplete="off" value={draft.accessKeyId} required disabled={disabled}
             onChange={(event) => change({ accessKeyId: event.target.value })} />
           <FormField id="backup-storage-secret" label="Secret access key" type="password" autoComplete="new-password" value={draft.secret} disabled={disabled}
             placeholder={saved?.has_secret ? "Saved. Type a new one to replace it" : ""}
-            hint="Kept in the Host's private state. The console and the API never show it again." onChange={(event) => change({ secret: event.target.value })} />
+            hint="The Host stores this key privately and never returns it through the console or API." onChange={(event) => change({ secret: event.target.value })} />
         </div>
         <FormActions tone={failure ? "danger" : dirty ? "warning" : "neutral"} message={message}>
           {saved?.configured ? <Button size="sm" type="button" variant="ghost" className="btn-danger-ghost" disabled={disabled} onClick={() => setRemoving(true)}>Remove</Button> : null}
@@ -202,7 +202,7 @@ export function MaintenanceWindow({ id }: PaneProps) {
     <SettingCard id={id} title="Maintenance window">
       <Form onSubmit={(event: FormEvent) => void save(event)}>
         <div className="form-body">
-          <p className="muted t-label">The Host starts planned database work, such as scheduled backups, in these hours. Times use the Host's clock, not this browser's.</p>
+          <p className="muted t-label">The Platform starts planned database work, including scheduled Backups, during these hours in the Host's local time.</p>
           {loadError ? <Failure failure={asReport(loadError)} /> : null}
           {failure ? <Alert variant="error"><AlertDescription>{failure.error}</AlertDescription></Alert> : null}
           <Select value={String(draft.start)} disabled={!saved || saving} onValueChange={(start) => { setDraft({ ...draft, start: Number(start) }); setDirty(true); }}>
@@ -210,7 +210,7 @@ export function MaintenanceWindow({ id }: PaneProps) {
             <SelectContent>{startHours.map((hour) => <SelectItem key={hour} value={String(hour)}>{clock(hour)}</SelectItem>)}</SelectContent>
           </Select>
           <Select value={String(draft.hours)} disabled={!saved || saving} onValueChange={(hours) => { setDraft({ ...draft, hours: Number(hours) }); setDirty(true); }}>
-            <FormField id="maintenance-window-hours" label="Lasts" hint="Work that starts inside the window may end after it."><SelectTrigger><SelectValue /></SelectTrigger></FormField>
+            <FormField id="maintenance-window-hours" label="Duration" hint="Work that starts inside the window may end after it."><SelectTrigger><SelectValue /></SelectTrigger></FormField>
             <SelectContent>{lengths.map((hours) => <SelectItem key={hours} value={String(hours)}>{hours === 1 ? "1 hour" : `${hours} hours`}</SelectItem>)}</SelectContent>
           </Select>
         </div>
