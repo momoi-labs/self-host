@@ -550,12 +550,16 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .settings-select-item { display: inline-flex; align-items: center; gap: var(--spacing-sm); }
 .settings-sections, .settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); min-width: 0; }
 .settings-section[hidden] { display: none; }
-@container (min-width: 52rem) {
+@container (min-width: 70rem) {
   .settings-layout { grid-template-columns: 14rem minmax(0, 1fr); }
   .settings-nav { display: block; position: sticky; inset-block-start: calc(max(52px, var(--size-control-lg)) + var(--spacing-lg)); padding-inline-start: var(--spacing-sm); }
   .settings-select { display: none; }
 }
 .setting-card > .card-header.between { flex-wrap: wrap; }
+.setting-card .table :is([data-slot="select-trigger"], .btn) { white-space: nowrap; }
+@container (max-width: 40rem) {
+  .setting-card .table td:first-child { min-width: 26ch; }
+}
 .setting-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-xs); }
 .setting-card > .card-body { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 .setting-card > .card-body:has(> .form), .setting-card > .card-body:has(> .empty-frame:only-child) { padding: 0; }
@@ -593,7 +597,7 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .update-change-ref { margin-inline-end: auto; }
 
 /* A scheduled task: its name over what it does, and when it runs, side by side. */
-.schedule-task { display: grid; gap: 2px; min-width: 32ch; }
+.schedule-task { display: grid; gap: 2px; }
 .table .cell-name { white-space: nowrap; }
 .schedule-when { display: inline-flex; gap: var(--spacing-sm); align-items: center; }
 
