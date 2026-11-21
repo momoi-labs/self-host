@@ -143,6 +143,8 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 @media (max-width: 560px) {
   .list-filters > .input-group { flex: 1 1 8rem; }
   .list-filters > .select { width: auto; min-width: 0; }
+}
+@media (width < 560px) {
   .panel-toolbar .panel-action { width: auto; margin-inline-start: auto; }
   .panel-toolbar .section-search { order: 1; flex-basis: 100%; max-width: none; margin-inline-start: 0; }
   .panel-action-full { display: none; }
