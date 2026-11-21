@@ -118,6 +118,10 @@ Other components above live in `console/src/components/`.
   draws the divider under the title, so the stripes start at the title row.
   In a tab with other content, it sits alone in a `Card`, where the table
   would be.
+- Below 560px an Overview group's title row holds the title and a "New"
+  button, whose accessible name names the object ("New database"). The
+  search takes its own row below. From 560px up the button keeps its full
+  label and the search sits on the title row.
 - A screen header is the title and at most one action. No
   `PageHeaderDescription` on list, create, Host, Events or Settings screens,
   so every title sits where the Kiso CRUD puts it. When all of Overview is
