@@ -168,16 +168,16 @@ export function ApiKeys({ id }: PaneProps) {
           <EmptyStateTitle>No API keys yet</EmptyStateTitle>
           <EmptyStateDescription>A key lets a person, the CLI or an AI agent reach the API.</EmptyStateDescription>
         </EmptyState></div>
-      ) : <TableFrame frame="none" className="key-table">
+      ) : <TableFrame frame="none">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead scope="col">Key</TableHead>
-                <TableHead scope="col" className="key-secondary">Kind</TableHead>
+                <TableHead scope="col">Kind</TableHead>
                 <TableHead scope="col">Expires</TableHead>
-                <TableHead scope="col" className="key-secondary">Scopes</TableHead>
-                <TableHead scope="col" className="key-secondary">Last used</TableHead>
-                <TableHead scope="col" className="key-secondary">Created</TableHead>
+                <TableHead scope="col">Scopes</TableHead>
+                <TableHead scope="col">Last used</TableHead>
+                <TableHead scope="col">Created</TableHead>
                 <TableHead scope="col" className="col-tight">
                   Action
                 </TableHead>
@@ -189,24 +189,12 @@ export function ApiKeys({ id }: PaneProps) {
                     <TableCell>
                       <div>{key.primary ? <>{key.label} <span className="muted t-label">Platform key, made by init</span></> : key.label}</div>
                       <div className="mono muted t-label">{key.id}</div>
-                      <div className="key-details">{kindOf(key)}</div>
-                      <details className="disclosure key-details">
-                        <summary aria-label={`Show details for ${key.label}`}>Details</summary>
-                        <dl>
-                          <dt>Scopes</dt>
-                          <dd className="mono t-label">{scopesOf(key)}</dd>
-                          <dt>Last used</dt>
-                          <dd>{lastUsed(key)}</dd>
-                          <dt>Created</dt>
-                          <dd>{createdOn(key)}</dd>
-                        </dl>
-                      </details>
                     </TableCell>
-                    <TableCell className="key-secondary">{kindOf(key)}</TableCell>
+                    <TableCell>{kindOf(key)}</TableCell>
                     <TableCell className="key-date">{key.expires_at ? day(key.expires_at) : <span className="muted">Never</span>}</TableCell>
-                    <TableCell className="key-secondary mono t-label">{scopesOf(key)}</TableCell>
-                    <TableCell className="key-secondary">{lastUsed(key)}</TableCell>
-                    <TableCell className="key-secondary key-date">{createdOn(key)}</TableCell>
+                    <TableCell className="mono t-label">{scopesOf(key)}</TableCell>
+                    <TableCell>{lastUsed(key)}</TableCell>
+                    <TableCell className="key-date">{createdOn(key)}</TableCell>
                     <TableCell className="col-tight">
                       {/* The Platform's own key cannot be revoked; it is what the console and CLI use. */}
                       {key.primary ? null : (
