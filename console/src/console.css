@@ -564,6 +564,9 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 @container (max-width: 40rem) {
   .setting-card .table td:first-child { min-width: 26ch; }
 }
+@media (pointer: coarse) {
+  .setting-card .check > .kiso-checkbox { margin-block: calc((1lh - var(--size-icon-md)) / 2); }
+}
 .setting-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-xs); }
 .setting-card > .card-body { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 .setting-card > .card-body:has(> .form), .setting-card > .card-body:has(> .empty-frame:only-child) { padding: 0; }
