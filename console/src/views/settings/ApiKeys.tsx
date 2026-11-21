@@ -169,7 +169,6 @@ export function ApiKeys({ id }: PaneProps) {
           <EmptyStateDescription>A key lets a person, the CLI or an AI agent reach the API.</EmptyStateDescription>
         </EmptyState></div>
       ) : <TableFrame frame="none" className="key-table">
-        <div className="table-scroll">
           <Table>
             <TableHeader>
               <TableRow>
@@ -225,7 +224,6 @@ export function ApiKeys({ id }: PaneProps) {
                 ))}
             </TableBody>
           </Table>
-        </div>
       </TableFrame>}
 
       <Dialog
