@@ -167,7 +167,11 @@ These map the existing screens. They do not certify a full contract audit.
 
 ## Exceptions
 
-None recorded. Existing contract gaps are not approved exceptions.
+| Where | Kiso rule | Console rule | Why |
+| --- | --- | --- | --- |
+| `.list-filters` below 560px, `console.css` | The search and the select each take a full row. | The search and the select share one 36px row. Clear filters wraps to a second row. | The Operator compares every list with the Kiso CRUD list, whose filter row is one line at 390px. |
+
+Existing contract gaps are not approved exceptions.
 
 ## Verify
 

@@ -1,6 +1,6 @@
 .events-layout { display: grid; gap: var(--spacing-xl); align-items: start; }
 .events-layout-open { grid-template-columns: minmax(0, 1fr) minmax(280px, 32%); }
-.events-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); align-content: start; min-width: 0; }
+.events-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--presentation-section-gap); align-content: start; min-width: 0; }
 .events-row { cursor: pointer; }
 .events-row[data-state="selected"] { background: var(--color-selected); color: var(--color-selected-foreground); }
 .events-action { border: 0; background: transparent; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
