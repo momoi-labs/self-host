@@ -51,6 +51,7 @@ const agentScopes = [
   { value: "dns:write", label: "Change DNS Records", description: "Add and edit DNS Records. Only a Person key can delete one." },
   { value: "databases:write", label: "Manage databases", description: "Create servers and connections, start backups." },
   { value: "vms:write", label: "Manage virtual machines", description: "Create, start and stop machines." },
+  { value: "host", label: "Change the Host", description: "Warning: this key can change bind mounts, read secrets and edit Git sources on the Host. Turn it on only for an agent you trust with the Host." },
 ];
 const agentDefault = ["read", "apps:write", "dns:write", "databases:write"];
 const expiries = [
