@@ -92,7 +92,6 @@ export function ScheduledTasks({ id }: PaneProps) {
     <SettingCard id={id} title="Scheduled tasks">
       <p className="muted t-label">Work the Platform runs on its own. Each run is a task, and its outcome is in Events.</p>
       <TableFrame frame="none">
-        <div className="table-scroll">
           <Table aria-label="Scheduled tasks">
             <TableHeader>
               <TableRow>
@@ -149,7 +148,6 @@ export function ScheduledTasks({ id }: PaneProps) {
               ))}
             </TableBody>
           </Table>
-        </div>
       </TableFrame>
     </SettingCard>
   );

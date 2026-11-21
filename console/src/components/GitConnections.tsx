@@ -193,7 +193,7 @@ export function GitConnectionsSettings({ id }: { id: string }) {
     {empty ? null : <p className="muted t-label">Saved access for importing and updating applications.</p>}
     {error ? <Alert variant="error"><AlertDescription>{error}</AlertDescription><Button size="sm" onClick={() => void refresh()}>Retry</Button></Alert> : null}
     {empty ? <div className="empty-frame"><EmptyState variant="first-run"><EmptyStateTitle>No Git connections</EmptyStateTitle><EmptyStateDescription>Connect an account to choose its repositories, or use a URL for a public one.</EmptyStateDescription></EmptyState></div> : <TableFrame frame="none">
-      <div className="table-scroll"><Table>
+      <Table>
         <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
         <TableBody>
           {connections.map((connection) => <TableRow key={connection.id}>
@@ -205,7 +205,7 @@ export function GitConnectionsSettings({ id }: { id: string }) {
             {loading ? "Loading connections..." : "Could not load connections."}
           </TableCell></TableRow> : null}
         </TableBody>
-      </Table></div>
+      </Table>
     </TableFrame>}
     {dialog ? <GitConnectionDialog open connection={dialog === "new" ? undefined : dialog} onClose={() => setDialog(null)} onSaved={() => {}} /> : null}
     {setup ? <GitProviderSetup open onClose={() => setSetup(false)} /> : null}
