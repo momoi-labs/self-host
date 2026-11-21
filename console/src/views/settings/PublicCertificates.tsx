@@ -269,7 +269,7 @@ export function PublicCertificates({ id }: PaneProps) {
             <TableBody>
               {rows.map((certificate) => (
                 <TableRow key={certificate.hostname}>
-                  <TableCell className="mono">{certificate.hostname}</TableCell>
+                  <TableCell className="mono cell-name">{certificate.hostname}</TableCell>
                   <TableCell><StatusBadge tone={tone[certificate.state]}>{label[certificate.state]}</StatusBadge></TableCell>
                   <TableCell>{day(certificate.expires_at)}</TableCell>
                   <TableCell>{day(certificate.renew_at)}</TableCell>

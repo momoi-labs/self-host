@@ -108,7 +108,7 @@ export function ScheduledTasks({ id }: PaneProps) {
                 <TableRow key={schedule.id}>
                   <TableCell>
                     <span className="schedule-task">
-                      <span>{schedule.title}</span>
+                      <span className="cell-name">{schedule.title}</span>
                       <span className="muted t-label">{schedule.description}</span>
                     </span>
                   </TableCell>

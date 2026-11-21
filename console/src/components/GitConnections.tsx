@@ -197,7 +197,7 @@ export function GitConnectionsSettings({ id }: { id: string }) {
         <TableHeader><TableRow><TableHead scope="col">Name</TableHead><TableHead scope="col">Provider</TableHead><TableHead scope="col">Status</TableHead><TableHead scope="col" className="col-tight">Access</TableHead></TableRow></TableHeader>
         <TableBody>
           {connections.map((connection) => <TableRow key={connection.id}>
-            <TableCell>{connection.name}</TableCell><TableCell>{connectionMethod(connection)}</TableCell>
+            <TableCell className="cell-name">{connection.name}</TableCell><TableCell>{connectionMethod(connection)}</TableCell>
             <TableCell><StatusBadge tone={connection.status === "expired" ? "danger" : "success"}>{connection.status === "expired" ? "Reconnect required" : "Connected"}</StatusBadge></TableCell>
             <TableCell className="col-tight"><Button size="sm" variant="ghost" onClick={() => setDialog(connection)}>Reconnect</Button><Button size="sm" variant="ghost" className="btn-danger-ghost" onClick={() => { setActionError(null); setDisconnecting(connection); }}>Disconnect</Button></TableCell>
           </TableRow>)}
