@@ -30,6 +30,8 @@ pub const SESSION_COOKIE: &str = "__Host-self-host-session";
 pub const RECOVERY_HEADER: &str = "x-self-host-recovery";
 pub const RECOVERY_SECRET_STATE: &str = "account_recovery_secret";
 pub const OPERATOR: &str = "operator";
+pub const ROOT_RETIRED_STATE: &str = "api_key_retired_at";
+pub const CONSOLE_ORIGIN_ENV: &str = "SELF_HOST_CONSOLE_ORIGIN";
 const ACCOUNT_STATE: &str = "operator_account";
 const SESSION_HOURS: i64 = 12;
 const CEREMONY_TTL: Duration = Duration::from_secs(5 * 60);
@@ -178,7 +180,22 @@ pub fn canonical_for(dns_suffix: &str, https_port: u16) -> Option<Canonical> {
     })
 }
 
+fn canonical_at(origin: &str) -> Option<Canonical> {
+    let origin = Url::parse(origin).ok()?;
+    let host = origin.host_str()?.to_ascii_lowercase();
+    (origin.scheme() == "https").then(|| Canonical {
+        rp_id: host.clone(),
+        host,
+        origin,
+    })
+}
+
 pub async fn canonical<S: StateStore>(store: &S) -> Option<Canonical> {
+    if let Ok(origin) = std::env::var(CONSOLE_ORIGIN_ENV)
+        && !origin.is_empty()
+    {
+        return canonical_at(&origin);
+    }
     let suffix = store.get_state("dns_suffix").await.ok().flatten()?;
     let port = std::env::var("SELF_HOST_PROXY_HTTPS_PORT")
         .ok()
@@ -415,6 +432,7 @@ impl From<&StoredPasskey> for PasskeySummary {
 #[derive(Serialize)]
 struct AccountResponse {
     exists: bool,
+    root_key_retired: bool,
     rp_id: String,
     console_url: String,
     passkeys_void: bool,
@@ -426,6 +444,7 @@ pub(crate) async fn get<S: StateStore>(State(state): State<AppState<S>>) -> Answ
     let account = load(&state.store).await?;
     Ok(Json(AccountResponse {
         exists: account.is_some(),
+        root_key_retired: root_retired(&state.store).await,
         passkeys_void: account
             .as_ref()
             .is_some_and(|account| account.rp_id != canonical.rp_id),
@@ -437,6 +456,83 @@ pub(crate) async fn get<S: StateStore>(State(state): State<AppState<S>>) -> Answ
             .iter()
             .flat_map(|account| account.passkeys.iter().map(PasskeySummary::from))
             .collect(),
+    })
+    .into_response())
+}
+
+pub async fn root_retired<S: StateStore>(store: &S) -> bool {
+    store
+        .get_state(ROOT_RETIRED_STATE)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|at| !at.is_empty())
+}
+
+pub async fn seed_root_key<S: StateStore>(store: &S, key: &str) {
+    if key.is_empty() || root_retired(store).await {
+        return;
+    }
+    if store.get_api_key().await.ok().flatten().is_none()
+        && let Err(error) = store.store_state("api_key", key).await
+    {
+        tracing::warn!(%error, "could not store the Platform key");
+    }
+}
+
+async fn retire_root<S: StateStore>(state: &AppState<S>) -> Result<bool, Refusal> {
+    if root_retired(&state.store).await {
+        return Ok(false);
+    }
+    let failed = |e: crate::store::StoreError| Refusal::internal(e.to_string());
+    state
+        .store
+        .store_state(ROOT_RETIRED_STATE, &crate::auth::now())
+        .await
+        .map_err(failed)?;
+    state
+        .store
+        .store_state("api_key", "")
+        .await
+        .map_err(failed)?;
+    crate::audit::record(
+        state,
+        crate::audit::event(
+            "retire",
+            crate::audit::Subject::new("api_key", crate::audit::ADMIN, crate::audit::ADMIN),
+            "completed",
+            None,
+            "The Platform key was retired after the first passkey login.",
+        ),
+    )
+    .await;
+    Ok(true)
+}
+
+#[derive(Serialize)]
+struct StatusResponse {
+    exists: bool,
+    usable: bool,
+    canonical: bool,
+    console_url: String,
+    root_key_retired: bool,
+}
+
+pub(crate) async fn status<S: StateStore>(
+    State(state): State<AppState<S>>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Answer {
+    let canonical = canonical_or_fail(&state.store).await?;
+    let account = load(&state.store).await?;
+    Ok(Json(StatusResponse {
+        exists: account.is_some(),
+        usable: account
+            .as_ref()
+            .is_some_and(|a| a.rp_id == canonical.rp_id && !a.passkeys.is_empty()),
+        canonical: host_of(&headers, &uri).as_deref() == Some(canonical.host.as_str()),
+        console_url: canonical.console_url(),
+        root_key_retired: root_retired(&state.store).await,
     })
     .into_response())
 }
@@ -676,6 +772,7 @@ pub(crate) struct LoginFinish {
 #[derive(Serialize)]
 struct LoggedIn {
     expires_at: String,
+    retired_root_key: bool,
 }
 
 async fn usable_account<S: StateStore>(
@@ -803,8 +900,10 @@ pub(crate) async fn login_finish<S: StateStore>(
         .upsert(&state.store, &record)
         .await
         .map_err(|error| Refusal::internal(error.to_string()))?;
+    let retired_root_key = retire_root(&state).await?;
     let mut response = Json(LoggedIn {
         expires_at: record.expires_at,
+        retired_root_key,
     })
     .into_response();
     response.headers_mut().insert(

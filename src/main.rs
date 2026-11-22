@@ -190,6 +190,10 @@ enum AccountCommand {
     /// Print a one-time setup key that registers a new passkey, for when
     /// every passkey is lost or the DNS Suffix changed. Run it on the Host.
     Recover,
+    /// Store the API key this CLI uses, read from standard input. After the
+    /// first passkey login the Platform key is retired, so the CLI needs a
+    /// Person key of its own.
+    UseKey,
 }
 
 #[derive(Subcommand)]
@@ -429,10 +433,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Command::Account {
-            command: AccountCommand::Recover,
-        }) => {
-            if let Err(e) = run_account_recover_command().await {
+        Some(Command::Account { command }) => {
+            let result = match command {
+                AccountCommand::Recover => run_account_recover_command().await,
+                AccountCommand::UseKey => run_account_use_key_command().await,
+            };
+            if let Err(e) = result {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
             }
@@ -624,8 +630,14 @@ fn check_existing_api_key(existing: &str, requested: Option<&str>) -> anyhow::Re
     Ok(())
 }
 
+const ROOT_RETIRED: &str = "The Platform key was retired after the first passkey login. Log in to the console with your passkey, or run 'self-host account recover' on this Host";
+
 async fn read_initial_api_key(state_dir: std::path::PathBuf) -> anyhow::Result<String> {
-    FileStateStore::read_only(state_dir)?
+    let store = FileStateStore::read_only(state_dir)?;
+    if self_host::account::root_retired(&store).await {
+        anyhow::bail!(ROOT_RETIRED);
+    }
+    store
         .get_api_key()
         .await?
         .filter(|key| !key.is_empty())
@@ -676,6 +688,42 @@ async fn run_account_recover_command() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_account_use_key_command() -> anyhow::Result<()> {
+    let mut config = CliConfig::load()?.ok_or_else(|| {
+        anyhow::anyhow!("CLI config not found; run 'self-host init' on this Host first")
+    })?;
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprint!("Paste the API key, then press Enter: ");
+    }
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let key = line.trim();
+    anyhow::ensure!(
+        !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_graphic()),
+        "An API key is visible ASCII characters, without spaces"
+    );
+    let base = config.api_base_url.trim_end_matches('/').to_owned();
+    let response = platform_api_client()?
+        .get(format!("{base}/whoami"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("The Platform does not answer at {base}: {e}"))?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(api_error("The key was not accepted", status, &text));
+    }
+    let who: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    config.api_key = key.to_owned();
+    config.save()?;
+    println!(
+        "The CLI now uses the key '{}'.",
+        who["label"].as_str().unwrap_or("unnamed")
+    );
+    Ok(())
+}
+
 async fn run_init_command(
     dns_suffix: &str,
     host_ip: Option<&str>,
@@ -691,15 +739,26 @@ async fn run_init_command(
     // daemon is running.
     let existing = FileStateStore::read_only(file_store::state_dir())?;
     if bootstrap::preflight_initialized(&existing, dns_suffix).await? {
-        let api_key = existing
-            .get_api_key()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("initialized Platform has no API key"))?;
-        check_existing_api_key(&api_key, requested_api_key)?;
-        save_cli_config_values(dns_suffix, &api_key)?;
+        let retired = self_host::account::root_retired(&existing).await;
+        if retired {
+            anyhow::ensure!(requested_api_key.is_none(), ROOT_RETIRED);
+        } else {
+            let api_key = existing
+                .get_api_key()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("initialized Platform has no API key"))?;
+            check_existing_api_key(&api_key, requested_api_key)?;
+            save_cli_config_values(dns_suffix, &api_key)?;
+        }
         println!("Platform is already initialized with DNS Suffix '{dns_suffix}'.");
         println!("Existing DNS, TLS and routing configuration is consistent.");
-        println!("CLI config points to https://console.{dns_suffix}.");
+        if retired {
+            println!(
+                "The Platform key is retired, so the CLI keeps its own key. Change it with 'self-host account use-key'."
+            );
+        } else {
+            println!("CLI config points to https://console.{dns_suffix}.");
+        }
 
         // Bootstrap completes on a Host with no Docker, leaving the Platform
         // configured but unable to run anything. Running init again is how the
@@ -1755,9 +1814,7 @@ async fn run_api_server(
     }
 
     // If we have state but no stored API key, use env var
-    if store.get_api_key().await.ok().flatten().is_none() && !api_key.is_empty() {
-        let _ = store.store_state("api_key", &api_key).await;
-    }
+    self_host::account::seed_root_key(&store, &api_key).await;
     // Reading the CLI config tightens one an older release left 0644.
     let _ = CliConfig::load();
 
