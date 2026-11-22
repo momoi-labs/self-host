@@ -463,6 +463,23 @@ async fn passkeys_work_only_on_the_canonical_console_name() {
             "{body}"
         );
     }
+
+    let (status, _, body) = send(
+        &app,
+        "POST",
+        "https://console.home.lan/account/login/start",
+        Call {
+            host: None,
+            ..Call::console()
+        },
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "HTTP/2 names the host in the URI, not in Host: {body}"
+    );
 }
 
 #[tokio::test]
@@ -548,6 +565,22 @@ async fn a_session_with_a_bound_passkey_assertion_creates_a_powerful_key_once() 
     let events = events.to_string();
     assert!(events.contains("authorizedBy"), "{events}");
     assert!(events.contains("\"passkey_name\":\"laptop\""), "{events}");
+
+    let (_, _, keys) = send(
+        &app,
+        "GET",
+        "/api-keys",
+        Call::session(&cookie),
+        Value::Null,
+    )
+    .await;
+    let listed = keys
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|key| key["label"] == "ops")
+        .expect("the new key is listed");
+    assert_eq!(listed["authorized_by"], created["authorized_by"]);
 
     confirmed["label"] = json!("ops-again");
     let (status, _, body) =

@@ -2806,7 +2806,7 @@ async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
     match state.store.list_api_keys().await {
         Ok(keys) => {
             let root = auth::Principal::root();
-            let body: Vec<ApiKeyResponse> = std::iter::once(ApiKeyResponse {
+            let mut body: Vec<ApiKeyResponse> = std::iter::once(ApiKeyResponse {
                 id: audit::ADMIN.into(),
                 label: audit::ADMIN.into(),
                 created_at: String::new(),
@@ -2824,6 +2824,15 @@ async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
                     .map(describe_key),
             )
             .collect();
+            for key in body.iter_mut().skip(1) {
+                key.authorized_by = state
+                    .store
+                    .get_state(&format!("api_key_authorized_by:{}", key.id))
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|by| serde_json::from_str(&by).ok());
+            }
             (StatusCode::OK, Json(body)).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
