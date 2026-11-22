@@ -353,8 +353,8 @@ self-host account recover
 
 It prints a setup key and the console address. The setup key works once, for
 15 minutes, and does nothing but register a passkey. The command reaches the
-daemon on its loopback address and proves it can read the Platform state, so
-it does not work from another machine.
+daemon on the Host itself and proves it can read the Platform state, so it
+does not work from another machine.
 
 ## Agent access over Tailscale
 

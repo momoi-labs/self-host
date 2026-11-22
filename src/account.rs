@@ -470,7 +470,20 @@ pub async fn root_retired<S: StateStore>(store: &S) -> bool {
 }
 
 pub async fn seed_root_key<S: StateStore>(store: &S, key: &str) {
-    if key.is_empty() || root_retired(store).await {
+    if root_retired(store).await {
+        if store
+            .get_api_key()
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|k| !k.is_empty())
+            && let Err(error) = store.store_state("api_key", "").await
+        {
+            tracing::warn!(%error, "could not clear the retired Platform key");
+        }
+        return;
+    }
+    if key.is_empty() {
         return;
     }
     if store.get_api_key().await.ok().flatten().is_none()
@@ -1114,13 +1127,24 @@ pub(crate) async fn recover<S: StateStore>(
     State(state): State<AppState<S>>,
     request: Request,
 ) -> Answer {
-    let loopback = request
+    let listen = state
+        .store
+        .get_state("api_listen_addr")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|addr| addr.parse::<SocketAddr>().ok())
+        .map(|addr| addr.ip().to_canonical());
+    let local = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .is_some_and(|ConnectInfo(peer)| peer.ip().to_canonical().is_loopback());
-    if !loopback {
+        .is_some_and(|ConnectInfo(peer)| {
+            let peer = peer.ip().to_canonical();
+            peer.is_loopback() || listen.is_some_and(|ip| !ip.is_unspecified() && ip == peer)
+        });
+    if !local {
         return Err(Refusal::forbidden(
-            "Recovery works only from the Host itself, on its loopback address.",
+            "Recovery works only from the Host itself.",
         ));
     }
     let expected = state
