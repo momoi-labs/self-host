@@ -100,6 +100,7 @@ async fn reach(target: &str) -> Option<TcpStream> {
 
 #[derive(Deserialize)]
 struct Connect {
+    #[serde(default)]
     key: String,
 }
 
@@ -107,14 +108,19 @@ struct Connect {
 // a Bearer header on a WebSocket upgrade, and a key does not go in a URL.
 pub(crate) async fn upgrade<S: StateStore>(
     State(state): State<AppState<S>>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let session = match crate::account::upgrade_session(&state.store, &headers).await {
+        Ok(session) => session,
+        Err(refused) => return refused.into_response(),
+    };
     ws.max_message_size(MAX_FRAME)
         .max_frame_size(MAX_FRAME)
-        .on_upgrade(move |socket| connected(socket, state))
+        .on_upgrade(move |socket| connected(socket, state, session))
 }
 
-async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>) {
+async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, session: bool) {
     let Ok(Some(Ok(Message::Text(first)))) =
         tokio::time::timeout(Duration::from_secs(5), socket.recv()).await
     else {
@@ -124,7 +130,7 @@ async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>) {
         terminal::fail(&mut socket, "Invalid screen request.").await;
         return;
     };
-    if !terminal::authentic(&state, &request.key).await {
+    if !session && !terminal::authentic(&state, &request.key).await {
         terminal::fail(&mut socket, "Invalid API key.").await;
         return;
     }

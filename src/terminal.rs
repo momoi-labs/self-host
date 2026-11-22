@@ -8,7 +8,8 @@ use axum::{
         Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    response::Response,
+    http::HeaderMap,
+    response::{IntoResponse, Response},
 };
 use futures_util::SinkExt;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -38,6 +39,7 @@ impl Size {
 
 #[derive(Deserialize)]
 struct Connect {
+    #[serde(default)]
     key: String,
     #[serde(default)]
     container: String,
@@ -47,6 +49,7 @@ struct Connect {
 /// A Virtual machine is one shell, so there is nothing to choose between.
 #[derive(Deserialize)]
 struct ConnectVm {
+    #[serde(default)]
     key: String,
     #[serde(flatten)]
     size: Size,
@@ -111,22 +114,32 @@ impl Session {
 pub(crate) async fn upgrade<S: StateStore>(
     State(state): State<AppState<S>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let session = match crate::account::upgrade_session(&state.store, &headers).await {
+        Ok(session) => session,
+        Err(refused) => return refused.into_response(),
+    };
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
-        .on_upgrade(move |socket| connected(socket, state, id))
+        .on_upgrade(move |socket| connected(socket, state, id, session))
 }
 /// The same upgrade for a Virtual machine. Its shell is the Operator's, so it
 /// opens as `dev` rather than as the machine's root.
 pub(crate) async fn upgrade_environment<S: StateStore>(
     State(state): State<AppState<S>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let session = match crate::account::upgrade_session(&state.store, &headers).await {
+        Ok(session) => session,
+        Err(refused) => return refused.into_response(),
+    };
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
-        .on_upgrade(move |socket| connected_environment(socket, state, id))
+        .on_upgrade(move |socket| connected_environment(socket, state, id, session))
 }
 
 /// A shell on the Host itself, as the account the Platform runs under: the
@@ -134,14 +147,19 @@ pub(crate) async fn upgrade_environment<S: StateStore>(
 /// root. Off until the Operator allows it.
 pub(crate) async fn upgrade_host<S: StateStore>(
     State(state): State<AppState<S>>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let session = match crate::account::upgrade_session(&state.store, &headers).await {
+        Ok(session) => session,
+        Err(refused) => return refused.into_response(),
+    };
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
-        .on_upgrade(move |socket| connected_host(socket, state))
+        .on_upgrade(move |socket| connected_host(socket, state, session))
 }
 
-async fn connected_host<S: StateStore>(mut socket: WebSocket, state: AppState<S>) {
+async fn connected_host<S: StateStore>(mut socket: WebSocket, state: AppState<S>, session: bool) {
     let Ok(Some(Ok(Message::Text(first)))) =
         tokio::time::timeout(Duration::from_secs(5), socket.recv()).await
     else {
@@ -151,7 +169,7 @@ async fn connected_host<S: StateStore>(mut socket: WebSocket, state: AppState<S>
         fail(&mut socket, "Invalid terminal request.").await;
         return;
     };
-    if !authentic(&state, &request.key).await {
+    if !session && !authentic(&state, &request.key).await {
         fail(&mut socket, "Invalid API key.").await;
         return;
     }
@@ -181,6 +199,7 @@ async fn connected_environment<S: StateStore>(
     mut socket: WebSocket,
     state: AppState<S>,
     id: String,
+    session: bool,
 ) {
     let Ok(Some(Ok(Message::Text(first)))) =
         tokio::time::timeout(Duration::from_secs(5), socket.recv()).await
@@ -191,7 +210,7 @@ async fn connected_environment<S: StateStore>(
         fail(&mut socket, "Invalid terminal request.").await;
         return;
     };
-    if !authentic(&state, &request.key).await {
+    if !session && !authentic(&state, &request.key).await {
         fail(&mut socket, "Invalid API key.").await;
         return;
     }
@@ -236,7 +255,12 @@ pub(crate) async fn fail(socket: &mut WebSocket, message: impl ToString) {
         ))
         .await;
 }
-async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, id: String) {
+async fn connected<S: StateStore>(
+    mut socket: WebSocket,
+    state: AppState<S>,
+    id: String,
+    session: bool,
+) {
     let Ok(Some(Ok(Message::Text(first)))) =
         tokio::time::timeout(Duration::from_secs(5), socket.recv()).await
     else {
@@ -246,7 +270,7 @@ async fn connected<S: StateStore>(mut socket: WebSocket, state: AppState<S>, id:
         fail(&mut socket, "Invalid terminal request.").await;
         return;
     };
-    if !authentic(&state, &request.key).await {
+    if !session && !authentic(&state, &request.key).await {
         fail(&mut socket, "Invalid API key.").await;
         return;
     }

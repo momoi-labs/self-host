@@ -50,8 +50,10 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["auth", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+webauthn-rs = { version = "0.6.2", default-features = false }
 x509-parser = { version = "0.16", features = ["verify"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"
+webauthn-authenticator-rs = { version = "0.6.2", features = ["softpasskey"] }
 tower = { version = "0.5", features = ["util"] }

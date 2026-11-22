@@ -17,6 +17,7 @@ use crate::error::ErrorReport;
 use crate::store::{DevelopmentApplication, Publication, Runtime, StoreError, VariableDelivery};
 use rand::Rng;
 
+pub mod account;
 pub mod apps;
 pub mod audit;
 pub mod auth;
@@ -84,6 +85,7 @@ struct AppState<S: StateStore> {
     audit: Arc<audit::Journal>,
     tasks: Arc<tasks::Scheduler>,
     volume_sizes: Arc<postgres::VolumeSizes>,
+    account: Arc<account::Ceremonies>,
     /// `--audit-events-max-age`, when the daemon was started with it. Pins the
     /// retention over the Operator's setting (ADR-0027).
     audit_events_max_age_flag: Option<std::time::Duration>,
@@ -239,9 +241,24 @@ fn build_platform_with_native<S: StateStore>(
         metrics,
         tasks: Arc::new(tasks::Scheduler::default()),
         volume_sizes: Default::default(),
+        account: Default::default(),
     };
 
     let authorization_routes = Router::new()
+        .route("/account", get(account::get::<S>))
+        .route("/account/step-up", post(account::step_up::<S>))
+        .route(
+            "/account/passkeys/start",
+            post(account::add_passkey_start::<S>),
+        )
+        .route(
+            "/account/passkeys/finish",
+            post(account::add_passkey_finish::<S>),
+        )
+        .route(
+            "/account/passkeys/{id}",
+            axum::routing::delete(account::remove_passkey::<S>),
+        )
         .route(
             "/source/integrations/gitlab",
             axum::routing::put(save_gitlab_integration),
@@ -432,7 +449,17 @@ fn build_platform_with_native<S: StateStore>(
         .with_state(state.clone())
         .merge(mcp_routes);
 
+    let account_routes = Router::new()
+        .route("/account/setup/start", post(account::setup_start::<S>))
+        .route("/account/setup/finish", post(account::setup_finish::<S>))
+        .route("/account/login/start", post(account::login_start::<S>))
+        .route("/account/login/finish", post(account::login_finish::<S>))
+        .route("/account/logout", post(account::logout::<S>))
+        .route("/account/recover", post(account::recover::<S>))
+        .with_state(state.clone());
+
     let router = console::console_router()
+        .merge(account_routes)
         .merge(public_ca_router(tls::ca_cert_path()))
         .merge(source_callback_router(source::private_root()))
         .merge(api_routes);
@@ -1329,6 +1356,8 @@ async fn http_readiness(
     }
 }
 
+#[cfg(test)]
+mod account_tests;
 #[cfg(test)]
 mod agent_tests;
 
@@ -2708,6 +2737,8 @@ struct CreateKeyRequest {
     expires_in_days: Option<Value>,
     #[serde(default)]
     node_id: Option<String>,
+    #[serde(default)]
+    step_up: Option<account::StepUpProof>,
 }
 
 const AGENT_DEFAULT_DAYS: i64 = 30;
@@ -2729,6 +2760,8 @@ struct ApiKeyResponse {
     /// The Platform's own key, which `init` made and cannot be revoked.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     primary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authorized_by: Option<auth::AuthorizedBy>,
 }
 
 #[derive(Serialize)]
@@ -2765,6 +2798,7 @@ fn describe_key(record: store::ApiKeyRecord) -> ApiKeyResponse {
         node_id: record.node_id,
         last_used_at: record.last_used_at,
         primary: false,
+        authorized_by: None,
     }
 }
 
@@ -2782,6 +2816,7 @@ async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
                 node_id: None,
                 last_used_at: None,
                 primary: true,
+                authorized_by: None,
             })
             .chain(
                 keys.into_iter()
@@ -2795,42 +2830,34 @@ async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
     }
 }
 
-fn unprocessable(message: impl Into<String>) -> Response {
-    (
-        StatusCode::UNPROCESSABLE_ENTITY,
-        Json(ErrorReport::plain(message.into())),
-    )
-        .into_response()
+fn unprocessable(message: impl Into<String>) -> account::Refusal {
+    account::Refusal::new(StatusCode::UNPROCESSABLE_ENTITY, message)
 }
 
-async fn create_key<S: StateStore>(
-    state: axum::extract::State<AppState<S>>,
-    Json(body): Json<CreateKeyRequest>,
-) -> Response {
+#[derive(Serialize)]
+struct KeyPlan {
+    label: String,
+    kind: auth::Kind,
+    scopes: std::collections::BTreeSet<auth::Scope>,
+    days: Option<i64>,
+    node_id: Option<String>,
+}
+
+impl KeyPlan {
+    fn needs_passkey(&self) -> bool {
+        self.kind == auth::Kind::Human || self.scopes.contains(&auth::Scope::Host)
+    }
+}
+
+fn plan_key(body: CreateKeyRequest) -> Result<KeyPlan, account::Refusal> {
     let label = body.label.trim().to_owned();
     if audit::reserved_actor(&label) {
-        return unprocessable(format!(
-            "'{label}' is reserved: admin is the Platform's own key and system is what it does on its own"
-        ));
+        return Err(unprocessable(format!(
+            "'{label}' is reserved: admin is the Platform's own key, operator is the passkey account and system is what the Platform does on its own"
+        )));
     }
     if label.is_empty() {
-        return unprocessable("Name the key");
-    }
-    let keys = match state.store.list_api_keys().await {
-        Ok(keys) => keys,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
-    };
-    if keys
-        .iter()
-        .any(|k| k.revoked_at.is_none() && k.label.eq_ignore_ascii_case(&label))
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorReport::plain(format!(
-                "A key named '{label}' exists. Pick another name, so the history can tell them apart"
-            ))),
-        )
-            .into_response();
+        return Err(unprocessable("Name the key"));
     }
     let kind = body.kind.unwrap_or(auth::Kind::Human);
     let scopes: std::collections::BTreeSet<auth::Scope> = match (&body.scopes, kind) {
@@ -2841,21 +2868,23 @@ async fn create_key<S: StateStore>(
             for name in names {
                 match auth::Scope::parse(name) {
                     Some(scope) => scopes.insert(scope),
-                    None => return unprocessable(format!("'{name}' is not a scope")),
+                    None => return Err(unprocessable(format!("'{name}' is not a scope"))),
                 };
             }
             scopes
         }
     };
     if !scopes.contains(&auth::Scope::Read) {
-        return unprocessable("Every key needs the 'read' scope, which /mcp and /whoami answer to");
+        return Err(unprocessable(
+            "Every key needs the 'read' scope, which /mcp and /whoami answer to",
+        ));
     }
     if kind == auth::Kind::Agent
         && let Some(scope) = scopes
             .iter()
             .find(|scope| !auth::Scope::AGENT_ALLOWED.contains(scope))
     {
-        return unprocessable(format!(
+        return Err(unprocessable(format!(
             "An agent key cannot hold '{}'. Agent keys may hold {}",
             scope.name(),
             auth::Scope::AGENT_ALLOWED
@@ -2863,27 +2892,96 @@ async fn create_key<S: StateStore>(
                 .map(|scope| scope.name())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ));
+        )));
     }
     let days = match (&body.expires_in_days, kind) {
         (None | Some(Value::Null), auth::Kind::Agent) => Some(AGENT_DEFAULT_DAYS),
         (None | Some(Value::Null), auth::Kind::Human) => None,
         (Some(Value::String(never)), auth::Kind::Human) if never == "never" => None,
         (Some(Value::String(never)), auth::Kind::Agent) if never == "never" => {
-            return unprocessable(format!(
+            return Err(unprocessable(format!(
                 "An agent key must expire, in at most {AGENT_MAX_DAYS} days"
-            ));
+            )));
         }
         (Some(Value::Number(n)), _) => match n.as_i64() {
             Some(days) if days >= 1 => Some(days),
-            _ => return unprocessable("Expiry is a whole number of days, at least 1"),
+            _ => {
+                return Err(unprocessable(
+                    "Expiry is a whole number of days, at least 1",
+                ));
+            }
         },
-        _ => return unprocessable("Expiry is a number of days or \"never\""),
+        _ => return Err(unprocessable("Expiry is a number of days or \"never\"")),
     };
     if kind == auth::Kind::Agent && days.is_some_and(|days| days > AGENT_MAX_DAYS) {
-        return unprocessable(format!("An agent key lasts at most {AGENT_MAX_DAYS} days"));
+        return Err(unprocessable(format!(
+            "An agent key lasts at most {AGENT_MAX_DAYS} days"
+        )));
     }
     let node_id = body.node_id.filter(|node| !node.trim().is_empty());
+    Ok(KeyPlan {
+        label,
+        kind,
+        scopes,
+        days,
+        node_id,
+    })
+}
+
+fn key_plan_fingerprint(request: Value) -> Result<String, account::Refusal> {
+    let body: CreateKeyRequest = serde_json::from_value(request)
+        .map_err(|error| unprocessable(format!("The key request is not valid: {error}")))?;
+    Ok(account::fingerprint("create_key", &plan_key(body)?))
+}
+
+async fn create_key<S: StateStore>(
+    state: axum::extract::State<AppState<S>>,
+    Json(mut body): Json<CreateKeyRequest>,
+) -> Response {
+    let keys = match state.store.list_api_keys().await {
+        Ok(keys) => keys,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    };
+    let wanted = body.label.trim().to_owned();
+    if !wanted.is_empty()
+        && keys
+            .iter()
+            .any(|k| k.revoked_at.is_none() && k.label.eq_ignore_ascii_case(&wanted))
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorReport::plain(format!(
+                "A key named '{wanted}' exists. Pick another name, so the history can tell them apart"
+            ))),
+        )
+            .into_response();
+    }
+    let proof = body.step_up.take();
+    let plan = match plan_key(body) {
+        Ok(plan) => plan,
+        Err(refused) => return refused.into_response(),
+    };
+    let authorized_by = if plan.needs_passkey() {
+        match account::confirm_step_up(
+            &state,
+            proof.as_ref(),
+            &account::fingerprint("create_key", &plan),
+        )
+        .await
+        {
+            Ok(by) => Some(by),
+            Err(refused) => return refused.into_response(),
+        }
+    } else {
+        None
+    };
+    let KeyPlan {
+        label,
+        kind,
+        scopes,
+        days,
+        node_id,
+    } = plan;
 
     let key_bytes: [u8; 32] = rand::rng().random();
     let key: String = key_bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -2909,10 +3007,22 @@ async fn create_key<S: StateStore>(
         last_used_at: None,
         revoked_at: None,
     };
+    if let Some(by) = &authorized_by {
+        let body = serde_json::to_string(by).unwrap_or_default();
+        if let Err(error) = state
+            .store
+            .store_state(&format!("api_key_authorized_by:{}", record.id), &body)
+            .await
+        {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error);
+        }
+    }
     match state.store.create_api_key(&record).await {
         Ok(()) => {
+            let mut key_response = describe_key(record);
+            key_response.authorized_by = authorized_by;
             let response = CreateKeyResponse {
-                key: describe_key(record),
+                key: key_response,
                 secret: key,
             };
             (StatusCode::CREATED, Json(response)).into_response()
@@ -3061,16 +3171,13 @@ async fn require_api_key<S: StateStore>(
     req: Request,
     next: Next,
 ) -> Response {
-    let Some(key) = req
+    let bearer = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|key| !key.is_empty())
-        .map(str::to_owned)
-    else {
-        return unauthorized("invalid api key");
-    };
+        .map(str::to_owned);
     let arrival = req.extensions().get::<tailnet::Arrival>().cloned();
     let via = req
         .extensions()
@@ -3078,19 +3185,30 @@ async fn require_api_key<S: StateStore>(
         .cloned()
         .unwrap_or(auth::Via::Api);
 
-    let expected_key = state
-        .store
-        .get_api_key()
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let mut principal = if !expected_key.is_empty() && constant_time_eq(&key, &expected_key) {
-        auth::Principal::root()
-    } else {
-        match resolve_key(&state.store, &key, arrival.as_ref()).await {
-            Ok(principal) => principal,
-            Err(message) => return unauthorized(message),
+    let mut principal = match bearer {
+        Some(key) => {
+            let expected_key = state
+                .store
+                .get_api_key()
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            if !expected_key.is_empty() && constant_time_eq(&key, &expected_key) {
+                auth::Principal::root()
+            } else {
+                match resolve_key(&state.store, &key, arrival.as_ref()).await {
+                    Ok(principal) => principal,
+                    Err(message) => return unauthorized(message),
+                }
+            }
+        }
+        None => {
+            match account::authenticate_session(&state.store, req.headers(), req.method()).await {
+                Ok(Some(principal)) => principal,
+                Ok(None) => return unauthorized("invalid api key"),
+                Err(refused) => return refused.into_response(),
+            }
         }
     };
     principal.via = via;
@@ -3191,6 +3309,7 @@ async fn resolve_key<S: StateStore>(
         expires_at: record.expires_at.clone(),
         node,
         via: auth::Via::Api,
+        session: None,
     })
 }
 

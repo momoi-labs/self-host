@@ -131,6 +131,11 @@ enum Command {
         #[arg(short, long)]
         port: Option<u16>,
     },
+    /// Manage the Operator account that logs in to the console with passkeys
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
     /// Manage Applications
     Apps {
         #[command(subcommand)]
@@ -178,6 +183,13 @@ enum Command {
         #[arg(long, requires = "from")]
         fingerprint: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AccountCommand {
+    /// Print a one-time setup key that registers a new passkey, for when
+    /// every passkey is lost or the DNS Suffix changed. Run it on the Host.
+    Recover,
 }
 
 #[derive(Subcommand)]
@@ -417,6 +429,14 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Command::Account {
+            command: AccountCommand::Recover,
+        }) => {
+            if let Err(e) = run_account_recover_command().await {
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        }
         Some(Command::TrustCa { from, fingerprint }) => {
             if let Err(e) = run_trust_ca_command(from.as_deref(), fingerprint.as_deref()).await {
                 eprintln!("Error: {e:?}");
@@ -612,6 +632,48 @@ async fn read_initial_api_key(state_dir: std::path::PathBuf) -> anyhow::Result<S
         .ok_or_else(|| {
             anyhow::anyhow!("No initial API key found. Run 'self-host init' on this Host first.")
         })
+}
+
+async fn run_account_recover_command() -> anyhow::Result<()> {
+    let state = FileStateStore::read_only(file_store::state_dir())?;
+    let secret = state
+        .get_state(self_host::account::RECOVERY_SECRET_STATE)
+        .await?
+        .filter(|secret| !secret.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "The Platform has not prepared recovery yet. Start it with 'self-host serve' on this Host, then run this again."
+            )
+        })?;
+    let listen: std::net::SocketAddr = state
+        .get_state("api_listen_addr")
+        .await?
+        .unwrap_or_else(|| format!("127.0.0.1:{}", bootstrap::OPERATOR_API_PORT))
+        .parse()?;
+    let host = if listen.ip().is_unspecified() {
+        std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), listen.port())
+    } else {
+        listen
+    };
+    let response = reqwest::Client::new()
+        .post(format!("http://{host}/account/recover"))
+        .header(self_host::account::RECOVERY_HEADER, secret)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("The Platform does not answer on {host}: {e}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("The Platform refused recovery (HTTP {status}): {body}");
+    }
+    let key: self_host::account::SetupKey = response.json().await?;
+    println!("Setup key: {}", key.setup_key);
+    println!(
+        "It works once, for the next {} minutes, and only registers a passkey.",
+        key.expires_in_seconds / 60
+    );
+    println!("Open {} and set up a passkey with it.", key.console_url);
+    Ok(())
 }
 
 async fn run_init_command(
@@ -1704,6 +1766,7 @@ async fn run_api_server(
     if let Err(e) = store.store_state("api_listen_addr", &listen_addr).await {
         tracing::warn!("could not record the API listen address: {e}");
     }
+    self_host::account::ensure_recovery_secret(&store).await;
 
     // Nothing here talks to Docker yet, and nothing needs to: DNS, the
     // console and the API are served whether or not it ever answers.
@@ -1797,7 +1860,12 @@ async fn run_api_server(
 
     info!("listening on {listen_addr}");
 
-    axum::serve(listener, app).await.expect("server error");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }
 
 /// Serves Consumer traffic on 80 and 443 (ADR-0019).
