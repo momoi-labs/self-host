@@ -276,8 +276,8 @@ async fn the_root_key_registers_the_first_passkey_and_a_passkey_login_opens_a_se
     let mut second = SoftPasskey::new(true);
     assert_eq!(
         register(&app, ROOT, &mut second, "phone").await,
-        StatusCode::CONFLICT,
-        "the root key sets up only the first passkey"
+        StatusCode::UNAUTHORIZED,
+        "the first passkey login retired the root key"
     );
 
     let (status, headers, _) = send(
@@ -640,7 +640,7 @@ async fn a_bearer_key_cannot_start_a_step_up() {
         &app,
         "POST",
         "/account/step-up",
-        Call::bearer(ROOT),
+        Call::bearer(PERSON),
         json!({"purpose": "create_key", "key": {"label": "ops"}}),
     )
     .await;
@@ -695,7 +695,7 @@ async fn the_last_passkey_cannot_be_removed() {
         &app,
         "DELETE",
         &format!("/account/passkeys/{}", ids[0]),
-        Call::bearer(ROOT),
+        Call::bearer(PERSON),
         Value::Null,
     )
     .await;
@@ -836,4 +836,75 @@ async fn a_dns_suffix_change_voids_the_passkeys_until_recovery() {
             .unwrap()
             .contains("self-host account recover")
     );
+}
+
+#[tokio::test]
+async fn the_first_passkey_login_retires_the_root_key_for_good() {
+    let Platform { app, state } = platform().await;
+    let (status, _, _) = send(&app, "GET", "/apps", Call::bearer(ROOT), Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut passkey = SoftPasskey::new(true);
+    assert_eq!(
+        register(&app, ROOT, &mut passkey, "laptop").await,
+        StatusCode::CREATED
+    );
+    let (status, _, _) = send(&app, "GET", "/apps", Call::bearer(ROOT), Value::Null).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "registering alone does not retire the root key"
+    );
+
+    let (status, _, body) = login(&app, &mut passkey).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["retired_root_key"], true);
+    let (status, _, _) = send(&app, "GET", "/apps", Call::bearer(ROOT), Value::Null).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, body) = login(&app, &mut passkey).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["retired_root_key"], false);
+
+    account::seed_root_key(&state.store, ROOT).await;
+    let (status, _, _) = send(&app, "GET", "/apps", Call::bearer(ROOT), Value::Null).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a restart with SELF_HOST_API_KEY set does not bring the root key back"
+    );
+    let (status, _, keys) = send(&app, "GET", "/api-keys", Call::bearer(PERSON), Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        keys.as_array()
+            .unwrap()
+            .iter()
+            .all(|key| key["primary"] != true),
+        "{keys}"
+    );
+    let (status, _, status_body) =
+        send(&app, "GET", "/account/status", Call::console(), Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status_body["root_key_retired"], true);
+    assert_eq!(status_body["usable"], true);
+    assert_eq!(status_body["canonical"], true);
+}
+
+#[tokio::test]
+async fn the_status_tells_the_console_where_passkeys_work() {
+    let Platform { app, .. } = platform().await;
+    let (status, _, body) = send(
+        &app,
+        "GET",
+        "/account/status",
+        Call {
+            host: Some("venusaur.example.ts.net"),
+            ..Default::default()
+        },
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["canonical"], false);
+    assert_eq!(body["exists"], false);
+    assert_eq!(body["root_key_retired"], false);
+    assert_eq!(body["console_url"], "https://console.home.lan/console");
 }

@@ -450,6 +450,7 @@ fn build_platform_with_native<S: StateStore>(
         .merge(mcp_routes);
 
     let account_routes = Router::new()
+        .route("/account/status", get(account::status::<S>))
         .route("/account/setup/start", post(account::setup_start::<S>))
         .route("/account/setup/finish", post(account::setup_finish::<S>))
         .route("/account/login/start", post(account::login_start::<S>))
@@ -2824,7 +2825,10 @@ async fn list_keys<S: StateStore>(state: axum::extract::State<AppState<S>>) -> R
                     .map(describe_key),
             )
             .collect();
-            for key in body.iter_mut().skip(1) {
+            if account::root_retired(&state.store).await {
+                body.remove(0);
+            }
+            for key in body.iter_mut().filter(|key| !key.primary) {
                 key.authorized_by = state
                     .store
                     .get_state(&format!("api_key_authorized_by:{}", key.id))

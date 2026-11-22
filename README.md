@@ -188,7 +188,8 @@ self-host trust-ca # trust the Platform CA; the macOS installer does this
 Then open `https://console.<your-dns-suffix>`, which is `https://console.home.lan`
 by default.
 
-`init` generates a random API key and saves it for the console and the CLI. To
+`init` generates a random API key and saves it for the CLI and the first
+passkey. To
 choose the key, pass `--api-key`. For a local test:
 
 ```bash
@@ -198,7 +199,8 @@ self-host init --dns prototype.lan --api-key local
 Running `init` again accepts the same key or no key. It rejects a different key
 without replacing the saved one. To print the saved key, run
 `self-host init --show-key`. That reads Platform State only, so it works while
-the daemon runs or stopped.
+the daemon runs or stopped. After the first passkey login the key is retired,
+and `--show-key` says so.
 
 Deploy a container image or a Compose file from the CLI:
 
@@ -309,7 +311,10 @@ any other name, such as `localhost` or the tailnet name, is refused. The
 passkeys belong to that name, so changing the DNS Suffix voids every passkey.
 After a change, run `self-host account recover` and register a new one.
 
-The first passkey is set up with the Platform's API key. After that, only a
+The first passkey is set up with the Platform's API key. The first passkey
+login retires that key for good: the Platform refuses it from then on, and does
+not take it back from `SELF_HOST_API_KEY` or `self-host init` after a restart.
+After that, only a
 logged-in console session adds a passkey, and it asks the passkey you used to
 confirm. The account keeps at least one passkey. A synced passkey works on
 every device you sign in to, and a second passkey is a backup.
@@ -318,6 +323,24 @@ Creating a Person key, or any key with the `host` scope, needs a logged-in
 session and a fresh passkey confirmation for that exact key. An API key alone,
 the Platform's own key included, cannot create one. The key and its history
 event record which passkey authorized it.
+
+### Give the CLI its own key
+
+The CLI used the Platform key, so after the first login it needs a Person key.
+The console offers to create one right after that login, or create one in
+Settings, API keys. Then run this on the Host and paste the key:
+
+```bash
+self-host account use-key
+```
+
+It checks the key against the Platform and saves it in the CLI config.
+
+### Serve passkeys on another name
+
+`SELF_HOST_CONSOLE_ORIGIN` replaces the console name with a full HTTPS origin,
+such as `https://host.example.ts.net:8443`. Passkeys then belong to that name.
+Use it only when `console.<your-dns-suffix>` cannot reach the Host.
 
 ### Recover the account
 
