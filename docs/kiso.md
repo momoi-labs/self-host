@@ -128,8 +128,8 @@ Other components above live in `console/src/components/`.
   empty, Create sits in the header and the card holds only the
   `EmptyState`.
 - No disabled header action. Hide an action the Operator cannot take, and let
-  the empty state say why. Routes offers Deploy application until an
-  Application exists.
+  the empty state say why. Routes always offers Add route, because an
+  External app needs no Application.
 - A list's `TableFrame` fits its rows. `data-fill="false"` opts out of Kiso's
   stretch for a last-child table, so Databases and Events do not fill the
   window.

@@ -247,6 +247,7 @@ pub const ROUTES: &[(&str, &str, Scope)] = &[
     ("GET", "/apps/id/{id}/containers", Read),
     ("GET", "/apps/id/{id}/processes", Read),
     ("GET", "/apps/id/{id}/http-status", Read),
+    ("POST", "/external/fingerprint", Host),
     ("GET", "/metrics", Read),
     ("GET", "/account", Admin),
     ("POST", "/account/step-up", Admin),

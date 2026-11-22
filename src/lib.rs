@@ -397,6 +397,7 @@ fn build_platform_with_native<S: StateStore>(
         .route("/apps/id/{id}/containers", get(list_app_containers::<S>))
         .route("/apps/id/{id}/processes", get(list_app_processes::<S>))
         .route("/apps/id/{id}/http-status", get(http_status::<S>))
+        .route("/external/fingerprint", post(fetch_fingerprint))
         .route("/metrics", get(get_metrics::<S>))
         .route("/api-keys", get(list_keys::<S>).post(create_key::<S>))
         .route("/api-keys/{id}", delete(revoke_key::<S>))
@@ -1313,6 +1314,9 @@ async fn http_readiness(
     app: &apps::ApplicationRecord,
     services: &[apps::ServiceState],
 ) -> HttpReadiness {
+    if let Runtime::External(definition) = &app.runtime {
+        return external_readiness(app, definition).await;
+    }
     let target_service = if matches!(app.runtime, Runtime::Native(_)) {
         native::lifecycle::SERVICE.into()
     } else {
@@ -1355,6 +1359,23 @@ async fn http_readiness(
         .await
     {
         Ok(response) if response.status().is_server_error() => HttpReadiness::Error,
+        Ok(_) => HttpReadiness::Responding,
+        Err(_) => HttpReadiness::Unreachable,
+    }
+}
+
+async fn external_readiness(
+    app: &apps::ApplicationRecord,
+    definition: &store::ExternalDefinition,
+) -> HttpReadiness {
+    if app.status != apps::STATUS_RUNNING {
+        return HttpReadiness::Unknown;
+    }
+    let Ok(upstream) = external::parse(definition) else {
+        return HttpReadiness::Unknown;
+    };
+    match proxy::probe(&upstream, &app.hostname, std::time::Duration::from_secs(3)).await {
+        Ok(status) if status >= 500 => HttpReadiness::Error,
         Ok(_) => HttpReadiness::Responding,
         Err(_) => HttpReadiness::Unreachable,
     }
@@ -2609,6 +2630,23 @@ async fn http_status<S: StateStore>(
                 .into_response()
         }
         Err(err) => deploy_error_response(err),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FingerprintRequest {
+    upstream: String,
+}
+
+async fn fetch_fingerprint(Json(body): Json<FingerprintRequest>) -> Response {
+    match external::fetch_certificate(&body.upstream).await {
+        Ok(certificate) => (StatusCode::OK, Json(certificate)).into_response(),
+        Err(external::FetchError::Refused(reason)) => {
+            (StatusCode::BAD_REQUEST, Json(ErrorReport::plain(reason.0))).into_response()
+        }
+        Err(external::FetchError::Unreachable(reason)) => {
+            (StatusCode::BAD_GATEWAY, Json(ErrorReport::plain(reason))).into_response()
+        }
     }
 }
 
@@ -3922,6 +3960,52 @@ mod tests {
         let (app, _store) = setup_initialized_app("test-key", "home.lan").await;
         let response = send(&app, "/apps/id/example/http-status", Some("test-key")).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn fetching_a_fingerprint_needs_the_host_scope() {
+        let (app, store) = setup_initialized_app("test-key", "home.lan").await;
+        crate::agent_tests::insert_key(
+            &store,
+            "readonly0000-secret",
+            crate::store::ApiKeyRecord {
+                label: "viewer".into(),
+                kind: "human".into(),
+                scopes: Some(vec!["read".into(), "apps:write".into()]),
+                ..Default::default()
+            },
+        )
+        .await;
+        let response = post_json(
+            &app,
+            "/external/fingerprint",
+            Some("readonly0000-secret"),
+            json!({"upstream": "https://192.168.1.1"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn fetching_a_fingerprint_refuses_what_an_external_app_refuses() {
+        let (app, _store) = setup_initialized_app("test-key", "home.lan").await;
+        for (upstream, reason) in [
+            ("http://192.168.1.1", "only from an https://"),
+            ("https://8.8.8.8", "public address"),
+            ("https://router.lan", "names are not supported"),
+        ] {
+            let response = post_json(
+                &app,
+                "/external/fingerprint",
+                Some("test-key"),
+                json!({"upstream": upstream}),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{upstream}");
+            let body = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(text.contains(reason), "{upstream}: {text}");
+        }
     }
 
     async fn post_json(app: &Router, uri: &str, api_key: Option<&str>, body: Value) -> Response {

@@ -1,15 +1,22 @@
 import { useState, type FormEvent } from "react";
 import {
-  Button, Checkbox, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+  Button, Card, CardContent, Checkbox, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
   FormField, Label, RadioGroup, RadioGroupItem, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@momoi-labs/kiso-react";
 
-import { asReport } from "../lib/api.js";
+import { api, asReport, failureOf } from "../lib/api.js";
 import {
-  isPublished, redirectDraft, redirectRule, replaceRoute, routesOf, saveRoutes, targetLabel, type Route,
+  isPublished, nameFor, redirectDraft, redirectRule, replaceRoute, routesOf, sameFingerprint, saveRoutes, targetLabel, type Route,
 } from "../lib/routes.js";
 import type { App } from "../lib/types.js";
 import { Failure } from "./Failure.js";
+import { Icon } from "./Icon.js";
+
+const EXTERNAL = "external";
+
+type Probe = { fingerprint: string; subject?: string | null; not_after?: string | null };
+
+const expiryFormat = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
 /**
  * What the dialog opens on: the Application, or null to choose one, and the
@@ -42,7 +49,7 @@ export function RouteDialog({ editor, apps, dnsSuffix, onClose, onSaved, onPatte
   const [saving, setSaving] = useState(false);
   return (
     <Dialog open={editor !== null} onOpenChange={(open) => { if (!open && !saving) onClose(); }}>
-      <DialogContent>
+      <DialogContent className="route-dialog">
         {editor ? (
           <RouteForm key={editor.route?.key ?? `${editor.app?.id ?? "any"}:${editor.redirect ?? "new"}`} editor={editor} apps={apps} dnsSuffix={dnsSuffix}
             saving={saving} setSaving={setSaving} onClose={onClose} onSaved={onSaved} onPattern={onPattern} />
@@ -66,8 +73,21 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
   const redirecting = editor.app && editor.redirect !== undefined ? editor.app.redirects?.[editor.redirect] : undefined;
   const draft = redirecting ? redirectDraft(redirecting) : null;
   const published = apps.filter(isPublished);
-  const [appId, setAppId] = useState(editor.app?.id ?? published[0]?.id ?? "");
-  const app = published.find((one) => one.id === appId);
+  const externalRoot = editor.app?.runtime?.kind === "external" && editing?.kind === "hostname" ? editor.app : null;
+  const applications = published.filter((one) => one.runtime?.kind !== "external" || (one.id === editor.app?.id && !externalRoot));
+  const [appId, setAppId] = useState(externalRoot ? EXTERNAL : editor.app?.id ?? applications[0]?.id ?? EXTERNAL);
+  const external = appId === EXTERNAL;
+  const app = external ? externalRoot ?? undefined : published.find((one) => one.id === appId);
+  const saved = externalRoot?.runtime?.kind === "external" ? externalRoot.runtime : null;
+  const [upstream, setUpstream] = useState(saved?.upstream ?? "");
+  const [pin, setPin] = useState(saved?.pin ?? "");
+  const [probe, setProbe] = useState<Probe | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeFailure, setProbeFailure] = useState<unknown>(null);
+  const [matched, setMatched] = useState(false);
+  const https = upstream.trim().startsWith("https://");
+  const verdict = !probe || !pin.trim() ? null : sameFingerprint(pin, probe.fingerprint) ? "match" : "mismatch";
+  const trusted = verdict === "match" || matched;
   const zone = `.${dnsSuffix}`;
   const initial = editing?.hostname ?? draft?.hostname ?? "";
   const inZone = initial === "" || initial.endsWith(zone);
@@ -121,11 +141,46 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
       : /^(https?:\/\/|\/)/.test(target)
         ? target === prefix ? "That is the path it answers on." : null
         : "Start with / for a path on this hostname, or with https://.";
-  const valid = app !== undefined && name !== "" && !labelError && !pathError
+  const valid = (app !== undefined || (external && upstream.trim() !== "" && (!probe || trusted))) && name !== "" && !labelError && !pathError
     && (action === "forward" || (target !== "" && !locationError));
+
+  async function fetchFingerprint() {
+    setProbing(true);
+    setProbe(null);
+    setMatched(false);
+    setProbeFailure(null);
+    try {
+      const res = await api("/external/fingerprint", { method: "POST", body: JSON.stringify({ upstream: upstream.trim() }) });
+      if (!res.ok) setProbeFailure(await failureOf(res));
+      else setProbe(await res.json() as Probe);
+    } catch (cause) {
+      setProbeFailure(asReport(cause));
+    } finally { setProbing(false); }
+  }
+
+  async function saveExternal() {
+    const chosen = probe ? probe.fingerprint : pin.trim();
+    const runtime = { kind: "external", upstream: upstream.trim(), pin: https && chosen ? chosen : null };
+    const res = externalRoot
+      ? await api(`/apps/id/${encodeURIComponent(externalRoot.id)}`, { method: "PUT", body: JSON.stringify({ hostname, runtime }) })
+      : await api("/apps", { method: "POST", body: JSON.stringify({ name: nameFor(name, apps), hostname, runtime }) });
+    return res.ok ? null : await failureOf(res);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (external && valid && !saving) {
+      setSaving(true);
+      setFailure(null);
+      try {
+        const refused = await saveExternal();
+        if (refused) setFailure(refused);
+        else onSaved(externalRoot ? "Route saved" : "Route added");
+      } catch (cause) {
+        setFailure(asReport(cause));
+      } finally { setSaving(false); }
+      return;
+    }
     if (!app || !valid || saving) return;
     setSaving(true);
     setFailure(null);
@@ -164,14 +219,58 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
       </DialogHeader>
       <form onSubmit={(event) => void submit(event)}>
         <DialogBody>
-          <Select value={appId} onValueChange={setAppId} disabled={editor.app !== null || saving}>
-            <FormField id="route-app" label="Application" hint={editor.app ? undefined : "Only an Application with a Hostname can be reached."}>
-              <SelectTrigger><SelectValue placeholder="No Application has a Hostname" /></SelectTrigger>
+          <Select value={appId} onValueChange={(next) => { setAppId(next); setFailure(null); }} disabled={editor.app !== null || saving}>
+            <FormField id="route-app" label="Destination" hint={editor.app ? undefined : external ? "A device or service on your LAN that this Host does not run." : "An Application with a Hostname, or an External app on your LAN."}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
             </FormField>
             <SelectContent>
-              {published.map((one) => <SelectItem key={one.id} value={one.id}>{one.name}</SelectItem>)}
+              {applications.map((one) => <SelectItem key={one.id} value={one.id}>{one.runtime?.kind === "external" ? `External app · ${targetLabel(one)}` : one.name}</SelectItem>)}
+              <SelectItem value={EXTERNAL}>External app</SelectItem>
             </SelectContent>
           </Select>
+          {external ? <>
+            <FormField id="route-upstream" label="Upstream URL" className="mono" value={upstream} required disabled={saving}
+              placeholder="https://192.168.1.1" autoComplete="off" spellCheck={false}
+              onChange={(event) => { setUpstream(event.target.value); setProbe(null); setMatched(false); setProbeFailure(null); }}
+              hint="http:// or https://, a private LAN IP address and an optional port. No names, no path." />
+            {https ? <>
+              {probe ? (
+                <div className="field">
+                  <Label>Certificate fingerprint</Label>
+                  <Card className="pin-card">
+                    <CardContent className="stack">
+                      {verdict === "match"
+                        ? <p className="pin-card-verdict pin-card-match"><Icon name="check" />Matches what you entered.</p>
+                        : verdict === "mismatch"
+                          ? <p className="pin-card-verdict"><Icon name="alert" />Does not match what you entered. Compare with the fingerprint the device shows.</p>
+                          : <p className="pin-card-verdict"><Icon name="alert" />Unverified. Compare with the fingerprint the device shows.</p>}
+                      <p className="mono pin-card-print">{probe.fingerprint}</p>
+                      <p className="mono muted t-label">{[probe.subject, probe.not_after ? `expires ${expiryFormat.format(new Date(probe.not_after))}` : null].filter(Boolean).join("  ·  ")}</p>
+                      <div className="row pin-card-actions">
+                        {verdict === "match" ? null : <div className="check">
+                          <Checkbox id="route-pin-match" checked={matched} disabled={saving} onCheckedChange={(checked) => setMatched(checked === true)} />
+                          <Label htmlFor="route-pin-match">It matches the device</Label>
+                        </div>}
+                        <Button type="button" size="sm" variant="ghost" disabled={saving || probing} onClick={() => void fetchFingerprint()}>{probing ? "Fetching..." : "Refetch"}</Button>
+                        <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => { setProbe(null); setMatched(false); }}>Clear</Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : <>
+                <FormField id="route-pin" label="Certificate fingerprint" className="mono" value={pin} disabled={saving}
+                  placeholder="SHA-256, 64 hex digits" autoComplete="off" spellCheck={false}
+                  onChange={(event) => setPin(event.target.value)}
+                  hint="Pins a self-signed certificate. Leave empty when a public CA signed it." />
+                <div className="row">
+                  <Button type="button" size="sm" disabled={saving || probing || !upstream.trim()} onClick={() => void fetchFingerprint()}>
+                    {probing ? "Fetching..." : "Fetch fingerprint"}
+                  </Button>
+                </div>
+              </>}
+              {probeFailure ? <Failure failure={probeFailure} /> : null}
+            </> : null}
+          </> : null}
           <Select value={where} onValueChange={(next) => { setWhere(next); setLabel(""); }} disabled={saving}>
             <FormField id="route-zone" label="Domain" hint={where === OTHER ? "Point its DNS at this Host first." : "The Platform answers its names itself."}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -198,7 +297,7 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
           <datalist id="route-hostnames">
             {(where === OTHER ? outside : labels).map((one) => <option key={one} value={one} />)}
           </datalist>
-          <FormField
+          {!external ? <FormField
             id="route-path"
             label="Path"
             className="mono"
@@ -207,12 +306,12 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
             disabled={saving}
             onChange={(event) => setPath(event.target.value)}
             error={pathError}
-          />
-          <RadioGroup label="Action" variant="tiles" value={action} disabled={saving} onValueChange={(next) => setAction(next as Action)}>
+          /> : null}
+          {!external ? <RadioGroup label="Action" variant="tiles" value={action} disabled={saving} onValueChange={(next) => setAction(next as Action)}>
             <RadioGroupItem value="forward" label={`Send to ${app?.name ?? "the Application"}`} description="Requests reach the Application, and the address bar keeps the URL." />
             <RadioGroupItem value="redirect" label="Redirect" description="The browser is sent to another path or URL, and the address bar changes." />
-          </RadioGroup>
-          {action === "forward" ? (
+          </RadioGroup> : null}
+          {external ? null : action === "forward" ? (
             prefix !== "/" ? (
               <div className="check">
                 <Checkbox id="route-strip" checked={strip} disabled={saving} onCheckedChange={(checked) => setStrip(checked === true)} />
@@ -248,7 +347,8 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
             https://{shownHost}{prefix === "/" ? "" : prefix}
             <span className="muted"> → </span>
             {action === "forward"
-              ? <>{app ? targetLabel(app) : <span className="muted">Application</span>}{prefix !== "/" && !strip ? prefix : ""}</>
+              ? external ? (upstream.trim() || <span className="muted">https://192.168.1.1</span>)
+              : <>{app ? targetLabel(app) : <span className="muted">Application</span>}{prefix !== "/" && !strip ? prefix : ""}</>
               : target ? (target.startsWith("/") ? <>https://{shownHost}{target}</> : target) : <span className="muted">/path</span>}
             {action === "redirect" ? <span className="muted"> ({permanent ? "301" : "302"})</span> : null}
           </p>

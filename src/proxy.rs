@@ -35,6 +35,7 @@ use crate::store::{RedirectRule, RouteRule};
 mod upstream;
 pub use upstream::{
     Fingerprint, Scheme, Upstream, fingerprint_of, format_fingerprint, parse_fingerprint,
+    presented_certificate, probe,
 };
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -3044,6 +3045,34 @@ mod integration {
             }
         });
         (addr, fingerprint)
+    }
+
+    #[tokio::test]
+    async fn the_presented_certificate_is_the_one_the_upstream_serves() {
+        let (backend, fingerprint) = spawn_tls_backend().await;
+        let certificate = presented_certificate(backend, Duration::from_secs(3))
+            .await
+            .unwrap();
+        assert_eq!(fingerprint_of(certificate.as_ref()), fingerprint);
+    }
+
+    #[tokio::test]
+    async fn a_probe_honours_the_pin() {
+        let (backend, fingerprint) = spawn_tls_backend().await;
+        let mut upstream = Upstream {
+            scheme: Scheme::Https,
+            address: backend,
+            pin: Some(fingerprint),
+        };
+        assert_eq!(
+            probe(&upstream, "router.home.lan", Duration::from_secs(3)).await,
+            Ok(404)
+        );
+        upstream.pin = Some([7; 32]);
+        let error = probe(&upstream, "router.home.lan", Duration::from_secs(3))
+            .await
+            .unwrap_err();
+        assert!(error.contains("pinned fingerprint"), "{error}");
     }
 
     #[tokio::test]

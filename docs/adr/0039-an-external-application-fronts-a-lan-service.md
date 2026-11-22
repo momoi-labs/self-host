@@ -60,7 +60,12 @@ answers 500. Leave `rewrite_host` off for UniFi.
   stop publish and withdraw its route.
 - Deploying or changing one needs the `host` scope, because it opens a path
   from the proxy to a LAN address.
-- Not covered: mTLS to the upstream, upstreams by DNS name, and the console.
+- The console creates, edits and removes one from Routes. It fetches the
+  leaf certificate with `POST /external/fingerprint`, which needs the `host`
+  scope and applies the same address rules. The fetch trusts any
+  certificate, so the Operator confirms the fingerprint against the device
+  before the console saves it as the pin.
+- Not covered: mTLS to the upstream and upstreams by DNS name.
 
 ## Consequences
 

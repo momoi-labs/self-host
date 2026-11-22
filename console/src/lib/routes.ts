@@ -59,15 +59,30 @@ export function urlOf(route: { hostname: string; path: string }): string {
 
 /** Where the Application's Web Target listens, as a route reaches it. */
 export function targetOf(app: App): string | undefined {
+  if (app.runtime?.kind === "external") return app.runtime.upstream.replace(/^(https:\/\/.+):443$|^(http:\/\/.+):80$/, "$1$2");
   if (app.runtime?.kind === "native") return app.runtime.port ? `:${app.runtime.port}` : undefined;
   const port = app.development?.web_port ?? app.web_port ?? 80;
   return app.web_service ? `${app.web_service}:${port}` : `:${port}`;
+}
+
+export function sameFingerprint(typed: string, fetched: string): boolean {
+  const key = (text: string) => text.replace(/[\s:]/g, "").toUpperCase();
+  return key(typed) === key(fetched);
+}
+
+export function nameFor(hostname: string, apps: App[]): string {
+  const base = hostname.split(".")[0];
+  const taken = new Set(apps.map((one) => one.name.toLowerCase()));
+  let name = base;
+  for (let suffix = 2; taken.has(name); suffix += 1) name = `${base}-${suffix}`;
+  return name;
 }
 
 /** The Web Target with its owner named, as a table or a preview reads it: `blog:80`, `web:80`. */
 export function targetLabel(app: App): string {
   const target = targetOf(app);
   if (!target) return app.name;
+  if (app.runtime?.kind === "external") return target;
   return target.startsWith(":") ? `${app.name}${target}` : target;
 }
 

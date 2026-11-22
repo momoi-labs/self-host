@@ -128,6 +128,34 @@ The pin names one certificate. When the upstream makes a new one, for example
 after a reset or a firmware update, the proxy answers `502` until the
 Operator saves the new fingerprint with `PUT /apps/id/{id}`.
 
+In the console, open Routes, choose **Add route** and pick **External app** as
+the destination. Enter the upstream URL and press **Fetch fingerprint**. The
+card shows the fingerprint, the certificate subject and its expiry. Compare it
+with the fingerprint the device shows, then tick **It matches the device**.
+When you typed a fingerprint first, the card says whether the fetched one
+matches it. The console creates a hostname route on `/` that forwards to the
+upstream, and names the Application after the subdomain. External apps appear
+only on Routes: they have no detail page and are not in the Applications
+lists.
+
+The console fetches the fingerprint with `POST /external/fingerprint`. It needs
+the `host` scope and applies the same address rules as `POST /apps`:
+
+```json
+{ "upstream": "https://192.168.1.1" }
+```
+
+It answers `200` with `{"fingerprint", "subject", "not_after"}`, `400` when the
+rules refuse the upstream or it is not `https://`, and `502` when the
+handshake fails or takes more than 3 seconds. The fetch accepts any
+certificate, so only the Operator's comparison with the device makes the pin
+trustworthy.
+
+`GET /apps/id/{id}/http-status` for an External app sends `GET /` to the
+upstream through the same pin as the proxy. A status below 500 is
+`responding`, 500 and above is `error`, and a failed connection or a pin
+mismatch is `unreachable`.
+
 ## Matching and validation
 
 The longest matching prefix wins. A prefix ends at a path segment boundary:

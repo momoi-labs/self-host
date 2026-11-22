@@ -78,7 +78,7 @@ export function Overview({
   const [databaseSearch, setDatabaseSearch] = useState("");
   const [machineSearch, setMachineSearch] = useState("");
   const { capabilities } = useNativeCapabilities();
-  const applications = apps.filter((app) => !app.managed_postgres);
+  const applications = apps.filter((app) => !app.managed_postgres && app.runtime?.kind !== "external");
   const databases = apps.filter((app) => app.managed_postgres);
 
   // A database's connections are the only record of who uses it.
@@ -124,7 +124,7 @@ export function Overview({
         <div className="stack">
           <Card className="summary-panel">
             <CardContent>
-              <GroupedSummary apps={applications} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} onOpenRoutes={onOpenRoutes} />
+              <GroupedSummary apps={applications} routed={apps} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} onOpenRoutes={onOpenRoutes} />
             </CardContent>
           </Card>
 
@@ -417,7 +417,8 @@ function GroupAction({ label, object, onClick }: { label: string; object: string
   );
 }
 
-function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabases, onOpenRoutes }: {
+function GroupedSummary({ apps, routed, databases, environments, metrics, onOpenDatabases, onOpenRoutes }: {
+  routed: App[];
   apps: App[];
   databases: App[];
   environments: Environment[];
@@ -426,7 +427,7 @@ function GroupedSummary({ apps, databases, environments, metrics, onOpenDatabase
   onOpenRoutes: () => void;
 }) {
   const running = apps.filter((app) => app.status === "running").length;
-  const routes = apps.flatMap(routesOf).length;
+  const routes = routed.flatMap(routesOf).length;
   const awake = environments.filter((one) => one.state === "running").length;
   const totals = hostTotals(metrics);
   const platform = metrics?.platform ?? [];

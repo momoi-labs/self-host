@@ -353,9 +353,9 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .import-upload .meter-label > :first-child { display: none; }
 .import-upload .meter-label > :last-child { max-width: none; }
 /* The import dialog's steps scroll on a short screen; its buttons stay put. */
-:is(.import-dialog, .key-dialog) > form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
-:is(.import-dialog, .key-dialog) > form > [data-slot="dialog-body"] { overflow-y: auto; min-height: 0; }
-:is(.import-dialog, .key-dialog) > [data-slot="dialog-header"] { flex-shrink: 0; }
+:is(.import-dialog, .key-dialog, .route-dialog) > form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+:is(.import-dialog, .key-dialog, .route-dialog) > form > [data-slot="dialog-body"] { overflow-y: auto; min-height: 0; }
+:is(.import-dialog, .key-dialog, .route-dialog) > [data-slot="dialog-header"] { flex-shrink: 0; }
 /* The import form's pg_dump command, there when asked for. */
 .import-howto > summary { cursor: pointer; font-size: var(--type-size-label); }
 .import-howto[open] > summary { margin-block-end: var(--spacing-sm); }
@@ -619,3 +619,9 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
    button as a card, so the primary one takes its own colors back. */
 .btn-group.btn-group .btn-primary { background: var(--color-primary); border-color: var(--color-primary); }
 .btn-group.btn-group .btn-primary:hover { background: var(--color-primary-hover); }
+
+.pin-card-verdict { display: flex; gap: var(--spacing-sm); align-items: center; color: var(--color-warning); font-weight: 500; }
+.pin-card-match { color: var(--color-success); }
+.pin-card-print { overflow-wrap: anywhere; }
+.pin-card-actions { flex-wrap: wrap; gap: var(--spacing-sm); }
+.pin-card-actions > .check { margin-inline-end: auto; }
