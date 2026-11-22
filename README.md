@@ -299,6 +299,40 @@ and HTTPS on ports 80 and 443.
 
 Backup, restore and upgrades are in [docs/operating.md](docs/operating.md).
 
+## Operator account and passkeys
+
+The Platform has one Operator account. It logs in to the console with passkeys,
+and has no password. API keys stay for machines: the CLI, MCP and agents.
+
+Passkeys work only at `https://console.<your-dns-suffix>/console`. A login on
+any other name, such as `localhost` or the tailnet name, is refused. The
+passkeys belong to that name, so changing the DNS Suffix voids every passkey.
+After a change, run `self-host account recover` and register a new one.
+
+The first passkey is set up with the Platform's API key. After that, only a
+logged-in console session adds a passkey, and it asks the passkey you used to
+confirm. The account keeps at least one passkey. A synced passkey works on
+every device you sign in to, and a second passkey is a backup.
+
+Creating a Person key, or any key with the `host` scope, needs a logged-in
+session and a fresh passkey confirmation for that exact key. An API key alone,
+the Platform's own key included, cannot create one. The key and its history
+event record which passkey authorized it.
+
+### Recover the account
+
+If every passkey is lost, or the DNS Suffix changed, run this on the Host while
+the Platform runs, as the account the Platform runs under:
+
+```bash
+self-host account recover
+```
+
+It prints a setup key and the console address. The setup key works once, for
+15 minutes, and does nothing but register a passkey. The command reaches the
+daemon on its loopback address and proves it can read the Platform state, so
+it does not work from another machine.
+
 ## Agent access over Tailscale
 
 An AI agent such as Claude Code or Codex can configure the Platform through its
@@ -321,7 +355,8 @@ settings, read secrets, reach the Host's disk or delete anything, unless you
 give it the `host` scope. That scope is off by default. It lets the key change
 bind mounts, read secrets and edit Git sources on the Host, and it adds the MCP
 tool `update_source`, which changes a Git Application's source (such as a build
-arg) and rebuilds it. The console login refuses an agent key. Then, on a machine on the tailnet:
+arg) and rebuilds it. Creating a key with that scope needs a passkey
+confirmation in the console. The console login refuses an agent key. Then, on a machine on the tailnet:
 
 ```bash
 export SELF_HOST_AGENT_KEY=...   # shown once, when the key is created

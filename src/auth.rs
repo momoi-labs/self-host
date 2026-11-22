@@ -102,6 +102,20 @@ pub struct Principal {
     pub expires_at: Option<String>,
     pub node: Option<String>,
     pub via: Via,
+    pub session: Option<SessionRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRef {
+    pub id: String,
+    pub account: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizedBy {
+    pub account: String,
+    pub passkey: String,
+    pub passkey_name: String,
 }
 
 impl Principal {
@@ -114,6 +128,7 @@ impl Principal {
             expires_at: None,
             node: None,
             via: Via::Api,
+            session: None,
         }
     }
 
@@ -128,6 +143,10 @@ pub fn now() -> String {
 
 pub fn days_from_now(days: i64) -> String {
     format_time(time::OffsetDateTime::now_utc() + time::Duration::days(days))
+}
+
+pub fn hours_from_now(hours: i64) -> String {
+    format_time(time::OffsetDateTime::now_utc() + time::Duration::hours(hours))
 }
 
 pub fn seconds_ago(seconds: i64) -> String {
@@ -229,6 +248,11 @@ pub const ROUTES: &[(&str, &str, Scope)] = &[
     ("GET", "/apps/id/{id}/processes", Read),
     ("GET", "/apps/id/{id}/http-status", Read),
     ("GET", "/metrics", Read),
+    ("GET", "/account", Admin),
+    ("POST", "/account/step-up", Admin),
+    ("POST", "/account/passkeys/start", Admin),
+    ("POST", "/account/passkeys/finish", Admin),
+    ("DELETE", "/account/passkeys/{id}", Admin),
     ("GET", "/api-keys", Admin),
     ("POST", "/api-keys", Admin),
     ("DELETE", "/api-keys/{id}", Admin),

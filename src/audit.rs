@@ -36,7 +36,9 @@ pub const ADMIN: &str = "admin";
 /// Names a custom key may not take, so an actor always says who it was.
 pub fn reserved_actor(label: &str) -> bool {
     let label = label.trim();
-    label.eq_ignore_ascii_case(ADMIN) || label.eq_ignore_ascii_case("system")
+    label.eq_ignore_ascii_case(ADMIN)
+        || label.eq_ignore_ascii_case("system")
+        || label.eq_ignore_ascii_case(crate::account::OPERATOR)
 }
 tokio::task_local! { pub static EVENT_ID: Option<String>; }
 tokio::task_local! { pub static PRINCIPAL: crate::auth::Principal; }
@@ -112,6 +114,8 @@ pub struct Event {
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_by: Option<crate::auth::AuthorizedBy>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -193,6 +197,7 @@ pub fn event(
         via,
         tool,
         node,
+        authorized_by: None,
     }
 }
 
@@ -273,6 +278,9 @@ impl Journal {
                 }
                 if existing.node.is_none() {
                     existing.node = event.node;
+                }
+                if existing.authorized_by.is_none() {
+                    existing.authorized_by = event.authorized_by;
                 }
                 existing
             }
@@ -784,6 +792,9 @@ pub(crate) async fn capture<S: StateStore>(
             entry.subject.id =
                 crate::dns_records::key(&field(&result, "/name"), &field(&result, "/type"));
         }
+        entry.authorized_by = result
+            .get("authorized_by")
+            .and_then(|by| serde_json::from_value(by.clone()).ok());
         for pointer in ["/name", "/config/name", "/recipe/name", "/label"] {
             let name = field(&result, pointer);
             if !name.is_empty() {
@@ -926,16 +937,18 @@ mod tests {
     #[tokio::test]
     async fn custom_keys_authenticate_and_keep_actor_without_recording_secrets() {
         let (app, store) = setup().await;
-        let (status, key) = call(
-            &app,
-            "POST",
-            "/api-keys",
-            "root-secret",
-            json!({"label":"deploy-bot"}),
+        let token = "deploybot000-secret";
+        crate::agent_tests::insert_key(
+            &store,
+            token,
+            crate::store::ApiKeyRecord {
+                label: "deploy-bot".into(),
+                kind: "human".into(),
+                ..Default::default()
+            },
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED);
-        let token = key["key"].as_str().unwrap();
+        let key = json!({"id": "sk-deploybot000"});
         let (status, created) = call(
             &app,
             "POST",
@@ -1014,7 +1027,7 @@ mod tests {
                     "POST",
                     "/api-keys",
                     "root-secret",
-                    json!({"label":format!("client-{index}")}),
+                    json!({"label":format!("client-{index}"), "kind":"agent"}),
                 )
                 .await
             }));

@@ -135,6 +135,11 @@ async fn an_agent_key_cannot_reach_guarded_routes() {
     let host_mount = "services:\n  web:\n    image: nginx\n    volumes:\n      - /etc:/host-etc\n";
     for (method, path, body) in [
         ("POST", "/api-keys".to_owned(), json!({"label": "more"})),
+        (
+            "POST",
+            "/api-keys".to_owned(),
+            json!({"label": "more-agent", "kind": "agent"}),
+        ),
         ("GET", format!("/apps/id/{id}/env"), Value::Null),
         (
             "POST",
@@ -241,17 +246,6 @@ async fn agent_keys_expire_within_a_year() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    let (status, key) = call(
-        &app,
-        "POST",
-        "/api-keys",
-        ROOT,
-        json!({"label": "d", "expires_in_days": "never"}),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert!(key.get("expires_at").is_none_or(Value::is_null));
 }
 
 #[tokio::test]
@@ -704,12 +698,21 @@ async fn insert_git_app(store: &FakeStateStore) {
         .unwrap();
 }
 
-async fn host_agent_key(app: &Router) -> String {
-    agent_key(
-        app,
-        json!({"label": "claude", "kind": "agent", "scopes": ["read", "apps:write", "host"]}),
+async fn host_agent_key(store: &FakeStateStore) -> String {
+    let secret = "hostagent000-secret";
+    insert_key(
+        store,
+        secret,
+        ApiKeyRecord {
+            label: "claude".into(),
+            kind: "agent".into(),
+            scopes: Some(vec!["read".into(), "apps:write".into(), "host".into()]),
+            expires_at: Some(crate::auth::days_from_now(30)),
+            ..Default::default()
+        },
     )
-    .await
+    .await;
+    secret.to_owned()
 }
 
 async fn tool_names(app: &Router, key: &str) -> Vec<String> {
@@ -726,7 +729,7 @@ async fn tool_names(app: &Router, key: &str) -> Vec<String> {
 async fn update_source_removes_one_build_arg_and_keeps_the_rest() {
     let (app, store) = setup().await;
     insert_git_app(&store).await;
-    let key = host_agent_key(&app).await;
+    let key = host_agent_key(&store).await;
     assert!(
         tool_names(&app, &key)
             .await
@@ -771,7 +774,7 @@ async fn update_source_removes_one_build_arg_and_keeps_the_rest() {
 async fn update_source_refuses_unknown_fields() {
     let (app, store) = setup().await;
     insert_git_app(&store).await;
-    let key = host_agent_key(&app).await;
+    let key = host_agent_key(&store).await;
     let (_, answer) = rpc(
         &app,
         &key,
@@ -791,7 +794,7 @@ async fn update_source_refuses_unknown_fields() {
 async fn update_source_refuses_build_inputs_that_are_not_strings() {
     let (app, store) = setup().await;
     insert_git_app(&store).await;
-    let key = host_agent_key(&app).await;
+    let key = host_agent_key(&store).await;
     for (arguments, field) in [
         (
             json!({"id": "yard", "build_args": {"PIN": 123456}}),
