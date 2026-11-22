@@ -141,6 +141,67 @@ unsafe fn socket_ipv4(sockaddr: *const libc::sockaddr) -> Ipv4Addr {
     Ipv4Addr::from(u32::from_be(raw.sin_addr.s_addr))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalNetwork {
+    pub interface: String,
+    pub address: IpAddr,
+    pub prefix: u8,
+}
+
+pub fn local_networks() -> anyhow::Result<Vec<LocalNetwork>> {
+    let found = unsafe { local_networks_from_getifaddrs() };
+    found.map_err(|e| anyhow::anyhow!("read host interfaces: {e}"))
+}
+
+unsafe fn local_networks_from_getifaddrs() -> std::io::Result<Vec<LocalNetwork>> {
+    unsafe {
+        let mut addrs: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut addrs) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut networks = Vec::new();
+        let mut cursor = addrs;
+        while !cursor.is_null() {
+            let entry = &*cursor;
+            if let Some(address) = socket_ip(entry.ifa_addr) {
+                let prefix = socket_ip(entry.ifa_netmask)
+                    .map(|mask| match mask {
+                        IpAddr::V4(mask) => u32::from(mask).count_ones() as u8,
+                        IpAddr::V6(mask) => u128::from(mask).count_ones() as u8,
+                    })
+                    .unwrap_or(0);
+                let interface = std::ffi::CStr::from_ptr(entry.ifa_name)
+                    .to_string_lossy()
+                    .into_owned();
+                networks.push(LocalNetwork {
+                    interface,
+                    address,
+                    prefix,
+                });
+            }
+            cursor = (*cursor).ifa_next;
+        }
+        libc::freeifaddrs(addrs);
+        Ok(networks)
+    }
+}
+
+unsafe fn socket_ip(sockaddr: *const libc::sockaddr) -> Option<IpAddr> {
+    if sockaddr.is_null() {
+        return None;
+    }
+    unsafe {
+        match (*sockaddr).sa_family as libc::c_int {
+            libc::AF_INET => Some(IpAddr::V4(socket_ipv4(sockaddr))),
+            libc::AF_INET6 => {
+                let raw = &*(sockaddr as *const libc::sockaddr_in6);
+                Some(IpAddr::V6(std::net::Ipv6Addr::from(raw.sin6_addr.s6_addr)))
+            }
+            _ => None,
+        }
+    }
+}
+
 fn is_usable_unicast(address: Ipv4Addr) -> bool {
     !address.is_loopback() && !address.is_link_local() && !address.is_unspecified()
 }

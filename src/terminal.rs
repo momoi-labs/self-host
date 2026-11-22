@@ -285,6 +285,14 @@ async fn connected<S: StateStore>(
             return;
         }
     };
+    if app.runtime.is_external() {
+        fail(
+            &mut socket,
+            "An External Application runs outside the Platform; it has no terminal.",
+        )
+        .await;
+        return;
+    }
     if matches!(app.runtime, crate::store::Runtime::Native(_)) {
         if !crate::native::capabilities().terminal {
             fail(
@@ -613,6 +621,13 @@ mod tests {
     use std::sync::Arc;
 
     async fn fixture(development: bool) -> (String, FakeDocker, tokio::task::JoinHandle<()>) {
+        fixture_with(development, Default::default()).await
+    }
+
+    async fn fixture_with(
+        development: bool,
+        runtime: crate::store::Runtime,
+    ) -> (String, FakeDocker, tokio::task::JoinHandle<()>) {
         let store = FakeStateStore::new();
         store.store_state("api_key", "test-key").await.unwrap();
         crate::agent_tests::insert_key(
@@ -649,7 +664,7 @@ mod tests {
                 web_port: 3000,
                 persist_data: false,
             }),
-            runtime: Default::default(),
+            runtime,
             publication: Default::default(),
             variable_delivery: crate::store::VariableDelivery::Referenced,
             route_rules: Vec::new(),
@@ -744,5 +759,26 @@ mod tests {
             assert_eq!(calls[0].2.as_deref(), development.then_some("dev"));
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn an_external_application_has_no_terminal() {
+        let external = crate::store::Runtime::External(crate::store::ExternalDefinition {
+            upstream: "https://192.168.1.1:443".into(),
+            pin: None,
+        });
+        let (url, docker, server) = fixture_with(false, external).await;
+        let answer = first(
+            &url,
+            json!({"key":"test-key", "container":"owned", "cols":80,"rows":24}),
+        )
+        .await;
+        assert_eq!(answer["type"], "error");
+        assert!(
+            answer.to_string().contains("External Application"),
+            "{answer}"
+        );
+        assert!(docker.terminals.lock().unwrap().is_empty());
+        server.abort();
     }
 }

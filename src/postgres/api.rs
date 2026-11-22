@@ -818,6 +818,11 @@ async fn connect<S: StateStore>(
                     .into(),
             ));
         }
+        if consumer.runtime.is_external() {
+            return Err(Error::Invalid(
+                "An External Application runs outside the Platform and cannot receive a database connection".into(),
+            ));
+        }
         let native = matches!(consumer.runtime, Runtime::Native(_));
         if native && !crate::native::capabilities().managed_postgres {
             return Err(Error::Invalid("managed PostgreSQL connections for native Applications are unavailable on this Host".into()));

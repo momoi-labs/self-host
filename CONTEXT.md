@@ -9,7 +9,7 @@ The control system installed on the host: the binary/daemon that bootstraps infr
 _Avoid_: PaaS (as a vague synonym), cluster, Kubernetes
 
 **Application**:
-A workload managed as a unit by the Platform and made available to Consumers on the LAN. An Application may consist of several services; its identity is independent of how those services run.
+A workload managed as a unit by the Platform and made available to Consumers on the LAN. An Application may consist of several services; its identity is independent of how those services run. An External Application is one the Platform only routes to; it runs elsewhere on the LAN.
 _Avoid_: binary (reserved for the Platform), service (overloaded), site
 
 **Application name**:
@@ -90,12 +90,16 @@ Where an Application's Hostname routes to: the Compose service and container por
 _Avoid_: backend, main service, entrypoint
 
 **Runtime**:
-How an Application runs on the Host: in a container (Docker, one container or a Compose project) or as a native process tree under an Application Account. Recorded on the Application; every Application that predates the term runs in a container.
+How an Application runs: in a container on the Host (Docker, one container or a Compose project), as a native process tree under an Application Account, or outside the Platform as an External Application. Recorded on the Application; every Application that predates the term runs in a container.
 _Avoid_: engine, executor, backend (as the name for how an Application runs)
 
 **Native Application**:
 An Application whose Runtime is a process tree on the Host, run under its own Application Account, with no container.
 _Avoid_: bare-metal app, host process (as the product term), s6 service (the supervisor is a detail)
+
+**External Application**:
+An Application whose Runtime is a service that already runs on the LAN, such as a router's admin page. The Platform runs nothing for it; the proxy forwards its Hostname to a private LAN upstream, optionally pinned by certificate fingerprint (ADR-0039).
+_Avoid_: proxy host, external service, passthrough app
 
 **Application Account**:
 The dedicated Host account a Native Application runs as: an execution identity the Platform owns, never root and never the Operator's own login. On macOS, deleting the Application retires the account: the record stays, marked retired, so nothing runs as it and its number is never reused (ADR-0032).

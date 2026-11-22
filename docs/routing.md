@@ -93,6 +93,41 @@ with `rewrite_host` on `PUT /apps/id/{id}/routes`: `true` or `false` pins its
 choice, and `null` follows the setting again. An omitted field keeps the
 current choice, and a redeploy keeps it too.
 
+## External upstreams
+
+An External Application forwards to a service on the LAN instead of a
+loopback port (ADR-0039). Deploy one with `POST /apps`:
+
+```json
+{
+  "name": "router",
+  "hostname": "router.home.lan",
+  "runtime": {
+    "kind": "external",
+    "upstream": "https://192.168.1.1",
+    "pin": "FA:99:...:9D"
+  }
+}
+```
+
+The CLI takes `self-host apps add --name router --upstream https://192.168.1.1 --pin <fingerprint>`.
+The upstream must be an RFC 1918 or IPv6 ULA address. Get the pin with:
+
+```sh
+openssl s_client -connect 192.168.1.1:443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -fingerprint -sha256
+```
+
+Without a pin, the upstream needs a certificate the system roots trust. A
+wrong pin or an untrusted certificate is a `502` with a body that says which.
+Route rules, redirects and aliases work as for any Application. Leave
+`rewrite_host` off for UniFi: it checks `Origin` against `Host` on
+WebSockets.
+
+The pin names one certificate. When the upstream makes a new one, for example
+after a reset or a firmware update, the proxy answers `502` until the
+Operator saves the new fingerprint with `PUT /apps/id/{id}`.
+
 ## Matching and validation
 
 The longest matching prefix wins. A prefix ends at a path segment boundary:

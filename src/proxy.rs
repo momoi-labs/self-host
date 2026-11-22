@@ -22,8 +22,6 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use hyper::header::{self, HeaderValue};
 use hyper::{Request, Response, StatusCode, Uri};
-use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
@@ -33,6 +31,11 @@ use tower::ServiceExt;
 
 use crate::routes::{RouteError, is_challenge_path, matches_path};
 use crate::store::{RedirectRule, RouteRule};
+
+mod upstream;
+pub use upstream::{
+    Fingerprint, Scheme, Upstream, fingerprint_of, format_fingerprint, parse_fingerprint,
+};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 // `UnsyncBoxBody`, not `BoxBody`: axum's own response body isn't `Sync`
@@ -215,7 +218,7 @@ struct Tables {
 #[derive(Clone)]
 struct OwnedRoute {
     owner: String,
-    target: Option<SocketAddr>,
+    target: Option<Upstream>,
     strip_prefix: bool,
     rewrite_host: Option<bool>,
 }
@@ -279,7 +282,7 @@ pub fn compile_redirect(rule: &RedirectRule) -> Result<regex::Regex, RouteError>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteMatch {
     pub path_prefix: String,
-    pub target: Option<SocketAddr>,
+    pub target: Option<Upstream>,
     pub strip_prefix: bool,
     /// The Application gets its target's address as `Host`, not the
     /// Hostname the client asked for.
@@ -293,7 +296,8 @@ impl RouteTable {
 
     /// Compatibility lookup for an Application's root route.
     pub fn target_for(&self, host: &str) -> Option<Option<SocketAddr>> {
-        self.route_for(host, "/").map(|route| route.target)
+        self.route_for(host, "/")
+            .map(|route| route.target.map(|target| target.address))
     }
 
     pub fn route_for(&self, host: &str, path: &str) -> Option<RouteMatch> {
@@ -353,7 +357,14 @@ impl RouteTable {
         rules: &[RouteRule],
         rewrite_host: Option<bool>,
     ) -> Result<(), RouteError> {
-        self.publish_rules_with_redirects(id, hostnames, target, rules, rewrite_host, &[])
+        self.publish_rules_with_redirects(
+            id,
+            hostnames,
+            target.map(Upstream::http),
+            rules,
+            rewrite_host,
+            &[],
+        )
     }
 
     /// `publish_rules`, with what the owner answers in place of itself.
@@ -361,14 +372,18 @@ impl RouteTable {
         &self,
         id: &str,
         hostnames: &[String],
-        target: Option<SocketAddr>,
+        target: Option<Upstream>,
         rules: &[RouteRule],
         rewrite_host: Option<bool>,
         redirects: &[RedirectRule],
     ) -> Result<(), RouteError> {
-        if target.is_some_and(|target| !target.ip().is_loopback() || target.port() == 0) {
+        if let Some(target) = &target
+            && (target.address.port() == 0
+                || !(target.address.ip().is_loopback()
+                    || crate::external::is_private_lan(target.address.ip())))
+        {
             return Err(RouteError::Invalid(
-                "target must be a loopback address with a nonzero port".into(),
+                "target must be a loopback or private LAN address with a nonzero port".into(),
             ));
         }
         let compiled = redirects
@@ -407,7 +422,7 @@ impl RouteTable {
                 key,
                 OwnedRoute {
                     owner: id.to_string(),
-                    target: rule.target.or(target),
+                    target: rule.target.map(Upstream::http).or(target),
                     strip_prefix: rule.strip_prefix,
                     rewrite_host,
                 },
@@ -466,7 +481,7 @@ struct Context {
     admin_router: Router,
     challenge_router: Router,
     table: RouteTable,
-    client: Client<HttpConnector, ProxyBody>,
+    clients: upstream::Clients,
     metrics: crate::metrics::Metrics,
 }
 
@@ -492,11 +507,6 @@ pub async fn bind(
 ) -> anyhow::Result<Bound> {
     let tls_config = load_tls_config(&config.cert_path, &config.key_path)?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
-
-    let mut connector = HttpConnector::new();
-    connector.set_connect_timeout(Some(Duration::from_secs(5)));
-    let client: Client<HttpConnector, ProxyBody> =
-        Client::builder(TokioExecutor::new()).build(connector);
 
     let https_listener = TcpListener::bind(SocketAddr::new(config.bind_ip, config.https_port))
         .await
@@ -527,7 +537,7 @@ pub async fn bind(
             admin_router,
             challenge_router: Router::new(),
             table,
-            client,
+            clients: upstream::Clients::new(),
             metrics,
         }),
     })
@@ -756,7 +766,7 @@ fn requested_by_ip(req: &Request<Incoming>) -> bool {
 
 fn redirect_to(redirect: &Redirect) -> Response<ProxyBody> {
     let Ok(location) = HeaderValue::from_str(&redirect.location) else {
-        return bad_gateway();
+        return bad_gateway("upstream did not answer");
     };
     Response::builder()
         .status(if redirect.permanent {
@@ -850,7 +860,7 @@ async fn handle(req: Request<Incoming>, ctx: Arc<Context>, peer_ip: IpAddr) -> R
                 ..
             },
         ) => {
-            let response = proxy_to(&ctx.client, req, &host, target, peer_ip, &route).await;
+            let response = proxy_to(&ctx.clients, req, &host, &target, peer_ip, &route).await;
             // A `5xx` counts whichever side produced it: the Consumer asked
             // for an Application and did not get one.
             ctx.metrics
@@ -896,10 +906,10 @@ const FORWARDED_IDENTITY: &[&str] = &[
 ];
 
 async fn proxy_to(
-    client: &Client<HttpConnector, ProxyBody>,
+    clients: &upstream::Clients,
     mut req: Request<Incoming>,
     host: &str,
-    target: SocketAddr,
+    target: &Upstream,
     peer_ip: IpAddr,
     route: &RouteMatch,
 ) -> Response<ProxyBody> {
@@ -947,7 +957,7 @@ async fn proxy_to(
     // An Application that answers only its own loopback name gets the
     // target's address instead. `X-Forwarded-Host` still names the Hostname.
     if route.rewrite_host
-        && let Ok(value) = HeaderValue::from_str(&target.to_string())
+        && let Ok(value) = HeaderValue::from_str(&target.host_header())
     {
         parts.headers.insert(header::HOST, value);
     }
@@ -971,7 +981,7 @@ async fn proxy_to(
     {
         parts.headers.insert("x-forwarded-prefix", prefix);
     }
-    parts.uri = match format!("http://{target}{path_and_query}").parse::<Uri>() {
+    parts.uri = match target.uri(&path_and_query).parse::<Uri>() {
         Ok(uri) => uri,
         Err(_) => return bad_request("invalid request target"),
     };
@@ -980,11 +990,11 @@ async fn proxy_to(
 
     let outgoing = Request::from_parts(parts, body.map_err(BoxError::from).boxed_unsync());
 
-    let mut backend_response = match client.request(outgoing).await {
+    let mut backend_response = match clients.request(target, outgoing).await {
         Ok(response) => response,
         Err(error) => {
-            tracing::warn!(%target, "proxy request failed: {error}");
-            return bad_gateway();
+            tracing::warn!(%target, "proxy request failed: {}", upstream::chain(&error));
+            return bad_gateway(upstream::failure(&error));
         }
     };
 
@@ -1037,10 +1047,10 @@ fn service_unavailable() -> Response<ProxyBody> {
         .unwrap()
 }
 
-fn bad_gateway() -> Response<ProxyBody> {
+fn bad_gateway(message: &'static str) -> Response<ProxyBody> {
     Response::builder()
         .status(StatusCode::BAD_GATEWAY)
-        .body(text_body("upstream did not answer"))
+        .body(text_body(message))
         .unwrap()
 }
 
@@ -1223,7 +1233,7 @@ mod tests {
                     .route_for("BLOG.example.invalid", path)
                     .unwrap()
                     .target,
-                Some(addr(port)),
+                Some(Upstream::http(addr(port))),
                 "{path}"
             );
         }
@@ -1248,7 +1258,7 @@ mod tests {
         let route = table.route_for("blog.example.invalid", "/app/x").unwrap();
         assert_eq!(
             (route.path_prefix.as_str(), route.target),
-            ("/app", Some(addr(1)))
+            ("/app", Some(Upstream::http(addr(1))))
         );
     }
 
@@ -1273,14 +1283,14 @@ mod tests {
                 .route_for("blog.example.invalid", "/app")
                 .unwrap()
                 .target,
-            Some(addr(4))
+            Some(Upstream::http(addr(4)))
         );
         assert_eq!(
             table
                 .route_for("blog.example.invalid", "/api")
                 .unwrap()
                 .target,
-            Some(addr(1))
+            Some(Upstream::http(addr(1)))
         );
         let conflict = table.publish_rules("paths", &[], None, &[rule("/", 5)], None);
         assert!(matches!(conflict, Err(RouteError::Conflict(_))));
@@ -1289,7 +1299,7 @@ mod tests {
                 .route_for("blog.example.invalid", "/app")
                 .unwrap()
                 .target,
-            Some(addr(4))
+            Some(Upstream::http(addr(4)))
         );
         table.withdraw("root");
         assert_eq!(table.target_for("blog.example.invalid"), None);
@@ -1298,7 +1308,7 @@ mod tests {
                 .route_for("blog.example.invalid", "/app")
                 .unwrap()
                 .target,
-            Some(addr(4))
+            Some(Upstream::http(addr(4)))
         );
         table.withdraw("paths");
         assert_eq!(table.route_for("blog.example.invalid", "/app"), None);
@@ -1955,7 +1965,7 @@ mod integration {
             .publish_rules_with_redirects(
                 "blog",
                 &["blog.example.invalid".into(), "docs.example.invalid".into()],
-                Some(app),
+                Some(Upstream::http(app)),
                 &[],
                 None,
                 &rules,
@@ -2884,5 +2894,181 @@ mod integration {
         let mut buf = [0u8; 5];
         io.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"hello");
+    }
+
+    async fn spawn_tls_backend() -> (SocketAddr, Fingerprint) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["unifi.local".to_string()]).unwrap();
+        let der = certified.cert.der().clone();
+        let fingerprint = fingerprint_of(&der);
+        let key =
+            rustls::pki_types::PrivateKeyDer::Pkcs8(certified.key_pair.serialize_der().into());
+        let mut config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![der], key)
+            .unwrap();
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    continue;
+                };
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(tls) = acceptor.accept(stream).await else {
+                        return;
+                    };
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            TokioIo::new(tls),
+                            hyper::service::service_fn(backend_handle),
+                        )
+                        .with_upgrades()
+                        .await;
+                });
+            }
+        });
+        (addr, fingerprint)
+    }
+
+    async fn external_proxy(
+        backend: SocketAddr,
+        pin: Option<Fingerprint>,
+    ) -> (SocketAddr, rustls::pki_types::CertificateDer<'static>) {
+        let table = RouteTable::new();
+        table
+            .publish_rules_with_redirects(
+                "router",
+                &["router.home.lan".into()],
+                Some(Upstream {
+                    scheme: Scheme::Https,
+                    address: backend,
+                    pin,
+                }),
+                &[],
+                None,
+                &[],
+            )
+            .unwrap();
+        let (https_addr, _, cert, _) = spawn_proxy(Router::new(), table).await;
+        (https_addr, cert)
+    }
+
+    #[tokio::test]
+    async fn a_pinned_https_upstream_with_a_self_signed_certificate_answers() {
+        let (backend, fingerprint) = spawn_tls_backend().await;
+        let (https_addr, cert) = external_proxy(backend, Some(fingerprint)).await;
+        let (status, _, body) = request(
+            https_addr,
+            client_config(cert),
+            "router.home.lan",
+            "/reflect",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("version=HTTP/1.1"), "{body}");
+        assert!(body.contains("host=router.home.lan"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_pin_answers_bad_gateway_naming_the_mismatch() {
+        let (backend, _) = spawn_tls_backend().await;
+        let (https_addr, cert) = external_proxy(backend, Some([7; 32])).await;
+        let (status, _, body) = request(
+            https_addr,
+            client_config(cert),
+            "router.home.lan",
+            "/reflect",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            "the upstream certificate does not match the pinned fingerprint"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unpinned_https_upstream_needs_a_trusted_chain() {
+        let (backend, _) = spawn_tls_backend().await;
+        let (https_addr, cert) = external_proxy(backend, None).await;
+        let (status, _, body) = request(
+            https_addr,
+            client_config(cert),
+            "router.home.lan",
+            "/reflect",
+            &[],
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            "the upstream certificate is not trusted; pin its fingerprint"
+        );
+    }
+
+    async fn spawn_websocket_backend() -> (SocketAddr, Fingerprint) {
+        use futures_util::{SinkExt, StreamExt};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["unifi.local".to_string()]).unwrap();
+        let der = certified.cert.der().clone();
+        let fingerprint = fingerprint_of(&der);
+        let key =
+            rustls::pki_types::PrivateKeyDer::Pkcs8(certified.key_pair.serialize_der().into());
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![der], key)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let tls = acceptor.accept(stream).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tls).await.unwrap();
+            while let Some(Ok(message)) = ws.next().await {
+                if message.is_text() && ws.send(message).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (addr, fingerprint)
+    }
+
+    #[tokio::test]
+    async fn a_websocket_echoes_through_a_pinned_tls_upstream() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let (backend, fingerprint) = spawn_websocket_backend().await;
+        let (https_addr, cert) = external_proxy(backend, Some(fingerprint)).await;
+
+        let tcp = TcpStream::connect(https_addr).await.unwrap();
+        let connector = tokio_rustls::TlsConnector::from(client_config(cert));
+        let tls = connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+            .unwrap();
+        let request = "wss://router.home.lan/socket"
+            .into_client_request()
+            .unwrap();
+        let (mut ws, response) = tokio_tungstenite::client_async(request, tls).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+        ws.send(Message::text("hello")).await.unwrap();
+        let echoed = ws.next().await.unwrap().unwrap();
+        assert_eq!(echoed.into_text().unwrap().as_str(), "hello");
     }
 }

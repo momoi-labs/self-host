@@ -72,6 +72,21 @@ pub enum Runtime {
     Container,
     /// A process tree on the Host under a dedicated Application Account.
     Native(NativeDefinition),
+    External(ExternalDefinition),
+}
+
+impl Runtime {
+    pub fn is_external(&self) -> bool {
+        matches!(self, Runtime::External(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalDefinition {
+    pub upstream: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
 }
 
 /// What a Native Application runs and under which Application Account.
