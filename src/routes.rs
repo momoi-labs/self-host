@@ -263,7 +263,15 @@ pub fn target(app: &ApplicationRecord) -> Option<Upstream> {
         return None;
     }
     if let Runtime::External(definition) = &app.runtime {
-        return crate::external::parse(definition).ok();
+        return match crate::external::validate(definition)
+            .and_then(|checked| crate::external::parse(&checked))
+        {
+            Ok(upstream) => Some(upstream),
+            Err(error) => {
+                tracing::warn!("External Application {} is not routed: {error}", app.name);
+                None
+            }
+        };
     }
     app.web_target_port
         .map(|port| Upstream::http(SocketAddr::from(([127, 0, 0, 1], port))))
