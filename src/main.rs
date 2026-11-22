@@ -226,6 +226,17 @@ enum AppsCommand {
         /// Extra Hostname the Application also answers on (repeatable)
         #[arg(long = "alias")]
         aliases: Vec<String>,
+        #[arg(
+            long,
+            help = "Proxy to a LAN service instead of running one: http:// or https:// and a private IP address"
+        )]
+        upstream: Option<String>,
+        #[arg(
+            long,
+            requires = "upstream",
+            help = "SHA-256 fingerprint of the https upstream's certificate, trusted instead of a CA"
+        )]
+        pin: Option<String>,
     },
     /// List Applications
     List,
@@ -1112,6 +1123,8 @@ async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
             web_port,
             hostname,
             aliases,
+            upstream,
+            pin,
         } => {
             let image = image.unwrap_or_default();
             let path = path.unwrap_or_default();
@@ -1121,15 +1134,30 @@ async fn run_apps_command(command: AppsCommand) -> anyhow::Result<()> {
                 None => String::new(),
             };
 
-            if image.is_empty() && path.is_empty() && compose.is_empty() {
+            let given = [
+                !image.is_empty(),
+                !path.is_empty(),
+                !compose.is_empty(),
+                upstream.is_some(),
+            ]
+            .into_iter()
+            .filter(|given| *given)
+            .count();
+            if given != 1 {
                 return Err(anyhow::anyhow!(
-                    "One of --image, --path or --compose-file is required for deploy."
+                    "One of --image, --path, --compose-file or --upstream is required for deploy."
                 ));
             }
 
-            let mut body = serde_json::json!({
-                "name": name, "image": image, "path": path, "compose": compose
-            });
+            let mut body = match &upstream {
+                Some(upstream) => serde_json::json!({
+                    "name": name,
+                    "runtime": { "kind": "external", "upstream": upstream, "pin": pin },
+                }),
+                None => serde_json::json!({
+                    "name": name, "image": image, "path": path, "compose": compose
+                }),
+            };
             if let Some(service) = &web_service {
                 body["web_service"] = serde_json::json!(service);
             }

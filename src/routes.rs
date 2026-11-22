@@ -8,8 +8,8 @@
 
 use std::net::SocketAddr;
 
-use crate::proxy::{Publisher, RouteTable};
-use crate::store::{ApplicationRecord, Publication, RedirectRule, RouteRule};
+use crate::proxy::{Publisher, RouteTable, Upstream};
+use crate::store::{ApplicationRecord, Publication, RedirectRule, RouteRule, Runtime};
 
 /// How many redirects one Application may carry. Enough for a site's worth
 /// of moved pages, not for a rewrite engine.
@@ -258,12 +258,15 @@ fn rule_keys(app: &ApplicationRecord) -> std::collections::HashSet<(&str, &str)>
 /// (ADR-0019). `None` for an Application that has no port yet, which the
 /// proxy answers as unavailable rather than unknown, and for one that is
 /// unpublished, which the proxy never hears of.
-pub fn target(app: &ApplicationRecord) -> Option<SocketAddr> {
+pub fn target(app: &ApplicationRecord) -> Option<Upstream> {
     if app.publication == Publication::Unpublished {
         return None;
     }
+    if let Runtime::External(definition) = &app.runtime {
+        return crate::external::parse(definition).ok();
+    }
     app.web_target_port
-        .map(|port| SocketAddr::from(([127, 0, 0, 1], port)))
+        .map(|port| Upstream::http(SocketAddr::from(([127, 0, 0, 1], port))))
 }
 
 /// The route table the proxy serves from.
@@ -357,7 +360,7 @@ impl RouteStore for FakeRoutes {
             app.id.clone(),
             Published {
                 hostnames: hostnames(app).into_iter().map(str::to_string).collect(),
-                target: target(app),
+                target: target(app).map(|upstream| upstream.address),
                 route_rules: app.route_rules.clone(),
             },
         );
@@ -449,7 +452,10 @@ mod tests {
     #[test]
     fn the_target_is_the_web_targets_host_port_on_loopback() {
         let record = app("abc123", "blog.home.lan", &[]);
-        assert_eq!(target(&record), Some("127.0.0.1:20001".parse().unwrap()));
+        assert_eq!(
+            target(&record),
+            Some(Upstream::http("127.0.0.1:20001".parse().unwrap()))
+        );
     }
 
     #[test]

@@ -55,6 +55,7 @@ pub const SOURCE_PATH: &str = "path";
 pub const SOURCE_COMPOSE: &str = "compose";
 pub const SOURCE_GIT: &str = "git";
 pub const SOURCE_NATIVE: &str = "native";
+pub const SOURCE_EXTERNAL: &str = "external";
 
 /// Names reserved for Platform Infra — remove must reject these. Only the
 /// proxy is left: DNS moved into the binary (ADR-0017) and the state store
@@ -81,6 +82,7 @@ pub enum DeployError {
     /// but cannot run yet (ADR-0028).
     NativeUnavailable,
     InvalidNative(String),
+    InvalidExternal(String),
     Native(anyhow::Error),
     /// The request asked to change a Publication chosen at creation.
     PublicationFixed,
@@ -122,6 +124,9 @@ impl std::fmt::Display for DeployError {
             }
             DeployError::InvalidNative(message) => {
                 write!(f, "invalid native Application: {message}")
+            }
+            DeployError::InvalidExternal(message) => {
+                write!(f, "invalid External Application: {message}")
             }
             DeployError::Native(_) => write!(f, "native Application operation failed"),
             DeployError::NativeUnavailable => write!(
@@ -586,6 +591,11 @@ async fn pending_record(
     if source != SOURCE_NATIVE && source != SOURCE_GIT && matches!(runtime, Runtime::Native(_)) {
         return Err(DeployError::NativeUnavailable);
     }
+    if (source == SOURCE_EXTERNAL) != runtime.is_external() {
+        return Err(DeployError::InvalidExternal(
+            "an External Application is deployed from an upstream address only".into(),
+        ));
+    }
     let publication = settle_publication(
         options.publication,
         existing.as_ref().map(|app| app.publication),
@@ -629,14 +639,15 @@ async fn pending_record(
             };
             let port = match &runtime {
                 Runtime::Native(definition) => {
-                    definition.port.expect("validated native Web Target port")
+                    Some(definition.port.expect("validated native Web Target port"))
                 }
                 Runtime::Container => match existing.as_ref().and_then(|app| app.web_target_port) {
-                    Some(port) => port,
-                    None => allocate_web_target_port(store).await?,
+                    Some(port) => Some(port),
+                    None => Some(allocate_web_target_port(store).await?),
                 },
+                Runtime::External(_) => None,
             };
-            (hostname, aliases, Some(port))
+            (hostname, aliases, port)
         }
     };
 
@@ -865,6 +876,96 @@ pub async fn prepare_deploy_native(
     Ok(PendingDeploy {
         record,
         work: DeployWork::Native { running },
+    })
+}
+
+pub async fn prepare_deploy_external(
+    store: &impl StateStore,
+    name: &str,
+    mut options: DeployOptions,
+) -> Result<PendingDeploy, DeployError> {
+    validate_app_name(name)?;
+    if !store.is_initialized().await? {
+        return Err(DeployError::NotInitialized);
+    }
+    let Some(Runtime::External(definition)) = &options.runtime else {
+        return Err(DeployError::InvalidExternal(
+            "external source requires the external Runtime".into(),
+        ));
+    };
+    let definition = crate::external::validate(definition)
+        .map_err(|e| DeployError::InvalidExternal(e.to_string()))?;
+    if options.publication == Some(Publication::Unpublished) {
+        return Err(DeployError::InvalidExternal(
+            "an External Application is reached only through its Hostname".into(),
+        ));
+    }
+    if options.network_policy.is_some() {
+        return Err(DeployError::InvalidExternal(
+            "an External Application has no network policy".into(),
+        ));
+    }
+    options.runtime = Some(Runtime::External(definition));
+    let previous = store.find_application_by_name(name).await?;
+    let mut record =
+        pending_record(store, name, String::new(), SOURCE_EXTERNAL, None, &options).await?;
+    record.status = if previous.is_some_and(|a| a.status == STATUS_STOPPED) {
+        STATUS_STOPPED.into()
+    } else {
+        STATUS_RUNNING.into()
+    };
+    store.insert_application(&record).await?;
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::Settled,
+    })
+}
+
+async fn prepare_external_update(
+    store: &impl StateStore,
+    current: ApplicationRecord,
+    update: ApplicationUpdate,
+) -> Result<PendingDeploy, DeployError> {
+    settle_publication(update.publication, Some(current.publication))?;
+    if update.image.is_some()
+        || update.compose.is_some()
+        || update.development.is_some()
+        || update.web_service.is_some()
+        || update.web_port.is_some()
+        || update.network_policy.is_some()
+    {
+        return Err(DeployError::InvalidExternal(
+            "External updates accept the upstream and pin through runtime".into(),
+        ));
+    }
+    let mut record = current.clone();
+    if let Some(runtime) = update.runtime {
+        let Runtime::External(definition) = runtime else {
+            return Err(DeployError::InvalidExternal(
+                "Application Runtime cannot be changed".into(),
+            ));
+        };
+        let definition = crate::external::validate(&definition)
+            .map_err(|e| DeployError::InvalidExternal(e.to_string()))?;
+        record.runtime = Runtime::External(definition);
+    }
+    record.name = update.name.unwrap_or_else(|| current.name.clone());
+    validate_app_name(&record.name)?;
+    if let Some(clash) = store.find_application_by_name(&record.name).await?
+        && clash.id != record.id
+    {
+        return Err(DeployError::AlreadyExists(record.name));
+    }
+    record.hostname = update.hostname.unwrap_or_else(|| current.hostname.clone());
+    record.aliases = update.aliases.unwrap_or_else(|| current.aliases.clone());
+    record.route_rules = update
+        .route_rules
+        .unwrap_or_else(|| current.route_rules.clone());
+    validate_routing(store, &record).await?;
+    store.insert_application(&record).await?;
+    Ok(PendingDeploy {
+        record,
+        work: DeployWork::Settled,
     })
 }
 
@@ -1420,6 +1521,14 @@ pub async fn reconcile(
         if matches!(app.runtime, Runtime::Native(_)) {
             continue;
         }
+        if app.runtime.is_external() {
+            if app.status == STATUS_RUNNING {
+                routes.publish(&app);
+            } else {
+                routes.withdraw(&app.id);
+            }
+            continue;
+        }
         if app.status == STATUS_PENDING && executor_available && !queued.contains(&app.id) {
             let states = service_states(docker, &app).await;
             let running = !states.is_empty() && states.iter().all(|s| s.state == "running");
@@ -1571,7 +1680,13 @@ pub async fn prepare_update(
     if matches!(current.runtime, Runtime::Native(_)) {
         return prepare_native_update(store, current, update).await;
     }
-    if matches!(update.runtime, Some(Runtime::Native(_))) {
+    if current.runtime.is_external() {
+        return prepare_external_update(store, current, update).await;
+    }
+    if matches!(
+        update.runtime,
+        Some(Runtime::Native(_) | Runtime::External(_))
+    ) {
         return Err(DeployError::InvalidNative(
             "Application Runtime cannot be changed".into(),
         ));
@@ -1946,6 +2061,15 @@ pub async fn remove_application(
 
     require_removable(store, &app).await?;
 
+    if app.runtime.is_external() {
+        routes.withdraw(&app.id);
+        store.delete_application(&app.id).await?;
+        if delete_data {
+            crate::deployments::forget(store, &app.id).await?;
+        }
+        return Ok(());
+    }
+
     // The project is rendered before the row goes, because rendering reads
     // the row's environment.
     let project = if app.compose.is_some() {
@@ -2085,6 +2209,11 @@ pub async fn stop_application(
     let app = get_application(store, id).await?;
 
     routes.withdraw(&app.id);
+    if app.runtime.is_external() {
+        return Ok(store
+            .set_application_outcome(id, STATUS_STOPPED, None)
+            .await?);
+    }
     if app.compose.is_some() {
         match project_for(store, &app).await {
             Ok(project) => docker.compose_stop(&project).await?,
@@ -2119,6 +2248,13 @@ pub async fn start_application(
     id: &str,
 ) -> Result<ApplicationRecord, DeployError> {
     let app = get_application(store, id).await?;
+    if app.runtime.is_external() {
+        let current = store
+            .set_application_outcome(id, STATUS_RUNNING, None)
+            .await?;
+        routes.publish(&current);
+        return Ok(current);
+    }
     let result = async {
         reconcile_private_connections(store, docker).await?;
         if app.compose.is_some() {
@@ -2155,6 +2291,13 @@ pub async fn restart_application(
     pull: bool,
 ) -> Result<(ApplicationRecord, Vec<crate::audit::Change>), DeployError> {
     let app = get_application(store, id).await?;
+    if app.runtime.is_external() {
+        let current = store
+            .set_application_outcome(id, STATUS_RUNNING, None)
+            .await?;
+        routes.publish(&current);
+        return Ok((current, Vec::new()));
+    }
     let images = if pull {
         registry_images(&app)
     } else {
@@ -2497,6 +2640,11 @@ pub(crate) async fn change_env(
         .get_application(app_id)
         .await?
         .ok_or_else(|| EnvError::NotFound(app_id.into()))?;
+    if app.runtime.is_external() {
+        return Err(EnvError::Definition(DeployError::InvalidExternal(
+            "an External Application has no Variables".into(),
+        )));
+    }
     match value {
         Some(value) => store.set_env(app_id, key, value).await?,
         None => store.unset_env(app_id, key).await?,

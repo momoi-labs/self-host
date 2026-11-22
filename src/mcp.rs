@@ -92,7 +92,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "deploy_app",
-        description: "Deploy a new Application from an image or a compose file. The body is the POST /apps request: name, image or compose, hostname, aliases, environment, route_rules. Returns a task id.",
+        description: "Deploy a new Application from an image or a compose file, or an External Application that proxies to a LAN service. The body is the POST /apps request: name, image or compose, hostname, aliases, environment, route_rules. Returns a task id.",
         scope: Scope::AppsWrite,
         input: deploy_input,
     },
@@ -249,7 +249,17 @@ fn deploy_input() -> Value {
             "hostname": { "type": "string" },
             "aliases": { "type": "array", "items": { "type": "string" } },
             "environment": { "type": "object", "additionalProperties": { "type": "string" } },
-            "route_rules": { "type": "array", "items": { "type": "object" } }
+            "route_rules": { "type": "array", "items": { "type": "object" } },
+            "runtime": {
+                "type": "object",
+                "description": "Leave out for a container. For an External Application, a LAN service the proxy fronts: {\"kind\": \"external\", \"upstream\": \"https://192.168.1.1\", \"pin\": \"<SHA-256 fingerprint>\"}. The upstream is a private LAN IP address; the pin is optional and applies to https only.",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["container", "native", "external"] },
+                    "upstream": { "type": "string" },
+                    "pin": { "type": "string" }
+                },
+                "required": ["kind"]
+            }
         },
         "required": ["name"],
         "additionalProperties": true

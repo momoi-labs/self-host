@@ -36,6 +36,7 @@ pub mod dns_records;
 pub mod docker;
 pub mod environments;
 pub mod error;
+pub mod external;
 pub mod fd_limit;
 pub mod file_store;
 pub mod host;
@@ -1253,7 +1254,9 @@ async fn observed<S: StateStore>(
     state: &AppState<S>,
     app: apps::ApplicationRecord,
 ) -> ApplicationResponse {
-    let services = if matches!(app.runtime, Runtime::Native(_)) {
+    let services = if app.runtime.is_external() {
+        Vec::new()
+    } else if matches!(app.runtime, Runtime::Native(_)) {
         native::lifecycle::service_states(state.native.as_ref(), &app).await
     } else {
         apps::service_states(state.docker.as_ref(), &app).await
@@ -1645,6 +1648,10 @@ async fn update_app<S: StateStore>(
         let current_mounts = host_mounts(current.compose.as_deref().unwrap_or_default());
         let reaches_host = if matches!(body.runtime, Some(Runtime::Native(_))) {
             Some("a native runtime")
+        } else if current.runtime.is_external()
+            || matches!(body.runtime, Some(Runtime::External(_)))
+        {
+            Some("an External Application")
         } else if current.git.is_some() || body.git.is_some() {
             Some("a Git source")
         } else if body.compose.as_deref().is_some_and(|compose| {
@@ -1962,8 +1969,11 @@ async fn deploy_app<S: StateStore>(
     Json(body): Json<DeployApplicationRequest>,
 ) -> Response {
     let is_native = matches!(body.runtime, Some(Runtime::Native(_)));
+    let is_external = matches!(body.runtime, Some(Runtime::External(_)));
     let reaches_host = if is_native {
         Some("a native runtime")
+    } else if is_external {
+        Some("an External Application")
     } else if body.git.is_some() {
         Some("a Git source")
     } else if !body.path.is_empty() {
@@ -2011,6 +2021,28 @@ async fn deploy_app<S: StateStore>(
         )
         .await
         {
+            Ok(pending) => accept_deploy(&state, pending, "create").await,
+            Err(error) => deploy_error_response(error),
+        };
+    }
+    if is_external {
+        if body.git.is_some()
+            || body.source_revision.is_some()
+            || !body.image.is_empty()
+            || !body.path.is_empty()
+            || !body.compose.is_empty()
+            || body.development.is_some()
+            || body.web_service.is_some()
+            || body.web_port.is_some()
+            || !body.environment.is_empty()
+        {
+            return deploy_error_response(DeployError::InvalidExternal(
+                "the external Runtime accepts no image, path, Compose file, Git source, Web Target or environment"
+                    .into(),
+            ));
+        }
+        let _namespace = state.dns_records.lock_namespace().await;
+        return match apps::prepare_deploy_external(&state.store, &body.name, options).await {
             Ok(pending) => accept_deploy(&state, pending, "create").await,
             Err(error) => deploy_error_response(error),
         };
@@ -2377,6 +2409,9 @@ async fn set_env_record<S: StateStore>(
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
         _ => {}
     }
+    if app.runtime.is_external() {
+        return external_refusal("it has no Variables");
+    }
     if matches!(app.runtime, Runtime::Native(_))
         && let Err(error) =
             native::lifecycle::validate_environment(&[(body.key.clone(), body.value.clone())])
@@ -2440,6 +2475,9 @@ async fn unset_env_record<S: StateStore>(
     key: String,
 ) -> Response {
     let name = app.name.clone();
+    if app.runtime.is_external() {
+        return external_refusal("it has no Variables");
+    }
     if !audit::allows(auth::Scope::Host) && mounts_read_variables(&app) {
         return needs_host("a Variable that a mount path reads");
     }
@@ -2479,7 +2517,7 @@ async fn list_app_containers<S: StateStore>(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     match state.store.get_application(&id).await {
-        Ok(Some(app)) if matches!(app.runtime, Runtime::Native(_)) => {
+        Ok(Some(app)) if matches!(app.runtime, Runtime::Native(_) | Runtime::External(_)) => {
             Json(Vec::<String>::new()).into_response()
         }
         Ok(Some(_)) => match state.docker.application_containers(&id).await {
@@ -2517,7 +2555,7 @@ async fn list_app_processes<S: StateStore>(
             }),
             Err(error) => return error_response(StatusCode::SERVICE_UNAVAILABLE, error.as_ref()),
         }
-    } else {
+    } else if !app.runtime.is_external() {
         let names = match state.docker.application_containers(&id).await {
             Ok(names) => names,
             Err(error) => return logs_error_response(&apps::LogsError::Docker(error)),
@@ -2555,7 +2593,9 @@ async fn http_status<S: StateStore>(
 ) -> Response {
     match apps::get_application(&state.store, &id).await {
         Ok(app) => {
-            let services = if matches!(app.runtime, Runtime::Native(_)) {
+            let services = if app.runtime.is_external() {
+                Vec::new()
+            } else if matches!(app.runtime, Runtime::Native(_)) {
                 native::lifecycle::service_states(state.native.as_ref(), &app).await
             } else {
                 apps::service_states(state.docker.as_ref(), &app).await
@@ -2609,6 +2649,9 @@ async fn stream_logs_for<S: StateStore>(
     app: apps::ApplicationRecord,
     container: Option<String>,
 ) -> Response {
+    if app.runtime.is_external() {
+        return external_refusal("its logs stay on the device");
+    }
     if matches!(app.runtime, Runtime::Native(_)) {
         if container.is_some() {
             return (
@@ -3102,6 +3145,16 @@ async fn tailnet_status() -> Response {
     }
 }
 
+fn external_refusal(reason: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorReport::plain(format!(
+            "An External Application runs outside the Platform; {reason}"
+        ))),
+    )
+        .into_response()
+}
+
 fn deploy_error_response(err: DeployError) -> Response {
     let status = match &err {
         DeployError::AlreadyExists(_) | DeployError::PublicationFixed => StatusCode::CONFLICT,
@@ -3112,6 +3165,7 @@ fn deploy_error_response(err: DeployError) -> Response {
         DeployError::Readiness(_) => StatusCode::CONFLICT,
         DeployError::Source(source::SourceError::Invalid(_)) => StatusCode::BAD_REQUEST,
         DeployError::InvalidNative(_)
+        | DeployError::InvalidExternal(_)
         | DeployError::InvalidName(_)
         | DeployError::InvalidHostname(_)
         | DeployError::MissingImage
@@ -4190,6 +4244,183 @@ mod tests {
 
         let response = post_json(&app, "/apps/id/nope/start", Some("test-key"), json!({})).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn setup_external() -> (Router, FakeStateStore, FakeDocker, Arc<routes::FakeRoutes>) {
+        let store = FakeStateStore::new();
+        store.store_state("api_key", "test-key").await.unwrap();
+        store.store_state("dns_suffix", "home.lan").await.unwrap();
+        let docker = FakeDocker::new();
+        let route_store = Arc::new(routes::FakeRoutes::new());
+        let app = build_app(
+            store.clone(),
+            Arc::new(docker.clone()),
+            route_store.clone(),
+            metrics::Metrics::new(),
+        );
+        (app, store, docker, route_store)
+    }
+
+    #[tokio::test]
+    async fn an_external_application_is_routed_and_its_lifecycle_never_reaches_docker() {
+        let (app, store, docker, route_store) = setup_external().await;
+        let pin = "ab".repeat(32);
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "router",
+                "hostname": "router.home.lan",
+                "runtime": {"kind": "external", "upstream": "https://192.168.1.1", "pin": pin},
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let record = store
+            .find_application_by_name("router")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.status, apps::STATUS_RUNNING);
+        assert_eq!(record.source, apps::SOURCE_EXTERNAL);
+        assert_eq!(record.web_target_port, None);
+        assert_eq!(
+            record.runtime,
+            Runtime::External(store::ExternalDefinition {
+                upstream: "https://192.168.1.1:443".into(),
+                pin: Some(["AB"; 32].join(":")),
+            })
+        );
+        let published = route_store.get(&record.id).unwrap();
+        assert_eq!(published.hostnames, ["router.home.lan"]);
+        assert_eq!(published.target, Some("192.168.1.1:443".parse().unwrap()));
+
+        let response = post_json(
+            &app,
+            &format!("/apps/id/{}/stop", record.id),
+            Some("test-key"),
+            json!({}),
+        )
+        .await;
+        let (_, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
+        assert_eq!(
+            store
+                .get_application(&record.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            apps::STATUS_STOPPED
+        );
+        assert_eq!(route_store.get(&record.id), None);
+
+        for verb in ["start", "restart"] {
+            let response = post_json(
+                &app,
+                &format!("/apps/id/{}/{verb}", record.id),
+                Some("test-key"),
+                json!({}),
+            )
+            .await;
+            let (_, event) = accepted_and_finished(&store, response).await;
+            assert_eq!(event.status, "completed", "{verb}");
+            assert_eq!(
+                store
+                    .get_application(&record.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                apps::STATUS_RUNNING,
+                "{verb}"
+            );
+            assert!(route_store.get(&record.id).is_some(), "{verb}");
+        }
+
+        let response = send(
+            &app,
+            &format!("/apps/id/{}/logs", record.id),
+            Some("test-key"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("External Application"));
+        for path in ["containers", "processes"] {
+            let response = send(
+                &app,
+                &format!("/apps/id/{}/{path}", record.id),
+                Some("test-key"),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                json!([]),
+                "{path}"
+            );
+        }
+        let response = post_json(
+            &app,
+            "/apps/router/env",
+            Some("test-key"),
+            json!({"key": "A", "value": "b"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = delete_req(&app, "/apps/router", Some("test-key")).await;
+        let (_, event) = accepted_and_finished(&store, response).await;
+        assert_eq!(event.status, "completed");
+        assert!(store.list_applications().await.unwrap().is_empty());
+        assert_eq!(route_store.get(&record.id), None);
+
+        assert!(docker.apps.lock().unwrap().is_empty());
+        assert!(docker.pulled.lock().unwrap().is_empty());
+        assert!(docker.projects.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_external_upstream_off_the_private_lan_is_refused_by_rule() {
+        let (app, store, _, _) = setup_external().await;
+        for (upstream, rule) in [
+            ("http://127.0.0.1:8080", "loopback"),
+            ("http://[::1]:8080", "loopback"),
+            ("http://169.254.169.254", "link-local"),
+            ("https://8.8.8.8", "public"),
+            ("https://[2001:db8::1]", "public"),
+            ("https://router.lan", "names are not supported"),
+            ("http://172.17.0.2", "Docker bridge"),
+        ] {
+            let response = post_json(
+                &app,
+                "/apps",
+                Some("test-key"),
+                json!({"name": "router", "runtime": {"kind": "external", "upstream": upstream}}),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{upstream}");
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let parsed: Value = serde_json::from_slice(&body).unwrap();
+            let error = parsed["error"].as_str().unwrap();
+            assert!(error.contains(rule), "{upstream}: {error}");
+        }
+        let response = post_json(
+            &app,
+            "/apps",
+            Some("test-key"),
+            json!({
+                "name": "router",
+                "image": "nginx",
+                "runtime": {"kind": "external", "upstream": "https://192.168.1.1"},
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(store.list_applications().await.unwrap().is_empty());
     }
 
     #[tokio::test]
