@@ -246,6 +246,100 @@ impl ServerCertVerifier for PinnedCertificate {
     }
 }
 
+#[derive(Debug)]
+struct CapturedCertificate {
+    seen: Mutex<Option<CertificateDer<'static>>>,
+    algorithms: WebPkiSupportedAlgorithms,
+}
+
+impl ServerCertVerifier for CapturedCertificate {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        *self.seen.lock().unwrap() = Some(end_entity.clone().into_owned());
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
+}
+
+pub async fn presented_certificate(
+    address: SocketAddr,
+    timeout: Duration,
+) -> Result<CertificateDer<'static>, String> {
+    let provider = provider();
+    let verifier = Arc::new(CapturedCertificate {
+        seen: Mutex::new(None),
+        algorithms: provider.signature_verification_algorithms,
+    });
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("the ring provider supports the default protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(verifier.clone())
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let handshake = async {
+        let tcp = TcpStream::connect(address).await?;
+        connector
+            .connect(ServerName::IpAddress(address.ip().into()), tcp)
+            .await
+    };
+    match tokio::time::timeout(timeout, handshake).await {
+        Err(_) => Err(format!(
+            "{address} did not finish a TLS handshake within {} seconds",
+            timeout.as_secs()
+        )),
+        Ok(Err(error)) => Err(format!("{address}: {}", chain(&error))),
+        Ok(Ok(_)) => verifier
+            .seen
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| format!("{address} presented no certificate")),
+    }
+}
+
+pub async fn probe(upstream: &Upstream, host: &str, timeout: Duration) -> Result<u16, String> {
+    let request = Request::get(upstream.uri("/"))
+        .header(hyper::header::HOST, host)
+        .body(super::empty_body())
+        .map_err(|error| error.to_string())?;
+    match tokio::time::timeout(timeout, Clients::new().request(upstream, request)).await {
+        Err(_) => Err(format!(
+            "{upstream} did not answer within {} seconds",
+            timeout.as_secs()
+        )),
+        Ok(Err(error)) => Err(chain(&error)),
+        Ok(Ok(response)) => Ok(response.status().as_u16()),
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct TlsConnector {
     tls: tokio_rustls::TlsConnector,

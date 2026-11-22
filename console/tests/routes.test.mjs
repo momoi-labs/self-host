@@ -19,7 +19,7 @@ await build({
     rollupOptions: { output: { entryFileNames: "routes.mjs" } },
   },
 });
-const { replaceRoute, routesOf } = await import(pathToFileURL(join(outDir, "routes.mjs")));
+const { nameFor, replaceRoute, routesOf, sameFingerprint, targetLabel } = await import(pathToFileURL(join(outDir, "routes.mjs")));
 
 const app = {
   id: "web",
@@ -80,4 +80,27 @@ test("a redirect draft reads back from the rule it writes, and lands on the rout
   assert.equal(landingRoute(routesOf(app), rule.replacement)?.key, www.key);
   assert.equal(landingRoute(routesOf(app), "https://web.home.lan/api/v1")?.key, api.key);
   assert.equal(landingRoute(routesOf(app), "https://elsewhere.example.com/"), undefined);
+});
+
+test("an External app is named after its subdomain, with a suffix when the name is taken", () => {
+  const taken = [{ name: "router" }, { name: "router-2" }, { name: "nas" }];
+  assert.equal(nameFor("unifi", taken), "unifi");
+  assert.equal(nameFor("router", taken), "router-3");
+  assert.equal(nameFor("nas.example.com", taken), "nas-2");
+});
+
+test("an External app's target drops the scheme's default port", () => {
+  const external = (upstream) => ({ id: "x", name: "x", hostname: "x.home.lan", runtime: { kind: "external", upstream } });
+  assert.equal(targetLabel(external("https://192.168.1.1:443")), "https://192.168.1.1");
+  assert.equal(targetLabel(external("http://192.168.1.5:80")), "http://192.168.1.5");
+  assert.equal(targetLabel(external("https://192.168.1.1:8443")), "https://192.168.1.1:8443");
+  assert.equal(targetLabel(external("http://[fd00::5]:80")), "http://[fd00::5]");
+  assert.equal(targetLabel(external("http://192.168.1.5:443")), "http://192.168.1.5:443");
+});
+
+test("a fingerprint typed by hand matches the fetched one whatever its case and colons", () => {
+  const fetched = "FA:99:01:F7:AF:22:78:AD:52:C4:FF:B7:B0:13:92:D0:DD:74:77:B0:72:6F:09:76:97:39:DC:6B:A9:C2:D8:9D";
+  assert.equal(sameFingerprint(fetched.toLowerCase().replaceAll(":", ""), fetched), true);
+  assert.equal(sameFingerprint(` ${fetched} `, fetched), true);
+  assert.equal(sameFingerprint(fetched.replace("FA", "FB"), fetched), false);
 });

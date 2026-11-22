@@ -44,7 +44,7 @@ export type NativeDefinition = {
 
 /** How an Application runs (ADR-0028). Every Application predating the field
  * is a container. */
-export type Runtime = { kind: "container" } | ({ kind: "native" } & NativeDefinition);
+export type Runtime = { kind: "container" } | ({ kind: "native" } & NativeDefinition) | { kind: "external"; upstream: string; pin?: string | null };
 
 /** Whether the Application's Hostname routes to it (ADR-0028). An unpublished
  * Application has an empty hostname, no aliases and no route. */

@@ -7,6 +7,9 @@ import {
 
 import { kindIcon, kindLabel, redirectFrom, redirectTo, replaceRoute, saveRedirects, saveRoutes, targetLabel, urlOf, type Route } from "../lib/routes.js";
 import type { App, RedirectRule } from "../lib/types.js";
+import { api, asReport, failureOf } from "../lib/api.js";
+import { fetchEvents } from "../lib/useEvents.js";
+import { waitForTask } from "../lib/tasks.js";
 
 /** A redirect as a row: the Application it answers for, the rule, and its place in that Application's list. */
 export type RedirectEntry = { app: App; rule: RedirectRule; index: number };
@@ -71,9 +74,17 @@ export function RouteRows({ routes, redirects, ready, showApplication, reload, o
   const [unredirecting, setUnredirecting] = useState<RedirectEntry | null>(null);
   const columns = showApplication ? 6 : 5;
 
+  async function removeExternal(app: App) {
+    const res = await api(`/apps/id/${encodeURIComponent(app.id)}`, { method: "DELETE" });
+    if (!res.ok) return await failureOf(res);
+    const outcome = await waitForTask(((await res.json()) as { task_id: string }).task_id, { events: fetchEvents });
+    return outcome.status === "failed" ? asReport(outcome.error ?? "The removal failed.") : null;
+  }
   async function remove(route: Route) {
     try {
-      const refused = await saveRoutes(route.app, replaceRoute(route.app, route, null));
+      const refused = route.kind === "hostname" && route.app.runtime?.kind === "external"
+        ? await removeExternal(route.app)
+        : await saveRoutes(route.app, replaceRoute(route.app, route, null));
       if (refused) { notify("danger", "Could not remove the route", refused); return; }
       await reload();
       notify("success", "Route removed");
@@ -123,7 +134,7 @@ export function RouteRows({ routes, redirects, ready, showApplication, reload, o
               <span className="mono">{route.hostname}<span className="route-path">{route.path}</span></span>
             </TableCell>
             {showApplication ? (
-              <TableCell>{appLink(route.app)}</TableCell>
+              <TableCell>{route.app.runtime?.kind === "external" ? <span className="route-app muted"><Icon name="router" />External app</span> : appLink(route.app)}</TableCell>
             ) : null}
             <TableCell><Badge variant="neutral"><Icon name={kindIcon[route.kind]} />{kindLabel[route.kind]}</Badge></TableCell>
             <TableCell className="mono muted">{route.target ?? targetLabel(route.app)}{route.path !== "/" && !route.stripPrefix ? route.path : ""}</TableCell>
@@ -137,9 +148,9 @@ export function RouteRows({ routes, redirects, ready, showApplication, reload, o
                   <Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for ${urlOf(route)}`}><Icon name="more" /></Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  {showApplication ? <DropdownMenuItem onSelect={() => onOpenApp?.(route.app.id)}>Open {route.app.name}</DropdownMenuItem> : null}
+                  {showApplication && route.app.runtime?.kind !== "external" ? <DropdownMenuItem onSelect={() => onOpenApp?.(route.app.id)}>Open {route.app.name}</DropdownMenuItem> : null}
                   <DropdownMenuItem onSelect={() => void navigator.clipboard?.writeText(urlOf(route))}>Copy URL</DropdownMenuItem>
-                  {route.kind === "hostname" ? (
+                  {route.kind === "hostname" && route.app.runtime?.kind !== "external" ? (
                     onRename ? <DropdownMenuItem onSelect={onRename}>Change in Configuration</DropdownMenuItem> : null
                   ) : (
                     <>
@@ -181,8 +192,10 @@ export function RouteRows({ routes, redirects, ready, showApplication, reload, o
           <AlertDialogHeader><AlertDialogTitle>Remove route</AlertDialogTitle></AlertDialogHeader>
           <div className="dialog-body">
             <AlertDialogDescription>
-              <code>{removing ? urlOf(removing) : null}</code> stops reaching {removing?.app.name}.
-              {removing?.kind === "path" ? " Its requests go to the hostname's / route, if it has one." : " The proxy answers 404 for it."}
+              {removing?.kind === "hostname" && removing.app.runtime?.kind === "external" ? <>
+                <code>{urlOf(removing)}</code> stops reaching <code>{targetLabel(removing.app)}</code>, and its aliases and path routes go with it. The proxy answers 404 for it. The device itself is untouched.
+              </> : <><code>{removing ? urlOf(removing) : null}</code> stops reaching {removing?.app.runtime?.kind === "external" ? targetLabel(removing.app) : removing?.app.name}.
+              {removing?.kind === "path" ? " Its requests go to the hostname's / route, if it has one." : " The proxy answers 404 for it."}</>}
             </AlertDialogDescription>
           </div>
           <AlertDialogFooter>

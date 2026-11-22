@@ -12,13 +12,12 @@ import { isPublished, kindLabel, redirectDraft, redirectFrom, redirectTo, routes
 import type { App } from "../lib/types.js";
 
 /** The HTTP proxy's whole table: every hostname and path, and the Application it reaches. */
-export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: {
+export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp }: {
   apps: App[];
   ready: boolean;
   dnsSuffix: string;
   reload: () => Promise<App[]>;
   onOpenApp: (id: string) => void;
-  onDeploy: () => void;
 }) {
   const notify = useToast();
   const [query, setQuery] = useState("");
@@ -31,7 +30,7 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: 
     .sort((a, b) => a.hostname.localeCompare(b.hostname) || a.path.localeCompare(b.path));
   const visible = routes.filter((route) =>
     `${route.hostname}${route.path}`.includes(query.trim().toLowerCase()) &&
-    (application === "all" || route.app.id === application) &&
+    (application === "all" || route.app.id === application || (application === "external" && route.app.runtime?.kind === "external")) &&
     (kind === "all" || route.kind === kind));
   const redirects: RedirectEntry[] = published.flatMap((app) => (app.redirects ?? []).map((rule, index) => ({ app, rule, index })))
     .filter(({ app, rule }) =>
@@ -48,10 +47,9 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: 
   return (
     <>
       <ListPage title="Routes"
-        action={published.length ? { label: "Add route", icon: <Icon name="plus" />, onClick: () => setEditor({ app: null }) }
-          : { label: "Deploy application", icon: <Icon name="plus" />, onClick: onDeploy }}
+        action={{ label: "Add route", icon: <Icon name="plus" />, onClick: () => setEditor({ app: null }) }}
         state={!ready ? "loading" : total ? "ready" : "empty"}
-        empty={{ title: "No routes yet", text: "Routes come from an Application with a Hostname, so deploy one first." }}
+        empty={{ title: "No routes yet", text: "Add a route to an Application with a Hostname, or to an External app on your LAN." }}
         count={`${visible.length + redirects.length} of ${total} routes`}
         filters={<div className="list-filters">
           <Search aria-label="Search routes" placeholder="Search routes..." value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -59,7 +57,8 @@ export function Routes({ apps, ready, dnsSuffix, reload, onOpenApp, onDeploy }: 
             <SelectTrigger aria-label="Filter by application"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All applications</SelectItem>
-              {published.map((app) => <SelectItem key={app.id} value={app.id}>{app.name}</SelectItem>)}
+              {published.filter((app) => app.runtime?.kind !== "external").map((app) => <SelectItem key={app.id} value={app.id}>{app.name}</SelectItem>)}
+              {published.some((app) => app.runtime?.kind === "external") ? <SelectItem value="external">External apps</SelectItem> : null}
             </SelectContent>
           </Select>
           <Select value={kind} onValueChange={setKind}>

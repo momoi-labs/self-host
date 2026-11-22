@@ -45,6 +45,7 @@ export function App() {
   useEffect(() => {
     if (!ready) return;
     if (view.view === "app" && !app) go({ view: "overview", id: null }, { replace: true });
+    if (app?.runtime?.kind === "external") go({ view: "routes", id: null }, { replace: true });
   }, [ready, view, app, go]);
 
   const crumb =
@@ -137,7 +138,7 @@ export function App() {
           go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
         }} />
       ) : view.view === "routes" ? (
-        <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} onDeploy={() => go({ view: "new", id: null })} />
+        <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} />
       ) : view.view === "databases" ? (
         <Databases apps={apps} ready={ready} reload={reload} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
       ) : view.view === "database-new" ? (
@@ -177,7 +178,7 @@ export function App() {
         />
       ) : app?.managed_postgres ? (
         <ManagedPostgres key={app.id} app={app} apps={apps} metrics={metrics} reload={reload} onRemoved={() => go({ view: "databases", id: null })} onOpenApp={(id) => go({ view: "app", id })} />
-      ) : app ? (
+      ) : app && app.runtime?.kind !== "external" ? (
         <AppDetail
           key={app.id}
           app={app}
