@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import {
   Button, Card, CardContent, Checkbox, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
   FormField, Label, RadioGroup, RadioGroupItem, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -85,6 +85,7 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
   const [probing, setProbing] = useState(false);
   const [probeFailure, setProbeFailure] = useState<unknown>(null);
   const [matched, setMatched] = useState(false);
+  const fetches = useRef(0);
   const https = upstream.trim().startsWith("https://");
   const verdict = !probe || !pin.trim() ? null : sameFingerprint(pin, probe.fingerprint) ? "match" : "mismatch";
   const trusted = verdict === "match" || matched;
@@ -104,15 +105,16 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
 
   const name = label.trim().toLowerCase();
   const hostname = where === OTHER ? name : `${name}${zone}`;
-  const prefix = path.trim() || "/";
+  const prefix = external ? "/" : path.trim() || "/";
+  const forward = external || action === "forward";
   const target = location.trim();
   const routes = published.flatMap(routesOf);
   const outside = [...new Set(routes.map((route) => route.hostname).filter((one) => !one.endsWith(zone)))];
   const labels = [...new Set(routes.map((route) => route.hostname).filter((one) => one.endsWith(zone)).map((one) => one.slice(0, -zone.length)))];
-  const clash = action === "forward"
+  const clash = forward
     ? routes.find((route) => route.key !== editing?.key && route.hostname === hostname && route.path === prefix)
     : undefined;
-  const redirectClash = action === "redirect"
+  const redirectClash = !forward
     ? (app?.redirects ?? []).some((rule, index) => {
       const other = redirectDraft(rule);
       return index !== editor.redirect && other?.hostname === hostname && other.path === prefix;
@@ -141,21 +143,25 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
       : /^(https?:\/\/|\/)/.test(target)
         ? target === prefix ? "That is the path it answers on." : null
         : "Start with / for a path on this hostname, or with https://.";
-  const valid = (app !== undefined || (external && upstream.trim() !== "" && (!probe || trusted))) && name !== "" && !labelError && !pathError
-    && (action === "forward" || (target !== "" && !locationError));
+  const valid = name !== "" && !labelError && (external
+    ? upstream.trim() !== "" && (!probe || trusted)
+    : app !== undefined && !pathError && (forward || (target !== "" && !locationError)));
 
   async function fetchFingerprint() {
+    const asked = ++fetches.current;
     setProbing(true);
     setProbe(null);
     setMatched(false);
     setProbeFailure(null);
     try {
       const res = await api("/external/fingerprint", { method: "POST", body: JSON.stringify({ upstream: upstream.trim() }) });
-      if (!res.ok) setProbeFailure(await failureOf(res));
-      else setProbe(await res.json() as Probe);
+      const answer = res.ok ? await res.json() as Probe : await failureOf(res);
+      if (asked !== fetches.current) return;
+      if (res.ok) setProbe(answer as Probe);
+      else setProbeFailure(answer);
     } catch (cause) {
-      setProbeFailure(asReport(cause));
-    } finally { setProbing(false); }
+      if (asked === fetches.current) setProbeFailure(asReport(cause));
+    } finally { if (asked === fetches.current) setProbing(false); }
   }
 
   async function saveExternal() {
@@ -231,7 +237,7 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
           {external ? <>
             <FormField id="route-upstream" label="Upstream URL" className="mono" value={upstream} required disabled={saving}
               placeholder="https://192.168.1.1" autoComplete="off" spellCheck={false}
-              onChange={(event) => { setUpstream(event.target.value); setProbe(null); setMatched(false); setProbeFailure(null); }}
+              onChange={(event) => { fetches.current += 1; setProbing(false); setUpstream(event.target.value); setProbe(null); setMatched(false); setProbeFailure(null); }}
               hint="http:// or https://, a private LAN IP address and an optional port. No names, no path." />
             {https ? <>
               {probe ? (
