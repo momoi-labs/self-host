@@ -996,7 +996,7 @@ async fn prepare_native_update(
                 .into(),
         ));
     }
-    if matches!(update.runtime, Some(Runtime::Container)) {
+    if !matches!(update.runtime, None | Some(Runtime::Native(_))) {
         return Err(DeployError::InvalidNative(
             "Application Runtime cannot be changed".into(),
         ));
@@ -5355,6 +5355,46 @@ services:
         assert_eq!(retry.native_intent(), Some(true));
         assert_eq!(retry.record.status, STATUS_PENDING);
         assert_eq!(retry.record.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn a_native_application_cannot_become_external() {
+        let store = initialized_store().await;
+        let pending = prepare_deploy_native(
+            &store,
+            "api",
+            DeployOptions {
+                runtime: Some(Runtime::Native(
+                    serde_json::from_value(serde_json::json!({
+                        "command": ["/opt/api/bin/serve"],
+                        "port": 8080
+                    }))
+                    .unwrap(),
+                )),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+        let err = prepare_update(
+            &store,
+            &pending.record.id,
+            ApplicationUpdate {
+                runtime: Some(Runtime::External(crate::store::ExternalDefinition {
+                    upstream: "https://192.168.1.1".into(),
+                    pin: None,
+                })),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid native Application: Application Runtime cannot be changed"
+        );
     }
 
     #[tokio::test]
