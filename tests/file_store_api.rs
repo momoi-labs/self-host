@@ -429,7 +429,7 @@ async fn a_host_with_no_database_keeps_what_the_operator_deployed_across_a_resta
         &app,
         "POST",
         "/api-keys",
-        Some(json!({ "label": "laptop" })),
+        Some(json!({ "label": "laptop", "kind": "agent" })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{key}");
