@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use axum::{
     Json,
     extract::{ConnectInfo, Path, Request, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use rand::Rng;
@@ -252,8 +252,11 @@ async fn save<S: StateStore>(store: &S, account: &Account) -> Result<(), Refusal
         .map_err(|e| Refusal::internal(e.to_string()))
 }
 
-fn host_of(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get(header::HOST)?.to_str().ok()?;
+fn host_of(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    let raw = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| uri.host())?;
     Some(raw.split(':').next().unwrap_or(raw).to_ascii_lowercase())
 }
 
@@ -261,8 +264,8 @@ fn origin_of(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
 }
 
-fn on_canonical(headers: &HeaderMap, canonical: &Canonical) -> Result<(), Refusal> {
-    if host_of(headers).as_deref() != Some(canonical.host.as_str()) {
+fn on_canonical(headers: &HeaderMap, uri: &Uri, canonical: &Canonical) -> Result<(), Refusal> {
+    if host_of(headers, uri).as_deref() != Some(canonical.host.as_str()) {
         return Err(Refusal::forbidden(format!(
             "Passkeys work only at {}. Open that address and try again.",
             canonical.console_url()
@@ -636,10 +639,11 @@ async fn setup_authority<S: StateStore>(
 pub(crate) async fn setup_start<S: StateStore>(
     State(state): State<AppState<S>>,
     headers: HeaderMap,
+    uri: Uri,
     Json(body): Json<NameRequest>,
 ) -> Answer {
     let canonical = canonical_or_fail(&state.store).await?;
-    on_canonical(&headers, &canonical)?;
+    on_canonical(&headers, &uri, &canonical)?;
     let authority = setup_authority(&state, &headers).await?;
     let name = passkey_name(&body.name)?;
     start_registration(&state, &canonical, authority, name).await
@@ -648,10 +652,11 @@ pub(crate) async fn setup_start<S: StateStore>(
 pub(crate) async fn setup_finish<S: StateStore>(
     State(state): State<AppState<S>>,
     headers: HeaderMap,
+    uri: Uri,
     Json(body): Json<RegistrationFinish>,
 ) -> Answer {
     let canonical = canonical_or_fail(&state.store).await?;
-    on_canonical(&headers, &canonical)?;
+    on_canonical(&headers, &uri, &canonical)?;
     let authority = setup_authority(&state, &headers).await?;
     finish_registration(&state, &canonical, authority, body).await
 }
@@ -737,9 +742,10 @@ async fn verify_assertion<S: StateStore>(
 pub(crate) async fn login_start<S: StateStore>(
     State(state): State<AppState<S>>,
     headers: HeaderMap,
+    uri: Uri,
 ) -> Answer {
     let canonical = canonical_or_fail(&state.store).await?;
-    on_canonical(&headers, &canonical)?;
+    on_canonical(&headers, &uri, &canonical)?;
     let (options, challenge) = start_assertion(&state.store, &canonical).await?;
     let id = random_hex();
     state.account.pending().logins.insert(
@@ -756,10 +762,11 @@ pub(crate) async fn login_start<S: StateStore>(
 pub(crate) async fn login_finish<S: StateStore>(
     State(state): State<AppState<S>>,
     headers: HeaderMap,
+    uri: Uri,
     Json(body): Json<LoginFinish>,
 ) -> Answer {
     let canonical = canonical_or_fail(&state.store).await?;
-    on_canonical(&headers, &canonical)?;
+    on_canonical(&headers, &uri, &canonical)?;
     let login = state
         .account
         .pending()
