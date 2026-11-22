@@ -762,6 +762,33 @@ async fn recovery_answers_only_on_loopback_with_the_state_secret() {
 }
 
 #[tokio::test]
+async fn recovery_answers_on_the_address_the_daemon_listens_on() {
+    let Platform { app, state } = platform().await;
+    state
+        .store
+        .store_state("api_listen_addr", "100.64.0.1:3721")
+        .await
+        .unwrap();
+    let (status, _) = recover(&app, Some("100.64.0.1:5000"), Some(RECOVERY)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = recover(&app, Some("100.64.0.2:5000"), Some(RECOVERY)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_restart_clears_a_root_key_a_crash_left_behind_its_retirement() {
+    let Platform { app, state } = platform().await;
+    state
+        .store
+        .store_state(account::ROOT_RETIRED_STATE, &crate::auth::now())
+        .await
+        .unwrap();
+    account::seed_root_key(&state.store, "").await;
+    let (status, _, _) = send(&app, "GET", "/apps", Call::bearer(ROOT), Value::Null).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn a_recovery_key_registers_one_passkey_once_and_opens_nothing_else() {
     let Platform { app, state } = platform().await;
     let (_, old_cookie) = operator(&app).await;
