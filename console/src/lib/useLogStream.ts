@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { authHeaders } from "./api.js";
+import { api } from "./api.js";
 import { logEventParser, type LogLine } from "./logEvents.js";
 
 /**
@@ -19,7 +19,7 @@ export function useLogStream(url: string | null): LogLine[] {
 
     void (async () => {
       try {
-        const res = await fetch(url, { headers: authHeaders(), signal: abort.signal });
+        const res = await api(url, { signal: abort.signal });
         if (!res.ok || !res.body) {
           setLines([{ text: "Could not connect to the log stream.", level: "error" }]);
           return;

@@ -6,7 +6,6 @@ import {
   EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateIcon, EmptyStateTitle, FormField,
 } from "@momoi-labs/kiso-react";
 
-import { apiKey } from "../lib/api.js";
 import { hostQuery } from "../lib/queries.js";
 import { Icon } from "./Icon.js";
 import { useToast } from "./Toasts.js";
@@ -51,7 +50,7 @@ export function HostScreen() {
     socket.binaryType = "arraybuffer";
     session.current = { rfb: null, socket };
     setStatus("connecting");
-    socket.onopen = () => socket.send(JSON.stringify({ key: apiKey() }));
+    socket.onopen = () => socket.send(JSON.stringify({}));
     socket.onclose = () => {
       session.current = null;
       setStatus("idle");

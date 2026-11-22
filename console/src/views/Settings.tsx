@@ -25,6 +25,7 @@ import {
   type SettingsSectionId,
 } from "../lib/settingsSections.js";
 import { ApiKeys } from "./settings/ApiKeys.js";
+import { Passkeys } from "./settings/Passkeys.js";
 import { BackupStorage, MaintenanceWindow } from "./settings/Backups.js";
 import { YourHost } from "./settings/DnsSetup.js";
 import { ApplicationDefaults, AuditHistory, HostAccess, NativeBuildLimits } from "./settings/General.js";
@@ -36,6 +37,7 @@ const cards: Record<SettingId, ComponentType<{ id: string }>> = {
   "native-build-limits": NativeBuildLimits,
   "audit-history": AuditHistory,
   "api-keys": ApiKeys,
+  passkeys: Passkeys,
   host: HostAccess,
   "git-connections": GitConnectionsSettings,
   "your-host": YourHost,

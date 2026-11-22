@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Alert,
@@ -37,8 +37,9 @@ import {
 
 import { Icon } from "../../components/Icon.js";
 import type { PaneProps } from "./General.js";
-import { api, failureOf, readJson, requireKey } from "../../lib/api.js";
+import { api, readJson } from "../../lib/api.js";
 import { formatAgo } from "../../lib/format.js";
+import { ceremonyMessage, createKey, needsPasskey } from "../../lib/passkey.js";
 import { apiKeysQuery } from "../../lib/queries.js";
 import type { ApiKey, TailnetStatus } from "../../lib/types.js";
 import { SettingCard } from "./SettingCard.js";
@@ -79,44 +80,33 @@ export function ApiKeys({ id }: PaneProps) {
   const [scopes, setScopes] = useState<string[]>(agentDefault);
   const [expiry, setExpiry] = useState("30");
   const [device, setDevice] = useState(anyDevice);
-  const [created, setCreated] = useState<string | null>(null);
+  const [created, setCreated] = useState<{ key: string; by?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    requireKey();
-  }, []);
+  const [pending, setPending] = useState(false);
 
   async function create(event: FormEvent) {
     event.preventDefault();
     setError(null);
+    const request =
+      kind === "agent"
+        ? { label: label.trim(), kind, scopes, expires_in_days: Number(expiry), node_id: device === anyDevice ? null : device }
+        : { label: label.trim(), kind, expires_in_days: expiry === "never" ? "never" : Number(expiry) };
+    setPending(true);
     try {
-      const res = await api("/api-keys", {
-        method: "POST",
-        body: JSON.stringify(
-          kind === "agent"
-            ? {
-                label: label.trim(),
-                kind,
-                scopes,
-                expires_in_days: Number(expiry),
-                node_id: device === anyDevice ? null : device,
-              }
-            : { label: label.trim(), kind, expires_in_days: expiry === "never" ? "never" : Number(expiry) },
-        ),
-      });
-      if (!res.ok) throw new Error(res.status === 422 || res.status === 409 ? (await failureOf(res)).error : "Could not create the key. Try again.");
-      const data = (await res.json()) as { key: string };
+      const data = (await createKey(request, needsPasskey(request))) as { key: string; authorized_by?: ApiKey["authorized_by"] };
       setLabel("");
       setKind("agent");
       setScopes(agentDefault);
       setExpiry("30");
       setDevice(anyDevice);
       setCreating(false);
-      setCreated(data.key);
+      setCreated({ key: data.key, by: data.authorized_by?.passkey_name });
       await load();
     } catch (cause) {
-      setError((cause as Error).message);
+      setError(ceremonyMessage(cause));
+    } finally {
+      setPending(false);
     }
   }
 
@@ -159,7 +149,8 @@ export function ApiKeys({ id }: PaneProps) {
           <Icon name="info" size="md" />
           <AlertContent>
             <AlertTitle>Copy this key now. It will not be shown again.</AlertTitle>
-            <AlertDescription className="mono">{created}</AlertDescription>
+            <AlertDescription className="mono">{created.key}</AlertDescription>
+            {created.by ? <AlertDescription>Authorized with the passkey "{created.by}".</AlertDescription> : null}
           </AlertContent>
         </Alert>
       ) : null}
@@ -190,6 +181,7 @@ export function ApiKeys({ id }: PaneProps) {
                     <TableCell>
                       <div>{key.primary ? <>{key.label} <span className="muted t-label">Platform key, made by init</span></> : key.label}</div>
                       <div className="mono muted t-label">{key.id}</div>
+                      {key.authorized_by ? <div className="muted t-label">Authorized with passkey "{key.authorized_by.passkey_name}"</div> : null}
                     </TableCell>
                     <TableCell>{kindOf(key)}</TableCell>
                     <TableCell className="key-date">{key.expires_at ? day(key.expires_at) : <span className="muted">Never</span>}</TableCell>
@@ -197,7 +189,6 @@ export function ApiKeys({ id }: PaneProps) {
                     <TableCell>{lastUsed(key)}</TableCell>
                     <TableCell className="key-date">{createdOn(key)}</TableCell>
                     <TableCell className="col-tight">
-                      {/* The Platform's own key cannot be revoked; it is what the console and CLI use. */}
                       {key.primary ? null : (
                         <Button
                           size="sm"
@@ -295,6 +286,14 @@ export function ApiKeys({ id }: PaneProps) {
                   </Alert>
                 )
               ) : null}
+              {needsPasskey({ kind, scopes: kind === "agent" ? scopes : undefined }) ? (
+                <Alert variant="info">
+                  <Icon name="info" size="md" />
+                  <AlertDescription>
+                    {kind === "human" ? "A Person key has full access." : "This key can change the Host."} Your browser asks for your passkey before the key is created.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
               {error ? (
                 <Alert variant="error">
                   <Icon name="alert" size="md" />
@@ -306,8 +305,8 @@ export function ApiKeys({ id }: PaneProps) {
               <Button size="sm" type="button" onClick={() => setCreating(false)}>
                 Cancel
               </Button>
-              <Button size="sm" variant="primary" type="submit">
-                Create key
+              <Button size="sm" variant="primary" type="submit" disabled={pending}>
+                {needsPasskey({ kind, scopes: kind === "agent" ? scopes : undefined }) ? "Confirm with passkey" : "Create key"}
               </Button>
             </DialogFooter>
           </form>

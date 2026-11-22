@@ -173,7 +173,8 @@ These map the existing screens. They do not certify a full contract audit.
 | Custom image editor | `crud`, with ADR-0024 create/detail layouts |
 | Virtual machine create/detail | `crud`, `guided-flow`, with ADR-0024 layouts |
 | Settings: General, Access, Network, and Backups and tasks sections | `settings` |
-| Login | `login-authentication`, plus `skills/add-page/login.md` |
+| Settings, Access, Passkeys | `settings`; adding a passkey or creating a Person or `host` key confirms with a passkey from the card's Dialog |
+| Login: passkey login, first passkey setup, CLI key step and the non-canonical name message | `login-authentication`, plus `skills/add-page/login.md` |
 | Device setup | `onboarding`; outside the authenticated shell |
 | Host and standalone remote screen | No full-screen pattern; product-specific terminal and remote screen |
 

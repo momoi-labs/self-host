@@ -3,7 +3,7 @@ import { Button, FormField, EmptyState, EmptyStateActions, EmptyStateDescription
 import { Terminal as Xterm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { api, apiKey, failureOf } from "../lib/api.js";
+import { api, failureOf } from "../lib/api.js";
 import type { App, ServiceState } from "../lib/types.js";
 import { Icon } from "./Icon.js";
 import { useToast } from "./Toasts.js";
@@ -101,8 +101,8 @@ export function Terminal({ id = "", machine = false, native = false, host = fals
       if (disposed) { socket.close(); return; }
       send(
         machine || native || host
-          ? { key: apiKey(), cols: terminal.cols, rows: terminal.rows }
-          : { key: apiKey(), container, cols: terminal.cols, rows: terminal.rows },
+          ? { cols: terminal.cols, rows: terminal.rows }
+          : { container, cols: terminal.cols, rows: terminal.rows },
       );
     };
     socket.onmessage = (event) => {
