@@ -318,6 +318,7 @@ export type ApiKey = {
   expires_at?: string;
   node_id?: string;
   last_used_at?: string;
+  authorized_by?: { account: string; passkey: string; passkey_name: string };
 };
 
 export type TailnetStatus = {

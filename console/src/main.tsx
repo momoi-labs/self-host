@@ -4,7 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 
 import { App } from "./App.js";
 import { Toasts } from "@momoi-labs/kiso-react";
-import { api, logout, requireKey } from "./lib/api.js";
+import { api } from "./lib/api.js";
 import { queryClient } from "./lib/queryClient.js";
 import "./console.css";
 
@@ -12,17 +12,11 @@ import "./console.css";
 // it, and noVNC is only fetched there.
 const HostScreen = lazy(() => import("./components/HostScreen.js").then((module) => ({ default: module.HostScreen })));
 
-/*
- * A key in session storage is not proof it still works: the Platform may have
- * been reset since. Ask once, and send a rejected key back to the login page
- * rather than rendering a console that cannot load anything.
- */
 async function start() {
-  if (!requireKey()) return;
   try {
-    const res = await api("/health");
-    if (!res.ok) {
-      logout();
+    const res = await api("/whoami");
+    if (res.status === 401 || res.status === 403) {
+      window.location.replace("/console");
       return;
     }
   } catch {

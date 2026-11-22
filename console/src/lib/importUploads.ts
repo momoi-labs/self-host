@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 
-import { apiKey } from "./api.js";
 import type { ArchiveFormat } from "./archiveFormat.js";
 import { fileFingerprint } from "./fileFingerprint.js";
 
@@ -68,7 +67,6 @@ function call(method: string, path: string, body: Blob | string | null, headers:
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open(method, path);
-    request.setRequestHeader("Authorization", `Bearer ${apiKey()}`);
     for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
     if (onProgress) request.upload.onprogress = (event) => onProgress(event.loaded);
     request.onload = () => resolve(request);

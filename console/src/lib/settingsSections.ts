@@ -17,6 +17,7 @@ export const settingsSections = [
     id: "access",
     title: "Access",
     settings: [
+      { id: "passkeys", title: "Passkeys" },
       { id: "api-keys", title: "API keys" },
       { id: "host", title: "Host" },
       { id: "git-connections", title: "Git connections" },

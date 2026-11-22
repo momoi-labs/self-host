@@ -1,23 +1,11 @@
 import type { Report } from "./types.js";
 
-export function apiKey(): string {
-  return sessionStorage.getItem("api_key") || "";
-}
-
-export function authHeaders(): Record<string, string> {
-  return { Authorization: "Bearer " + apiKey(), "Content-Type": "application/json" };
-}
-
-export function logout(): void {
-  sessionStorage.removeItem("api_key");
-  window.location.href = "/console";
-}
-
-/** Sends the console back to the login page when there is no key to send. */
-export function requireKey(): boolean {
-  if (apiKey()) return true;
-  window.location.href = "/console";
-  return false;
+export async function logout(): Promise<void> {
+  try {
+    await fetch("/account/logout", { method: "POST" });
+  } finally {
+    window.location.href = "/console";
+  }
 }
 
 /**
@@ -47,7 +35,7 @@ export async function failureOf(res: Response): Promise<Report> {
 }
 
 export function api(path: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(path, { ...init, headers: { ...authHeaders(), ...(init.headers || {}) } });
+  return fetch(path, { ...init, headers: { "Content-Type": "application/json", ...(init.headers || {}) } });
 }
 
 /**

@@ -1,8 +1,6 @@
-import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { KV, KVKey, KVValue, Link } from "@momoi-labs/kiso-react";
 
-import { requireKey } from "../../lib/api.js";
 import { bootstrapStatusQuery } from "../../lib/queries.js";
 import type { BootstrapStatus } from "../../lib/types.js";
 import type { PaneProps } from "./General.js";
@@ -10,9 +8,6 @@ import { SettingCard } from "./SettingCard.js";
 
 /** `undefined` while loading, `null` when the Platform did not answer. */
 function useBootstrapStatus(): BootstrapStatus | null | undefined {
-  useEffect(() => {
-    requireKey();
-  }, []);
   const { data, isError } = useQuery(bootstrapStatusQuery);
   return data ?? (isError ? null : undefined);
 }
