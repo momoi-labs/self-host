@@ -352,11 +352,11 @@ function RouteForm({ editor, apps, dnsSuffix, saving, setSaving, onClose, onSave
           <p className="route-preview mono t-label" aria-live="polite">
             https://{shownHost}{prefix === "/" ? "" : prefix}
             <span className="muted"> → </span>
-            {action === "forward"
+            {forward
               ? external ? (upstream.trim() || <span className="muted">https://192.168.1.1</span>)
               : <>{app ? targetLabel(app) : <span className="muted">Application</span>}{prefix !== "/" && !strip ? prefix : ""}</>
               : target ? (target.startsWith("/") ? <>https://{shownHost}{target}</> : target) : <span className="muted">/path</span>}
-            {action === "redirect" ? <span className="muted"> ({permanent ? "301" : "302"})</span> : null}
+            {!forward ? <span className="muted"> ({permanent ? "301" : "302"})</span> : null}
           </p>
           {failure ? <Failure failure={failure} /> : null}
         </DialogBody>
