@@ -67,10 +67,17 @@ Other components above live in `console/src/components/`.
 - `Failure` is a tinted error Alert by default. Pass `incident` only for a
   blocking incident at the top of a detail screen: the last failed deploy,
   database operation, image build or virtual machine operation. It then
-  renders Kiso's loud Alert with the animated top tape, `AlertLabel`,
-  `AlertMessage`, `AlertHelp` for the recovery action and the causes in
-  collapsible `AlertDetails`. Show at most one loud Alert per view. Form,
-  dialog and action errors stay tinted.
+  renders Kiso's loud Alert with the animated top tape. The header holds
+  `AlertLabel`, a Details toggle and the recovery action. The causes read
+  bottom-up as a Git graph: the root cause on a solid trunk, the steps it was
+  triggered while on a dashed branch in mono, and the result where the branch
+  merges back. Closed, the Alert shows the root cause and a faded peek of the
+  next row. A report with no causes shows the error as the single Cause, with
+  no graph and no Details. Show at most one loud Alert per view. Form, dialog
+  and action errors stay tinted.
+- A detail screen's header row has no editorial block padding and centers
+  the title with the `Lifecycle` cluster. A loud Alert right after it sits
+  closer to the header than to the content below.
 - The real console is the bundle embedded by `cargo run -- serve`. A Vite
   preview or prototype does not verify backend behavior.
 - Keep the console's list, detail and create compositions from

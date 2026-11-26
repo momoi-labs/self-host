@@ -80,9 +80,129 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
   overflow-wrap: anywhere;
 }
 .alert-causes li { margin-block-start: var(--spacing-xs); }
-.alert-loud .alert-causes { margin: 0; color: var(--loud-fg); font-size: var(--type-size-body); }
-.alert-loud .btn.btn-outline:hover { --pixel-fill: color-mix(in srgb, var(--loud-fg) 14%, transparent); }
 .alert-causes li::marker { font-variant-numeric: tabular-nums; }
+
+.page > .between:has(> .page-header) > .page-header { padding-block: 0; }
+.page > .between:has(> .page-header):has(> .lifecycle) { align-items: center; }
+.page > .between:has(> .page-header) + .alert-loud { margin-block-start: calc(-1 * var(--spacing-lg)); }
+
+.failure-story-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-xs) var(--spacing-sm);
+  min-block-size: var(--size-control-xs, 28px);
+}
+.failure-story-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+.failure-story-rail {
+  list-style: none;
+  margin: var(--spacing-sm) 0 0;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+.failure-story-single {
+  margin: var(--spacing-sm) 0 0;
+  overflow-wrap: anywhere;
+}
+.failure-story-rail > li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  column-gap: var(--spacing-xs);
+}
+.failure-story-lane {
+  position: relative;
+  display: block;
+}
+.failure-story-svg {
+  display: block;
+  position: absolute;
+  inset: 0;
+  inline-size: 30px;
+  block-size: 100%;
+  overflow: visible;
+}
+.failure-story-svg-stem {
+  display: block;
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0;
+  inline-size: 30px;
+  block-size: calc(100% - 18px);
+  overflow: visible;
+}
+.failure-story-svg-merge {
+  display: block;
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-end: 0;
+  inline-size: 30px;
+  block-size: 18px;
+  overflow: visible;
+}
+.failure-story-trunk {
+  fill: none;
+  stroke: color-mix(in srgb, var(--loud-fg) 88%, transparent);
+  stroke-width: 1.75;
+}
+.failure-story-branch {
+  fill: none;
+  stroke: color-mix(in srgb, var(--loud-fg) 46%, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2.5;
+}
+.failure-story-dot-main { fill: var(--loud-fg); }
+.failure-story-dot-branch { fill: color-mix(in srgb, var(--loud-fg) 75%, transparent); }
+.failure-story-dot-peek { fill: color-mix(in srgb, var(--loud-fg) 52%, transparent); }
+.failure-story-cell {
+  min-inline-size: 0;
+  padding-block-end: var(--spacing-sm);
+}
+.failure-story-fork > .failure-story-cell { padding-block-end: 10px; }
+.failure-story-step.is-last > .failure-story-cell { padding-block-end: 18px; }
+.failure-story-rail > li:last-child > .failure-story-cell { padding-block-end: 0; }
+.failure-story-rail > li.failure-story-peek { cursor: pointer; }
+.failure-story-peek-body {
+  max-block-size: 1.15rem;
+  overflow: hidden;
+  user-select: none;
+  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.65) 0%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.65) 0%, transparent 100%);
+}
+.failure-story-cell p { margin: 0; max-inline-size: 70ch; }
+.failure-story-step .failure-story-cell p {
+  font-family: var(--font-mono);
+  font-size: var(--type-size-label);
+  line-height: 1.5;
+  font-variant-ligatures: none;
+}
+.failure-story-kicker {
+  display: block;
+  margin-block-end: var(--spacing-2xs);
+  font-size: var(--type-size-metadata);
+  font-weight: var(--type-weight-semibold, 600);
+  letter-spacing: var(--type-letter-spacing-caps);
+  text-transform: uppercase;
+  color: var(--loud-meta);
+}
+.failure-story-fork .failure-story-kicker { margin-block-end: 0; }
+.failure-story-result .failure-story-cell > p { font-weight: var(--type-weight-semibold, 600); }
+.alert-loud .failure-story-primary.btn:where(:not(.btn-ghost)) {
+  --pixel-line: var(--loud-fg);
+  --pixel-fill: var(--loud-fg);
+  background-color: var(--loud-fg);
+  color: var(--loud-bg);
+}
+.alert-loud .failure-story-primary.btn.btn-outline:hover,
+.alert-loud .failure-story-primary.btn:where(:not(.btn-ghost)):hover {
+  --pixel-fill: color-mix(in srgb, var(--loud-fg) 88%, var(--loud-bg));
+  background-color: var(--pixel-fill);
+}
 
 fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 
