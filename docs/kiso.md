@@ -91,8 +91,9 @@ Other components above live in `console/src/components/`.
   home. Without a suffix the root reads "Console". Below 700px the
   breadcrumb shows only the current page. The lockup stands alone, with no
   suffix under it.
-- Use solid pixel frames, small corners, medium tick marks on panels and
-  none on the outer frame, hard shadows on every panel, solid panels,
+- Use solid pixel frames, small corners, no corner marks, a hard shadow
+  only on the inset shell frame and a floating header
+  (`data-shadow-scope="outer"`), solid panels,
   landing bands inside the frame and a quiet fibers background inside and
   outside the frame. Diagrams inherit the page background.
 - Use the series chart palette, straight chart lines, no chart fill, the standard chart layout and
@@ -158,13 +159,10 @@ Other components above live in `console/src/components/`.
   frame ends it.
   Kiso has no rule for this case, so it is product CSS.
 - Stack sibling panels in `.panel-stack`, not `.stack`. Kiso's `.stack` gap
-  is a fixed 16px, which lets tick marks and hard shadows touch. A
-  `.panel-stack` uses `--presentation-grid-gap`, as Kiso asks of custom page
+  is a fixed 16px. A `.panel-stack` uses `--presentation-grid-gap`, as Kiso asks of custom page
   compositions. Settings sections use the same gap.
-- A detail screen's `.detail-tabs` card is the only panel that casts a
-  shadow. Its `Tabs` take `data-shadow-style="none"`, a nested appearance
-  scope, so the panels, diagram nodes and log views in a tab keep their frame
-  and drop the cast.
+- Panels cast no shadow, the `.detail-tabs` card included. The panels,
+  diagram nodes and log views in a tab keep their frame.
 - A table that would scroll sideways drops its secondary columns below a
   container width and shows them in the row, as `data-interfaces.md` orders.
   Events hides Actor and Last updated below 56rem and lists them under the
