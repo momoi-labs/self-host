@@ -5,8 +5,8 @@ contracts own the shared rules.
 
 ## Contracts
 
-- Packages in `console/`: `@momoi-labs/kiso-react` 0.35.0 and
-  `@momoi-labs/kiso` 1.12.1, resolved in `console/package-lock.json`.
+- Packages in `console/`: `@momoi-labs/kiso-react` 0.37.0 and
+  `@momoi-labs/kiso` 1.15.0, resolved in `console/package-lock.json`.
 - Contracts: `console/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 
 ## Paths
@@ -74,8 +74,9 @@ Other components above live in `console/src/components/`.
 - Default to light. A saved light, dark or system selection takes precedence
   before first paint. System removes `data-theme` and follows the OS.
 - Use the tangerine accent, the warm neutral, the accent as primary, Inter,
-  default presentation, the inset shell with automatic outer chrome and a
-  full brand bar, a default-size header set to the page width, full page
+  sans technical text, flat controls, continuous progress, no panel labels,
+  editorial presentation, the inset shell with automatic outer chrome, a
+  filled bottom and right edge with a fading bottom, and a full brand bar, a default-size header set to the page width, full page
   width and start alignment. The console uses the default header variant.
   Login and setup keep the floating header, because they have no sidebar.
   The default header size gives the bar sewa's height.
@@ -83,10 +84,11 @@ Other components above live in `console/src/components/`.
   home. Without a suffix the root reads "Console". Below 700px the
   breadcrumb shows only the current page. The lockup stands alone, with no
   suffix under it.
-- Use solid pixel frames, small corners, no corner marks, no shadows,
-  solid panels, landing bands inside the frame and a quiet construction
-  background inside and outside the frame.
-- Use straight chart lines, no chart fill, the standard chart layout and
+- Use solid pixel frames, small corners, medium tick marks on panels and
+  none on the outer frame, hard shadows on every panel, solid panels,
+  landing bands inside the frame and a quiet fibers background inside and
+  outside the frame. Diagrams inherit the page background.
+- Use the series chart palette, straight chart lines, no chart fill, the standard chart layout and
   table legends. Keep existing product-specific chart legend visibility.
 - The shell is `ConsoleShell`: a collapsible sidebar with the toggle in the
   header, before the breadcrumb. From 700px to 1023px the navigation opens
