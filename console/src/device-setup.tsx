@@ -80,7 +80,7 @@ export function DeviceSetup() {
       : "";
 
   return (
-    <main className="device-setup stack">
+    <main className="device-setup panel-stack">
       <PageHeader>
         <p className="t-caps muted">self-host</p>
         <PageHeaderTitle>Connect this device</PageHeaderTitle>

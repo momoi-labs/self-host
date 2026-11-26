@@ -121,7 +121,7 @@ export function Overview({
           </CardContent>
         </Card>
       ) : (
-        <div className="stack">
+        <div className="panel-stack">
           <Card className="summary-panel">
             <CardContent>
               <GroupedSummary apps={applications} routed={apps} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} onOpenRoutes={onOpenRoutes} />

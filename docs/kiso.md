@@ -150,6 +150,10 @@ Other components above live in `console/src/components/`.
   `--pixel-footer-clip` to the body when a form, a flush table or an empty
   frame ends it.
   Kiso has no rule for this case, so it is product CSS.
+- Stack sibling panels in `.panel-stack`, not `.stack`. Kiso's `.stack` gap
+  is a fixed 16px, which lets tick marks and hard shadows touch. A
+  `.panel-stack` uses `--presentation-grid-gap`, as Kiso asks of custom page
+  compositions. Settings sections use the same gap.
 - A detail screen's `.detail-tabs` card is the only panel that casts a
   shadow. Its `Tabs` take `data-shadow-style="none"`, a nested appearance
   scope, so the panels, diagram nodes and log views in a tab keep their frame

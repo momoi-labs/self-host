@@ -195,7 +195,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
   const edit = <Button size="sm" variant="ghost" onClick={onOpenConfiguration}>Edit</Button>;
 
   return (
-    <div className="stack">
+    <div className="panel-stack">
       <Diagram className="app-diagram" label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
         {routes.length ? (
           // One node, so the line leaves from the middle of it: the Hostname leads and is always
