@@ -91,7 +91,7 @@ export function GitRepositoryPicker({ credentialId, disabled, onImport }: {
       <Search aria-label="Search repositories" placeholder="Search repositories..." value={query} onChange={(event) => setQuery(event.target.value)} />
     </div>
     {failure ? <Failure failure={failure} actionLabel={loaded ? undefined : "Retry"} onAction={() => setRetry((value) => value + 1)} /> : null}
-    {!loaded && loading ? <p className="muted" role="status">Loading repositories...</p> : loaded ? <TableFrame>
+    {!loaded && loading ? <p className="muted" role="status">Loading repositories...</p> : loaded ? <TableFrame frame="none">
       <div className="table-scroll">
         <Table>
           <TableHeader><TableRow><TableHead scope="col">Repository</TableHead><TableHead scope="col">Access</TableHead><TableHead scope="col">Action</TableHead></TableRow></TableHeader>

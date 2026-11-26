@@ -25,16 +25,6 @@ import { RedirectDialog, type RedirectEditor } from "./RedirectDialog.js";
 import { RouteDialog, type RouteEditor } from "./RouteDialog.js";
 import { useToast } from "./Toasts.js";
 
-/** How the console draws its diagrams: solid, rounded nodes without corner marks, on a quiet dot grid. */
-export const diagramLook = {
-  borderStyle: "solid",
-  cornerStyle: "rounded",
-  cornerSize: "medium",
-  cornerMarks: "none",
-  background: "dots",
-  strength: "quiet",
-} as const;
-
 /** How the diagram draws an Application: the kind kiso has for it, or an icon of its own. */
 export function nodeOf(app: App): { kind: DiagramKind; icon?: LucideIcon; label: string } {
   const definition = definitionOf(app);
@@ -196,7 +186,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
 
   return (
     <div className="panel-stack">
-      <Diagram className="app-diagram" label={`${app.name}: the domains that reach it and the databases it uses`} {...diagramLook}>
+      <Diagram className="app-diagram" label={`${app.name}: the domains that reach it and the databases it uses`}>
         {routes.length ? (
           // One node, so the line leaves from the middle of it: the Hostname leads and is always
           // shown, and aliases, paths and redirects fold under it.
@@ -358,7 +348,7 @@ function PrivateAccess({ app, apps, onOpenApp }: { app: App; apps: App[]; onOpen
     }),
   ];
   return (
-    <TableFrame>
+    <TableFrame frame="none">
       <div className="table-scroll">
         <Table aria-label="Private access">
           <TableHeader>

@@ -4,7 +4,7 @@ import { HardDrive } from "lucide-react";
 import { formatBytes } from "../lib/format.js";
 import type { App, DatabaseDetail } from "../lib/types.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
-import { diagramLook, opens, statusOf } from "./AppSummary.js";
+import { opens, statusOf } from "./AppSummary.js";
 import { Fact, GroupCard } from "./GroupCard.js";
 
 /**
@@ -27,7 +27,7 @@ export function DatabaseSummary({ app, apps, database, onOpenApp, onOpenConnecti
 
   return (
     <div className="panel-stack">
-      <Diagram className="app-diagram" label={`${app.name}: the Applications connected to it and the volume it stores data in`} {...diagramLook}>
+      <Diagram className="app-diagram" label={`${app.name}: the Applications connected to it and the volume it stores data in`}>
         <DiagramColumn>
           {connections.length ? (
             <DiagramNode id="consumers" title="" className="group-node">

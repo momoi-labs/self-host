@@ -33,7 +33,7 @@ export function NativeVariables({ app, reload, disabled, onEditingChange }: {
   const [query, setQuery] = useState("");
   const visible = names.filter((name) => name.toLowerCase().includes(query.trim().toLowerCase()));
   return <>
-    <TableFrame>
+    <TableFrame frame="none">
       <div className="table-toolbar panel-toolbar">
         <h2 className="section-title">Variables</h2>
         <Search aria-label="Search variables" containerClassName="section-search" placeholder="Search variables…"
