@@ -10,7 +10,7 @@ import { applyTheme, currentTheme } from "../src/lib/theme.ts";
 const appearance = {
   lang: "en",
   "data-theme": "light",
-  "data-accent": "tangerine",
+  "data-accent": "stone",
   "data-neutral": "warm",
   "data-primary": "accent",
   "data-typeface": "inter",
@@ -23,29 +23,28 @@ const appearance = {
   "data-chart-fill": "none",
   "data-chart-layout": "standard",
   "data-chart-legend": "table",
-  "data-shadow-style": "hard",
+  "data-shadow-style": "soft",
   "data-border-style": "solid",
-  "data-corner-style": "pixel",
-  "data-corner-marks": "none",
-  "data-corner-size": "small",
+  "data-corner-style": "square",
+  "data-corner-marks": "ticks",
+  "data-corner-size": "medium",
   "data-mark-size": "medium",
-  "data-visual-style": "editorial",
-  "data-app-shell": "inset",
+  "data-visual-style": "default",
+  "data-app-shell": "default",
   "data-header-variant": "default",
   "data-header-size": "default",
-  "data-header-width": "page",
   "data-app-shell-outer": "auto",
-  "data-shell-bottom": "fill",
-  "data-shell-bottom-style": "fade",
-  "data-shell-right": "fill",
-  "data-brand-bar": "full",
+  "data-shell-bottom": "default",
+  "data-shell-bottom-style": "none",
+  "data-shell-right": "default",
+  "data-brand-bar": "separate",
   "data-page-width": "full",
   "data-page-align": "start",
-  "data-frame-scope": "all",
+  "data-frame-scope": "panels",
   "data-mark-scope": "panels",
-  "data-shadow-scope": "outer",
+  "data-shadow-scope": "first",
   "data-mark-clearance": "normal",
-  "data-background-style": "fibers",
+  "data-background-style": "solid",
   "data-background-strength": "quiet",
   "data-background-placement": "both",
   "data-diagram-background-style": "inherit",
@@ -53,10 +52,9 @@ const appearance = {
   "data-frame-detail": "medium",
   "data-paper-tone": "theme",
   "data-panel-fill": "solid",
-  "data-landing-bands": "inside",
   "data-outer-border-style": "inherit",
   "data-outer-corner-style": "inherit",
-  "data-outer-corner-marks": "none",
+  "data-outer-corner-marks": "inherit",
   "data-outer-shadow-style": "inherit",
 };
 
@@ -69,6 +67,8 @@ for (const entry of ["index", "login", "setup"]) {
     );
     const headerVariant = entry === "index" ? "default" : "floating";
     assert.deepEqual(attributes, { ...appearance, "data-header-variant": headerVariant });
+    assert.equal(attributes["data-shadow-scope"], "first");
+    for (const dead of ["data-header-width", "data-landing-bands"]) assert.ok(!(dead in attributes), dead);
   });
 
   test(`${entry} applies the saved theme before first paint`, () => {

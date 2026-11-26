@@ -118,7 +118,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
       </Select>
       {filtering ? <Button size="sm" variant="ghost" onClick={clear}>Clear filters</Button> : null}
     </div>
-    <TableFrame aria-busy={loading}><div className="table-scroll"><Table aria-label="Deployments">
+    <TableFrame frame="none" aria-busy={loading}><div className="table-scroll"><Table aria-label="Deployments">
       <TableHeader><TableRow>
         <TableHead scope="col">Deployment</TableHead>
         <TableHead scope="col">Status</TableHead>

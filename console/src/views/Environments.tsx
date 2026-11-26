@@ -1131,7 +1131,7 @@ function Summary({
       <section>
         <p className="t-caps">Tools</p>
         {tools.length ? (
-          <TableFrame>
+          <TableFrame frame="none">
             <div className="table-scroll">
               <Table>
                 <TableHeader>

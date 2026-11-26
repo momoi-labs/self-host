@@ -45,7 +45,7 @@ export function RouteTable({ routes, redirects = [], total, ready = true, showAp
   onRename?: () => void;
 }) {
   return (
-    <TableFrame aria-busy={!ready}>
+    <TableFrame frame="none" aria-busy={!ready}>
       {toolbar}
       {ready && total === 0 ? empty : <>
         <Table aria-label="Routes">

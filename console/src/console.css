@@ -82,6 +82,7 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
 .alert-causes li { margin-block-start: var(--spacing-xs); }
 .alert-causes li::marker { font-variant-numeric: tabular-nums; }
 
+.page { grid-auto-rows: max-content; }
 .page > .between:has(> .page-header) > .page-header { padding-block: 0; }
 .page > .between:has(> .page-header):has(> .lifecycle) { align-items: center; }
 .page > .between:has(> .page-header) + .alert-loud { margin-block-start: calc(-1 * var(--spacing-lg)); }

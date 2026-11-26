@@ -87,22 +87,20 @@ Other components above live in `console/src/components/`.
   `console/tests/appearance.test.mjs` records the selected values.
 - Default to light. A saved light, dark or system selection takes precedence
   before first paint. System removes `data-theme` and follows the OS.
-- Use the tangerine accent, the warm neutral, the accent as primary, Inter,
+- Use the stone accent, the warm neutral, the accent as primary, Inter,
   sans technical text, flat controls, continuous progress, no panel labels,
-  editorial presentation, the inset shell with automatic outer chrome, a
-  filled bottom and right edge with a fading bottom, and a full brand bar, a default-size header set to the page width, full page
-  width and start alignment. The console uses the default header variant.
-  Login and setup keep the floating header, because they have no sidebar.
-  The default header size gives the bar sewa's height.
+  the default presentation, the default shell with automatic outer chrome, a
+  separate brand bar, a default-size header, full page width and start
+  alignment. The console uses the default header variant. Login and setup
+  keep the floating header, because they have no sidebar.
 - The DNS suffix is the breadcrumb root and links to the console
   home. Without a suffix the root reads "Console". Below 700px the
   breadcrumb shows only the current page. The lockup stands alone, with no
   suffix under it.
-- Use solid pixel frames, small corners, no corner marks, a hard shadow
-  only on the inset shell frame and a floating header
-  (`data-shadow-scope="outer"`), solid panels,
-  landing bands inside the frame and a quiet fibers background inside and
-  outside the frame. Diagrams inherit the page background.
+- Use solid square frames, medium corners, corner ticks on panels, a soft
+  shadow on the outermost panel only (`data-shadow-scope="first"`), solid
+  panels and a quiet solid background. A panel inside another panel never
+  casts a shadow. Diagrams inherit the console's frame, corners and marks.
 - Use the series chart palette, straight chart lines, no chart fill, the standard chart layout and
   table legends. Keep existing product-specific chart legend visibility.
 - The shell is `ConsoleShell`: a collapsible sidebar with the toggle in the
@@ -158,8 +156,10 @@ Other components above live in `console/src/components/`.
   the card. A section with a failing setting carries a danger `Badge` count,
   and Settings in the sidebar carries the total. Every section stays mounted,
   so an unsaved form survives a section switch.
-- A setting card has no frame inside it. A table in a card uses
-  `TableFrame frame="none"` and sits flush with the card edges, with no
+- A table has one frame, like Kiso's CRUD Products list. A table that is
+  its own panel keeps its `TableFrame`. A table inside a `Card`, a detail
+  tab or another panel uses `TableFrame frame="none"`. A setting card has
+  no frame inside it, and its table sits flush with the card edges, with no
   search or count. Kiso clips a form footer only when the form is the card's
   last child. A card body is not, so `console.css` applies the same
   `--pixel-footer-clip` to the body when a form, a flush table or an empty
@@ -168,8 +168,9 @@ Other components above live in `console/src/components/`.
 - Stack sibling panels in `.panel-stack`, not `.stack`. Kiso's `.stack` gap
   is a fixed 16px. A `.panel-stack` uses `--presentation-grid-gap`, as Kiso asks of custom page
   compositions. Settings sections use the same gap.
-- Panels cast no shadow, the `.detail-tabs` card included. The panels,
-  diagram nodes and log views in a tab keep their frame.
+- The `.detail-tabs` card is the outermost panel and casts the shadow. The
+  panels, diagram nodes and log views in a tab keep their frame and cast
+  none.
 - A table that would scroll sideways drops its secondary columns below a
   container width and shows them in the row, as `data-interfaces.md` orders.
   Events hides Actor and Last updated below 56rem and lists them under the

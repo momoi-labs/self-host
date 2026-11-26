@@ -86,7 +86,7 @@ export function ContainerResources({
       {rows.length ? (
         <div className="container-metrics">
           <p className="t-caps">Per container</p>
-          <TableFrame>
+          <TableFrame frame="none">
             <div className="table-scroll">
               <Table>
                 <TableHeader>
