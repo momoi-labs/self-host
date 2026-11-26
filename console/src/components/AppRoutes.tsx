@@ -62,7 +62,7 @@ export function AppRoutes({ app, apps, dnsSuffix, busy, reload, onRename }: {
   }
 
   return (
-    <div className="stack">
+    <div className="panel-stack">
       <RouteTable routes={visible} redirects={shownRedirects} total={routes.length + redirects.length} reload={reload}
         onEditRedirect={editRedirect}
         toolbar={

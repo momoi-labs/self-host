@@ -125,7 +125,7 @@ export function DatabaseBackups({ databaseId, databaseName, onStarted, onOpenOpe
     : changing ? (changing.enable ? "Turning backups on..." : "Turning backups off...")
     : saved.enabled ? "Backups are on." : "Backups are off.";
 
-  return <div className="stack">
+  return <div className="panel-stack">
     <PageHeader actions={<>
       <Button size="sm" disabled={busy || !readable} onClick={() => setRestoring(true)}>Restore to a new server</Button>
       <Button size="sm" disabled={busy || !readable || verification?.status === "running"} onClick={() => void run(`/databases/${databaseId}/backups/verify`, "Verifying the latest backup")}>{verification?.status === "running" ? "Verifying..." : "Verify latest backup"}</Button>

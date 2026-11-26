@@ -86,6 +86,7 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 
 /* The KPI row on the Overview. kiso sizes the tile; how many fit per row is
    the page's call. */
+.panel-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--presentation-grid-gap); }
 .stat-grid { display: grid; gap: var(--spacing-lg); grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 
 /* Use the same published data color for trends and framed charts. */
@@ -549,7 +550,7 @@ button.group-line:hover .group-name > .mono { text-decoration: underline; }
 .settings-nav .settings-nav-settings { margin-block: var(--spacing-2xs); padding-inline-start: var(--spacing-xl); }
 .settings-nav-settings .nav-item { height: auto; min-height: var(--size-control-sm); font-size: var(--type-size-label); }
 .settings-select-item { display: inline-flex; align-items: center; gap: var(--spacing-sm); }
-.settings-sections, .settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); min-width: 0; }
+.settings-sections, .settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--presentation-grid-gap); min-width: 0; }
 .settings-section[hidden] { display: none; }
 .page:has(> .settings-frame) { container-type: inline-size; display: grid; grid-template-rows: auto 1fr; }
 @container (min-width: 70rem) {

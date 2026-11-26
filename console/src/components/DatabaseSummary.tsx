@@ -26,7 +26,7 @@ export function DatabaseSummary({ app, apps, database, onOpenApp, onOpenConnecti
   const size = database?.volume_bytes ?? null;
 
   return (
-    <div className="stack">
+    <div className="panel-stack">
       <Diagram className="app-diagram" label={`${app.name}: the Applications connected to it and the volume it stores data in`} {...diagramLook}>
         <DiagramColumn>
           {connections.length ? (

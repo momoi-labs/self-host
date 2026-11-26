@@ -65,7 +65,7 @@ export function DatabaseConnections({ app, apps, connections, loading, busy, fai
     finally { setRevealing(false); }
   }
 
-  return <div className="stack">
+  return <div className="panel-stack">
     <PageHeader actions={<Button size="sm" variant="primary" disabled={busy || loading || app.status !== "running"} onClick={() => { setConsumer(""); setVariable("DATABASE_URL"); setDatabaseMode("new"); setDatabaseName(null); setExisting(""); setEditor("connect"); }}><Icon name="plus" />Connect application</Button>}>
       <PageHeaderTitle asChild><h2 className="t-h2">Connected applications</h2></PageHeaderTitle>
     </PageHeader>

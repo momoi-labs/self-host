@@ -178,7 +178,7 @@ export function DatabaseImports({ databaseId, apps, connections, imports, loadin
     }
   }
 
-  return <div className="stack">
+  return <div className="panel-stack">
     <PageHeader actions={<Button size="sm" variant="primary" disabled={busy} onClick={() => setAdding(true)}><Icon name="plus" />New import</Button>}>
       <PageHeaderTitle asChild><h2 className="t-h2">Imports</h2></PageHeaderTitle>
     </PageHeader>

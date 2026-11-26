@@ -98,7 +98,7 @@ export function DeploymentHistory({ app, reload }: { app: App; reload: () => Pro
     finally { inFlight.current = false; setBusy(false); void deployments.refetch(); await reload(); }
   }
 
-  return <div className="stack">
+  return <div className="panel-stack">
     {app.git || isImageApp(app) ? <DeployTrigger app={app} /> : null}
     {error ? <Failure failure={error} /> : null}
     {loadError && entries.length ? <Failure failure={loadError} actionLabel="Retry" onAction={retry} /> : null}
