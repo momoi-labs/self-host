@@ -80,6 +80,8 @@ button.health-link:not(:disabled):hover > span:not(.dot) { text-decoration: unde
   overflow-wrap: anywhere;
 }
 .alert-causes li { margin-block-start: var(--spacing-xs); }
+.alert-loud .alert-causes { margin: 0; color: var(--loud-fg); font-size: var(--type-size-body); }
+.alert-loud .btn.btn-outline:hover { --pixel-fill: color-mix(in srgb, var(--loud-fg) 14%, transparent); }
 .alert-causes li::marker { font-variant-numeric: tabular-nums; }
 
 fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }

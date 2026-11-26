@@ -816,6 +816,8 @@ export function Environments({
         {operation?.error ? (
           <Failure
             failure={operation.error}
+            incident="Operation failed"
+            help={operation.status === "failed" ? "Fix the cause, then retry the operation." : undefined}
             actionLabel={
               operation.status === "failed" ? "Retry operation" : undefined
             }

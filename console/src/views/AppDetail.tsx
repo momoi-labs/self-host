@@ -315,6 +315,8 @@ export function AppDetail({
       {app.last_error && !building ? (
         <Failure
           failure={app.last_error}
+          incident="Last deploy failed"
+          help="Fix the cause, then deploy again."
           actionLabel="Retry"
           onAction={() => {
             if (app.git) {
