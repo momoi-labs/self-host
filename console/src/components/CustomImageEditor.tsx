@@ -316,7 +316,7 @@ export function CustomImageEditor({ current, selected, loaded, loadFailure, onSa
       {/* A failed build is the page's news, above the header the way a
           machine's failed run is, and the log is the way into it. */}
       {current?.last_error ? (
-        <Failure failure={current.last_error} actionLabel="Open build log" onAction={() => setTab("log")} />
+        <Failure failure={current.last_error} incident="Build failed" help="The build log shows the step that failed." actionLabel="Open build log" onAction={() => setTab("log")} />
       ) : null}
       {/* The same header row every detail screen carries. An image is built,
           not run, so it offers no lifecycle verbs — the middle group is
