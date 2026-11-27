@@ -249,7 +249,6 @@ These map the existing screens. They do not certify a full contract audit.
 | Where | Kiso rule | Console rule | Why |
 | --- | --- | --- | --- |
 | `.list-filters` below 560px, `console.css` | The search and the select each take a full row. | The search and the select share one 36px row. Clear filters wraps to a second row. | The Operator compares every list with the Kiso CRUD list, whose filter row is one line at 390px. |
-
 | `.app-diagram`, `console.css` | Use the theme palette. | A recessed Stone canvas and card-colored nodes, per theme. | Graphite did not match the Stone page; the user chose the theme-following variant on 2026-11-27. |
 | `.app-shell`, `console.css` | `shellLayout` draws a 2px primary stripe under the sidebar brand. | `--app-shell-brand-stripe: 0px`; the 1px border stays. | The user judged the dark stripe heavy on the Stone page on 2026-11-27. |
 
