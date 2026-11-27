@@ -11,7 +11,7 @@ import { RestoreDialog } from "../components/RestoreDialog.js";
 import { useToast } from "../components/Toasts.js";
 import { formatAgo } from "../lib/format.js";
 import { backupSummaryQuery } from "../lib/queries.js";
-import { statusTone } from "../lib/status.js";
+import { statusLabel, statusTone } from "../lib/status.js";
 import type { App } from "../lib/types.js";
 
 export function Databases({ apps, ready, reload, onCreate, onOpen }: {
@@ -73,7 +73,7 @@ export function Databases({ apps, ready, reload, onCreate, onOpen }: {
             }}><strong>{database.name}</strong></a>
             <span className="muted">PostgreSQL {database.managed_postgres?.major}</span>
           </div></TableCell>
-          <TableCell><StatusBadge tone={statusTone(database.status)}>{database.status[0].toUpperCase() + database.status.slice(1)}</StatusBadge></TableCell>
+          <TableCell><StatusBadge tone={statusTone(database.status)}>{statusLabel(database.status)}</StatusBadge></TableCell>
           <TableCell>{(() => {
             const row = backups.find((item) => item.database_application_id === database.id);
             if (!row?.enabled && !row?.last) return <span className="muted">Off</span>;

@@ -75,6 +75,14 @@ Other components above live in `console/src/components/`.
   next row. A report with no causes shows the error as the single Cause, with
   no graph and no Details. Show at most one loud Alert per view. Form, dialog
   and action errors stay tinted.
+- The loud Alert means the workload is down. Its label says so: `Application
+  is down` or `Database is down`. When the workload still runs and only its
+  last deploy or operation failed, pass `blocking={false}`. `Failure` then
+  keeps the label and the graph in a tinted Alert, with no tape.
+- A status badge starts with a capital: `Running`, `Failed`, `Stopped`,
+  `Pending`. Use `statusLabel` for a status the backend sends in lowercase.
+- An Application that does not run shows its status only. `HttpStatus` and
+  `DeploymentReadiness` join the `Lifecycle` cluster when it runs.
 - A detail screen's header row has no editorial block padding and centers
   the title with the `Lifecycle` cluster. A loud Alert right after it sits
   closer to the header than to the content below.

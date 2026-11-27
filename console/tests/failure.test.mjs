@@ -52,6 +52,15 @@ test("a cause chain renders the loud alert with the root cause and a peek", () =
   assert.doesNotMatch(html, /failure-story-result|failure-story-step/);
 });
 
+test("a failure that left the workload running keeps the graph in a tinted alert", () => {
+  const html = render({ failure: { error: "failed to deploy", caused_by: chain }, incident: "Last deploy failed", blocking: false, actionLabel: "Retry", onAction() {} });
+  assert.match(html, /class="alert alert-danger failure-story-quiet"/);
+  assert.doesNotMatch(html, /alert-loud|data-tape|data-animated/);
+  assert.match(html, /class="alert-label">Error · Last deploy failed</);
+  assert.match(html, /<li class="failure-story-root">.*?Root cause<\/span><p[^>]*>dial unix \/run\/docker.sock: connect: no such file or directory<\/p>/);
+  assert.match(html, /failure-story-primary/);
+});
+
 test("a single cause peeks at the result", () => {
   const html = render({ failure: { error: "failed to deploy", caused_by: ["port 8080 is in use"] }, incident: "Last deploy failed" });
   assert.match(html, /Root cause<\/span><p[^>]*>port 8080 is in use<\/p>/);

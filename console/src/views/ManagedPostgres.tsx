@@ -6,6 +6,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { api, asReport, failureOf } from "../lib/api.js";
 import { databaseImportsQuery, databaseQuery } from "../lib/queries.js";
 import { importRoute } from "../lib/importUploads.js";
+import { statusLabel } from "../lib/status.js";
 import type { App, Metrics, Report } from "../lib/types.js";
 import { Glance } from "../components/Glance.js";
 import { seriesFor } from "../lib/useMetrics.js";
@@ -71,13 +72,13 @@ export function ManagedPostgres({ app, apps, metrics, reload, onRemoved, onOpenA
   return <>
     <div className="between">
       <PageHeader><PageHeaderTitle>{app.name}</PageHeaderTitle>{samples ? <Glance samples={samples} /> : null}</PageHeader>
-      <Lifecycle status={<><StatusBadge tone={app.status === "running" ? "success" : app.status === "failed" ? "danger" : "neutral"}>{app.status}</StatusBadge><StatusBadge tone={database?.readiness === "healthy" ? "success" : database?.readiness === "unhealthy" ? "danger" : "neutral"}>{database?.readiness === "healthy" ? "Ready" : database?.readiness ?? "Checking"}</StatusBadge>{taskBusy ? <StatusBadge tone="success" pulse>{phase}</StatusBadge> : null}</>}
+      <Lifecycle status={<><StatusBadge tone={app.status === "running" ? "success" : app.status === "failed" ? "danger" : "neutral"}>{statusLabel(app.status)}</StatusBadge><StatusBadge tone={database?.readiness === "healthy" ? "success" : database?.readiness === "unhealthy" ? "danger" : "neutral"}>{database?.readiness === "healthy" ? "Ready" : database?.readiness ?? "Checking"}</StatusBadge>{taskBusy ? <StatusBadge tone="success" pulse>{phase}</StatusBadge> : null}</>}
         actions={taskBusy ? undefined : <>{app.status !== "running" ? <Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/apps/id/${app.id}/start`, "POST")}>Start</Button> : <Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/apps/id/${app.id}/stop`, "POST")}>Stop</Button>}<Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/apps/id/${app.id}/restart`, "POST", { pull: false })}>Restart</Button><Button size="sm" disabled={busy || taskBusy} onClick={() => void operation(`/databases/${app.id}/redeploy`, "POST")}>Recreate</Button></>}
         destructive={<Button size="sm" variant="ghost" className="btn-danger-ghost" disabled={busy || taskBusy} onClick={() => { setConfirmName(""); setDeleteData(false); setRemoving(true); }}>Remove</Button>} />
     </div>
     {failure ? <Failure failure={failure} /> : null}
     {loadFailure ? <Failure failure={loadFailure} /> : null}
-    {app.last_error ? <Failure failure={app.last_error} incident="Last operation failed" /> : null}
+    {app.last_error ? <Failure failure={app.last_error} incident={app.status === "running" ? "Last operation failed" : "Database is down"} blocking={app.status !== "running"} /> : null}
     <Card className="detail-tabs"><Tabs sections data-shadow-style="none" value={tab} onValueChange={setTab}>
       <TabsList aria-label="Database details"><TabsTrigger value="summary">Summary</TabsTrigger><TabsTrigger value="connections">Connections</TabsTrigger><TabsTrigger value="imports">Imports</TabsTrigger><TabsTrigger value="backups">Backups</TabsTrigger><TabsTrigger value="last-operation">Last operation</TabsTrigger><TabsTrigger value="logs">Logs</TabsTrigger></TabsList>
       <TabsContent value="summary"><DatabaseSummary app={app} apps={apps} database={database} onOpenApp={onOpenApp} onOpenConnections={() => setTab("connections")} /></TabsContent>

@@ -11,6 +11,7 @@ import type { App, DatabaseConnection, Report } from "../lib/types.js";
 import { api, asReport, failureOf } from "../lib/api.js";
 import { defaultDatabaseName, validDatabaseName } from "../lib/databaseName.js";
 import { consumerDatabasesQuery } from "../lib/queries.js";
+import { statusLabel } from "../lib/status.js";
 import { Failure } from "./Failure.js";
 import { Icon } from "./Icon.js";
 
@@ -83,7 +84,7 @@ export function DatabaseConnections({ app, apps, connections, loading, busy, fai
         <TableCell><div className="stack-xs"><strong>{appName(connection)}</strong><span className="muted">{apps.find((candidate) => candidate.id === connection.consumer_application_id)?.runtime?.kind === "native" ? "Native process" : "Container"}</span></div></TableCell>
         <TableCell className="mono">{connection.database}</TableCell>
         <TableCell className="mono">{connection.variable}</TableCell>
-        <TableCell><StatusBadge tone={connection.status === "ready" ? "success" : connection.status === "failed" ? "danger" : "neutral"}>{connection.status}</StatusBadge></TableCell>
+        <TableCell><StatusBadge tone={connection.status === "ready" ? "success" : connection.status === "failed" ? "danger" : "neutral"}>{statusLabel(connection.status)}</StatusBadge></TableCell>
         <TableCell className="col-tight"><DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="ghost" className="btn-icon" aria-label={`Actions for ${appName(connection)}`}><Icon name="more" /></Button></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => { setSelected(connection); setEditor("view"); }}>View connection</DropdownMenuItem>

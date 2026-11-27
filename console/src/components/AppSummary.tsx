@@ -12,6 +12,7 @@ import { api, failureOf, readJson } from "../lib/api.js";
 import { formatBytes } from "../lib/format.js";
 import { databaseQuery } from "../lib/queries.js";
 import { kindIcon, redirectFrom, redirectTo, routesOf, targetOf } from "../lib/routes.js";
+import { statusLabel } from "../lib/status.js";
 import type { App, GitInspection, Inspection } from "../lib/types.js";
 import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
 import { useStoredLayout } from "../lib/useStoredLayout.js";
@@ -411,7 +412,7 @@ function WhatRuns({ app }: { app: App }) {
         {app.git_build ? <>
           <KVKey>Deployed commit</KVKey><KVValue>{app.git_build.revision}</KVValue>
           <KVKey>Build result</KVKey>
-          <KVValue><StatusBadge tone={app.git_build.status === "completed" ? "success" : "neutral"}>{app.git_build.status}</StatusBadge></KVValue>
+          <KVValue><StatusBadge tone={app.git_build.status === "completed" ? "success" : "neutral"}>{statusLabel(app.git_build.status)}</StatusBadge></KVValue>
           {Object.entries(app.git_build.images).map(([service, image]) => (
             <Fragment key={service}><KVKey>{service} image</KVKey><KVValue>{image}</KVValue></Fragment>
           ))}
