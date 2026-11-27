@@ -1,4 +1,4 @@
-import { Diagram, DiagramColumn, DiagramEdge, DiagramNode, GridPane, KV, KVKey, KVValue, PaneGrid } from "@momoi-labs/kiso-react";
+import { Card, CardContent, Diagram, DiagramColumn, DiagramEdge, DiagramNode, GridPane, KV, KVKey, KVValue, PaneGrid } from "@momoi-labs/kiso-react";
 import { HardDrive } from "lucide-react";
 
 import { formatBytes } from "../lib/format.js";
@@ -72,11 +72,11 @@ export function DatabaseSummary({ app, apps, database, onOpenApp, onOpenConnecti
       </Diagram>
 
       <PaneGrid aria-label={`${app.name} summary`} defaultLayout={layout} onLayoutChange={saveLayout}>
-        <GridPane id="what-runs" title="What runs" size={6}>
-          <KV>
+        <GridPane id="what-runs" title="What runs" size={6} frame="none">
+          <Card><CardContent><KV>
             <KVKey>Image</KVKey><KVValue>{app.image}</KVValue>
             <KVKey>Volume size</KVKey><KVValue>{size === null ? <span className="muted">Unknown</span> : formatBytes(size)}</KVValue>
-          </KV>
+          </KV></CardContent></Card>
         </GridPane>
       </PaneGrid>
     </div>

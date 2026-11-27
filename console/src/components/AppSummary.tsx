@@ -1,7 +1,7 @@
 import { Fragment, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
-  Badge, Button, Diagram, DiagramColumn, DiagramEdge, DiagramNode, GridPane, KV, KVKey, KVValue, PaneGrid, Search, StatusBadge,
+  Badge, Button, Card, CardContent, Diagram, DiagramColumn, DiagramEdge, DiagramNode, GridPane, KV, KVKey, KVValue, PaneGrid, Search, StatusBadge,
   Table, TableFrame, TableBody, TableCell, TableHead, TableHeader, TableRow,
   type DiagramKind, type DiagramStatus,
 } from "@momoi-labs/kiso-react";
@@ -255,7 +255,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
 
       <PaneGrid aria-label={`${app.name} summary`} defaultLayout={layout} onLayoutChange={saveLayout}>
         {native ? (
-          <GridPane id="start-command" title={native.worker ? "Worker or static site" : "Start command"} size={12} actions={<>
+          <GridPane id="start-command" title={native.worker ? "Worker or static site" : "Start command"} size={12} frame="none" actions={<>
             {app.git_build ? <Button size="sm" variant="ghost" disabled={busy} onClick={onRebuild}>Rebuild</Button> : null}
             <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard?.writeText(sourceOf(app))}>Copy</Button>
             {edit}
@@ -265,11 +265,11 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             {capabilities?.resource_limits ? <p className="muted t-label">{limitsOf(native.limits)}</p> : null}
           </GridPane>
         ) : (
-          <GridPane id="what-runs" title="What runs" size={6} actions={<>
+          <GridPane id="what-runs" title="What runs" size={6} frame="none" actions={<>
             {app.git_build ? <Button size="sm" variant="ghost" disabled={busy} onClick={onRebuild}>Rebuild</Button> : null}
             {edit}
           </>}>
-            <WhatRuns app={app} />
+            <Card><CardContent><WhatRuns app={app} /></CardContent></Card>
           </GridPane>
         )}
         {native ? (

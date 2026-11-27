@@ -23,11 +23,13 @@ The loud alert stays while the workload is down. A failed deploy on a
 workload that still runs gets a quiet alert.
 
 The console moves to Kiso's default look with the stone accent: square
-frames with corner ticks, a soft shadow on the outermost panel only, and a
+frames, corner ticks and a soft shadow on the outermost panel only, and a
 quiet solid background. Tables have a single frame. A table inside a card or
 a detail tab no longer draws a second border or shadow. A pane that holds
 only a table shows its title above the table frame, with no card around it.
+Every pane on a summary and on the Overview now has the same shape: a title
+above one framed body.
 
 The diagram on an application or database summary inverts the theme: dark
-on a light page and light on a dark page. It has small rounded corners, a
-quiet dot grid and notched arrowheads.
+nodes on a light page and light nodes on a dark page, on a mid gray surface.
+It has small rounded corners and notched arrowheads.
