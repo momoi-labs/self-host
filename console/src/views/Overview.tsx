@@ -117,14 +117,14 @@ export function Overview({
           </Card>
         ) : null}
 
-        <div className="stat-strip">
-          <Card><Stat>
+        <Card className="layout-stats">
+          <Stat>
             <StatHeader><StatLabel>Workloads</StatLabel>{failed.length ? <Dot variant="danger" /> : null}</StatHeader>
             <StatValue>{empty ? "0" : `${tally.all.running}/${tally.all.total}`}</StatValue>
             <StatFoot>{empty ? "No apps, databases or machines"
               : `${tally.application.running}/${tally.application.total} apps · ${tally.database.running}/${tally.database.total} DBs · ${tally.machine.running}/${tally.machine.total} VMs`}</StatFoot>
-          </Stat></Card>
-          <Card><Stat>
+          </Stat>
+          <Stat>
             <StatHeader><StatLabel>Host load</StatLabel></StatHeader>
             <div className="stack-sm">
               <Meter label="CPU" value={totals && cores ? Math.min(100, totals.cpu / cores) : null}
@@ -132,25 +132,25 @@ export function Overview({
               <Meter label="Memory" value={totals?.memoryLimit ? Math.min(100, (totals.memory / totals.memoryLimit) * 100) : null}
                 valueText={!totals ? "—" : totals.memoryLimit ? `${formatBytes(totals.memory)} of ${formatBytes(totals.memoryLimit)}` : formatBytes(totals.memory)} />
             </div>
-          </Stat></Card>
-          <Card><Stat>
+          </Stat>
+          <Stat>
             <StatHeader><StatLabel>Proxy traffic</StatLabel></StatHeader>
             <StatValue>{latest ? perMinute(latest.proxy_requests, interval) : "—"} <small className="muted">req/min</small></StatValue>
             {window ? <Sparkline values={platform.map((sample) => sample.proxy_requests)} height={28} label={`Proxy requests. ${window}`} /> : null}
             <StatFoot>{routes ? countOf(routes, "route") : "No routes"}{errors === null ? "" : ` · ${errors.toFixed(1)}% errors`}</StatFoot>
-          </Stat></Card>
-          <Card><Stat>
+          </Stat>
+          <Stat>
             <StatHeader><StatLabel>DNS queries</StatLabel></StatHeader>
             <StatValue>{latest ? perMinute(latest.dns_queries, interval) : "—"} <small className="muted">q/min</small></StatValue>
             {window ? <Sparkline values={platform.map((sample) => sample.dns_queries)} height={28} label={`DNS queries. ${window}`} /> : null}
             <StatFoot>{records ? (records.length ? countOf(records.length, "record") : "No records") : window ?? "No samples yet"}</StatFoot>
-          </Stat></Card>
-        </div>
+          </Stat>
+        </Card>
 
         {empty ? null : (
           <PaneGrid static>
-            <GridPane id="top" title="Top workloads by resource use">
-              <TableFrame frame="none">
+            <GridPane id="top" title="Top workloads by resource use" frame="none">
+              <TableFrame>
                 <Table density="compact" aria-label="Top workloads by resource use">
                   <TableHeader><TableRow>
                     <TableHead scope="col">Workload</TableHead>
@@ -179,6 +179,7 @@ export function Overview({
                     ))}
                   </TableBody>
                 </Table>
+                <div className="table-footer"><span>{top.length} of {countOf(tally.all.total, "workload")}</span></div>
               </TableFrame>
             </GridPane>
             <GridPane id="activity" title="Recent activity" actions={<Button size="sm" variant="ghost" asChild>
