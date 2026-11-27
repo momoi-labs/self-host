@@ -182,14 +182,16 @@ export function Overview({
                 <div className="table-footer"><span>{top.length} of {countOf(tally.all.total, "workload")}</span></div>
               </TableFrame>
             </GridPane>
-            <GridPane id="activity" title="Recent activity" actions={<Button size="sm" variant="ghost" asChild>
+            <GridPane id="activity" title="Recent activity" frame="none" actions={<Button size="sm" variant="ghost" asChild>
               <a href="/console/#events" onClick={(event) => {
                 if (!plainClick(event)) return;
                 event.preventDefault();
                 onOpenEvents();
               }}>All events</a>
             </Button>}>
-              <RecentActivity events={events} machines={environments} onOpenMachine={onOpenEnvironment} onOpenSubject={onOpenSubject} />
+              <Card><CardContent>
+                <RecentActivity events={events} machines={environments} onOpenMachine={onOpenEnvironment} onOpenSubject={onOpenSubject} />
+              </CardContent></Card>
             </GridPane>
           </PaneGrid>
         )}

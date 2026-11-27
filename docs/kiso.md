@@ -107,17 +107,22 @@ Other components above live in `console/src/components/`.
   home. Without a suffix the root reads "Console". Below 700px the
   breadcrumb shows only the current page. The lockup stands alone, with no
   suffix under it.
-- Use solid square frames, medium corners, corner ticks on panels, a soft
-  shadow on the outermost panel only (`data-shadow-scope="first"`), solid
-  panels and a quiet solid background. A panel inside another panel never
-  casts a shadow.
+- Use solid square frames, medium corners, a soft shadow and corner ticks on
+  the outermost panel only, solid panels and a quiet solid background. A
+  panel inside another panel never casts a shadow and never draws ticks.
+  `data-shadow-scope="first"` scopes the shadow. Kiso has no such scope for
+  corner marks, so `console.css` sets `--corner-mark: 0` on a panel inside a
+  panel.
 - A `Diagram` sets its own look: solid border, small rounded corners, no
   corner marks, quiet dots, orthogonal edges and the `stealth` arrowhead. It
   keeps `direction="right"`. `direction="grid"` needs bands of columns and
   suits a drawing with two axes, which these are not.
-- `.app-diagram` inverts the theme through `color-scheme`: a dark surface on
-  a light page and a light surface on a dark page, so the diagram stands
-  out. Kiso's tokens use `light-dark()`, so no color is restated.
+- `.app-diagram` inverts the theme through `color-scheme`, so its nodes are
+  dark on a light page and light on a dark page. Its surface is a mid gray,
+  the inverted card color mixed toward its foreground, so the diagram stands
+  apart without the full contrast of the opposite theme. The edges take the
+  foreground color to stay readable on it. Kiso's tokens use `light-dark()`,
+  so no color is restated.
 - Use the series chart palette, straight chart lines, no chart fill, the standard chart layout and
   table legends. Keep existing product-specific chart legend visibility.
 - The shell is `ConsoleShell`: a collapsible sidebar with the toggle in the
@@ -201,7 +206,9 @@ Other components above live in `console/src/components/`.
   tab or another panel uses `TableFrame frame="none"`. A pane that holds
   only a table is `GridPane frame="none"` with a framed `TableFrame` under
   the title, as in Kiso's dashboard template. The table never sits inside a
-  padded pane card. A setting card has
+  padded pane card. Every other pane on a summary or on the Overview follows
+  the same shape: `GridPane frame="none"` with the body in a `Card`, so each
+  pane reads as a title above one framed body. A setting card has
   no frame inside it, and its table sits flush with the card edges, with no
   search or count. Kiso clips a form footer only when the form is the card's
   last child. A card body is not, so `console.css` applies the same

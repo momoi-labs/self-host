@@ -355,6 +355,9 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 .route-path { color: var(--color-muted-foreground); }
 /* kiso sizes a diagram to its widest content, so a long line scrolls the Summary's
    even when wrapping would fit. Fill the card instead and scroll only below min-content. */
+.page :is(.card, .table-wrap, .logview, .marked, pre, .code-block) :is(.card, .table-wrap, .logview, .marked, pre, .code-block) { --corner-mark: 0; }
+.app-diagram { background: color-mix(in oklab, var(--color-card) 55%, var(--color-foreground)); }
+.app-diagram .diagram-edges { color: var(--color-foreground); }
 :root[data-theme="light"] .app-diagram { color-scheme: dark; }
 :root[data-theme="dark"] .app-diagram { color-scheme: light; }
 @media (prefers-color-scheme: light) {
