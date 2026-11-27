@@ -57,8 +57,9 @@ Rules:
   screen, in a tab or in a dialog. Never write `<div className="table-wrap">`
   by hand: the frame also renders the layer that paints the panel's shadow,
   and a hand-written one has no shadow under pixel corners. A table inside a
-  `Card` or a `GridPane` already has that panel's frame and takes no second
-  one.
+  `Card` or a tab uses `TableFrame frame="none"`. A pane that holds only a
+  table is `GridPane frame="none"` with a framed `TableFrame` under the
+  title, never a table inside a padded pane card.
 - Creating a small record (a DNS record, an API key) is a dialog, not a card
   parked above the table. A record with a recipe gets a create screen.
 - Empty state: with no records at all, `ListPage` shows the header and one
