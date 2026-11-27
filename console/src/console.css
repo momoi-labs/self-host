@@ -229,11 +229,19 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 .network-down { color: var(--color-success); }
 .network-up { color: var(--color-danger); }
 
-.stat-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--presentation-grid-gap); }
-.stat-strip > .card { min-width: 0; }
-.stat-strip .stat-value small { font-size: var(--type-size-body); font-weight: var(--type-weight-regular); }
-@media (max-width: 1100px) { .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .stat-strip { grid-template-columns: minmax(0, 1fr); } }
+.layout-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.layout-stats > .stat { min-width: 0; }
+.layout-stats > .stat + .stat { border-inline-start: 1px solid var(--color-border); }
+.layout-stats .stat-value small { font-size: var(--type-size-body); font-weight: var(--type-weight-regular); }
+@media (max-width: 1100px) {
+  .layout-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .layout-stats > .stat:nth-child(odd) { border-inline-start: 0; }
+  .layout-stats > .stat:nth-child(n + 3) { border-block-start: 1px solid var(--color-border); }
+}
+@media (max-width: 560px) {
+  .layout-stats { grid-template-columns: minmax(0, 1fr); }
+  .layout-stats > .stat + .stat { border-inline-start: 0; border-block-start: 1px solid var(--color-border); }
+}
 .attention-list, .activity-list { list-style: none; margin: 0; padding: 0; display: grid; }
 .attention-list > li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--spacing-md); padding-block: var(--spacing-sm); }
 .attention-list > li + li, .activity-list > li + li { border-top: 1px solid var(--color-border); }
@@ -347,6 +355,14 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 .route-path { color: var(--color-muted-foreground); }
 /* kiso sizes a diagram to its widest content, so a long line scrolls the Summary's
    even when wrapping would fit. Fill the card instead and scroll only below min-content. */
+:root[data-theme="light"] .app-diagram { color-scheme: dark; }
+:root[data-theme="dark"] .app-diagram { color-scheme: light; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .app-diagram { color-scheme: dark; }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .app-diagram { color-scheme: light; }
+}
 .app-diagram .diagram-canvas { width: 100%; min-width: min-content; }
 /* Its lines carry no labels, so the columns sit closer than kiso's default and stay together in the middle. */
 .app-diagram .diagram-lanes { justify-content: center; column-gap: var(--spacing-4xl); }

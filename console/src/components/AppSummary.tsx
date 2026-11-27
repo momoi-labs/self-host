@@ -187,7 +187,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
 
   return (
     <div className="panel-stack">
-      <Diagram className="app-diagram" label={`${app.name}: the domains that reach it and the databases it uses`}>
+      <Diagram className="app-diagram" borderStyle="solid" shadowStyle="auto" cornerStyle="rounded" cornerSize="small" cornerMarks="none" background="dots" strength="quiet" crossings="none" labels="auto" edges="orthogonal" arrow="stealth" label={`${app.name}: the domains that reach it and the databases it uses`}>
         {routes.length ? (
           // One node, so the line leaves from the middle of it: the Hostname leads and is always
           // shown, and aliases, paths and redirects fold under it.
@@ -291,7 +291,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
         ) : null}
         <Variables id="variables" size={6} app={app} />
         {consumersOf(app).length || providersOf(app, apps).length ? (
-          <GridPane id="private-access" title="Private access" size={12} newRow
+          <GridPane id="private-access" title="Private access" size={12} newRow frame="none"
             actions={canGrant(app) ? edit : undefined}>
             <PrivateAccess app={app} apps={apps} onOpenApp={onOpenApp} />
           </GridPane>
@@ -349,7 +349,7 @@ function PrivateAccess({ app, apps, onOpenApp }: { app: App; apps: App[]; onOpen
     }),
   ];
   return (
-    <TableFrame frame="none">
+    <TableFrame>
       <div className="table-scroll">
         <Table aria-label="Private access">
           <TableHeader>
@@ -511,12 +511,12 @@ function SearchPane({ id, size, newRow, title, noun, action, columns, rows, clas
   const [query, setQuery] = useState("");
   const visible = rows.filter((row) => row.key.toLowerCase().includes(query.trim().toLowerCase()));
   return (
-    <GridPane id={id} size={size} newRow={newRow} title={title} actions={<>
+    <GridPane id={id} size={size} newRow={newRow} title={title} frame="none" actions={<>
       <Search aria-label={`Search ${noun}`} containerClassName="pane-search" placeholder={`Search ${noun}…`}
         value={query} disabled={!rows.length} onChange={(event) => setQuery(event.target.value)} />
       {action}
     </>}>
-      <div className="table-scroll">
+      <TableFrame><div className="table-scroll">
         <Table aria-label={title} className={className}>
           <TableHeader>
             <TableRow>{columns.map((column) => <TableHead key={column} scope="col">{column}</TableHead>)}</TableRow>
@@ -533,7 +533,7 @@ function SearchPane({ id, size, newRow, title, noun, action, columns, rows, clas
             ))}
           </TableBody>
         </Table>
-      </div>
+      </div></TableFrame>
     </GridPane>
   );
 }
