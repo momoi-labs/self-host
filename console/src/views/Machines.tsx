@@ -7,7 +7,7 @@ import { Icon } from "../components/Icon.js";
 import { StatusFilter } from "../components/StatusFilter.js";
 import { Activity, Usage, plainClick } from "../components/WorkloadCells.js";
 import { formatBytes } from "../lib/format.js";
-import { countOf } from "../lib/overview.js";
+import { countOf, machineFailed } from "../lib/overview.js";
 import { statusLabel, statusTone } from "../lib/status.js";
 import type { Environment, Metrics } from "../lib/types.js";
 import { machineSeriesFor } from "../lib/useMetrics.js";
@@ -23,7 +23,7 @@ export function Machines({ machines, ready, metrics, onCreate, onOpen }: {
   const [status, setStatus] = useState("all");
   const term = query.trim().toLowerCase();
   const visible = machines.filter((one) =>
-    one.config.name.toLowerCase().includes(term) && (status === "all" || one.state === status),
+    one.config.name.toLowerCase().includes(term) && (status === "all" || (status === "failed" ? machineFailed(one) : one.state === status)),
   );
   const filtering = term !== "" || status !== "all";
 

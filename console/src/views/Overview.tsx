@@ -29,7 +29,7 @@ const STAGE_STATE = { running: "running", completed: "done", failed: "failed" } 
 
 export function Overview({
   ready, domain, apps, environments, metrics,
-  onOpenApp, onOpenEnvironment, onOpenEvents, onDeploy, onNewDatabase, onNewMachine,
+  onOpenApp, onOpenEnvironment, onOpenEvents, onOpenSubject, onDeploy, onNewDatabase, onNewMachine,
 }: {
   ready: boolean;
   domain: string | null;
@@ -39,14 +39,15 @@ export function Overview({
   onOpenApp: (id: string) => void;
   onOpenEnvironment: (id: string) => void;
   onOpenEvents: () => void;
+  onOpenSubject: (subject: PlatformEvent["subject"]) => void;
   onDeploy: () => void;
   onNewDatabase: () => void;
   onNewMachine: () => void;
 }) {
   const { events } = useEvents();
   const records = useQuery({ ...dnsRecordsQuery, refetchInterval: 15_000 }).data;
-  const empty = apps.length === 0 && environments.length === 0;
   const tally = tallies(apps, environments);
+  const empty = tally.all.total === 0;
   const failed = needsAttention(apps, environments);
   const open = (workload: Workload) => workload.kind === "machine" ? onOpenEnvironment(workload.id) : onOpenApp(workload.id);
 
@@ -187,7 +188,7 @@ export function Overview({
                 onOpenEvents();
               }}>All events</a>
             </Button>}>
-              <RecentActivity events={events} machines={environments} />
+              <RecentActivity events={events} machines={environments} onOpenMachine={onOpenEnvironment} onOpenSubject={onOpenSubject} />
             </GridPane>
           </PaneGrid>
         )}
@@ -196,7 +197,12 @@ export function Overview({
   );
 }
 
-function RecentActivity({ events, machines }: { events: PlatformEvent[]; machines: Environment[] }) {
+function RecentActivity({ events, machines, onOpenMachine, onOpenSubject }: {
+  events: PlatformEvent[];
+  machines: Environment[];
+  onOpenMachine: (id: string) => void;
+  onOpenSubject: (subject: PlatformEvent["subject"]) => void;
+}) {
   const running = machines.filter((one) => one.operation?.status === "running");
   const recent = events
     .filter((event) => !(event.status === "running" && event.subject.kind === "virtual-machine" && running.some((one) => one.id === event.subject.id)))
@@ -215,7 +221,11 @@ function RecentActivity({ events, machines }: { events: PlatformEvent[]; machine
             <Dot variant="success" pulse />
             <div>
               <div className="between">
-                <span><a className="fg" href={`/console/#virtual-machine-${one.id}`}><strong>{one.config.name}</strong></a> {title}</span>
+                <span><a className="fg" href={`/console/#virtual-machine-${one.id}`} onClick={(event) => {
+                  if (!plainClick(event)) return;
+                  event.preventDefault();
+                  onOpenMachine(one.id);
+                }}><strong>{one.config.name}</strong></a> {title}</span>
                 <span className="muted">now</span>
               </div>
               <StepBar label={title} steps={barSteps(operation.action, operation.step)} />
@@ -237,7 +247,11 @@ function RecentActivity({ events, machines }: { events: PlatformEvent[]; machine
               <div className="between">
                 <span>
                   {eventActionLabel(event)}{" "}
-                  {href ? <a className="fg" href={href}><strong>{event.subject.name}</strong></a> : <strong>{event.subject.name}</strong>}
+                  {href ? <a className="fg" href={href} onClick={(click) => {
+                    if (!plainClick(click)) return;
+                    click.preventDefault();
+                    onOpenSubject(event.subject);
+                  }}><strong>{event.subject.name}</strong></a> : <strong>{event.subject.name}</strong>}
                   {event.status === "failed" ? " failed" : ""}
                 </span>
                 <span className="muted activity-when" title={new Date(at).toLocaleString()}>{active ? "now" : formatAgo(at)}</span>

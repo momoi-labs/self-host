@@ -8,6 +8,7 @@ import { useMetrics } from "./lib/useMetrics.js";
 import { useEnvironments } from "./lib/useEnvironments.js";
 import { settingsQuery } from "./lib/queries.js";
 import { failedCounts } from "./lib/overview.js";
+import type { PlatformEvent } from "./lib/platformEvents.js";
 import { useSettingsFailures } from "./lib/settingsSections.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
@@ -96,6 +97,13 @@ export function App() {
       ? { label: "Images", href: "/console/#custom-images", active: false, onClick: () => go({ view: "custom-images", id: null }) }
       : undefined;
 
+  const openSubject = (subject: PlatformEvent["subject"]) => {
+    if (subject.kind === "api-key") { go({ view: "settings", id: "access/api-keys" }); return; }
+    if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
+    if (subject.kind === "platform") { go({ view: "settings", id: "backups/scheduled-tasks" }); return; }
+    go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
+  };
+
   return (
     <Shell
       crumb={crumb}
@@ -152,12 +160,7 @@ export function App() {
           onOpenApplication={id => go({ view: "app", id })}
           onOpenVirtualMachine={id => go({ view: "environments", id })} />
       ) : view.view === "events" ? (
-        <EventsPage onOpenSubject={(subject) => {
-          if (subject.kind === "api-key") { go({ view: "settings", id: "access/api-keys" }); return; }
-          if (subject.kind === "settings") { go({ view: "settings", id: "general" }); return; }
-          if (subject.kind === "platform") { go({ view: "settings", id: "backups/scheduled-tasks" }); return; }
-          go({ view: subject.kind === "virtual-machine" ? "environments" : subject.kind === "custom-image" ? "custom-image" : "app", id: subject.id });
-        }} />
+        <EventsPage onOpenSubject={openSubject} />
       ) : view.view === "routes" ? (
         <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} />
       ) : view.view === "apps" ? (
@@ -229,6 +232,7 @@ export function App() {
           onNewDatabase={() => go({ view: "database-new", id: null })}
           onNewMachine={() => go({ view: "environment-new", id: null })}
           onOpenEvents={() => go({ view: "events", id: null })}
+          onOpenSubject={openSubject}
         />
       )}
       <OperationOutcomes environments={environments} />
