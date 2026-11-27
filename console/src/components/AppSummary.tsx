@@ -260,9 +260,11 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
             <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard?.writeText(sourceOf(app))}>Copy</Button>
             {edit}
           </>}>
-            <pre><code>{sourceOf(app)}</code></pre>
-            <p className="muted t-label">Runs as <code>{native.account}</code> in {native.working_dir || (app.git ? "the repository context" : "the Application home")}</p>
-            {capabilities?.resource_limits ? <p className="muted t-label">{limitsOf(native.limits)}</p> : null}
+            <Card><CardContent>
+              <pre><code>{sourceOf(app)}</code></pre>
+              <p className="muted t-label">Runs as <code>{native.account}</code> in {native.working_dir || (app.git ? "the repository context" : "the Application home")}</p>
+              {capabilities?.resource_limits ? <p className="muted t-label">{limitsOf(native.limits)}</p> : null}
+            </CardContent></Card>
           </GridPane>
         ) : (
           <GridPane id="what-runs" title="What runs" size={6} frame="none" actions={<>
