@@ -46,7 +46,7 @@ export function CreateResource({
         onClick={() => changeOpen(true)}
       >
         <Icon name="plus" />
-        Create resource
+        Create
       </Button>
       <CommandPalette label="Create resource" open={open} onOpenChange={changeOpen}>
         <CommandPaletteInput

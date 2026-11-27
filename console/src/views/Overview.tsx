@@ -1,575 +1,254 @@
-import { useState, type ReactNode } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  StatusBadge,
-  Button,
-  Card,
-  CardContent,
-  EmptyState,
-  EmptyStateDescription,
-  EmptyStateTitle,
-  PageHeader,
-  PageHeaderTitle,
-  Search,
-  Skeleton,
-  Sparkline,
-  StepBar,
-  Table,
-  TableBody,
-  TableCell,
-  TableFrame,
-  TableHead,
-  TableHeader,
-  TableRow,
+  Badge, Button, Card, CardAction, CardContent, CardHeader, CardTitle, Dot,
+  EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateTitle, GridPane, Meter,
+  PageHeader, PageHeaderDescription, PageHeaderTitle, PaneGrid, Skeleton, Sparkline,
+  Stat, StatFoot, StatHeader, StatLabel, StatValue, StatusBadge, StepBar,
+  Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow,
 } from "@momoi-labs/kiso-react";
 
 import { CreateResource } from "../components/CreateResource.js";
-import { definitionOf, describeDefinition } from "../components/DefinitionPicker.js";
 import { Icon } from "../components/Icon.js";
-import { formatBytes } from "../lib/format.js";
-import { databaseQuery } from "../lib/queries.js";
+import { plainClick } from "../components/WorkloadCells.js";
+import { formatAgo, formatBytes, formatWindow } from "../lib/format.js";
+import {
+  countOf, errorRate, needsAttention, perMinute, tallies, topWorkloads, workloadHref,
+  type Workload, type WorkloadKind,
+} from "../lib/overview.js";
+import { eventActionLabel, eventSubjectHref, eventUpdatedAt, type PlatformEvent } from "../lib/platformEvents.js";
+import { dnsRecordsQuery } from "../lib/queries.js";
 import { routesOf } from "../lib/routes.js";
-import { NOUNS, TITLES, barSteps, phase, position } from "../lib/runSteps.js";
-import { statusTone } from "../lib/status.js";
-import { hostTotals, machineSeriesFor, seriesFor } from "../lib/useMetrics.js";
-import { useNativeCapabilities } from "../lib/useNativeCapabilities.js";
-import type { App, AppSample, Environment, Metrics } from "../lib/types.js";
+import { TITLES, barSteps, phase } from "../lib/runSteps.js";
+import type { App, Environment, Metrics } from "../lib/types.js";
+import { useEvents } from "../lib/useEvents.js";
+import { hostTotals } from "../lib/useMetrics.js";
 
-const matches = (name: string, query: string) =>
-  name.toLowerCase().includes(query.trim().toLowerCase());
-
-/** A status the way a badge says it: "Running", not "running". */
-const statusLabel = (status: string) => status.charAt(0).toUpperCase() + status.slice(1);
-
-/** What an Application's definition names: the image, the repository, the command. */
-function sourceOf(app: App): string {
-  if (app.runtime?.kind === "native") return app.git?.repository ?? app.runtime.worker?.config ?? app.runtime.command.join(" ");
-  return app.git?.repository ?? app.image;
-}
+const KIND_NAME: Record<WorkloadKind, string> = { application: "Application", database: "Database", machine: "Machine" };
+const KIND_SHORT: Record<WorkloadKind, string> = { application: "App", database: "DB", machine: "VM" };
+const STAGE_STATE = { running: "running", completed: "done", failed: "failed" } as const;
 
 export function Overview({
-  ready,
-  apps,
-  environments,
-  metrics,
-  onOpenApp,
-  onOpenEnvironment,
-  onDeploy,
-  onNewDatabase,
-  onNewMachine,
-  onOpenDatabases,
-  onOpenRoutes,
+  ready, domain, apps, environments, metrics,
+  onOpenApp, onOpenEnvironment, onOpenEvents, onDeploy, onNewDatabase, onNewMachine,
 }: {
   ready: boolean;
+  domain: string | null;
   apps: App[];
   environments: Environment[];
   metrics: Metrics | null;
   onOpenApp: (id: string) => void;
   onOpenEnvironment: (id: string) => void;
+  onOpenEvents: () => void;
   onDeploy: () => void;
   onNewDatabase: () => void;
   onNewMachine: () => void;
-  onOpenDatabases: () => void;
-  onOpenRoutes: () => void;
 }) {
-  // Each panel holds its own term. One box filtering every list said nothing
-  // about which list it was thinning.
-  const [appSearch, setAppSearch] = useState("");
-  const [databaseSearch, setDatabaseSearch] = useState("");
-  const [machineSearch, setMachineSearch] = useState("");
-  const { capabilities } = useNativeCapabilities();
-  const applications = apps.filter((app) => !app.managed_postgres && app.runtime?.kind !== "external");
-  const databases = apps.filter((app) => app.managed_postgres);
-
-  // A database's connections are the only record of who uses it.
-  const details = useQueries({
-    queries: databases.map((database) => ({ ...databaseQuery(database.id), refetchInterval: 15_000 })),
-  });
-  const usedBy = new Map(databases.map((database, index) => [
-    database.id,
-    details[index]?.data?.connections
-      .filter((connection) => connection.status !== "revoked")
-      .map((connection) => apps.find((app) => app.id === connection.consumer_application_id)?.name ?? "Removed application"),
-  ]));
-
-  const visibleApps = applications.filter((app) => matches(app.name, appSearch));
-  const visibleDatabases = databases.filter((database) => matches(database.name, databaseSearch));
-  const machines = environments.filter((one) => matches(one.config.name, machineSearch));
+  const { events } = useEvents();
+  const records = useQuery({ ...dnsRecordsQuery, refetchInterval: 15_000 }).data;
   const empty = apps.length === 0 && environments.length === 0;
+  const tally = tallies(apps, environments);
+  const failed = needsAttention(apps, environments);
+  const open = (workload: Workload) => workload.kind === "machine" ? onOpenEnvironment(workload.id) : onOpenApp(workload.id);
+
+  const totals = hostTotals(metrics);
+  const platform = metrics?.platform ?? [];
+  const interval = metrics?.interval_seconds ?? 0;
+  const latest = platform[platform.length - 1];
+  const window = platform.length > 1 ? `Last ${formatWindow((platform.length - 1) * interval)}` : null;
+  const routes = apps.reduce((sum, app) => sum + routesOf(app).length, 0);
+  const errors = errorRate(platform);
+  const cores = metrics?.host_cpus ?? 0;
+  const top = topWorkloads(apps, environments, metrics);
+  const span = Math.max(0, ...top.map((row) => (row.samples?.length ?? 1) - 1)) * interval;
+  const trend = span > 0 ? `Last ${formatWindow(span)}` : "Trend";
 
   return (
     <>
-      <PageHeader actions={ready && empty ? <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} /> : undefined}>
+      <PageHeader actions={ready ? <CreateResource onDeploy={onDeploy} onCreateMachine={onNewMachine} onCreateDatabase={onNewDatabase} /> : undefined}>
         <PageHeaderTitle>Overview</PageHeaderTitle>
+        {ready ? <PageHeaderDescription>
+          {empty ? "Nothing runs on this Host yet." : `${domain ? `${domain} · ` : ""}${countOf(tally.application.total, "app")}, ${countOf(tally.database.total, "database")}, ${countOf(tally.machine.total, "machine")}`}
+        </PageHeaderDescription> : null}
       </PageHeader>
 
       {!ready ? (
-        <Card>
-          <CardContent>
-            <Skeleton />
-          </CardContent>
-        </Card>
-      ) : empty ? (
-        <Card>
-          <CardContent>
-            <EmptyState variant="first-run">
-              <EmptyStateTitle>Nothing running yet</EmptyStateTitle>
-              <EmptyStateDescription>
-                Deploy an application or create a virtual machine, and reach it from your LAN.
-              </EmptyStateDescription>
-            </EmptyState>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="panel-stack">
-          <Card className="summary-panel">
+        <Card><CardContent><Skeleton /></CardContent></Card>
+      ) : <>
+        {failed.length ? (
+          <Card className="needs-attention">
+            <CardHeader>
+              <div className="between">
+                <CardTitle><span className="row"><Icon name="alert" />Needs attention</span></CardTitle>
+                <CardAction><Badge variant="danger">{failed.length} failed</Badge></CardAction>
+              </div>
+            </CardHeader>
             <CardContent>
-              <GroupedSummary apps={applications} routed={apps} databases={databases} environments={environments} metrics={metrics} onOpenDatabases={onOpenDatabases} onOpenRoutes={onOpenRoutes} />
+              <ul className="attention-list">
+                {failed.map((one) => (
+                  <li key={`${one.kind}-${one.id}`}>
+                    <StatusBadge tone="danger">Failed</StatusBadge>
+                    <div className="attention-what">
+                      <strong>{one.name}</strong> <span className="muted">{KIND_NAME[one.kind]}</span>
+                      {one.summary ? <p>{one.summary}</p> : null}
+                    </div>
+                    <Button size="sm" aria-label={one.kind === "application" ? undefined : `Open ${KIND_NAME[one.kind].toLowerCase()} ${one.name}`} onClick={() => open(one)}>
+                      {one.kind === "application" ? `Open ${one.name}` : `Open ${KIND_NAME[one.kind].toLowerCase()}`}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
             </CardContent>
           </Card>
+        ) : null}
 
-          <TableFrame>
-            <div className="table-toolbar panel-toolbar">
-              <h2 className="section-title">Applications</h2>
-              {applications.length ? <Search
-                aria-label="Search applications"
-                containerClassName="section-search"
-                placeholder="Search applications…"
-                value={appSearch}
-                onChange={(event) => setAppSearch(event.target.value)}
-              /> : null}
-              <GroupAction label="Deploy application" object="application" onClick={onDeploy} />
-            </div>
-            {applications.length === 0 ? (
-              <div className="empty-frame">
-                <EmptyState variant="first-run">
-                  <EmptyStateTitle>No applications yet</EmptyStateTitle>
-                  <EmptyStateDescription>Deploy a container image, a Git repository or a native process.</EmptyStateDescription>
-                </EmptyState>
-              </div>
-            ) : <div className="table-scroll">
-              <Table aria-label="Applications">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead scope="col">Application</TableHead>
-                    <TableHead scope="col">Hostname</TableHead>
-                    <TableHead scope="col">Status</TableHead>
-                    <TableHead scope="col">CPU</TableHead>
-                    <TableHead scope="col">Memory</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visibleApps.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="muted">No applications match your search.</TableCell>
-                    </TableRow>
-                  ) : (
-                    visibleApps.map((app) => {
-                      const definition = describeDefinition(definitionOf(app));
-                      const samples = seriesFor(metrics, app.id);
-                      // A native process tree is measured only where the Host has resource controls.
-                      const unmeasured = app.runtime?.kind === "native" && capabilities?.metrics === false;
-                      return (
-                        <TableRow
-                          key={app.id}
-                          tabIndex={0}
-                          role="button"
-                          aria-label={`Open ${app.name}`}
-                          onClick={() => onOpenApp(app.id)}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") return;
-                            event.preventDefault();
-                            onOpenApp(app.id);
-                          }}
-                        >
-                          <TableCell>
-                            <span className="app-cell">
-                              <Icon name={definition.icon} size="md" />
-                              <span className="stack-xs">
-                                <strong>{app.name}</strong>
-                                <span className="muted t-label">{definition.label} · <span className="mono">{sourceOf(app)}</span></span>
-                              </span>
-                            </span>
-                          </TableCell>
-                          <TableCell className="mono">
-                            {app.hostname || <span className="muted">Unpublished</span>}
-                            {app.aliases?.length ? <span className="t-metadata muted"> +{app.aliases.length}</span> : null}
-                          </TableCell>
-                          <TableCell>
-                            <StatusBadge tone={statusTone(app.status)}>{statusLabel(app.status)}</StatusBadge>
-                          </TableCell>
-                          <Usage
-                            samples={samples}
-                            unmeasured={unmeasured}
-                            value={(sample) => sample.cpu_percent}
-                            render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
-                          />
-                          <Usage
-                            samples={samples}
-                            unmeasured={unmeasured}
-                            value={(sample) => sample.memory_bytes}
-                            render={(sample) => formatBytes(sample.memory_bytes)}
-                          />
-                        </TableRow>
-                      );
-                    })
-                  )}
-                </TableBody>
-              </Table>
-            </div>}
-          </TableFrame>
+        {empty ? (
+          <Card>
+            <CardContent>
+              <EmptyState variant="first-run">
+                <EmptyStateTitle>Deploy the first workload</EmptyStateTitle>
+                <EmptyStateDescription>An application, a database or a machine. The Overview fills in when something runs.</EmptyStateDescription>
+                <EmptyStateActions>
+                  <Button variant="primary" onClick={onDeploy}>Deploy application</Button>
+                  <Button onClick={onNewDatabase}>Create database</Button>
+                </EmptyStateActions>
+              </EmptyState>
+            </CardContent>
+          </Card>
+        ) : null}
 
-          <TableFrame>
-            <div className="table-toolbar panel-toolbar">
-              <h2 className="section-title">Databases</h2>
-              {databases.length ? <Search
-                aria-label="Search databases"
-                containerClassName="section-search"
-                placeholder="Search databases…"
-                value={databaseSearch}
-                onChange={(event) => setDatabaseSearch(event.target.value)}
-              /> : null}
-              <GroupAction label="New database" object="database" onClick={onNewDatabase} />
+        <div className="stat-strip">
+          <Card><Stat>
+            <StatHeader><StatLabel>Workloads</StatLabel>{failed.length ? <Dot variant="danger" /> : null}</StatHeader>
+            <StatValue>{empty ? "0" : `${tally.all.running}/${tally.all.total}`}</StatValue>
+            <StatFoot>{empty ? "No apps, databases or machines"
+              : `${tally.application.running}/${tally.application.total} apps · ${tally.database.running}/${tally.database.total} DBs · ${tally.machine.running}/${tally.machine.total} VMs`}</StatFoot>
+          </Stat></Card>
+          <Card><Stat>
+            <StatHeader><StatLabel>Host load</StatLabel></StatHeader>
+            <div className="stack-sm">
+              <Meter label="CPU" value={totals && cores ? Math.min(100, totals.cpu / cores) : null}
+                valueText={totals && cores ? `${(totals.cpu / cores).toFixed(0)}% of ${countOf(cores, "core")}` : "—"} />
+              <Meter label="Memory" value={totals?.memoryLimit ? Math.min(100, (totals.memory / totals.memoryLimit) * 100) : null}
+                valueText={!totals ? "—" : totals.memoryLimit ? `${formatBytes(totals.memory)} of ${formatBytes(totals.memoryLimit)}` : formatBytes(totals.memory)} />
             </div>
-            {databases.length === 0 ? (
-              <div className="empty-frame">
-                <EmptyState variant="first-run">
-                  <EmptyStateTitle>No databases yet</EmptyStateTitle>
-                  <EmptyStateDescription>Create a PostgreSQL server for your Applications to connect to.</EmptyStateDescription>
-                </EmptyState>
-              </div>
-            ) : <div className="table-scroll">
-              <Table aria-label="Databases">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead scope="col">Database</TableHead>
-                    <TableHead scope="col">Status</TableHead>
-                    <TableHead scope="col">Used by</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visibleDatabases.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={3} className="muted">No databases match your search.</TableCell>
-                    </TableRow>
-                  ) : (
-                    visibleDatabases.map((database) => {
-                      const consumers = usedBy.get(database.id);
-                      return (
-                        <TableRow
-                          key={database.id}
-                          tabIndex={0}
-                          role="button"
-                          aria-label={`Open ${database.name}`}
-                          onClick={() => onOpenApp(database.id)}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") return;
-                            event.preventDefault();
-                            onOpenApp(database.id);
-                          }}
-                        >
-                          <TableCell>
-                            <span className="stack-xs">
-                              <strong>{database.name}</strong>
-                              <span className="muted t-label">PostgreSQL {database.managed_postgres?.major}</span>
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <StatusBadge tone={statusTone(database.status)}>{statusLabel(database.status)}</StatusBadge>
-                          </TableCell>
-                          <TableCell>
-                            {consumers === undefined ? <span className="muted">—</span>
-                              : consumers.length ? consumers.join(", ")
-                                : <span className="muted">No Application</span>}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })
-                  )}
-                </TableBody>
-              </Table>
-            </div>}
-          </TableFrame>
-
-          <TableFrame>
-            <div className="table-toolbar panel-toolbar">
-              <h2 className="section-title">Virtual machines</h2>
-              {environments.length ? <Search
-                aria-label="Search virtual machines"
-                containerClassName="section-search"
-                placeholder="Search machines…"
-                value={machineSearch}
-                onChange={(event) => setMachineSearch(event.target.value)}
-              /> : null}
-              <GroupAction label="Create virtual machine" object="virtual machine" onClick={onNewMachine} />
-            </div>
-            {environments.length === 0 ? (
-              <div className="empty-frame">
-                <EmptyState variant="first-run">
-                  <EmptyStateTitle>No virtual machines yet</EmptyStateTitle>
-                  <EmptyStateDescription>Create a persistent workspace with your tools and repositories, reachable over SSH.</EmptyStateDescription>
-                </EmptyState>
-              </div>
-            ) : <div className="table-scroll">
-              <Table aria-label="Virtual machines">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead scope="col">Virtual machine</TableHead>
-                    <TableHead scope="col">State</TableHead>
-                    <TableHead scope="col">Service</TableHead>
-                    <TableHead scope="col">Activity</TableHead>
-                    <TableHead scope="col">CPU</TableHead>
-                    <TableHead scope="col">Memory</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {machines.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6} className="muted">
-                        No virtual machines match your search.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    machines.map((one) => (
-                      <TableRow
-                        key={one.id}
-                        tabIndex={0}
-                        role="button"
-                        aria-label={`Open ${one.config.name}`}
-                        onClick={() => onOpenEnvironment(one.id)}
-                        onKeyDown={(event) => {
-                          if (event.key !== "Enter" && event.key !== " ") return;
-                          event.preventDefault();
-                          onOpenEnvironment(one.id);
-                        }}
-                      >
-                        <TableCell>{one.config.name}</TableCell>
-                        <TableCell>
-                          <StatusBadge tone={statusTone(one.state)}>
-                            {one.state}
-                          </StatusBadge>
-                        </TableCell>
-                        <TableCell>
-                          {/* No service yet on a machine still being created:
-                              "disabled" would say something that is not so. */}
-                          {one.operation?.status === "running" &&
-                          one.operation.action === "create" &&
-                          !one.service_ready ? (
-                            <span className="muted">—</span>
-                          ) : (
-                            <StatusBadge
-                              tone={one.service_ready ? "success" : "neutral"}
-                            >
-                              {one.service_ready ? "Ready" : "Disabled"}
-                            </StatusBadge>
-                          )}
-                        </TableCell>
-                        {/* What it is doing right now is the only reason to
-                            look at a machine mid-bootstrap: the action, one
-                            segment per step, and how far. An operation that
-                            ended well is history: it said "create: ready" at
-                            a machine being deleted. A failed one stays until
-                            the retry, with its red segment where it stopped. */}
-                        <TableCell>
-                          {one.operation?.status === "running" ||
-                          one.operation?.status === "failed" ? (
-                            <Activity operation={one.operation} />
-                          ) : (
-                            <span className="muted">Idle</span>
-                          )}
-                        </TableCell>
-                        <Usage
-                          samples={machineSeriesFor(metrics, one.id)}
-                          value={(sample) => sample.cpu_percent}
-                          render={(sample) => `${sample.cpu_percent.toFixed(1)}%`}
-                        />
-                        <Usage
-                          samples={machineSeriesFor(metrics, one.id)}
-                          value={(sample) => sample.memory_bytes}
-                          render={(sample) => formatBytes(sample.memory_bytes)}
-                        />
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>}
-          </TableFrame>
+          </Stat></Card>
+          <Card><Stat>
+            <StatHeader><StatLabel>Proxy traffic</StatLabel></StatHeader>
+            <StatValue>{latest ? perMinute(latest.proxy_requests, interval) : "—"} <small className="muted">req/min</small></StatValue>
+            {window ? <Sparkline values={platform.map((sample) => sample.proxy_requests)} height={28} label={`Proxy requests. ${window}`} /> : null}
+            <StatFoot>{routes ? countOf(routes, "route") : "No routes"}{errors === null ? "" : ` · ${errors.toFixed(1)}% errors`}</StatFoot>
+          </Stat></Card>
+          <Card><Stat>
+            <StatHeader><StatLabel>DNS queries</StatLabel></StatHeader>
+            <StatValue>{latest ? perMinute(latest.dns_queries, interval) : "—"} <small className="muted">q/min</small></StatValue>
+            {window ? <Sparkline values={platform.map((sample) => sample.dns_queries)} height={28} label={`DNS queries. ${window}`} /> : null}
+            <StatFoot>{records ? (records.length ? countOf(records.length, "record") : "No records") : window ?? "No samples yet"}</StatFoot>
+          </Stat></Card>
         </div>
-      )}
+
+        {empty ? null : (
+          <PaneGrid static>
+            <GridPane id="top" title="Top workloads by resource use">
+              <TableFrame frame="none">
+                <Table density="compact" aria-label="Top workloads by resource use">
+                  <TableHeader><TableRow>
+                    <TableHead scope="col">Workload</TableHead>
+                    <TableHead scope="col">Kind</TableHead>
+                    <TableHead scope="col" className="num">CPU</TableHead>
+                    <TableHead scope="col" className="num">Memory</TableHead>
+                    <TableHead scope="col" className="spark-col">{trend}</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {top.map((row) => (
+                      <TableRow key={`${row.kind}-${row.id}`}>
+                        <TableCell><a href={workloadHref(row)} onClick={(event) => {
+                          if (!plainClick(event)) return;
+                          event.preventDefault();
+                          open(row);
+                        }}>{row.name}</a></TableCell>
+                        <TableCell><Badge variant="neutral">{KIND_SHORT[row.kind]}</Badge></TableCell>
+                        <TableCell className="num">{row.cpu === null ? <span className="muted">—</span> : `${row.cpu.toFixed(1)}%`}</TableCell>
+                        <TableCell className="num">{row.memory === null ? <span className="muted">—</span> : formatBytes(row.memory)}</TableCell>
+                        <TableCell className="spark-col">
+                          {row.samples && row.samples.length > 1
+                            ? <Sparkline values={row.samples.map((sample) => sample.cpu_percent)} height={20} label={`${row.name} CPU. ${trend}`} />
+                            : <span className="muted">—</span>}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableFrame>
+            </GridPane>
+            <GridPane id="activity" title="Recent activity" actions={<Button size="sm" variant="ghost" asChild>
+              <a href="/console/#events" onClick={(event) => {
+                if (!plainClick(event)) return;
+                event.preventDefault();
+                onOpenEvents();
+              }}>All events</a>
+            </Button>}>
+              <RecentActivity events={events} machines={environments} />
+            </GridPane>
+          </PaneGrid>
+        )}
+      </>}
     </>
   );
 }
 
-/**
- * The Overview's summary, in one panel: four questions, a caps label over
- * each. What is up, what the measured workloads cost the Host, and what the
- * Platform's proxy and DNS handled. The reading is the answer; the panels
- * below are where anything deeper gets inspected.
- */
-function GroupAction({ label, object, onClick }: { label: string; object: string; onClick: () => void }) {
-  return (
-    <Button size="sm" variant="ghost" className="panel-action" onClick={onClick}>
-      <Icon name="plus" />
-      <span className="panel-action-full">{label}</span>
-      <span className="panel-action-short">New<span className="panel-action-object"> {object}</span></span>
-    </Button>
-  );
-}
+function RecentActivity({ events, machines }: { events: PlatformEvent[]; machines: Environment[] }) {
+  const running = machines.filter((one) => one.operation?.status === "running");
+  const recent = events
+    .filter((event) => !(event.status === "running" && event.subject.kind === "virtual-machine" && running.some((one) => one.id === event.subject.id)))
+    .sort((a, b) => Date.parse(eventUpdatedAt(b)) - Date.parse(eventUpdatedAt(a)))
+    .slice(0, Math.max(0, 8 - running.length));
 
-function GroupedSummary({ apps, routed, databases, environments, metrics, onOpenDatabases, onOpenRoutes }: {
-  routed: App[];
-  apps: App[];
-  databases: App[];
-  environments: Environment[];
-  metrics: Metrics | null;
-  onOpenDatabases: () => void;
-  onOpenRoutes: () => void;
-}) {
-  const running = apps.filter((app) => app.status === "running").length;
-  const routes = routed.flatMap(routesOf).length;
-  const awake = environments.filter((one) => one.state === "running").length;
-  const totals = hostTotals(metrics);
-  const platform = metrics?.platform ?? [];
-  const latest = platform[platform.length - 1];
-  // Proxy and DNS count events over the same interval and share one scale
-  // (ADR-0020), so both speak per minute.
-  const interval = Math.max(1, metrics?.interval_seconds ?? 10);
-  const perMinute = (count: number) => Math.round((count * 60) / interval);
-  const windowMinutes = Math.max(1, Math.round((platform.length * interval) / 60));
+  if (!running.length && !recent.length) return <p className="muted">No activity yet.</p>;
 
   return (
-    <div className="summary-groups">
-      <div className="summary-group">
-        <p className="t-caps">Workloads</p>
-        <p className="summary-line">
-          <b>{running} of {apps.length}</b> apps running
-          {databases.length ? <>
-            <span className="sep">·</span>
-            <a href="/console/#databases" onClick={(event) => {
-              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-              event.preventDefault();
-              onOpenDatabases();
-            }}><b>{databases.filter((database) => database.status === "running").length} of {databases.length}</b> databases</a>
-          </> : null}
-          {environments.length ? <>
-            <span className="sep">·</span>
-            <b>{awake} of {environments.length}</b> VMs
-          </> : null}
-        </p>
-      </div>
-      <div className="summary-group">
-        <p className="t-caps">Measured use</p>
-        <p className="summary-line">
-          <span className="k">CPU</span> <b>{totals ? `${totals.cpu.toFixed(1)}%` : "—"}</b>
-          <span className="sep">·</span>
-          <span className="k">Memory</span> <b>{totals ? formatBytes(totals.memory) : "—"}</b>
-          {totals ? ` of ${formatBytes(totals.memoryLimit)}` : ""}
-        </p>
-      </div>
-      <Rate label="Proxy" noun="requests" counts={platform.map((sample) => perMinute(sample.proxy_requests))}
-        latest={latest ? perMinute(latest.proxy_requests) : null} windowMinutes={windowMinutes}>
-        {routes ? <>
-          <span className="sep">·</span>
-          <a href="/console/#routes" onClick={(event) => {
-            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-            event.preventDefault();
-            onOpenRoutes();
-          }}><b>{routes}</b> {routes === 1 ? "route" : "routes"}</a>
-        </> : null}
-      </Rate>
-      <Rate label="DNS" noun="queries" counts={platform.map((sample) => perMinute(sample.dns_queries))}
-        latest={latest ? perMinute(latest.dns_queries) : null} windowMinutes={windowMinutes} />
-    </div>
-  );
-}
-
-/** One server's rate and its shape, or a sentence when the window saw nothing, then what else the line says. */
-function Rate({ label, noun, counts, latest, windowMinutes, children }: {
-  label: string;
-  noun: string;
-  counts: number[];
-  latest: number | null;
-  windowMinutes: number;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="summary-group">
-      <p className="t-caps">{label}</p>
-      <div className="summary-line">
-        {latest === null ? <b>—</b>
-          : counts.some(Boolean) ? <><b>{latest}/min</b><Sparkline values={counts} height={14} /></>
-            : <span>No {noun} in the last {windowMinutes} {windowMinutes === 1 ? "minute" : "minutes"}</span>}
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/**
- * A running or failed operation in a table cell: the badge says the phase
- * the run is in ("Starting", "Provisioning") or what went wrong ("Bootstrap
- * failed"), the bar shows where it is, the count says how far. No ticker
- * here; the machine's own screen has the output.
- */
-function Activity({ operation }: { operation: NonNullable<Environment["operation"]> }) {
-  const failed = operation.status === "failed";
-  const said = failed
-    ? `${NOUNS[operation.action] ?? operation.action} failed`
-    : phase(operation.action, operation.step);
-  const place = position(operation.action, operation.step);
-  return (
-    <span
-      className="activity-cell"
-      title={operation.step ? `${said}: ${operation.step}` : said}
-    >
-      <StatusBadge tone={failed ? "danger" : "success"} pulse={!failed}>
-        {said}
-      </StatusBadge>
-      <StepBar
-        label={TITLES[operation.action] ?? operation.action}
-        steps={barSteps(operation.action, operation.step, failed)}
-      />
-      {place ? (
-        <span className="mono muted t-label">
-          {place.at}/{place.of}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
-/**
- * A workload's usage in a table cell: the last reading with the window's
- * shape beside it. A dash until the collector's first tick, which is up to a
- * minute after the workload starts, and "Not measured" for a native process
- * on a Host that cannot measure one.
- */
-function Usage({
-  samples,
-  unmeasured,
-  value,
-  render,
-}: {
-  samples: AppSample[] | null;
-  unmeasured?: boolean;
-  value: (sample: AppSample) => number;
-  render: (sample: AppSample) => string;
-}) {
-  if (unmeasured) {
-    return (
-      <TableCell className="muted" title="This Host has no resource controls for native processes">Not measured</TableCell>
-    );
-  }
-  if (!samples) {
-    return <TableCell className="muted">—</TableCell>;
-  }
-  return (
-    <TableCell>
-      <span className="usage-inline">
-        <span className="usage-value">{render(samples[samples.length - 1])}</span>
-        <Sparkline values={samples.map(value)} height={16} />
-      </span>
-    </TableCell>
+    <ul className="activity-list">
+      {running.map((one) => {
+        const operation = one.operation!;
+        const title = TITLES[operation.action] ?? operation.action;
+        return (
+          <li key={`machine-${one.id}`}>
+            <Dot variant="success" pulse />
+            <div>
+              <div className="between">
+                <span><a className="fg" href={`/console/#virtual-machine-${one.id}`}><strong>{one.config.name}</strong></a> {title}</span>
+                <span className="muted">now</span>
+              </div>
+              <StepBar label={title} steps={barSteps(operation.action, operation.step)} />
+              <span className="muted">{phase(operation.action, operation.step)}</span>
+            </div>
+          </li>
+        );
+      })}
+      {recent.map((event) => {
+        const href = eventSubjectHref(event.subject);
+        const at = eventUpdatedAt(event);
+        const active = event.status === "running" || event.status === "pending";
+        const stages = event.progress?.stages ?? [];
+        const detail = event.status === "failed" ? (event.error?.error ?? event.description) : event.description;
+        return (
+          <li key={event.id}>
+            <Dot variant={event.status === "failed" ? "danger" : active ? "success" : "neutral"} pulse={active} />
+            <div>
+              <div className="between">
+                <span>
+                  {eventActionLabel(event)}{" "}
+                  {href ? <a className="fg" href={href}><strong>{event.subject.name}</strong></a> : <strong>{event.subject.name}</strong>}
+                  {event.status === "failed" ? " failed" : ""}
+                </span>
+                <span className="muted activity-when" title={new Date(at).toLocaleString()}>{active ? "now" : formatAgo(at)}</span>
+              </div>
+              {active && stages.length ? <StepBar label={eventActionLabel(event)}
+                steps={stages.map((stage) => ({ key: stage.id, label: stage.label, state: STAGE_STATE[stage.status] }))} /> : null}
+              {detail ? <span className="muted">{detail}</span> : null}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

@@ -10,9 +10,9 @@ import {
 
 import { Failure } from "../components/Failure.js";
 import { Icon } from "../components/Icon.js";
-import { api, asReport, failureOf, readJson } from "../lib/api.js";
-import { recordRows, type DnsRecord, type RecordRow } from "../lib/dnsRecords.js";
-import { bootstrapStatusQuery } from "../lib/queries.js";
+import { api, asReport, failureOf } from "../lib/api.js";
+import { recordRows, type RecordRow } from "../lib/dnsRecords.js";
+import { bootstrapStatusQuery, dnsRecordsQuery } from "../lib/queries.js";
 import type { App, Environment, Report } from "../lib/types.js";
 
 type Editor = { mode: "create" } | { mode: "edit" | "delete"; record: RecordRow };
@@ -23,11 +23,7 @@ export function Dns({ applications, machines, onOpenApplication, onOpenVirtualMa
   onOpenApplication: (id: string) => void;
   onOpenVirtualMachine: (id: string) => void;
 }) {
-  const records = useQuery({
-    queryKey: ["dns", "records"],
-    queryFn: ({ signal }) => readJson<DnsRecord[]>("/dns/records", signal),
-    refetchInterval: 5000,
-  });
+  const records = useQuery({ ...dnsRecordsQuery, refetchInterval: 5000 });
   const status = useQuery({ ...bootstrapStatusQuery, refetchInterval: 5000 });
   const inventory = records.data ?? null;
   const diagnostics = status.data ?? null;
