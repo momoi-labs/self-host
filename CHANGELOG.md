@@ -1,5 +1,61 @@
 # self-host
 
+## 0.24.0
+
+### Minor Changes
+
+- bf449a6: The console adds External apps from Routes. Pick **External app** as the
+  destination, enter the LAN upstream and press **Fetch fingerprint**. The
+  console shows the certificate the device presents, compares it with a
+  fingerprint you typed, and saves it as the pin once you confirm it matches
+  the device. The Routes HTTP column now probes External apps through their
+  pin.
+
+### Patch Changes
+
+- 583c72a: The console has a new layout.
+  
+  The sidebar now has groups. Workloads holds Apps, Databases, Machines and
+  Images. Network holds Routes and DNS. System holds Events, Host and
+  Settings. Apps, Databases and Machines show a red count when a workload has
+  failed.
+  
+  The Overview is now a triage screen. A Needs attention card lists every
+  failed workload with its error and a button to open it. One card shows
+  workloads up, Host load, proxy traffic and DNS queries. Below them, Top
+  workloads ranks apps, databases and machines by resource use, and Recent
+  activity shows the latest events and running operations.
+  
+  Apps and Machines have their own list pages, with search and a status
+  filter. A detail screen's breadcrumb leads back to its list.
+  
+  A failed application or database says "Failed" once, in the status badge.
+  The loud alert stays while the workload is down. A failed deploy on a
+  workload that still runs gets a quiet alert.
+  
+  The console moves to Kiso's default look with the stone accent: square
+  frames, corner ticks and a soft shadow on the outermost panel only, and a
+  quiet solid background. Tables have a single frame. A table inside a card or
+  a detail tab no longer draws a second border or shadow. A pane that holds
+  only a table shows its title above the table frame, with no card around it.
+  Every pane on a summary and on the Overview now has the same shape: a title
+  above one framed body.
+  
+  The diagram on an application or database summary follows the theme in the
+  Stone hue: card-colored nodes on a recessed canvas with a quiet cross
+  pattern. It has small rounded corners and notched arrowheads. The sidebar
+  brand bar no longer draws a dark stripe under the logo.
+- de58331: The console moves to Kiso 1.15 and a new look: editorial headings, clean
+  panels with no corner marks, a hard shadow only on the outer frame, a paper
+  fibers background and an inset shell that fills to the bottom and right
+  edges.
+  
+  A failed deploy, database operation, image build or virtual machine
+  operation now shows Kiso's loud error Alert, with an animated hazard tape.
+  It leads with the root cause and reads the rest bottom-up as a Git graph:
+  what the platform was doing when it broke, then the result. Details and
+  the recovery action sit in the Alert's header.
+
 ## 0.23.0
 
 ### Minor Changes
