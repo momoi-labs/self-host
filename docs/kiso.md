@@ -28,7 +28,7 @@ rules. All entry points use it.
 | Component | Purpose |
 | --- | --- |
 | `Shell` | The console's `ConsoleShell`: navigation, breadcrumb, the health status with the version, and the account menu |
-| `BrandSymbol`, `Lockup` | The self-host brand: the lockup alone in the sidebar bar (`shellLayout`), the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The sidebar bar, its stripe and the brand inset are Kiso's `shellLayout`. The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
+| `BrandSymbol`, `Lockup` | The self-host brand: the lockup alone in the sidebar bar (`shellLayout`), the symbol as the rail's `brandMark` and in the phone header, and the lockup with the origin in the login brand row. The sidebar bar and the brand inset are Kiso's `shellLayout`; the console removes its stripe (see the exceptions). The lockup's torii is the rail mark's size (`--size-control-sm`), so the torii does not move or resize on collapse. One drawing per theme. The console always shows the terminal prompt; only the favicon files are the torii alone |
 | `AppForm`, `NativeAppForm`, `PostgresFields` | Application and database configuration |
 | `CustomImageEditor`, `EnvironmentEditor` | Image and virtual machine configuration |
 | `Glance` | Detail-page metrics |
@@ -114,15 +114,12 @@ Other components above live in `console/src/components/`.
   corner marks, so `console.css` sets `--corner-mark: 0` on a panel inside a
   panel.
 - A `Diagram` sets its own look: solid border, small rounded corners, no
-  corner marks, quiet dots, orthogonal edges and the `stealth` arrowhead. It
+  corner marks, quiet crosses, orthogonal edges and the `stealth` arrowhead. It
   keeps `direction="right"`. `direction="grid"` needs bands of columns and
   suits a drawing with two axes, which these are not.
-- `.app-diagram` inverts the theme through `color-scheme`, so its nodes are
-  dark on a light page and light on a dark page. Its surface is a mid gray,
-  the inverted card color mixed toward its foreground, so the diagram stands
-  apart without the full contrast of the opposite theme. The edges take the
-  foreground color to stay readable on it. Kiso's tokens use `light-dark()`,
-  so no color is restated.
+- `.app-diagram` follows the theme. Its canvas sits one step below the page
+  (`#ebe8e3` light, `#1a1917` dark) with Kiso's quiet cross pattern, and its
+  nodes use the card color. The colors stay in the Stone hue.
 - Use the series chart palette, straight chart lines, no chart fill, the standard chart layout and
   table legends. Keep existing product-specific chart legend visibility.
 - The shell is `ConsoleShell`: a collapsible sidebar with the toggle in the
@@ -252,6 +249,9 @@ These map the existing screens. They do not certify a full contract audit.
 | Where | Kiso rule | Console rule | Why |
 | --- | --- | --- | --- |
 | `.list-filters` below 560px, `console.css` | The search and the select each take a full row. | The search and the select share one 36px row. Clear filters wraps to a second row. | The Operator compares every list with the Kiso CRUD list, whose filter row is one line at 390px. |
+
+| `.app-diagram`, `console.css` | Use the theme palette. | A recessed Stone canvas and card-colored nodes, per theme. | Graphite did not match the Stone page; the user chose the theme-following variant on 2026-11-27. |
+| `.app-shell`, `console.css` | `shellLayout` draws a 2px primary stripe under the sidebar brand. | `--app-shell-brand-stripe: 0px`; the 1px border stays. | The user judged the dark stripe heavy on the Stone page on 2026-11-27. |
 
 Existing contract gaps are not approved exceptions.
 
