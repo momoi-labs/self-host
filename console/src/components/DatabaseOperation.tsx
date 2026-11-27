@@ -3,6 +3,7 @@ import { LogView, LogViewLine, Pane, Split, Splitter, StatusBadge, StepList } fr
 
 import { eventActionLabel, type OperationStage, type PlatformEvent } from "../lib/platformEvents.js";
 import { formatSeconds, seconds } from "../lib/runSteps.js";
+import { statusLabel } from "../lib/status.js";
 import { useMediaQuery } from "../lib/useMediaQuery.js";
 
 /** A database Task's stages, each with the commands it ran and their output. */
@@ -31,7 +32,7 @@ export function DatabaseOperation({ event, child, error, title }: { event: Platf
     detail: !wide && stage.id === shown.id ? output : undefined,
   }))} />;
   return <div className="run">
-    <div className="run-head"><p className="run-title">{title ?? eventActionLabel(event)} <StatusBadge tone={(child ?? event).status === "failed" ? "danger" : ["completed", "running"].includes((child ?? event).status) ? "success" : "neutral"} pulse={(child ?? event).status === "running"}>{(child ?? event).status === "running" ? active?.label ?? "Running" : (child ?? event).status}</StatusBadge></p></div>
+    <div className="run-head"><p className="run-title">{title ?? eventActionLabel(event)} <StatusBadge tone={(child ?? event).status === "failed" ? "danger" : ["completed", "running"].includes((child ?? event).status) ? "success" : "neutral"} pulse={(child ?? event).status === "running"}>{(child ?? event).status === "running" ? active?.label ?? "Running" : statusLabel((child ?? event).status)}</StatusBadge></p></div>
     {error ? <p className="muted">{error}</p> : null}
     {wide ? <Split className="run-split"><Pane className="run-steps">{list}</Pane><Splitter defaultSize={36} aria-label="Resize the steps and output panes" /><Pane className="grow run-output">{output}</Pane></Split> : <div className="run-list">{list}</div>}
   </div>;

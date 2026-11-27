@@ -83,11 +83,13 @@ export function Failure({
   actionLabel,
   onAction,
   incident,
+  blocking = true,
 }: {
   failure: unknown;
   actionLabel?: string;
   onAction?: () => void;
   incident?: string;
+  blocking?: boolean;
 }) {
   const [stepsOpen, setStepsOpen] = useState(false);
   const stepsId = useId();
@@ -101,8 +103,7 @@ export function Failure({
     const { steps, root } = splitCauses(report.caused_by);
     const middle = steps.slice().reverse();
     const hasDetails = Boolean(root);
-    return (
-      <Alert variant="error" appearance="loud" tape="top" animated pulse={false} placement="inline">
+    const story = (
         <AlertContent>
           <div className="failure-story-head">
             <AlertLabel>Error · {incident}</AlertLabel>
@@ -190,6 +191,14 @@ export function Failure({
             </div>
           )}
         </AlertContent>
+    );
+    return blocking ? (
+      <Alert variant="error" appearance="loud" tape="top" animated pulse={false} placement="inline">
+        {story}
+      </Alert>
+    ) : (
+      <Alert variant="error" appearance="tinted" placement="inline" className="failure-story-quiet">
+        {story}
       </Alert>
     );
   }

@@ -41,7 +41,7 @@ import { useToast } from "../components/Toasts.js";
 import { api, failureOf } from "../lib/api.js";
 import { settingsQuery } from "../lib/queries.js";
 import { isPublished } from "../lib/routes.js";
-import { hostnames, isCompose, statusTone } from "../lib/status.js";
+import { hostnames, isCompose, statusLabel, statusTone } from "../lib/status.js";
 import { waitForTask } from "../lib/tasks.js";
 import type { App, GitSource, Metrics, Report } from "../lib/types.js";
 import { fetchEvents, useEvents } from "../lib/useEvents.js";
@@ -272,9 +272,9 @@ export function AppDetail({
         <Lifecycle
           status={
             <>
-              <StatusBadge tone={native && app.status === "pending" ? "success" : statusTone(app.status)} pulse={Boolean(native && app.status === "pending")}>{native && app.status === "pending" ? "Preparing" : app.status}</StatusBadge>
-              {app.publication?.kind !== "unpublished" ? <HttpStatus id={app.id} status={app.status} /> : null}
-              {app.runtime?.kind !== "native" ? <DeploymentReadiness app={app} /> : null}
+              <StatusBadge tone={native && app.status === "pending" ? "success" : statusTone(app.status)} pulse={Boolean(native && app.status === "pending")}>{native && app.status === "pending" ? "Preparing" : statusLabel(app.status)}</StatusBadge>
+              {app.status === "running" && app.publication?.kind !== "unpublished" ? <HttpStatus id={app.id} status={app.status} /> : null}
+              {app.status === "running" && app.runtime?.kind !== "native" ? <DeploymentReadiness app={app} /> : null}
               {gitBusy ? <StatusBadge tone="success" pulse>{lastBuild?.status === "pending" ? "Queued" : "Building"}</StatusBadge> : null}
             </>
           }
@@ -315,7 +315,8 @@ export function AppDetail({
       {app.last_error && !building ? (
         <Failure
           failure={app.last_error}
-          incident="Last deploy failed"
+          incident={app.status === "running" ? "Last deploy failed" : "Application is down"}
+          blocking={app.status !== "running"}
           actionLabel="Retry"
           onAction={() => {
             if (app.git) {

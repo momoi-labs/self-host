@@ -13,6 +13,10 @@ export function statusTone(status: string): Tone {
   return "neutral";
 }
 
+export function statusLabel(status: string): string {
+  return status ? status.charAt(0).toUpperCase() + status.slice(1) : status;
+}
+
 /** A custom image's status is its latest build, so it reads as one. */
 export function buildTone(image: CustomImage): Tone {
   if (image.status === "ready" || image.status === "building") return "success";
