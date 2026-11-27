@@ -187,7 +187,7 @@ export function AppSummary({ app, apps, dnsSuffix, busy, reload, onOpenConfigura
 
   return (
     <div className="panel-stack">
-      <Diagram className="app-diagram" borderStyle="solid" shadowStyle="auto" cornerStyle="rounded" cornerSize="small" cornerMarks="none" background="dots" strength="quiet" crossings="none" labels="auto" edges="orthogonal" arrow="stealth" label={`${app.name}: the domains that reach it and the databases it uses`}>
+      <Diagram className="app-diagram" borderStyle="solid" shadowStyle="auto" cornerStyle="rounded" cornerSize="small" cornerMarks="none" background="crosses" strength="quiet" crossings="none" labels="auto" edges="orthogonal" arrow="stealth" label={`${app.name}: the domains that reach it and the databases it uses`}>
         {routes.length ? (
           // One node, so the line leaves from the middle of it: the Hostname leads and is always
           // shown, and aliases, paths and redirects fold under it.

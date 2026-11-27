@@ -27,7 +27,7 @@ export function DatabaseSummary({ app, apps, database, onOpenApp, onOpenConnecti
 
   return (
     <div className="panel-stack">
-      <Diagram className="app-diagram" borderStyle="solid" shadowStyle="auto" cornerStyle="rounded" cornerSize="small" cornerMarks="none" background="dots" strength="quiet" crossings="none" labels="auto" edges="orthogonal" arrow="stealth" label={`${app.name}: the Applications connected to it and the volume it stores data in`}>
+      <Diagram className="app-diagram" borderStyle="solid" shadowStyle="auto" cornerStyle="rounded" cornerSize="small" cornerMarks="none" background="crosses" strength="quiet" crossings="none" labels="auto" edges="orthogonal" arrow="stealth" label={`${app.name}: the Applications connected to it and the volume it stores data in`}>
         <DiagramColumn>
           {connections.length ? (
             <DiagramNode id="consumers" title="" className="group-node">

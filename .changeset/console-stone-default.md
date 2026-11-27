@@ -30,6 +30,7 @@ only a table shows its title above the table frame, with no card around it.
 Every pane on a summary and on the Overview now has the same shape: a title
 above one framed body.
 
-The diagram on an application or database summary inverts the theme: dark
-nodes on a light page and light nodes on a dark page, on a mid gray surface.
-It has small rounded corners and notched arrowheads.
+The diagram on an application or database summary follows the theme in the
+Stone hue: card-colored nodes on a recessed canvas with a quiet cross
+pattern. It has small rounded corners and notched arrowheads. The sidebar
+brand bar no longer draws a dark stripe under the logo.
