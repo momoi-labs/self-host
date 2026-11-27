@@ -1,5 +1,5 @@
 import type { MouseEvent, ReactNode } from "react";
-import { ConsoleShell, Dot } from "@momoi-labs/kiso-react";
+import { Badge, ConsoleShell, Dot } from "@momoi-labs/kiso-react";
 
 import { logout } from "../lib/api.js";
 import { useTheme } from "../lib/theme.js";
@@ -29,6 +29,9 @@ export function Shell({
   onOpenFailing,
   version,
   overview,
+  apps = { href: "/console/#apps", active: false },
+  machines = { href: "/console/#machines", active: false },
+  failed = { application: 0, database: 0, machine: 0 },
   databases = { href: "/console/#databases", active: false },
   customImages = { href: "/console/#custom-images", active: false },
   routes = { href: "/console/#routes", active: false },
@@ -49,6 +52,9 @@ export function Shell({
   onOpenFailing?: (id: string) => void;
   version: string | null;
   overview: Destination;
+  apps?: Destination;
+  machines?: Destination;
+  failed?: { application: number; database: number; machine: number };
   databases?: Destination;
   customImages?: Destination;
   routes?: Destination;
@@ -72,23 +78,31 @@ export function Shell({
         </span>
       }
       navigation={[
+        { destinations: [{ ...overview, label: "Overview", leading: <Icon name="chart" /> }] },
         {
+          label: "Workloads",
           destinations: [
-            {
-              ...overview,
-              label: "Overview",
-              leading: <Icon name="chart" />,
-              trailing: degraded ? <><Dot variant="warning" pulse /><span className="offscreen">Degraded</span></> : undefined,
-            },
-            { ...databases, label: "Databases", leading: <Icon name="database" /> },
-            { ...routes, label: "Routes", leading: <Icon name="route" /> },
-            { ...dns, label: "DNS", leading: <Icon name="globe" /> },
-            { ...events, label: "Events", leading: <Icon name="history" /> },
-            ...(host ? [{ ...host, label: "Host", leading: <Icon name="screen" /> }] : []),
-            { ...customImages, label: "Custom images", leading: <Icon name="box" /> },
+            { ...apps, label: "Apps", leading: <Icon name="layers" />, trailing: failedBadge(failed.application) },
+            { ...databases, label: "Databases", leading: <Icon name="database" />, trailing: failedBadge(failed.database) },
+            { ...machines, label: "Machines", leading: <Icon name="server" />, trailing: failedBadge(failed.machine) },
+            { ...customImages, label: "Images", leading: <Icon name="box" /> },
           ],
         },
-        { destinations: [{ ...settings, label: "Settings", leading: <Icon name="gear" /> }] },
+        {
+          label: "Network",
+          destinations: [
+            { ...routes, label: "Routes", leading: <Icon name="route" /> },
+            { ...dns, label: "DNS", leading: <Icon name="globe" /> },
+          ],
+        },
+        {
+          label: "System",
+          destinations: [
+            { ...events, label: "Events", leading: <Icon name="history" /> },
+            ...(host ? [{ ...host, label: "Host", leading: <Icon name="screen" /> }] : []),
+            { ...settings, label: "Settings", leading: <Icon name="gear" /> },
+          ],
+        },
       ]}
       breadcrumb={[
         { label: dnsSuffix ?? "Console", href: "/console/" },
@@ -135,6 +149,10 @@ export function Shell({
       {children}
     </ConsoleShell>
   );
+}
+
+function failedBadge(count: number): ReactNode {
+  return count > 0 ? <Badge variant="danger">{count}<span className="offscreen"> failed</span></Badge> : undefined;
 }
 
 /** "1 database failed", "2 applications and 1 database failed". */

@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 
 import { api, failureOf, readJson } from "./api.js";
+import type { DnsRecord } from "./dnsRecords.js";
 import type { ApiKey, App, BackupSettings, BackupStorage, BackupSummary, BootstrapStatus, Certificate, ConsumerDatabase, DatabaseBackup, CustomImage, DatabaseDetail, DatabaseImport, HostStatus, MaintenanceWindow, Settings } from "./types.js";
 
 /*
@@ -8,6 +9,11 @@ import type { ApiKey, App, BackupSettings, BackupStorage, BackupSummary, Bootstr
  * adds its own refetchInterval; the cache, and every screen showing it,
  * follows the newest answer.
  */
+
+export const dnsRecordsQuery = queryOptions({
+  queryKey: ["dns", "records"],
+  queryFn: ({ signal }) => readJson<DnsRecord[]>("/dns/records", signal),
+});
 
 export const appsQuery = queryOptions({
   queryKey: ["apps"],

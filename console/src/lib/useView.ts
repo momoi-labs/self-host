@@ -7,6 +7,8 @@ export type View =
   | { view: "events"; id: null }
   | { view: "dns"; id: null }
   | { view: "routes"; id: null }
+  | { view: "apps"; id: null }
+  | { view: "machines"; id: null }
   | { view: "databases"; id: null }
   | { view: "database-new"; id: null }
   | { view: "app"; id: string }
@@ -35,8 +37,9 @@ function settle(view: View) {
  * Settings carries its section and setting in the fragment too:
  * `#settings/access/api-keys`.
  */
-function fromHash(): View | null {
-  const hash = location.hash;
+export function viewFromHash(hash: string): View | null {
+  if (hash === "#apps") return { view: "apps", id: null };
+  if (hash === "#machines") return { view: "machines", id: null };
   if (hash === "#dns") return { view: "dns", id: null };
   if (hash === "#routes") return { view: "routes", id: null };
   if (hash === "#databases") return { view: "databases", id: null };
@@ -62,6 +65,8 @@ function fromHash(): View | null {
 
 function fromHistory(): View {
   const state = history.state as View | null;
+  if (state?.view === "apps") return { view: "apps", id: null };
+  if (state?.view === "machines") return { view: "machines", id: null };
   if (state?.view === "dns") return { view: "dns", id: null };
   if (state?.view === "routes") return { view: "routes", id: null };
   if (state?.view === "databases") return { view: "databases", id: null };
@@ -77,7 +82,7 @@ function fromHistory(): View {
   if (state?.view === "environment-new") return state;
   if (state?.view === "settings") return settingsView(state.id) ?? { view: "settings", id: "general" };
   return (
-    fromHash() ??
+    viewFromHash(location.hash) ??
     (new URLSearchParams(location.search).get("demo") === "environments"
       ? { view: "environment-new", id: null }
       : overview)
@@ -85,7 +90,9 @@ function fromHistory(): View {
 }
 
 /** The fragment a view is addressed by, for the views that keep one. */
-function hashFor(view: View): string | undefined {
+export function hashFor(view: View): string | undefined {
+  if (view.view === "apps") return "#apps";
+  if (view.view === "machines") return "#machines";
   if (view.view === "dns") return "#dns";
   if (view.view === "routes") return "#routes";
   if (view.view === "databases") return "#databases";

@@ -1,5 +1,5 @@
 import {
-  Box, ChartColumn, Check, Cpu, ChevronDown, ChevronUp, CircleAlert, CircleX, Clock, CornerDownRight, CornerUpRight, Database, Download, Ellipsis, Eye, EyeOff, File, GitBranch, Globe,
+  Box, ChartColumn, Server, Check, Cpu, ChevronDown, ChevronUp, CircleAlert, CircleX, Clock, CornerDownRight, CornerUpRight, Database, Download, Ellipsis, Eye, EyeOff, File, GitBranch, Globe,
   Hammer, History, Info, KeyRound, Layers, FileCode, GitCommitHorizontal, Tag, Link, Lock, LogOut, CircleUser, MemoryStick, Monitor, Plug, Plus, Route, Router, Settings, Split, SquareTerminal, User, X, type LucideIcon,
 } from "lucide-react";
 
@@ -51,6 +51,7 @@ const icons = {
   "chevron-up": ChevronUp,
   cpu: Cpu,
   memory: MemoryStick,
+  server: Server,
 } satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof icons;

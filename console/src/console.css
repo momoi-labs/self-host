@@ -229,33 +229,31 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 .network-down { color: var(--color-success); }
 .network-up { color: var(--color-danger); }
 
-/* The Overview's summary: four questions in one panel, a caps label over
-   each. What is up, what the measured workloads cost the Host, and what the
-   Platform's proxy and DNS handled. Four columns while the panel is wide, two
-   below that, a rule between neighbours on the same row. */
-.summary-panel { container-type: inline-size; }
-.summary-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--spacing-lg) 0; }
-.summary-group { display: grid; gap: var(--spacing-2xs); align-content: start; padding-inline: var(--spacing-lg); border-inline-start: 1px solid var(--color-border); }
-.summary-group:nth-child(odd) { padding-inline-start: 0; border-inline-start: 0; }
-@container (min-width: 52rem) {
-  .summary-groups { grid-template-columns: repeat(4, auto); }
-  .summary-group:nth-child(3) { padding-inline-start: var(--spacing-lg); border-inline-start: 1px solid var(--color-border); }
+.stat-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--presentation-grid-gap); }
+.stat-strip > .card { min-width: 0; }
+.stat-strip .stat-value small { font-size: var(--type-size-body); font-weight: var(--type-weight-regular); }
+@media (max-width: 1100px) { .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .stat-strip { grid-template-columns: minmax(0, 1fr); } }
+.attention-list, .activity-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.attention-list > li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--spacing-md); padding-block: var(--spacing-sm); }
+.attention-list > li + li, .activity-list > li + li { border-top: 1px solid var(--color-border); }
+.attention-what p { margin: 0; color: var(--color-muted-foreground); overflow-wrap: anywhere; }
+.needs-attention .card-header .icon { color: var(--color-danger); }
+.activity-list > li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--spacing-sm); padding-block: var(--spacing-sm); align-items: start; }
+.activity-list > li > .dot { margin-block-start: .45em; }
+.activity-list > li > div { display: grid; gap: var(--spacing-2xs); min-width: 0; overflow-wrap: anywhere; }
+.activity-when { flex: none; white-space: nowrap; }
+.spark-col { width: 120px; }
+.num { font-variant-numeric: tabular-nums; }
+.narrow-only { display: none; }
+.row-link { cursor: pointer; }
+.status-filter > .field { gap: 0; }
+@media (max-width: 700px) {
+  .attention-list > li { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+  .attention-list > li > .btn { grid-column: 2; justify-self: start; }
+  .wide-only, .spark-col { display: none; }
+  .narrow-only { display: inline; }
 }
-.summary-group .t-caps {
-  margin: 0; font-size: var(--type-size-metadata);
-  color: var(--color-subtle-foreground);
-}
-/* Values lead in the foreground voice; keys and totals trail muted. */
-.summary-line {
-  margin: 0; display: flex; flex-wrap: wrap; align-items: center;
-  gap: 0 var(--spacing-2xs);
-  font-size: var(--type-size-label); color: var(--color-muted-foreground);
-}
-.summary-line b {
-  color: var(--color-foreground); font-weight: var(--type-weight-regular);
-  font-variant-numeric: tabular-nums;
-}
-.summary-line .sparkline { width: 56px; }
 .section-title { font-size: var(--type-size-title); font-weight: 600; margin: 0; }
 /* A panel's heading row inside its frame: the title, the search that thins
    the list, and the way to add one more. The search grows to its width where
@@ -266,8 +264,6 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 /* The add button is one width on every panel, so the searches end in the same place. */
 .panel-toolbar .panel-action { width: 12rem; justify-content: center; }
 .panel-toolbar > .section-title + .panel-action { margin-inline-start: auto; }
-.panel-action-short { display: none; }
-.panel-action-object { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (max-width: 560px) {
   .list-filters > .input-group { flex: 1 1 8rem; }
   .list-filters > .select { width: auto; min-width: 0; }
@@ -275,8 +271,6 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 @media (width < 560px) {
   .panel-toolbar .panel-action { width: auto; margin-inline-start: auto; }
   .panel-toolbar .section-search { order: 1; flex-basis: 100%; max-width: none; margin-inline-start: 0; }
-  .panel-action-full { display: none; }
-  .panel-action-short { display: inline; }
 }
 /* Inspect values in the charts without a permanent summary or detail table. */
 .traffic .chart-values, .traffic > .framed-chart > [data-slot="chart-legend"] { display: none; }
@@ -315,6 +309,7 @@ fieldset.field { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 .variable-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Several values for one key, one per line: kiso's stack-xs lays them out, this drops the bullets. */
 .value-list { margin: 0; padding: 0; list-style: none; }
+
 .summary-footnote { display: flex; align-items: center; gap: var(--spacing-xs); margin: 0; }
 
 /* An Overview row names its definition before its value, and usage sits

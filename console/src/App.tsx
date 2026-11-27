@@ -7,6 +7,7 @@ import { Shell } from "./components/Shell.js";
 import { useMetrics } from "./lib/useMetrics.js";
 import { useEnvironments } from "./lib/useEnvironments.js";
 import { settingsQuery } from "./lib/queries.js";
+import { failedCounts } from "./lib/overview.js";
 import { useSettingsFailures } from "./lib/settingsSections.js";
 import { usePlatform } from "./lib/usePlatform.js";
 import { useView } from "./lib/useView.js";
@@ -15,6 +16,8 @@ import { Routes } from "./views/Routes.js";
 import { ManagedPostgres } from "./views/ManagedPostgres.js";
 import { Databases } from "./views/Databases.js";
 import { NewDatabase } from "./views/NewDatabase.js";
+import { Apps } from "./views/Apps.js";
+import { Machines } from "./views/Machines.js";
 import { AppDetail } from "./views/AppDetail.js";
 import { NewApp } from "./views/NewApp.js";
 import { Overview } from "./views/Overview.js";
@@ -40,8 +43,6 @@ export function App() {
       ? apps.find((candidate) => candidate.id === view.id)
       : undefined;
 
-  // A view whose subject is gone — an Application removed here or in another
-  // tab — falls back to the Overview rather than rendering nothing.
   useEffect(() => {
     if (!ready) return;
     if (view.view === "app" && !app) go({ view: "overview", id: null }, { replace: true });
@@ -51,6 +52,10 @@ export function App() {
   const crumb =
     view.view === "dns"
       ? "DNS"
+      : view.view === "apps"
+      ? "Apps"
+      : view.view === "machines"
+      ? "Machines"
       : view.view === "routes"
       ? "Routes"
       : view.view === "databases"
@@ -64,7 +69,7 @@ export function App() {
       : view.view === "new"
         ? "New application"
         : view.view === "custom-images"
-          ? "Custom images"
+          ? "Images"
           : view.view === "custom-image"
             ? view.id
               ? "Custom image"
@@ -80,10 +85,15 @@ export function App() {
                     ? "Host"
                     : "Overview";
 
-  // A database is reached from its list, so the breadcrumb leads back there.
   const parent =
     view.view === "database-new" || app?.managed_postgres
       ? { label: "Databases", href: "/console/#databases", active: false, onClick: () => go({ view: "databases", id: null }) }
+      : view.view === "new" || (view.view === "app" && app)
+      ? { label: "Apps", href: "/console/#apps", active: false, onClick: () => go({ view: "apps", id: null }) }
+      : view.view === "environment-new" || view.view === "environments"
+      ? { label: "Machines", href: "/console/#machines", active: false, onClick: () => go({ view: "machines", id: null }) }
+      : view.view === "custom-image"
+      ? { label: "Images", href: "/console/#custom-images", active: false, onClick: () => go({ view: "custom-images", id: null }) }
       : undefined;
 
   return (
@@ -98,9 +108,20 @@ export function App() {
       version={version}
       overview={{
         href: "/console/",
-        active: view.view === "overview" || view.view === "environments" || (view.view === "app" && !!app && !app.managed_postgres),
+        active: view.view === "overview",
         onClick: () => go({ view: "overview", id: null }),
       }}
+      apps={{
+        href: "/console/#apps",
+        active: view.view === "apps" || view.view === "new" || (view.view === "app" && !!app && !app.managed_postgres),
+        onClick: () => go({ view: "apps", id: null }),
+      }}
+      machines={{
+        href: "/console/#machines",
+        active: view.view === "machines" || view.view === "environments" || view.view === "environment-new",
+        onClick: () => go({ view: "machines", id: null }),
+      }}
+      failed={failedCounts(apps, environments)}
       dns={{ href: "/console/#dns", active: view.view === "dns", onClick: () => go({ view: "dns", id: null }) }}
       routes={{ href: "/console/#routes", active: view.view === "routes", onClick: () => go({ view: "routes", id: null }) }}
       events={{
@@ -139,6 +160,11 @@ export function App() {
         }} />
       ) : view.view === "routes" ? (
         <Routes apps={apps} ready={ready} dnsSuffix={dnsSuffix} reload={reload} onOpenApp={(id) => go({ view: "app", id })} />
+      ) : view.view === "apps" ? (
+        <Apps apps={apps} ready={ready} metrics={metrics} onDeploy={() => go({ view: "new", id: null })} onOpen={(id) => go({ view: "app", id })} />
+      ) : view.view === "machines" ? (
+        <Machines machines={environments} ready={environmentsReady} metrics={metrics}
+          onCreate={() => go({ view: "environment-new", id: null })} onOpen={(id) => go({ view: "environments", id })} />
       ) : view.view === "databases" ? (
         <Databases apps={apps} ready={ready} reload={reload} onCreate={() => go({ view: "database-new", id: null })} onOpen={(id) => go({ view: "app", id })} />
       ) : view.view === "database-new" ? (
@@ -153,7 +179,7 @@ export function App() {
           mode={view.view === "environment-new" ? "new" : "detail"}
           selected={view.id}
           onOpen={(id) =>
-            go(id ? { view: "environments", id } : { view: "overview", id: null })
+            go(id ? { view: "environments", id } : { view: "machines", id: null })
           }
         />
       ) : view.view === "custom-images" || view.view === "custom-image" ? (
@@ -167,12 +193,12 @@ export function App() {
         <NewApp
           dnsSuffix={dnsSuffix}
           reload={reload}
-          onCancel={() => go({ view: "overview", id: null })}
+          onCancel={() => go({ view: "apps", id: null })}
           onCreated={(created) =>
             go(
               created
                 ? { view: "app", id: created.id }
-                : { view: "overview", id: null },
+                : { view: "apps", id: null },
             )
           }
         />
@@ -187,12 +213,13 @@ export function App() {
           dnsSuffix={dnsSuffix}
           metrics={metrics}
           reload={reload}
-          onRemoved={() => go({ view: "overview", id: null })}
+          onRemoved={() => go({ view: "apps", id: null })}
           onOpenApp={(id) => go({ view: "app", id })}
         />
       ) : (
         <Overview
           ready={ready && environmentsReady}
+          domain={domain}
           apps={apps}
           environments={environments}
           metrics={metrics}
@@ -201,13 +228,9 @@ export function App() {
           onDeploy={() => go({ view: "new", id: null })}
           onNewDatabase={() => go({ view: "database-new", id: null })}
           onNewMachine={() => go({ view: "environment-new", id: null })}
-          onOpenDatabases={() => go({ view: "databases", id: null })}
-          onOpenRoutes={() => go({ view: "routes", id: null })}
+          onOpenEvents={() => go({ view: "events", id: null })}
         />
       )}
-      {/* A run is watched on the Overview's table or the machine's own
-          screen; the toast only says how it ended, wherever the Operator
-          went meanwhile. */}
       <OperationOutcomes environments={environments} />
     </Shell>
   );

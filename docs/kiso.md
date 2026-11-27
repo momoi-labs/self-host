@@ -44,6 +44,8 @@ rules. All entry points use it.
 | `LogPane`, `Logs`, `useToast` | Logs and action feedback |
 | `PrivateAccessField`, `DatabaseConnections` | Application access grants and managed database connections |
 | `DatabaseBackups` | A managed database server's backups: on or off, days to keep, the repository's backups, restore to a new server and verification |
+| `StatusFilter` | The segmented All, Running, Failed, Stopped filter on a workload list |
+| `WorkloadCells` | `Usage` and `Activity` table cells for a workload row, shared by Apps and Machines |
 | `RestoreDialog` | Restores a server's backups into a new server. The Backups tab opens it for one server, and the Databases list lets the Operator pick the source |
 | `barSteps`, `phase` in `console/src/lib/runSteps.ts` | Task progress and phase labels |
 
@@ -115,14 +117,21 @@ Other components above live in `console/src/components/`.
   header, before the breadcrumb. From 700px to 1023px the navigation opens
   in a drawer. Below 700px it moves to ConsoleShell's bottom navigation: the
   first four destinations, then More for the rest.
-- The sidebar lists pages, not records. Applications and virtual machines open
-  from the Overview's tables, and their detail screens mark Overview as the
-  current destination. A database's screen marks Databases.
-- Settings is the last navigation group. The header ends with ConsoleShell's
-  `status`, the health line and the Host version, then the account button.
-  Its `Popover` holds the identity, `ThemeSelector` and Sign out. When a
-  workload is down, the status links to it, and Overview in the navigation
-  shows a warning dot.
+- The sidebar lists pages, not records, in four groups. Overview stands
+  alone, without a label. Workloads holds Apps, Databases, Machines and
+  Images. Network holds Routes and DNS. System holds Events, Host and
+  Settings.
+- A detail or create screen marks its list as the current destination, and
+  its breadcrumb leads back to that list: Apps, Databases, Machines or
+  Images.
+- Apps, Databases and Machines show a danger `Badge` with the count of
+  failed workloads, and no badge at zero. The count comes from
+  `failedCounts` in `lib/overview.ts`, the same source as the Overview's
+  Needs attention list.
+- The header ends with ConsoleShell's `status`, the health line and the Host
+  version, then the account button. Its `Popover` holds the identity,
+  `ThemeSelector` and Sign out. When a workload is down, the status links to
+  it.
 - Use Kiso's `Card` paint layer for shaped shadows. A table that is its own
   panel sits in `TableFrame`, never in a hand-written `div.table-wrap`. Other native frames
   need `PanelShadow` as their first child, as documented in the installed
@@ -131,25 +140,39 @@ Other components above live in `console/src/components/`.
   the filters, then the table, with the count in its footer. Loading is
   `Skeleton`. An empty list is the header and one `Card` with the
   `EmptyState`, edge to edge: no filters, no table, no count. The
-  `EmptyState` has a title and one sentence, no icon and no button. A filter
+  `EmptyState` has a title and one sentence, no icon and no button. The
+  Overview's first-run `EmptyState` is the exception: it offers Deploy
+  application and Create database. A filter
   that empties a non-empty list keeps the table and shows a "No X match your
   filters." row. Events has no header action and ListPage requires one, so
   Events writes the same markup by hand.
-- An `EmptyState` touches its frame on all four sides. In an Overview group
-  or a Settings pane, the group keeps only its title row and the
+- An `EmptyState` touches its frame on all four sides. In a Settings pane, the group keeps only its title row and the
   `EmptyState` in a `div.empty-frame`: no search, no table header. The frame
   draws the divider under the title, so the stripes start at the title row.
   In a tab with other content, it sits alone in a `Card`, where the table
   would be.
-- Below 560px an Overview group's title row holds the title and a "New"
-  button, whose accessible name names the object ("New database"). The
-  search takes its own row below. From 560px up the button keeps its full
-  label and the search sits on the title row.
+- The Overview is a triage screen, top to bottom: Needs attention, the stat
+  strip, then Top workloads and Recent activity in a static `PaneGrid`. It
+  lists no workloads of its own. Apps, Databases and Machines are the lists.
+- Needs attention is a `Card` that shows only while a workload has failed.
+  Each row has the failed `StatusBadge`, the name and kind, the real error,
+  and one button that opens the workload.
+- The stat strip is four `Stat`s, each in a `Card`: Workloads, Host load,
+  Proxy traffic and DNS queries. Four columns, two at 1100px and below, one
+  at 560px and below. A value with no sample reads "—", never zero.
+- A trend is labeled with the window the Host really keeps ("Last 5 min"),
+  never with a fixed "Last hour".
+- A list's status filter is `StatusFilter`: Kiso's segmented `RadioGroup`
+  with All, Running, Failed and Stopped.
+- On Apps and Machines a row click opens the detail screen. The name is a
+  real link, so the keyboard and a new tab work too. Below 700px,
+  `.wide-only` hides the secondary columns so the table never scrolls
+  sideways.
 - A screen header is the title and at most one action. No
   `PageHeaderDescription` on list, create, Host, Events or Settings screens,
-  so every title sits where the Kiso CRUD puts it. When all of Overview is
-  empty, Create sits in the header and the card holds only the
-  `EmptyState`.
+  so every title sits where the Kiso CRUD puts it. The Overview is the
+  exception: its description names the domain and counts the workloads, and
+  Create is always in its header.
 - No disabled header action. Hide an action the Operator cannot take, and let
   the empty state say why. Routes always offers Add route, because an
   External app needs no Application.
@@ -196,7 +219,7 @@ These map the existing screens. They do not certify a full contract audit.
 | Overview | `dashboard` |
 | Application and managed PostgreSQL detail | `crud`, with ADR-0024 detail layout |
 | New application and database | `crud`, with ADR-0024 create layout |
-| Databases, DNS, routes, events and custom image lists | `crud`, with ADR-0024 list layout |
+| Apps, Databases, Machines, DNS, routes, events and custom image lists | `crud`, with ADR-0024 list layout |
 | Custom image editor | `crud`, with ADR-0024 create/detail layouts |
 | Virtual machine create/detail | `crud`, `guided-flow`, with ADR-0024 layouts |
 | Settings: General, Access, Network, and Backups and tasks sections | `settings` |
